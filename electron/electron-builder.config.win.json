@@ -43,7 +43,16 @@
     }
   ],
   "files": ["assets/**/*", "build/**/*", "capacitor.config.*", "app/**/*"],
-  "asarUnpack": ["build/src/ed25519-verify.worker.js", "build/src/reticulum-chat.worker.js", "build/src/reticulum-resource.worker.js", "build/src/reticulum-media.worker.js"],
+  "asarUnpack": [
+    "**/*.node",
+    "node_modules/@img/sharp-*/**/*",
+    "node_modules/bindings/**/*",
+    "node_modules/file-uri-to-path/**/*",
+    "build/src/ed25519-verify.worker.js",
+    "build/src/reticulum-chat.worker.js",
+    "build/src/reticulum-resource.worker.js",
+    "build/src/reticulum-media.worker.js"
+  ],
   "win": {
     "legalTrademarks": "QORTAL.ORG",
     "icon": "assets/appIcon.ico",

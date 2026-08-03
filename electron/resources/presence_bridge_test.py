@@ -1,8 +1,11 @@
 import base64
+import ctypes
 import importlib.util
 import json
 import os
 import queue
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -53,18 +56,22 @@ class PresenceBridgeOwnerLifecycleTest(unittest.TestCase):
                 self.assertEqual(self.bridge._owner_pid_from_environment(), 0)
 
     @unittest.skipIf(os.name == "nt", "POSIX parent-reparenting behavior")
-    def test_owner_watchdog_forces_exit_after_parent_is_lost(self):
+    def test_owner_watchdog_forces_exit_after_owner_is_lost(self):
         owner_pid = 4321
         self.bridge._shutdown.clear()
-        with mock.patch.object(self.bridge.os, "getppid", return_value=1), mock.patch.object(
-            self.bridge.time, "sleep"
-        ) as sleep_mock, mock.patch.object(
+        close_monitor = mock.Mock()
+        with mock.patch.object(
+            self.bridge,
+            "_open_posix_owner_monitor",
+            return_value=(lambda: False, close_monitor, "test"),
+        ), mock.patch.object(self.bridge.time, "sleep") as sleep_mock, mock.patch.object(
             self.bridge.os, "_exit", side_effect=SystemExit(0)
         ) as exit_mock:
             with self.assertRaises(SystemExit):
                 self.bridge._owner_watchdog_loop(owner_pid)
 
         self.assertTrue(self.bridge._shutdown.is_set())
+        close_monitor.assert_called_once_with()
         sleep_mock.assert_called_once_with(self.bridge._OWNER_EXIT_GRACE_SECONDS)
         exit_mock.assert_called_once_with(0)
 
@@ -72,9 +79,11 @@ class PresenceBridgeOwnerLifecycleTest(unittest.TestCase):
     def test_owner_loss_still_forces_exit_when_stdin_already_started_shutdown(self):
         owner_pid = 4321
         self.bridge._shutdown.set()
-        with mock.patch.object(self.bridge.os, "getppid", return_value=1), mock.patch.object(
-            self.bridge.time, "sleep"
-        ), mock.patch.object(
+        with mock.patch.object(
+            self.bridge,
+            "_open_posix_owner_monitor",
+            return_value=(lambda: False, lambda: None, "test"),
+        ), mock.patch.object(self.bridge.time, "sleep"), mock.patch.object(
             self.bridge.os, "_exit", side_effect=SystemExit(0)
         ) as exit_mock:
             with self.assertRaises(SystemExit):
@@ -86,11 +95,131 @@ class PresenceBridgeOwnerLifecycleTest(unittest.TestCase):
     def test_owner_watchdog_leaves_a_live_owner_alone_during_shutdown(self):
         owner_pid = 4321
         self.bridge._shutdown.set()
-        with mock.patch.object(self.bridge.os, "getppid", return_value=owner_pid), mock.patch.object(
-            self.bridge.os, "_exit"
-        ) as exit_mock:
+        close_monitor = mock.Mock()
+        with mock.patch.object(
+            self.bridge,
+            "_open_posix_owner_monitor",
+            return_value=(lambda: True, close_monitor, "test"),
+        ), mock.patch.object(self.bridge.os, "_exit") as exit_mock:
             self.bridge._owner_watchdog_loop(owner_pid)
+        close_monitor.assert_called_once_with()
         exit_mock.assert_not_called()
+
+    @unittest.skipIf(os.name == "nt", "POSIX process monitor")
+    def test_owner_monitor_accepts_a_live_process_that_is_not_the_direct_parent(self):
+        owner_alive, close_monitor, _kind = self.bridge._open_posix_owner_monitor(
+            os.getpid()
+        )
+        try:
+            self.assertTrue(owner_alive())
+        finally:
+            close_monitor()
+
+    @unittest.skipIf(os.name == "nt", "POSIX process monitor")
+    def test_owner_monitor_detects_the_exact_process_exiting(self):
+        owner = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(0.1)"]
+        )
+        owner_alive, close_monitor, _kind = self.bridge._open_posix_owner_monitor(
+            owner.pid
+        )
+        try:
+            self.assertTrue(owner_alive())
+            owner.wait(timeout=2.0)
+            deadline = time.monotonic() + 1.0
+            while owner_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(owner_alive())
+        finally:
+            if owner.poll() is None:
+                owner.terminate()
+                owner.wait(timeout=2.0)
+            close_monitor()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fallback monitor")
+    def test_linux_owner_monitor_fallback_rejects_a_reused_pid(self):
+        with mock.patch.object(
+            self.bridge.os, "pidfd_open", side_effect=OSError("unsupported")
+        ), mock.patch.object(
+            self.bridge,
+            "_linux_process_start_token",
+            side_effect=["original-start", "original-start", "replacement-start"],
+        ):
+            owner_alive, close_monitor, kind = self.bridge._open_posix_owner_monitor(
+                4321
+            )
+            try:
+                self.assertEqual(kind, "proc-start")
+                self.assertTrue(owner_alive())
+                self.assertFalse(owner_alive())
+            finally:
+                close_monitor()
+
+    def test_macos_owner_monitor_uses_process_exit_events(self):
+        class FakeKqueue:
+            def __init__(self):
+                self.exited = False
+                self.closed = False
+                self.changes = []
+
+            def control(self, changes, _max_events, _timeout):
+                if changes is not None:
+                    self.changes.extend(changes)
+                    return []
+                return ["exit"] if self.exited else []
+
+            def close(self):
+                self.closed = True
+
+        fake_kqueue = FakeKqueue()
+        with mock.patch.object(self.bridge.sys, "platform", "darwin"), mock.patch.object(
+            self.bridge.select, "kqueue", return_value=fake_kqueue, create=True
+        ), mock.patch.object(
+            self.bridge.select, "kevent", return_value="process-event", create=True
+        ), mock.patch.object(
+            self.bridge.select, "KQ_FILTER_PROC", 1, create=True
+        ), mock.patch.object(
+            self.bridge.select, "KQ_EV_ADD", 2, create=True
+        ), mock.patch.object(
+            self.bridge.select, "KQ_EV_ENABLE", 4, create=True
+        ), mock.patch.object(
+            self.bridge.select, "KQ_EV_CLEAR", 8, create=True
+        ), mock.patch.object(
+            self.bridge.select, "KQ_NOTE_EXIT", 16, create=True
+        ):
+            owner_alive, close_monitor, kind = self.bridge._open_posix_owner_monitor(
+                4321
+            )
+            self.assertEqual(kind, "kqueue")
+            self.assertTrue(owner_alive())
+            fake_kqueue.exited = True
+            self.assertFalse(owner_alive())
+            close_monitor()
+
+        self.assertEqual(fake_kqueue.changes, ["process-event"])
+        self.assertTrue(fake_kqueue.closed)
+
+    def test_windows_owner_watchdog_uses_the_exact_process_handle(self):
+        kernel32 = mock.Mock()
+        kernel32.OpenProcess.return_value = 99
+        kernel32.WaitForSingleObject.return_value = 0
+        fake_windll = mock.Mock(kernel32=kernel32)
+        self.bridge._shutdown.clear()
+
+        with mock.patch.object(self.bridge.os, "name", "nt"), mock.patch.object(
+            ctypes, "windll", fake_windll, create=True
+        ), mock.patch.object(
+            self.bridge._shutdown, "wait", return_value=False
+        ), mock.patch.object(self.bridge.time, "sleep"), mock.patch.object(
+            self.bridge.os, "_exit", side_effect=SystemExit(0)
+        ) as exit_mock:
+            with self.assertRaises(SystemExit):
+                self.bridge._owner_watchdog_loop(4321)
+
+        kernel32.OpenProcess.assert_called_once_with(0x00100000, False, 4321)
+        kernel32.WaitForSingleObject.assert_called_once()
+        kernel32.CloseHandle.assert_called_once_with(99)
+        exit_mock.assert_called_once_with(0)
 
 
 class ReticulumPathVisibilityTest(unittest.TestCase):

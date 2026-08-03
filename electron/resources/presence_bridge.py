@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import select
 import selectors
 from collections import deque
 import queue
@@ -22713,11 +22714,109 @@ def _owner_pid_from_environment() -> int:
     return owner_pid if owner_pid > 1 else 0
 
 
+def _posix_pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
+def _linux_process_start_token(pid: int) -> Optional[str]:
+    """Return the kernel start tick for a PID, protecting fallback checks from PID reuse."""
+    try:
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as handle:
+            raw = handle.read()
+    except (FileNotFoundError, ProcessLookupError, PermissionError, OSError):
+        return None
+    # comm is parenthesized and may itself contain spaces or closing parentheses.
+    closing = raw.rfind(")")
+    if closing < 0:
+        return None
+    fields_after_comm = raw[closing + 1 :].strip().split()
+    # fields_after_comm[0] is field 3 (state); process start time is field 22.
+    if len(fields_after_comm) <= 19:
+        return None
+    return fields_after_comm[19]
+
+
+def _open_posix_owner_monitor(
+    owner_pid: int,
+) -> Tuple[Callable[[], bool], Callable[[], None], str]:
+    """Bind to the Electron owner itself, independent of frozen bridge wrappers."""
+    if sys.platform.startswith("linux") and hasattr(os, "pidfd_open"):
+        try:
+            owner_fd = os.pidfd_open(owner_pid, 0)
+            poller = select.poll()
+            poller.register(owner_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+
+            def pidfd_alive() -> bool:
+                return not bool(poller.poll(0))
+
+            def close_pidfd() -> None:
+                try:
+                    os.close(owner_fd)
+                except OSError:
+                    pass
+
+            return pidfd_alive, close_pidfd, "pidfd"
+        except ProcessLookupError:
+            return lambda: False, lambda: None, "pidfd"
+        except (AttributeError, OSError):
+            # Older kernels can expose os.pidfd_open without supporting it.
+            pass
+
+    if sys.platform == "darwin" and hasattr(select, "kqueue"):
+        kqueue = None
+        try:
+            kqueue = select.kqueue()
+            process_event = select.kevent(
+                owner_pid,
+                filter=select.KQ_FILTER_PROC,
+                flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR,
+                fflags=select.KQ_NOTE_EXIT,
+            )
+            kqueue.control([process_event], 0, 0)
+
+            def kqueue_alive() -> bool:
+                return not bool(kqueue.control(None, 1, 0))
+
+            return kqueue_alive, kqueue.close, "kqueue"
+        except (AttributeError, OSError):
+            if kqueue is not None:
+                try:
+                    kqueue.close()
+                except OSError:
+                    pass
+
+    if sys.platform.startswith("linux"):
+        start_token = _linux_process_start_token(owner_pid)
+        if start_token is None:
+            return lambda: False, lambda: None, "proc-start"
+        return (
+            lambda: _linux_process_start_token(owner_pid) == start_token,
+            lambda: None,
+            "proc-start",
+        )
+
+    # Portable last resort for POSIX platforms without pidfd or kqueue. The
+    # check targets Electron's PID rather than assuming a direct parent.
+    return (
+        lambda: _posix_pid_exists(owner_pid),
+        lambda: None,
+        "pid-exists",
+    )
+
+
 def _owner_watchdog_loop(owner_pid: int) -> None:
     """Terminate this per-app bridge when its exact Electron owner disappears."""
     owner_lost = False
     owner_handle = None
     kernel32 = None
+    owner_alive = None
+    owner_monitor_close = lambda: None
 
     if os.name == "nt":
         try:
@@ -22753,27 +22852,77 @@ def _owner_watchdog_loop(owner_pid: int) -> None:
                 f"state=owner-missing owner_pid={owner_pid}"
             )
             owner_lost = True
+        else:
+            wait_result = kernel32.WaitForSingleObject(owner_handle, 0)
+            if wait_result == 0:
+                owner_lost = True
+            elif wait_result != 0x00000102:  # WAIT_TIMEOUT
+                log(
+                    "[presence_bridge] target=owner-watchdog "
+                    f"state=monitor-failed owner_pid={owner_pid} result={wait_result}"
+                )
+                kernel32.CloseHandle(owner_handle)
+                return
     else:
-        # The bridge is spawned directly by Electron. On POSIX, orphaning
-        # reparents it, so comparing the live parent PID is immune to PID reuse.
-        if os.getppid() != owner_pid:
-            owner_lost = True
+        # A PyInstaller one-file executable inserts a bootloader process
+        # between Electron and the actual Python bridge. Monitor Electron
+        # itself rather than requiring it to remain our direct parent.
+        owner_alive, owner_monitor_close, monitor_kind = _open_posix_owner_monitor(
+            owner_pid
+        )
+        try:
+            owner_lost = not owner_alive()
+        except Exception as exc:
+            log(
+                "[presence_bridge] target=owner-watchdog "
+                f"state=monitor-failed owner_pid={owner_pid} monitor={monitor_kind} err={exc}"
+            )
+            try:
+                owner_monitor_close()
+            except Exception:
+                pass
+            return
+        log(
+            "[presence_bridge] target=owner-watchdog "
+            f"state=monitor-active owner_pid={owner_pid} monitor={monitor_kind}"
+        )
 
     try:
         while not owner_lost and not _shutdown.wait(_OWNER_WATCH_INTERVAL_SECONDS):
             if os.name == "nt":
                 # WAIT_OBJECT_0 means the exact owner handle was signalled.
-                owner_lost = kernel32.WaitForSingleObject(
-                    owner_handle, int(_OWNER_WATCH_INTERVAL_SECONDS * 1000)
-                ) == 0
+                wait_result = kernel32.WaitForSingleObject(owner_handle, 0)
+                if wait_result == 0:
+                    owner_lost = True
+                elif wait_result != 0x00000102:  # WAIT_TIMEOUT
+                    log(
+                        "[presence_bridge] target=owner-watchdog "
+                        f"state=monitor-failed owner_pid={owner_pid} result={wait_result}"
+                    )
+                    return
             else:
-                owner_lost = os.getppid() != owner_pid
+                try:
+                    owner_lost = not owner_alive()
+                except Exception as exc:
+                    log(
+                        "[presence_bridge] target=owner-watchdog "
+                        f"state=monitor-failed owner_pid={owner_pid} err={exc}"
+                    )
+                    return
     finally:
         if owner_handle and kernel32:
             try:
                 kernel32.CloseHandle(owner_handle)
             except Exception:
                 pass
+        if os.name != "nt":
+            try:
+                owner_monitor_close()
+            except Exception as exc:
+                log(
+                    "[presence_bridge] target=owner-watchdog "
+                    f"state=monitor-close-failed owner_pid={owner_pid} err={exc}"
+                )
 
     if not owner_lost:
         return
