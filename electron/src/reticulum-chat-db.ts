@@ -12662,13 +12662,55 @@ export class ReticulumChatDatabase {
       ...expandRows(nonRecurringRows),
       ...expandRows(recurringRows),
     ];
-    return occurrences
+    const ordered = occurrences
       .sort(
         (a, b) =>
           a.occurrenceStart - b.occurrenceStart ||
           a.occurrenceId.localeCompare(b.occurrenceId)
       )
       .slice(0, safeLimit);
+    const eventIds = [...new Set(ordered.map((item) => item.eventId))];
+    const creationByEventId = new Map<
+      string,
+      { authorAddress: string; timestamp: number }
+    >();
+    for (let offset = 0; offset < eventIds.length; offset += 500) {
+      const chunk = eventIds.slice(offset, offset + 500);
+      if (chunk.length === 0) continue;
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(
+          `SELECT event_id, author_address, timestamp
+             FROM rchat_calendar_mutations
+            WHERE group_id = ?
+              AND operation = 'upsert'
+              AND event_id IN (${placeholders})
+            ORDER BY timestamp ASC, mutation_id ASC`
+        )
+        .all(groupId, ...chunk) as Array<{
+        event_id: string;
+        author_address: string;
+        timestamp: number;
+      }>;
+      for (const row of rows) {
+        if (!creationByEventId.has(row.event_id)) {
+          creationByEventId.set(row.event_id, {
+            authorAddress: row.author_address,
+            timestamp: row.timestamp,
+          });
+        }
+      }
+    }
+    return ordered.map((occurrence) => {
+      const creation = creationByEventId.get(occurrence.eventId);
+      return creation
+        ? {
+            ...occurrence,
+            creatorAddress: creation.authorAddress,
+            createdAt: creation.timestamp,
+          }
+        : occurrence;
+    });
   }
 
   getCalendarEventOccurrences(

@@ -81,7 +81,7 @@ const truncateInvite = (value: string) =>
 
 const yearsAgo = (timestamp?: number | string) => {
   const years = getLegacyLevel(timestamp);
-  return years ? Math.max(0, years - 1) : null;
+  return years == null ? null : years;
 };
 
 const formatCreatedDate = (timestamp?: number | string) => {

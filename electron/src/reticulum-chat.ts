@@ -9336,12 +9336,13 @@ export class ReticulumChatManager extends EventEmitter {
 
   createCalendarEvent(
     groupId: number,
-    input: unknown
+    input: unknown,
+    eventId: string = nodeCrypto.randomUUID()
   ): Promise<ReticulumCalendarMutation> {
     return this.publishLocalCalendarMutation(
       groupId,
       'upsert',
-      nodeCrypto.randomUUID(),
+      eventId,
       input
     );
   }

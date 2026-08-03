@@ -1787,11 +1787,16 @@ try {
           rangeStart,
           rangeEnd
         ) as Promise<unknown[]>,
-      createCalendarEvent: async (groupId: number, input: unknown) =>
+      createCalendarEvent: async (
+        groupId: number,
+        input: unknown,
+        eventId?: string
+      ) =>
         ipcRenderer.invoke(
           'reticulumChat:createCalendarEvent',
           groupId,
-          input
+          input,
+          eventId
         ) as Promise<unknown>,
       updateCalendarEvent: async (
         groupId: number,
@@ -2856,11 +2861,16 @@ try {
           rangeStart,
           rangeEnd
         ) as Promise<unknown[]>,
-      createCalendarEvent: async (groupId: number, input: unknown) =>
+      createCalendarEvent: async (
+        groupId: number,
+        input: unknown,
+        eventId?: string
+      ) =>
         ipcRenderer.invoke(
           'reticulumChat:createCalendarEvent',
           groupId,
-          input
+          input,
+          eventId
         ) as Promise<unknown>,
       updateCalendarEvent: async (
         groupId: number,

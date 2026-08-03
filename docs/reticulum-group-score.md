@@ -5,12 +5,12 @@ Group Score is a public-group discovery signal shown in Reticulum Q-Chat. It is 
 ## Formula
 
 ```text
-Group Score = Holding × 50% + Activity × 20% + Legacy × 15% + Community × 15%
+Group Score = QORT Holdings × 50% + Activity × 30% + Community × 10% + Legacy × 10%
 ```
 
 The weighted result is rounded and clamped to 0–100.
 
-### QORT Holding — 50%
+### QORT Holdings — 50%
 
 Holding is normalized against a target of 1,000,000 QORT:
 
@@ -20,7 +20,7 @@ Holding Score = 100 × log(1 + balance) / log(1 + 1,000,000)
 
 The score is capped at 100. A logarithmic curve was chosen instead of a linear one so a very large holder cannot flatten the useful differences between every other group. The 50% weight is an explicit product decision from the developer discussion.
 
-### Activity — 20%
+### Activity — 30%
 
 Activity combines three seven-day/recent participation signals. Each component scales proportionally to its target and is capped at 100:
 
@@ -31,15 +31,11 @@ Activity Score =
   + messages over 24 hours (target 100) × 20%
 ```
 
-One visible user post counts once. Active authors carry the most weight because participation breadth is harder to inflate than message volume; seven-day volume rewards sustained use; 24-hour volume adds recency without letting a short burst dominate. Activity receives more weight than Legacy or Community individually, but remains limited to 20% because it can change quickly.
+One visible user post counts once. Active authors carry the most weight because participation breadth is harder to inflate than message volume; seven-day volume rewards sustained use; 24-hour volume adds recency without letting a short burst dominate. Activity contributes up to 30 points, making sustained participation the second-largest signal after QORT Holdings.
 
 A successfully fetched activity directory that omits a public group is treated as zero activity. If the complete activity request fails, an existing valid snapshot is retained instead of replacing Activity with zeros.
 
-### Legacy — 15%
-
-Legacy Level is `full years since creation + 1`, with a minimum of 1. It is converted to the shared 0–100 scale as `level × 10`, capped at 100. This rewards longevity without allowing age alone to determine discovery order.
-
-### Community — 15%
+### Community — 10%
 
 Member count maps to ten tiers, then to the shared scale as `tier × 10`:
 
@@ -55,6 +51,12 @@ Member count maps to ten tiers, then to the shared scale as `tier × 10`:
 | 1,000–2,499 | 8 / 80 |
 | 2,500–4,999 | 9 / 90 |
 | 5,000+ | 10 / 100 |
+
+Community contributes at most 10 points to the total. A group reaches 9/10 Community points at 2,500 members and the full 10/10 at 5,000 members.
+
+### Legacy — 10%
+
+Legacy starts at zero and awards one total-score point for each completed year since the group was created. It caps at 10 points after ten completed years. This gives established groups modest recognition without preventing a new group from reaching 90/100 through QORT Holdings, Activity, and Community alone.
 
 ## Refresh and persistence
 
