@@ -19,6 +19,7 @@ import {
   blockedAddressesAtom,
   groupQManagerPopupSizeAtom,
   reticulumChatTextScaleAtom,
+  reticulumLegacyThreadsEnabledAtom,
   reticulumChatSummariesAtom,
   type ReticulumChatSummaryAtomEntry,
 } from '../../atoms/global';
@@ -95,7 +96,6 @@ import AddIcon from '@mui/icons-material/Add';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import CallIcon from '@mui/icons-material/Call';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
-import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
@@ -113,7 +113,6 @@ import CalendarMonthRoundedIcon from '@mui/icons-material/CalendarMonthRounded';
 import SendIcon from '@mui/icons-material/Send';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
-import SportsEsportsIcon from '@mui/icons-material/SportsEsports';
 import TagRoundedIcon from '@mui/icons-material/TagRounded';
 import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
@@ -128,6 +127,7 @@ import {
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 import { MessageSizeLimitLip } from './MessageSizeLimitLip';
 import { ReticulumUnreadCountBadge } from '../common/ReticulumUnreadCountBadge';
+import { ReticulumModePill } from '../Group/ReticulumModePill';
 import {
   ReticulumDiscussionDialog,
   type ReticulumDiscussionDraft,
@@ -1348,6 +1348,9 @@ export const ChatGroup = ({
   const userInfo = useAtomValue(userInfoAtom);
   const balance = useAtomValue(balanceAtom);
   const reticulumChatTextScale = useAtomValue(reticulumChatTextScaleAtom);
+  const legacyThreadsEnabled = useAtomValue(
+    reticulumLegacyThreadsEnabledAtom
+  );
   const [qManagerPopupSize, setQManagerPopupSize] = useAtom(
     groupQManagerPopupSizeAtom
   );
@@ -9345,19 +9348,22 @@ export const ChatGroup = ({
                   overflowX: 'auto',
                 }}
               >
-                {renderReticulumHeaderAction({
-                  label: 'Qortal Land',
-                  icon: <SportsEsportsIcon sx={{ fontSize: 19 }} />,
-                  onClick: onQortalLandClick,
-                  showLabel: true,
-                })}
-                {renderReticulumHeaderAction({
-                  active: true,
-                  label: 'Chat',
-                  icon: <ChatRoundedIcon sx={{ fontSize: 19 }} />,
-                  onClick: () => undefined,
-                  showLabel: true,
-                })}
+                {typeof onQortalLandClick === 'function' && (
+                  <ReticulumModePill
+                    label="Qortal Land"
+                    onClick={onQortalLandClick}
+                  />
+                )}
+                <Box
+                  aria-hidden
+                  sx={{
+                    backgroundColor: theme.palette.divider,
+                    flexShrink: 0,
+                    height: 22,
+                    mx: 0.5,
+                    width: '1px',
+                  }}
+                />
                 {renderReticulumHeaderAction({
                   label: groupCallJoining
                     ? 'Joining'
@@ -9373,19 +9379,8 @@ export const ChatGroup = ({
                   ),
                   onClick: onGroupCallClick,
                   disabled: groupCallDisabled || groupCallJoining,
-                  showLabel: true,
-                  tooltip: groupCallTooltip,
+                  tooltip: groupCallTooltip || 'Group Call',
                 })}
-                <Box
-                  aria-hidden
-                  sx={{
-                    backgroundColor: theme.palette.divider,
-                    flexShrink: 0,
-                    height: 22,
-                    mx: 0.5,
-                    width: '1px',
-                  }}
-                />
                 {renderReticulumHeaderAction({
                   active: reticulumCalendarOpen,
                   label: t('calendar.title', 'Group Calendar'),
@@ -9395,17 +9390,21 @@ export const ChatGroup = ({
                     setReticulumCalendarOpen((current) => !current);
                   },
                 })}
-                {renderReticulumHeaderAction({
-                  label: 'Threads',
-                  icon: <ForumRoundedIcon sx={{ fontSize: 19 }} />,
-                  onClick: onThreadsClick,
-                })}
-                {renderReticulumHeaderAction({
-                  active: Boolean(reticulumAdminAnchorEl),
-                  label: 'Admins',
-                  icon: <SecurityRoundedIcon sx={{ fontSize: 19 }} />,
-                  onClick: toggleReticulumAdminPopover,
-                })}
+                {legacyThreadsEnabled && (
+                  <>
+                    {renderReticulumHeaderAction({
+                      label: 'Threads',
+                      icon: <ForumRoundedIcon sx={{ fontSize: 19 }} />,
+                      onClick: onThreadsClick,
+                    })}
+                    {renderReticulumHeaderAction({
+                      active: Boolean(reticulumAdminAnchorEl),
+                      label: 'Admins',
+                      icon: <SecurityRoundedIcon sx={{ fontSize: 19 }} />,
+                      onClick: toggleReticulumAdminPopover,
+                    })}
+                  </>
+                )}
                 {renderReticulumHeaderAction({
                   active: isOpenQManager === true,
                   label: 'Q-Manager',

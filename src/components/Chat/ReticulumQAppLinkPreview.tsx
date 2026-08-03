@@ -480,9 +480,6 @@ const formatDuration = (duration: number | string | null | undefined) => {
   return `${minutes}:${String(remainder).padStart(2, '0')}`;
 };
 
-const cardSurface = (mode: 'light' | 'dark') =>
-  mode === 'light' ? '#f4f6f9' : '#17191f';
-
 const WIDE_MEDIA_PREVIEW_WIDTH = 'min(730px, 100%)';
 
 function PreviewShell({
@@ -505,7 +502,10 @@ function PreviewShell({
       <Box
         sx={{
           alignSelf: 'stretch',
-          backgroundColor: cardSurface(theme.palette.mode),
+          backgroundColor:
+            theme.palette.mode === 'light'
+              ? theme.palette.background.paper
+              : '#17191f',
           border: '1px solid',
           borderColor:
             theme.palette.mode === 'light'

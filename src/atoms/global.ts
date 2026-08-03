@@ -73,6 +73,8 @@ export const isOpenBlockedModalAtom = atomWithReset(false);
 export const isRunningPublicNodeAtom = atomWithReset(false);
 export const isUsingImportExportSettingsAtom = atomWithReset(null);
 export const memberGroupsAtom = atomWithReset([]);
+/** Address whose complete group-membership list has been loaded into memberGroupsAtom. */
+export const memberGroupsLoadedAddressAtom = atomWithReset('');
 export const mutedGroupsAtom = atomWithReset([]);
 export const myGroupsWhereIAmAdminAtom = atomWithReset([]);
 
@@ -187,6 +189,13 @@ export const reticulumChatTextScaleAtom =
 /** Persisted, Reticulum-only preference for subtly distinguishing sent messages. */
 export const reticulumHighlightOwnMessagesAtom = atomWithStorage<boolean>(
   'qortal_reticulum_highlight_own_messages',
+  false,
+  electronStorage as any
+);
+
+/** Persisted legacy UI preference. Disabled by default while Threads is retired. */
+export const reticulumLegacyThreadsEnabledAtom = atomWithStorage<boolean>(
+  'qortal_reticulum_legacy_threads_enabled',
   false,
   electronStorage as any
 );

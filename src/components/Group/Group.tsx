@@ -28,15 +28,14 @@ import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import CallIcon from '@mui/icons-material/Call';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
 import CircularProgress from '@mui/material/CircularProgress';
-import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
 import CalendarMonthRoundedIcon from '@mui/icons-material/CalendarMonthRounded';
 import FolderRoundedIcon from '@mui/icons-material/FolderRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
-import SportsEsportsIcon from '@mui/icons-material/SportsEsports';
 import { ReticulumUnreadCountBadge } from '../common/ReticulumUnreadCountBadge';
+import { ReticulumModePill } from './ReticulumModePill';
 
 import {
   clearAllQueues,
@@ -95,6 +94,7 @@ import {
   isOpenBlockedModalAtom,
   isRunningPublicNodeAtom,
   memberGroupsAtom,
+  memberGroupsLoadedAddressAtom,
   memberGroupsWithReticulumChatAtom,
   mutedGroupsAtom,
   myGroupsWhereIAmAdminAtom,
@@ -102,6 +102,7 @@ import {
   reticulumChatSummariesAtom,
   reticulumChatEnabledAtom,
   reticulumEnabledAtom,
+  reticulumLegacyThreadsEnabledAtom,
   selectedGroupIdAtom,
   timestampEnterDataAtom,
   userInfoAtom,
@@ -554,11 +555,10 @@ function ReticulumGroupSectionHeader({
   groupCallTooltip,
   membersPanelOpen,
   membersNotificationCount,
-  onChatClick,
   onCalendarClick,
   onGroupCallClick,
   onMembersClick,
-  onQortalLandClick,
+  onModeSwitchClick,
   onThreadsClick,
   sectionLabel,
 }: {
@@ -571,15 +571,17 @@ function ReticulumGroupSectionHeader({
   groupCallTooltip?: string;
   membersPanelOpen?: boolean;
   membersNotificationCount?: number;
-  onChatClick?: () => void;
   onCalendarClick?: () => void;
   onGroupCallClick?: () => void;
   onMembersClick?: () => void;
-  onQortalLandClick?: () => void;
+  onModeSwitchClick?: () => void;
   onThreadsClick?: () => void;
   sectionLabel: string;
 }) {
   const theme = useTheme();
+  const legacyThreadsEnabled = useAtomValue(
+    reticulumLegacyThreadsEnabledAtom
+  );
   const [isAdminMenuOpen, setIsAdminMenuOpen] = useState(false);
   const [isQManagerOpen, setIsQManagerOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -713,20 +715,21 @@ function ReticulumGroupSectionHeader({
           overflowX: 'auto',
         }}
       >
-        {renderAction({
-          active: activeSection === 'land',
-          label: 'Qortal Land',
-          icon: <SportsEsportsIcon sx={{ fontSize: 19 }} />,
-          onClick: onQortalLandClick,
-          showLabel: true,
-        })}
-        {renderAction({
-          active: activeSection === 'chat',
-          label: 'Chat',
-          icon: <ChatRoundedIcon sx={{ fontSize: 19 }} />,
-          onClick: onChatClick,
-          showLabel: true,
-        })}
+        {typeof onModeSwitchClick === 'function' && (
+          <>
+            <ReticulumModePill label="Chat" onClick={onModeSwitchClick} />
+            <Box
+              aria-hidden
+              sx={{
+                backgroundColor: theme.palette.divider,
+                flexShrink: 0,
+                height: 22,
+                mx: 0.5,
+                width: '1px',
+              }}
+            />
+          </>
+        )}
         {renderAction({
           label: groupCallJoining
             ? 'Joining'
@@ -742,32 +745,23 @@ function ReticulumGroupSectionHeader({
           ),
           onClick: onGroupCallClick,
           disabled: groupCallDisabled || groupCallJoining,
-          showLabel: true,
-          tooltip: groupCallTooltip,
+          tooltip: groupCallTooltip || 'Group Call',
         })}
-        <Box
-          aria-hidden
-          sx={{
-            backgroundColor: theme.palette.divider,
-            flexShrink: 0,
-            height: 22,
-            mx: 0.5,
-            width: '1px',
-          }}
-        />
         {renderAction({
           active: calendarOpen,
           label: 'Group Calendar',
           icon: <CalendarMonthRoundedIcon sx={{ fontSize: 19 }} />,
           onClick: onCalendarClick,
         })}
-        {renderAction({
-          active: activeSection === 'forum',
-          label: 'Threads',
-          icon: <ForumRoundedIcon sx={{ fontSize: 19 }} />,
-          onClick: onThreadsClick,
-        })}
-        {canManageReticulumGroup &&
+        {legacyThreadsEnabled &&
+          renderAction({
+            active: activeSection === 'forum',
+            label: 'Threads',
+            icon: <ForumRoundedIcon sx={{ fontSize: 19 }} />,
+            onClick: onThreadsClick,
+          })}
+        {legacyThreadsEnabled &&
+          canManageReticulumGroup &&
           renderAction({
             active: isAdminMenuOpen,
             label: 'Admins',
@@ -941,8 +935,9 @@ export const Group = ({
   const memberGroupsWithReticulumActivity = useAtomValue(
     memberGroupsWithReticulumChatAtom
   );
-  const [memberGroupsLoadedAddress, setMemberGroupsLoadedAddress] =
-    useState('');
+  const [memberGroupsLoadedAddress, setMemberGroupsLoadedAddress] = useAtom(
+    memberGroupsLoadedAddressAtom
+  );
   const [notificationReticulumChannelId, setNotificationReticulumChannelId] =
     useState('');
   const [notificationReticulumMessageId, setNotificationReticulumMessageId] =
@@ -4556,7 +4551,6 @@ export const Group = ({
                           ? 'Members'
                           : selectedGroup?.groupName || 'Group'
                   }
-                  onChatClick={goToChat}
                   onCalendarClick={() => {
                     const groupId = Number(selectedGroup?.groupId);
                     if (!Number.isInteger(groupId) || groupId <= 0) return;
@@ -4573,8 +4567,8 @@ export const Group = ({
                       ? handleGroupCallHeaderClick
                       : undefined
                   }
-                  onQortalLandClick={
-                    reticulumEnabled ? goToQortalLand : undefined
+                  onModeSwitchClick={
+                    groupSection === 'land' ? goToChat : undefined
                   }
                   onThreadsClick={goToThreads}
                   groupCallInCall={
@@ -4697,9 +4691,7 @@ export const Group = ({
                         ? handleGroupCallHeaderClick
                         : undefined
                     }
-                    onQortalLandClick={
-                      reticulumEnabled ? goToQortalLand : undefined
-                    }
+                    onQortalLandClick={goToQortalLand}
                     onThreadsClick={goToThreads}
                     onMembersClick={toggleReticulumMembersPanel}
                     membersPanelOpen={reticulumMembersPanelOpen}

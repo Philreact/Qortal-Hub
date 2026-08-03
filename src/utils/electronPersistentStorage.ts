@@ -62,6 +62,8 @@ export const ELECTRON_PERSISTENT_ATOM_KEYS = {
   disableDevLogs: 'qortal_disable_dev_logs',
   /** Reticulum preference for subtly distinguishing the current user's messages. */
   reticulumHighlightOwnMessages: 'qortal_reticulum_highlight_own_messages',
+  /** Reticulum preference for showing the legacy Threads and Admin actions. */
+  reticulumLegacyThreadsEnabled: 'qortal_reticulum_legacy_threads_enabled',
 } as const;
 
 /** Populate in-memory cache from appStorage (call once when app mounts in Electron). */

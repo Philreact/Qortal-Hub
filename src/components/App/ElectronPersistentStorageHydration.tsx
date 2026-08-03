@@ -10,6 +10,7 @@ import {
   notificationSeenInAppKeysRecordAtom,
   parseSeenInAppStored,
   reticulumHighlightOwnMessagesAtom,
+  reticulumLegacyThreadsEnabledAtom,
   seenAllNotificationsByAddressAtom,
   userInfoAtom,
 } from '../../atoms/global';
@@ -35,6 +36,9 @@ export function ElectronPersistentStorageHydration() {
   const setDisableDevLogs = useSetAtom(disableDevLogsAtom);
   const setReticulumHighlightOwnMessages = useSetAtom(
     reticulumHighlightOwnMessagesAtom
+  );
+  const setReticulumLegacyThreadsEnabled = useSetAtom(
+    reticulumLegacyThreadsEnabledAtom
   );
   const userAddress = useAtomValue(userInfoAtom)?.address;
   const dmFriendsByAccount = useAtomValue(dmFriendsByAccountAtom);
@@ -75,6 +79,7 @@ export function ElectronPersistentStorageHydration() {
         dmFriendsPayload,
         disableDevLogsPayload,
         reticulumHighlightOwnMessagesPayload,
+        reticulumLegacyThreadsEnabledPayload,
       ] =
         await Promise.all([
           appStorage.get(
@@ -88,6 +93,9 @@ export function ElectronPersistentStorageHydration() {
           appStorage.get(ELECTRON_PERSISTENT_ATOM_KEYS.disableDevLogs),
           appStorage.get(
             ELECTRON_PERSISTENT_ATOM_KEYS.reticulumHighlightOwnMessages
+          ),
+          appStorage.get(
+            ELECTRON_PERSISTENT_ATOM_KEYS.reticulumLegacyThreadsEnabled
           ),
         ]);
       if (subsPayload != null) {
@@ -133,6 +141,9 @@ export function ElectronPersistentStorageHydration() {
           reticulumHighlightOwnMessagesPayload
         );
       }
+      if (typeof reticulumLegacyThreadsEnabledPayload === 'boolean') {
+        setReticulumLegacyThreadsEnabled(reticulumLegacyThreadsEnabledPayload);
+      }
     })();
   }, [
     setCustomSubscriptionsByAddress,
@@ -141,6 +152,7 @@ export function ElectronPersistentStorageHydration() {
     setDmFriendsByAccount,
     setDisableDevLogs,
     setReticulumHighlightOwnMessages,
+    setReticulumLegacyThreadsEnabled,
   ]);
 
   useEffect(() => {

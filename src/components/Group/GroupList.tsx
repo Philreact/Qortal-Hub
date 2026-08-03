@@ -52,6 +52,7 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import AccessibilityNewOutlinedIcon from '@mui/icons-material/AccessibilityNewOutlined';
 import NotificationsNoneRoundedIcon from '@mui/icons-material/NotificationsNoneRounded';
 import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded';
+import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import {
@@ -68,6 +69,7 @@ import {
   qortalGroupMeshCallParticipantCountAtom,
   qortalGroupSelfGcallRoomIdAtom,
   reticulumHighlightOwnMessagesAtom,
+  reticulumLegacyThreadsEnabledAtom,
   reticulumChatTextScaleAtom,
   timestampEnterDataSelector,
 } from '../../atoms/global';
@@ -116,13 +118,17 @@ const ReticulumChatSettingsDialog = ({
 }) => {
   const theme = useTheme();
   const [activeSection, setActiveSection] = useState<
-    'text-size' | 'messages' | 'notifications'
+    'text-size' | 'messages' | 'notifications' | 'legacy-threads'
   >('text-size');
   const [accessibilityExpanded, setAccessibilityExpanded] = useState(true);
   const [notificationsExpanded, setNotificationsExpanded] = useState(true);
+  const [legacyExpanded, setLegacyExpanded] = useState(true);
   const [textScale, setTextScale] = useAtom(reticulumChatTextScaleAtom);
   const [highlightOwnMessages, setHighlightOwnMessages] = useAtom(
     reticulumHighlightOwnMessagesAtom
+  );
+  const [legacyThreadsEnabled, setLegacyThreadsEnabled] = useAtom(
+    reticulumLegacyThreadsEnabledAtom
   );
   const [mentionNotificationsEnabled, setMentionNotificationsEnabled] =
     useState(true);
@@ -295,6 +301,26 @@ const ReticulumChatSettingsDialog = ({
               sx={navButtonSx(activeSection === 'notifications')}
             >
               <NotificationsNoneRoundedIcon sx={{ fontSize: 19 }} /> Mentions
+            </ButtonBase>
+          )}
+          <ButtonBase
+            aria-expanded={legacyExpanded}
+            onClick={() => setLegacyExpanded((expanded) => !expanded)}
+            sx={{ ...categoryButtonSx, mt: 2.25 }}
+          >
+            <span>Legacy</span>
+            {legacyExpanded ? (
+              <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
+            ) : (
+              <ChevronRightRoundedIcon sx={{ fontSize: 18 }} />
+            )}
+          </ButtonBase>
+          {legacyExpanded && (
+            <ButtonBase
+              onClick={() => setActiveSection('legacy-threads')}
+              sx={navButtonSx(activeSection === 'legacy-threads')}
+            >
+              <ForumRoundedIcon sx={{ fontSize: 19 }} /> Threads
             </ButtonBase>
           )}
         </Box>
@@ -526,6 +552,86 @@ const ReticulumChatSettingsDialog = ({
                   }}
                 />
               </Box>
+            </>
+          ) : activeSection === 'legacy-threads' ? (
+            <>
+              <Typography
+                component="h2"
+                sx={{
+                  color: 'text.primary',
+                  fontSize: 20,
+                  fontWeight: 650,
+                  lineHeight: '26px',
+                }}
+              >
+                Threads
+              </Typography>
+              <Typography
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: 14,
+                  fontWeight: 400,
+                  lineHeight: '20px',
+                  maxWidth: 460,
+                  mt: 0.75,
+                }}
+              >
+                Show the legacy Threads and Admin controls in the Q-Chat header.
+              </Typography>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  backgroundColor: 'background.default',
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: '10px',
+                  display: 'flex',
+                  gap: 2,
+                  justifyContent: 'space-between',
+                  mt: 2.5,
+                  px: 2,
+                  py: 1.5,
+                }}
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography
+                    sx={{
+                      color: 'text.primary',
+                      fontSize: 14,
+                      fontWeight: 600,
+                      lineHeight: '20px',
+                    }}
+                  >
+                    Threads
+                  </Typography>
+                  <Typography
+                    sx={{
+                      color: 'text.secondary',
+                      fontSize: 13,
+                      lineHeight: '18px',
+                      mt: 0.25,
+                    }}
+                  >
+                    Display the legacy Threads and Admin icons.
+                  </Typography>
+                </Box>
+                <Switch
+                  checked={legacyThreadsEnabled === true}
+                  inputProps={{ 'aria-label': 'Show legacy Threads' }}
+                  onChange={(_, checked) => setLegacyThreadsEnabled(checked)}
+                />
+              </Box>
+              <Typography
+                sx={{
+                  color: theme.palette.error.main,
+                  fontSize: 13,
+                  lineHeight: '19px',
+                  mt: 1.5,
+                }}
+              >
+                Threads will be removed in the upcoming release. Move any
+                important thread information to a safe place or to a new
+                channel in Q-Chat before updating.
+              </Typography>
             </>
           ) : null}
         </DialogContent>

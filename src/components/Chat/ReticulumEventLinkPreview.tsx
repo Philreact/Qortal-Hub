@@ -21,7 +21,12 @@ import LocationOnRoundedIcon from '@mui/icons-material/LocationOnRounded';
 import { useAtom, useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { QORTAL_APP_CONTEXT } from '../../App';
-import { memberGroupsAtom, txListAtom, userInfoAtom } from '../../atoms/global';
+import {
+  memberGroupsAtom,
+  memberGroupsLoadedAddressAtom,
+  txListAtom,
+  userInfoAtom,
+} from '../../atoms/global';
 import { getFee } from '../../background/background';
 import { executeEvent } from '../../utils/events';
 import { getReticulumGroupMetadata } from '../Group/ReticulumGroupAbout';
@@ -31,6 +36,7 @@ const EVENT_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EVENT_PREVIEW_ACCENT = '#9b63f5';
 const EVENT_PREVIEW_CACHE_TTL_MS = 2 * 60 * 1000;
+const EVENT_PREVIEW_FAILURE_TTL_MS = 2 * 60 * 1000;
 const EVENT_PREVIEW_CACHE_MAX_ENTRIES = 48;
 
 export type ReticulumEventLink = {
@@ -51,6 +57,7 @@ const eventPreviewCache = new Map<
   { data: EventPreviewData; fetchedAt: number }
 >();
 const eventPreviewInflight = new Map<string, Promise<EventPreviewData>>();
+const eventPreviewFailureCache = new Map<string, number>();
 const coverUrlCache = new Map<string, string>();
 
 const stripTrailingLinkPunctuation = (value: string) =>
@@ -185,6 +192,7 @@ const readCachedPreview = (key: string) => {
 };
 
 const writeCachedPreview = (key: string, data: EventPreviewData) => {
+  eventPreviewFailureCache.delete(key);
   eventPreviewCache.delete(key);
   eventPreviewCache.set(key, { data, fetchedAt: Date.now() });
   while (eventPreviewCache.size > EVENT_PREVIEW_CACHE_MAX_ENTRIES) {
@@ -192,6 +200,14 @@ const writeCachedPreview = (key: string, data: EventPreviewData) => {
     if (!oldest) break;
     eventPreviewCache.delete(oldest);
   }
+};
+
+const hasCachedPreviewFailure = (key: string) => {
+  const failedAt = eventPreviewFailureCache.get(key);
+  if (!failedAt) return false;
+  if (Date.now() - failedAt <= EVENT_PREVIEW_FAILURE_TTL_MS) return true;
+  eventPreviewFailureCache.delete(key);
+  return false;
 };
 
 const loadEventPreview = async (
@@ -202,8 +218,13 @@ const loadEventPreview = async (
   if (!force) {
     const cached = readCachedPreview(key);
     if (cached) return cached;
+    if (hasCachedPreviewFailure(key)) {
+      throw new Error('Event preview is temporarily unavailable');
+    }
     const inflight = eventPreviewInflight.get(key);
     if (inflight) return inflight;
+  } else {
+    eventPreviewFailureCache.delete(key);
   }
   const request = (async () => {
     if (!window.reticulumChat?.getCalendarEvents) {
@@ -229,7 +250,12 @@ const loadEventPreview = async (
     const data = { groupName, occurrence };
     writeCachedPreview(key, data);
     return data;
-  })().finally(() => eventPreviewInflight.delete(key));
+  })()
+    .catch((error) => {
+      eventPreviewFailureCache.set(key, Date.now());
+      throw error;
+    })
+    .finally(() => eventPreviewInflight.delete(key));
   eventPreviewInflight.set(key, request);
   return request;
 };
@@ -385,7 +411,7 @@ function EventPreviewCard({
         sx={{
           background: dark
             ? 'linear-gradient(135deg, rgba(22,27,35,0.96), rgba(16,20,27,0.98))'
-            : 'linear-gradient(135deg, rgba(248,250,253,0.98), rgba(237,241,247,0.98))',
+            : theme.palette.background.paper,
           border: `1px solid ${
             dark ? 'rgba(155,169,192,0.24)' : 'rgba(50,64,84,0.2)'
           }`,
@@ -453,7 +479,9 @@ function EventPreviewCard({
                 aspectRatio: '16 / 9',
                 background: coverUrl
                   ? '#0c1017'
-                  : 'radial-gradient(circle at 48% 45%, rgba(155,99,245,0.3), transparent 42%), linear-gradient(145deg, #171b27, #0d1118)',
+                  : dark
+                    ? 'radial-gradient(circle at 48% 45%, rgba(155,99,245,0.3), transparent 42%), linear-gradient(145deg, #171b27, #0d1118)'
+                    : 'radial-gradient(circle at 48% 45%, rgba(155,99,245,0.13), transparent 42%), linear-gradient(145deg, #ffffff, #f7f3e9)',
                 overflow: 'hidden',
                 position: 'relative',
               }}
@@ -473,7 +501,9 @@ function EventPreviewCard({
               ) : (
                 <EventRoundedIcon
                   sx={{
-                    color: 'rgba(155,99,245,0.4)',
+                    color: dark
+                      ? 'rgba(155,99,245,0.4)'
+                      : 'rgba(116,78,184,0.55)',
                     fontSize: 72,
                     left: '50%',
                     position: 'absolute',
@@ -529,8 +559,9 @@ function EventPreviewCard({
             <Box
               sx={{
                 alignItems: 'center',
-                background:
-                  'linear-gradient(100deg, rgba(65,27,123,0.98), rgba(43,22,83,0.98))',
+                background: dark
+                  ? 'linear-gradient(100deg, rgba(91,59,135,0.98), rgba(73,49,111,0.98))'
+                  : 'linear-gradient(100deg, rgba(128,102,173,0.96), rgba(110,87,152,0.96))',
                 borderRadius: '0 0 7px 7px',
                 color: '#ffffff',
                 display: 'flex',
@@ -744,7 +775,7 @@ function EventUnavailableCard({
         background:
           theme.palette.mode === 'dark'
             ? 'linear-gradient(135deg, rgba(22,27,35,0.96), rgba(16,20,27,0.98))'
-            : 'linear-gradient(135deg, rgba(248,250,253,0.98), rgba(237,241,247,0.98))',
+            : theme.palette.background.paper,
         border: '1px solid',
         borderColor: 'divider',
         borderLeft: `4px solid ${EVENT_PREVIEW_ACCENT}`,
@@ -852,13 +883,20 @@ function EventUnavailableCard({
 
 function EventPreview({ link }: { link: ReticulumEventLink }) {
   const memberGroups = useAtomValue(memberGroupsAtom);
+  const memberGroupsLoadedAddress = useAtomValue(
+    memberGroupsLoadedAddressAtom
+  );
+  const userInfo = useAtomValue(userInfoAtom);
   const key = previewKey(link);
   const [data, setData] = useState<EventPreviewData | null>(() =>
     readCachedPreview(key)
   );
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState(() => hasCachedPreviewFailure(key));
   const [group, setGroup] = useState<any>(null);
   const [groupLoadFinished, setGroupLoadFinished] = useState(false);
+  const membershipResolved = Boolean(
+    userInfo?.address && memberGroupsLoadedAddress === userInfo.address
+  );
   const isMember = useMemo(
     () =>
       (memberGroups || []).some(
@@ -868,6 +906,11 @@ function EventPreview({ link }: { link: ReticulumEventLink }) {
   );
 
   useEffect(() => {
+    if (!membershipResolved || isMember) {
+      setGroup(null);
+      setGroupLoadFinished(false);
+      return undefined;
+    }
     let active = true;
     setGroupLoadFinished(false);
     void getReticulumGroupMetadata(link.groupId)
@@ -880,7 +923,7 @@ function EventPreview({ link }: { link: ReticulumEventLink }) {
     return () => {
       active = false;
     };
-  }, [link.groupId]);
+  }, [isMember, link.groupId, membershipResolved]);
 
   const load = useCallback(
     async (force = false) => {
@@ -895,8 +938,8 @@ function EventPreview({ link }: { link: ReticulumEventLink }) {
   );
 
   useEffect(() => {
-    if (isMember && !data) void load();
-  }, [data, isMember, load]);
+    if (membershipResolved && isMember && !data && !failed) void load();
+  }, [data, failed, isMember, load, membershipResolved]);
 
   useEffect(
     () =>
@@ -906,33 +949,39 @@ function EventPreview({ link }: { link: ReticulumEventLink }) {
           (!payload.eventId || payload.eventId === link.eventId)
         ) {
           eventPreviewCache.delete(key);
-          if (isMember) void load(true);
+          eventPreviewFailureCache.delete(key);
+          setFailed(false);
+          if (membershipResolved && isMember) void load(true);
         }
       }),
-    [isMember, key, link.eventId, link.groupId, load]
+    [isMember, key, link.eventId, link.groupId, load, membershipResolved]
   );
 
+  if (!membershipResolved || (!isMember && (!groupLoadFinished || !group))) {
+    return (
+      <Box
+        aria-label="Loading event preview"
+        sx={{
+          border: '1px solid',
+          borderColor: 'divider',
+          borderLeft: `4px solid ${EVENT_PREVIEW_ACCENT}`,
+          borderRadius: '10px',
+          boxSizing: 'border-box',
+          maxWidth: 'min(760px, 100%)',
+          minHeight: 112,
+          mt: 0.8,
+          p: 1.75,
+          width: '100%',
+        }}
+      >
+        <Skeleton height={22} width={160} />
+        <Skeleton height={18} width="68%" />
+        <Skeleton height={30} sx={{ mt: 0.75 }} width={190} />
+      </Box>
+    );
+  }
+
   if (!isMember) {
-    if (!groupLoadFinished || !group) {
-      return (
-        <Box
-          sx={{
-            border: '1px solid',
-            borderColor: 'divider',
-            borderLeft: `4px solid ${EVENT_PREVIEW_ACCENT}`,
-            borderRadius: '10px',
-            maxWidth: 'min(760px, 100%)',
-            mt: 0.8,
-            p: 1.75,
-            width: '100%',
-          }}
-        >
-          <Skeleton height={22} width={160} />
-          <Skeleton height={18} width="68%" />
-          <Skeleton height={38} sx={{ mt: 1 }} width={190} />
-        </Box>
-      );
-    }
     return <EventUnavailableCard group={group} groupId={link.groupId} />;
   }
 
@@ -971,23 +1020,35 @@ function EventPreview({ link }: { link: ReticulumEventLink }) {
           borderColor: 'divider',
           borderLeft: `4px solid ${EVENT_PREVIEW_ACCENT}`,
           borderRadius: '10px',
+          boxSizing: 'border-box',
           maxWidth: 'min(760px, 100%)',
           mt: 0.8,
-          p: 1.5,
+          p: 2.25,
           width: '100%',
         }}
       >
-        <Skeleton height={24} sx={{ ml: 'auto' }} width={110} />
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            minHeight: 24,
+            pb: 1.5,
+          }}
+        >
+          <Skeleton height={20} width={120} />
+        </Box>
         <Box
           sx={{
             display: 'grid',
-            gap: 2,
+            gap: { xs: 2, sm: 3 },
             gridTemplateColumns: { xs: '1fr', sm: '1.04fr 1fr' },
-            mt: 1,
           }}
         >
-          <Skeleton sx={{ aspectRatio: '16 / 9', borderRadius: 1 }} />
           <Box>
+            <Skeleton sx={{ aspectRatio: '16 / 9', borderRadius: 1 }} />
+            <Skeleton height={48} sx={{ mt: '-2px' }} variant="rectangular" />
+          </Box>
+          <Box sx={{ minHeight: { sm: 252 } }}>
             <Skeleton height={28} width="78%" />
             <Skeleton height={18} width="96%" />
             <Skeleton height={18} width="88%" />
