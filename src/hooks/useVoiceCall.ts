@@ -2140,6 +2140,15 @@ export function useVoiceCall(
       }
       if (event.type === 'direct-voice-rtc-state') {
         dmRtcOpenRef.current = event.state === 'open';
+        pushDirectVoiceUiLog(
+          event.state === 'failed' ? 'warn' : 'log',
+          'WebRTC transport state',
+          {
+            state: event.state,
+            roomTrunc: event.roomId.slice(0, 24),
+            peerTrunc: event.peerAddress.slice(0, 8),
+          }
+        );
         if (event.state === 'open') {
           for (const resolve of dmRtcOpenWaitersRef.current) resolve(true);
           dmRtcOpenWaitersRef.current.clear();
@@ -2172,8 +2181,15 @@ export function useVoiceCall(
           timestamp,
         };
         const { signature, publicKey } = await authorizeCallSignal(fields);
-        if (!signature || !publicKey || callIdRef.current !== callId) return;
-        await api.sendRtcSignal?.({
+        if (callIdRef.current !== callId) return;
+        if (!signature || !publicKey) {
+          pushDirectVoiceUiLog('warn', 'WebRTC signal signing failed', {
+            signalType,
+            callTrunc: callId.slice(0, 8),
+          });
+          return;
+        }
+        const result = await api.sendRtcSignal({
           callId,
           generation: event.signal.generation,
           signalId,
@@ -2184,7 +2200,23 @@ export function useVoiceCall(
           signature,
           publicKey,
         });
-      })().catch(() => {});
+        if (!result.success) {
+          pushDirectVoiceUiLog('warn', 'WebRTC signal send rejected', {
+            signalType,
+            callTrunc: callId.slice(0, 8),
+            error: result.error ?? 'unknown',
+          });
+        } else if (signalType !== 'candidate') {
+          pushDirectVoiceUiLog('log', 'WebRTC signal queued', {
+            signalType,
+            callTrunc: callId.slice(0, 8),
+          });
+        }
+      })().catch((error) => {
+        pushDirectVoiceUiLog('warn', 'WebRTC signaling failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     });
   }, [authorizeCallSignal]);
 

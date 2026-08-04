@@ -569,4 +569,33 @@ describe('Reticulum wallet signing policy', () => {
       })
     ).toThrow('unsupported value');
   });
+
+  it('allows only the bounded WebRTC signal digest envelope', () => {
+    const signal = {
+      type: 'CALL_RTC_SIGNAL',
+      callId: 'call-route-bound-id',
+      generation: 'generation_1234',
+      signalId: 'signal_1234',
+      signalType: 'offer',
+      payloadHash: 'a'.repeat(64),
+      timestamp: Date.now(),
+    };
+
+    expectAllowed(assertAllowedPresenceSigningPayload, signal);
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...signal, payload: 'sdp' })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...signal,
+        type: 'CALL_RTC_SIGNAL_UNKNOWN',
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...signal,
+        signalType: 'arbitrary',
+      })
+    ).toThrow('WebRTC signal signing envelope is invalid');
+  });
 });

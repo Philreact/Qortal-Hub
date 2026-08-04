@@ -2585,17 +2585,20 @@ try {
         };
       },
     });
-
-    contextBridge.exposeInMainWorld('hub', {
-      getBootstrapIceServers: () => hubP2pBootstrapIceServers,
-      getIceServers: () =>
-        ipcRenderer.invoke('hub:getIceServers') as Promise<{ urls: string }[]>,
-      reportStunCallOutcome: (stunUrls: string[], success: boolean) =>
-        ipcRenderer.invoke('hub:reportStunCallOutcome', stunUrls, success),
-      reportObservedStunSources: (stunUrls: string[]) =>
-        ipcRenderer.invoke('hub:reportObservedStunSources', stunUrls),
-    });
   }
+
+  // WebRTC DM calls use this even when the legacy P2P transport is disabled.
+  // Keeping it outside the legacy block ensures direct calls receive their
+  // STUN configuration without re-enabling any legacy data channel behavior.
+  contextBridge.exposeInMainWorld('hub', {
+    getBootstrapIceServers: () => hubP2pBootstrapIceServers,
+    getIceServers: () =>
+      ipcRenderer.invoke('hub:getIceServers') as Promise<{ urls: string }[]>,
+    reportStunCallOutcome: (stunUrls: string[], success: boolean) =>
+      ipcRenderer.invoke('hub:reportStunCallOutcome', stunUrls, success),
+    reportObservedStunSources: (stunUrls: string[]) =>
+      ipcRenderer.invoke('hub:reportObservedStunSources', stunUrls),
+  });
 
   if (isDisabledLegacy) {
     contextBridge.exposeInMainWorld('reticulumChat', {

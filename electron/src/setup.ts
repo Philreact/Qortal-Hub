@@ -7319,6 +7319,23 @@ ipcMain.on('audio-surface:host-event', (event, payload: AudioSurfaceEvent) => {
         );
         return;
       }
+      if (payload.type === 'direct-voice-rtc-state') {
+        loggerLog('[Call][RTC] transport state', {
+          state: payload.state,
+          room: payload.roomId.slice(0, 24),
+          peer: payload.peerAddress.slice(0, 8),
+        });
+      } else if (
+        payload.type === 'direct-voice-rtc-signal' &&
+        payload.signal.kind === 'description'
+      ) {
+        // Never log SDP, candidates, keys, or network addresses.
+        loggerLog('[Call][RTC] local description ready', {
+          signalType: payload.signal.description.type,
+          room: payload.roomId.slice(0, 24),
+          peer: payload.peerAddress.slice(0, 8),
+        });
+      }
       emitAudioSurfaceEvent(payload);
     }
   );

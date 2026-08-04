@@ -790,6 +790,14 @@ export class CallManager extends EventEmitter {
       createdAt: Date.now(),
     };
     this.rtcOutboundSignals.set(key, outbound);
+    if (input.signalType !== 'candidate') {
+      loggerLog('[Call][RTC] authenticated signal queued', {
+        signalType: input.signalType,
+        call: input.callId.slice(0, 8),
+        peer: peerDestinationHash.slice(0, 8),
+        fragments: parts.length,
+      });
+    }
     this.sendPinnedCallWireWhenReady(peerDestinationHash, startWire, 0);
     this.sendPinnedCallWireWhenReady(peerDestinationHash, authWire, 0);
     for (const partWire of partWires) {
@@ -1276,6 +1284,13 @@ export class CallManager extends EventEmitter {
             candidateKey,
             (this.rtcCandidateCounts.get(candidateKey) ?? 0) + 1
           );
+        }
+        if (signal.signalType !== 'candidate') {
+          loggerLog('[Call][RTC] authenticated signal received', {
+            signalType: signal.signalType,
+            call: signal.callId.slice(0, 8),
+            peer: signal.senderDestinationHash.slice(0, 8),
+          });
         }
         this.emit('call:rtc-signal', {
           callId: signal.callId,
