@@ -20,13 +20,12 @@ export type DirectVoiceRtcState =
 type DirectVoiceWebRtcTransportOptions = {
   offerer: boolean;
   getIceServers: () => Promise<RTCIceServer[]>;
+  localStream: MediaStream;
   onSignal: (signal: DirectVoiceRtcSignal) => void;
-  onPacket: (packet: ArrayBuffer) => void;
+  onRemoteStream: (stream: MediaStream) => void;
   onState?: (state: DirectVoiceRtcState) => void;
 };
 
-const DC_BUFFERED_AMOUNT_HIGH_WATER = 128 * 1024;
-const DC_MAX_AUDIO_PACKET_BYTES = 16 * 1024;
 const ICE_DISCONNECT_GRACE_MS = 3_000;
 const ICE_RESTART_MIN_INTERVAL_MS = 6_000;
 const ICE_RESTART_MAX_ATTEMPTS = 2;
@@ -37,13 +36,12 @@ function nextGeneration(): string {
 }
 
 /**
- * A deliberately small WebRTC data plane. Signaling is supplied by the caller
- * and is transported separately over the authenticated direct Reticulum link.
- * This class never logs SDP, candidates, or packet contents.
+ * Native WebRTC audio for a direct call. Signaling is supplied by the caller
+ * and transported separately over the authenticated direct Reticulum link.
+ * This class never logs SDP, candidates, tracks, or packet contents.
  */
 export class DirectVoiceWebRtcTransport {
   private pc: RTCPeerConnection | null = null;
-  private dc: RTCDataChannel | null = null;
   private generation = '';
   private state: DirectVoiceRtcState = 'idle';
   private pendingCandidates: RTCIceCandidateInit[] = [];
@@ -54,6 +52,7 @@ export class DirectVoiceWebRtcTransport {
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private restartAttempts = 0;
   private lastRestartAt = 0;
+  private remoteAudioTrackSeen = false;
   private closed = false;
 
   constructor(private readonly options: DirectVoiceWebRtcTransportOptions) {}
@@ -63,7 +62,7 @@ export class DirectVoiceWebRtcTransport {
   }
 
   isOpen(): boolean {
-    return this.state === 'open' && this.dc?.readyState === 'open';
+    return this.state === 'open' && this.pc?.connectionState === 'connected';
   }
 
   async start(): Promise<void> {
@@ -71,26 +70,37 @@ export class DirectVoiceWebRtcTransport {
     this.generation = this.options.offerer ? nextGeneration() : '';
     await this.createPeerConnection();
     if (!this.options.offerer || !this.pc) return;
-    this.attachDataChannel(
-      this.pc.createDataChannel('qortal-dm-audio-v1', {
-        ordered: false,
-        maxRetransmits: 0,
-      })
-    );
     await this.sendOffer(false);
   }
 
-  send(packet: Uint8Array): boolean {
-    const dc = this.dc;
-    if (!dc || !this.isOpen()) return false;
-    if (dc.bufferedAmount > DC_BUFFERED_AMOUNT_HIGH_WATER) return false;
-    try {
-      const copy = packet.slice();
-      dc.send(copy.buffer);
-      return true;
-    } catch {
-      return false;
+  setMuted(muted: boolean): void {
+    for (const track of this.options.localStream.getAudioTracks()) {
+      track.enabled = !muted;
     }
+  }
+
+  async replaceLocalStream(stream: MediaStream): Promise<void> {
+    if (this.closed) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    const nextTrack = stream.getAudioTracks()[0] ?? null;
+    if (!nextTrack) throw new Error('native-webrtc-microphone-track-missing');
+    const previousStream = this.options.localStream;
+    const sender = this.pc
+      ?.getSenders()
+      .find((entry) => entry.track?.kind === 'audio');
+    if (!sender) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error('native-webrtc-audio-sender-missing');
+    }
+    await sender.replaceTrack(nextTrack);
+    if (this.closed) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error('native-webrtc-track-replacement-cancelled');
+    }
+    this.options.localStream = stream;
+    previousStream.getTracks().forEach((track) => track.stop());
   }
 
   async handleSignal(signal: DirectVoiceRtcSignal): Promise<void> {
@@ -195,15 +205,15 @@ export class DirectVoiceWebRtcTransport {
     const pc = new RTCPeerConnection({ iceServers });
     this.pc = pc;
     this.setState('connecting');
-    pc.ondatachannel = (event) => {
-      if (
-        this.options.offerer ||
-        event.channel.label !== 'qortal-dm-audio-v1'
-      ) {
-        event.channel.close();
-        return;
-      }
-      this.attachDataChannel(event.channel);
+    for (const track of this.options.localStream.getAudioTracks()) {
+      pc.addTrack(track, this.options.localStream);
+    }
+    pc.ontrack = (event) => {
+      if (this.closed || event.track.kind !== 'audio') return;
+      this.remoteAudioTrackSeen = true;
+      const stream = event.streams[0] ?? new MediaStream([event.track]);
+      this.options.onRemoteStream(stream);
+      this.handleConnectionState();
     };
     pc.onicecandidate = (event) => {
       // End-of-candidates carries no address and costs another signed,
@@ -218,60 +228,12 @@ export class DirectVoiceWebRtcTransport {
     pc.onconnectionstatechange = () => this.handleConnectionState();
   }
 
-  private attachDataChannel(dc: RTCDataChannel): void {
-    if (this.closed) {
-      dc.close();
-      return;
-    }
-    if (this.dc && this.dc !== dc) {
-      this.dc.onclose = null;
-      this.dc.onerror = null;
-      this.dc.onmessage = null;
-      this.dc.close();
-    }
-    this.dc = dc;
-    dc.binaryType = 'arraybuffer';
-    dc.bufferedAmountLowThreshold = DC_BUFFERED_AMOUNT_HIGH_WATER / 2;
-    dc.onopen = () => {
-      this.restartAttempts = 0;
-      this.clearDisconnectTimer();
-      this.setState('open');
-    };
-    dc.onclose = () => {
-      if (!this.closed) this.scheduleRecovery();
-    };
-    dc.onerror = () => {
-      if (!this.closed) this.scheduleRecovery();
-    };
-    dc.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        if (event.data.byteLength > DC_MAX_AUDIO_PACKET_BYTES) return;
-        this.options.onPacket(event.data);
-        return;
-      }
-      if (event.data instanceof Blob) {
-        if (event.data.size > DC_MAX_AUDIO_PACKET_BYTES) return;
-        void event.data.arrayBuffer().then((packet) => {
-          if (!this.closed) this.options.onPacket(packet);
-        });
-      }
-    };
-  }
-
   private async sendOffer(iceRestart: boolean): Promise<void> {
     const pc = this.pc;
     if (!pc || this.closed || !this.options.offerer) return;
     if (iceRestart) {
       this.generation = nextGeneration();
       this.pendingCandidates = [];
-      if (!this.dc || this.dc.readyState === 'closed') {
-        this.attachDataChannel(
-          pc.createDataChannel('qortal-dm-audio-v1', {
-            ordered: false,
-            maxRetransmits: 0,
-          })
-        );
-      }
     }
     const offer = await pc.createOffer({ iceRestart });
     await pc.setLocalDescription(offer);
@@ -286,8 +248,9 @@ export class DirectVoiceWebRtcTransport {
   private handleConnectionState(): void {
     const state = this.pc?.connectionState;
     if (state === 'connected') {
+      this.restartAttempts = 0;
       this.clearDisconnectTimer();
-      if (this.dc?.readyState === 'open') this.setState('open');
+      this.setState(this.remoteAudioTrackSeen ? 'open' : 'connecting');
       return;
     }
     if (state === 'failed' || state === 'disconnected') {
@@ -338,19 +301,12 @@ export class DirectVoiceWebRtcTransport {
     try {
       if (
         !this.pc ||
-        this.pc.connectionState === 'failed' ||
-        this.dc?.readyState === 'closed'
+        this.pc.connectionState === 'failed'
       ) {
         this.releasePeerConnection();
         this.generation = nextGeneration();
         await this.createPeerConnection();
         if (!this.pc) return;
-        this.attachDataChannel(
-          this.pc.createDataChannel('qortal-dm-audio-v1', {
-            ordered: false,
-            maxRetransmits: 0,
-          })
-        );
         await this.sendOffer(false);
       } else {
         await this.sendOffer(true);
@@ -364,23 +320,11 @@ export class DirectVoiceWebRtcTransport {
   }
 
   private releasePeerConnection(): void {
-    const dc = this.dc;
     const pc = this.pc;
-    this.dc = null;
     this.pc = null;
-    if (dc) {
-      dc.onopen = null;
-      dc.onclose = null;
-      dc.onerror = null;
-      dc.onmessage = null;
-      try {
-        dc.close();
-      } catch {
-        // Best effort during transport replacement/teardown.
-      }
-    }
+    this.remoteAudioTrackSeen = false;
     if (pc) {
-      pc.ondatachannel = null;
+      pc.ontrack = null;
       pc.onicecandidate = null;
       pc.onconnectionstatechange = null;
       try {

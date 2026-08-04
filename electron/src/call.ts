@@ -7,7 +7,8 @@
  *
  * WebRTC negotiation is fragmented over the selected authenticated direct
  * Reticulum link. Audio itself is owned by the audio surface and can use a
- * WebRTC DataChannel while the existing Reticulum media path stays available.
+ * a native WebRTC audio track while the Reticulum media fallback stays
+ * available.
  */
 
 import { EventEmitter } from 'events';

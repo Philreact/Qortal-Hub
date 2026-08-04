@@ -4,28 +4,22 @@ import {
   type DirectVoiceRtcSignal,
 } from './directVoiceWebRtcTransport';
 
-class MockDataChannel {
-  label = 'qortal-dm-audio-v1';
-  readyState: RTCDataChannelState = 'connecting';
-  binaryType: BinaryType = 'arraybuffer';
-  bufferedAmount = 0;
-  bufferedAmountLowThreshold = 0;
-  onopen: (() => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  onmessage: ((event: MessageEvent) => void) | null = null;
-  send = vi.fn();
-  close = vi.fn();
-}
-
 class MockPeerConnection {
   static instances: MockPeerConnection[] = [];
   connectionState: RTCPeerConnectionState = 'new';
   remoteDescription: RTCSessionDescription | null = null;
   localDescription: RTCSessionDescription | null = null;
-  ondatachannel: ((event: RTCDataChannelEvent) => void) | null = null;
+  ontrack: ((event: RTCTrackEvent) => void) | null = null;
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
+  addTrack = vi.fn();
+  replaceTrack = vi.fn(async () => {});
+  getSenders = vi.fn(() => [
+    {
+      track: { kind: 'audio' },
+      replaceTrack: this.replaceTrack,
+    } as unknown as RTCRtpSender,
+  ]);
   addIceCandidate = vi.fn(async () => {});
   createAnswer = vi.fn(
     async () => ({ type: 'answer', sdp: 'answer' }) as RTCSessionDescriptionInit
@@ -51,9 +45,6 @@ class MockPeerConnection {
       } as RTCSessionDescription;
     }
   );
-  createDataChannel = vi.fn(
-    () => new MockDataChannel() as unknown as RTCDataChannel
-  );
   close = vi.fn();
 
   constructor(_configuration?: RTCConfiguration) {
@@ -67,6 +58,18 @@ afterEach(() => {
 });
 
 describe('DirectVoiceWebRtcTransport', () => {
+  const audioTrack = {
+    id: 'mic-track',
+    kind: 'audio',
+    enabled: true,
+    readyState: 'live',
+    stop: vi.fn(),
+  } as unknown as MediaStreamTrack;
+  const localStream = {
+    getAudioTracks: () => [audioTrack],
+    getTracks: () => [audioTrack],
+  } as unknown as MediaStream;
+
   it('keeps a candidate that arrives before its offer', async () => {
     vi.stubGlobal(
       'RTCPeerConnection',
@@ -76,8 +79,9 @@ describe('DirectVoiceWebRtcTransport', () => {
     const transport = new DirectVoiceWebRtcTransport({
       offerer: false,
       getIceServers: async () => [{ urls: 'stun:example.test:3478' }],
+      localStream,
       onSignal: (signal) => emitted.push(signal),
-      onPacket: vi.fn(),
+      onRemoteStream: vi.fn(),
     });
     await transport.start();
 
@@ -97,12 +101,97 @@ describe('DirectVoiceWebRtcTransport', () => {
 
     const pc = MockPeerConnection.instances[0]!;
     expect(pc.setRemoteDescription).toHaveBeenCalledOnce();
+    expect(pc.addTrack).toHaveBeenCalledWith(audioTrack, localStream);
     expect(pc.addIceCandidate).toHaveBeenCalledWith(candidate);
     expect(emitted).toContainEqual({
       kind: 'description',
       generation: 'generation_1234',
       description: { type: 'answer', sdp: 'answer' },
     });
+    transport.close();
+  });
+
+  it('opens native media when the peer connection connects', async () => {
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      MockPeerConnection as unknown as typeof RTCPeerConnection
+    );
+    const onState = vi.fn();
+    const transport = new DirectVoiceWebRtcTransport({
+      offerer: true,
+      getIceServers: async () => [],
+      localStream,
+      onSignal: vi.fn(),
+      onRemoteStream: vi.fn(),
+      onState,
+    });
+
+    await transport.start();
+    const pc = MockPeerConnection.instances[0]!;
+    pc.connectionState = 'connected';
+    pc.onconnectionstatechange?.();
+
+    expect(transport.isOpen()).toBe(false);
+
+    pc.ontrack?.({
+      track: { kind: 'audio' } as MediaStreamTrack,
+      streams: [{} as MediaStream],
+    } as RTCTrackEvent);
+
+    expect(transport.isOpen()).toBe(true);
+    expect(onState).toHaveBeenLastCalledWith('open');
+    transport.close();
+  });
+
+  it('delivers the remote stream and replaces the microphone track', async () => {
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      MockPeerConnection as unknown as typeof RTCPeerConnection
+    );
+    const previousTrack = {
+      id: 'previous-mic',
+      kind: 'audio',
+      enabled: true,
+      readyState: 'live',
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const previousStream = {
+      getAudioTracks: () => [previousTrack],
+      getTracks: () => [previousTrack],
+    } as unknown as MediaStream;
+    const nextTrack = {
+      id: 'next-mic',
+      kind: 'audio',
+      enabled: true,
+      readyState: 'live',
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const nextStream = {
+      getAudioTracks: () => [nextTrack],
+      getTracks: () => [nextTrack],
+    } as unknown as MediaStream;
+    const remoteTrack = { kind: 'audio' } as MediaStreamTrack;
+    const remoteStream = {} as MediaStream;
+    const onRemoteStream = vi.fn();
+    const transport = new DirectVoiceWebRtcTransport({
+      offerer: false,
+      getIceServers: async () => [],
+      localStream: previousStream,
+      onSignal: vi.fn(),
+      onRemoteStream,
+    });
+
+    await transport.start();
+    const pc = MockPeerConnection.instances[0]!;
+    pc.ontrack?.({
+      track: remoteTrack,
+      streams: [remoteStream],
+    } as RTCTrackEvent);
+    await transport.replaceLocalStream(nextStream);
+
+    expect(onRemoteStream).toHaveBeenCalledWith(remoteStream);
+    expect(pc.replaceTrack).toHaveBeenCalledWith(nextTrack);
+    expect(previousTrack.stop).toHaveBeenCalledOnce();
     transport.close();
   });
 });

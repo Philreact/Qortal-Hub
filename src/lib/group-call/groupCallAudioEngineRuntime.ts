@@ -19,7 +19,11 @@ import {
   truncateGcallDiagAddress,
   type GcallDiagExportContext,
 } from './gcall-diagnostics';
-import { listAudioDevices } from '../call/audioDevices';
+import {
+  applyCallAudioOutput,
+  getUserAudioStreamForCall,
+  listAudioDevices,
+} from '../call/audioDevices';
 import type { GcallAudioGapAttributionRecord } from '../call/dmVoiceGcallInboundPlayout';
 import packageJson from '../../../package.json';
 import {
@@ -1022,7 +1026,11 @@ export class GroupCallAudioEngineRuntime {
   private directVoiceOutboundLastFailureMessage: string | null = null;
   private directVoiceOutboundLastSendAtMs = 0;
   private directVoiceMediaReadyEmitted = false;
+  private directVoiceRtcMediaReadyEmitted = false;
   private directVoiceRtcTransport: DirectVoiceWebRtcTransport | null = null;
+  private directVoiceRtcLocalStream: MediaStream | null = null;
+  private directVoiceRtcRemoteAudio: HTMLAudioElement | null = null;
+  private directVoiceRtcLifecycleGeneration = 0;
   private unsubscribeGroupCallEvents: (() => void) | null = null;
   private currentChatId = '';
   /** Logical unsigned generation of this installation's active group-call slot. */
@@ -1513,11 +1521,45 @@ export class GroupCallAudioEngineRuntime {
     }
     this.directVoiceRoomId = roomId;
     this.directVoicePeerAddress = peerAddress;
+    this.directVoiceInputDeviceId =
+      command.inputDeviceId !== undefined
+        ? command.inputDeviceId
+        : this.inputDeviceId;
+    this.directVoiceOutputDeviceId =
+      command.outputDeviceId !== undefined
+        ? command.outputDeviceId
+        : this.outputDeviceId;
+    this.directVoiceMuted = command.muted === true;
+    this.directVoiceHearCall = command.hearCall !== false;
     if (!this.directVoiceRtcTransport) {
+      const lifecycleGeneration = ++this.directVoiceRtcLifecycleGeneration;
+      const capture = await getUserAudioStreamForCall(
+        this.directVoiceInputDeviceId
+      );
+      const localStream = capture.stream;
+      if (!localStream?.getAudioTracks()[0]) {
+        localStream?.getTracks().forEach((track) => track.stop());
+        return { ok: false, error: 'native-webrtc-microphone-unavailable' };
+      }
+      if (
+        lifecycleGeneration !== this.directVoiceRtcLifecycleGeneration ||
+        this.directVoiceRoomId !== roomId ||
+        this.directVoicePeerAddress !== peerAddress ||
+        this.directVoiceRtcTransport
+      ) {
+        localStream.getTracks().forEach((track) => track.stop());
+        return { ok: false, error: 'native-webrtc-start-cancelled' };
+      }
+      for (const track of localStream.getAudioTracks()) {
+        track.enabled = !this.directVoiceMuted;
+      }
+      this.directVoiceRtcLocalStream = localStream;
+      this.directVoiceRtcMediaReadyEmitted = false;
       const iceServers = command.iceServers.map((server) => ({ ...server }));
       this.directVoiceRtcTransport = new DirectVoiceWebRtcTransport({
         offerer: command.initiator,
         getIceServers: async () => iceServers,
+        localStream,
         onSignal: (signal) => {
           if (
             this.directVoiceRoomId !== roomId ||
@@ -1532,23 +1574,28 @@ export class GroupCallAudioEngineRuntime {
             signal,
           });
         },
-        onPacket: (packet) => {
+        onRemoteStream: (stream) => {
           if (
             this.directVoiceRoomId !== roomId ||
             this.directVoicePeerAddress !== peerAddress
           ) {
             return;
           }
-          void this.processDirectVoiceAudioPayload({
-            roomId,
-            fromAddress: peerAddress,
-            data: packet,
+          void this.attachDirectVoiceRtcRemoteStream(
+            stream,
+            lifecycleGeneration
+          ).catch((error) => {
+            this.recordDiagEvent('direct-voice-rtc-playback-failed', {
+              error: error instanceof Error ? error.message : String(error),
+            });
           });
         },
         onState: (state) => {
           const projected =
             state === 'open'
-              ? 'open'
+              ? this.directVoiceRtcMediaReadyEmitted
+                ? 'open'
+                : 'connecting'
               : state === 'closed'
                 ? 'closed'
                 : state === 'idle' ||
@@ -1567,7 +1614,14 @@ export class GroupCallAudioEngineRuntime {
     }
     try {
       await this.directVoiceRtcTransport.start();
-      return { ok: true, payload: { transport: 'webrtc' } };
+      if (this.directVoiceRoomKey && this.directVoiceLocalAddress) {
+        await this.configureDirectVoiceSender().catch((error) => {
+          this.recordDiagEvent('direct-voice-fallback-reconfigure-failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+      return { ok: true, payload: { transport: 'webrtc-native' } };
     } catch (error) {
       this.closeDirectVoiceRtc('start-failed');
       return {
@@ -1605,10 +1659,82 @@ export class GroupCallAudioEngineRuntime {
   }
 
   private closeDirectVoiceRtc(reason: string): void {
-    if (!this.directVoiceRtcTransport) return;
-    this.recordDiagEvent('direct-voice-rtc-closed', { reason });
-    this.directVoiceRtcTransport.close();
+    this.directVoiceRtcLifecycleGeneration += 1;
+    if (this.directVoiceRtcTransport) {
+      this.recordDiagEvent('direct-voice-rtc-closed', { reason });
+      this.directVoiceRtcTransport.close();
+    }
     this.directVoiceRtcTransport = null;
+    this.directVoiceRtcLocalStream?.getTracks().forEach((track) => track.stop());
+    this.directVoiceRtcLocalStream = null;
+    const remoteAudio = this.directVoiceRtcRemoteAudio;
+    this.directVoiceRtcRemoteAudio = null;
+    if (remoteAudio) {
+      remoteAudio.onplaying = null;
+      remoteAudio.pause();
+      remoteAudio.srcObject = null;
+      remoteAudio.remove();
+    }
+    this.directVoiceRtcMediaReadyEmitted = false;
+  }
+
+  private async attachDirectVoiceRtcRemoteStream(
+    stream: MediaStream,
+    lifecycleGeneration: number
+  ): Promise<void> {
+    if (lifecycleGeneration !== this.directVoiceRtcLifecycleGeneration) return;
+    let audio = this.directVoiceRtcRemoteAudio;
+    if (!audio) {
+      audio = document.createElement('audio');
+      audio.autoplay = true;
+      audio.playsInline = true;
+      audio.style.display = 'none';
+      audio.onplaying = () => {
+        if (
+          this.directVoiceRtcMediaReadyEmitted ||
+          !this.directVoiceRoomId ||
+          !this.directVoicePeerAddress
+        ) {
+          return;
+        }
+        this.directVoiceRtcMediaReadyEmitted = true;
+        this.emit({
+          type: 'direct-voice-media-ready',
+          roomId: this.directVoiceRoomId,
+          peerAddress: this.directVoicePeerAddress,
+        });
+        if (this.directVoiceRtcTransport?.isOpen()) {
+          this.emit({
+            type: 'direct-voice-rtc-state',
+            roomId: this.directVoiceRoomId,
+            peerAddress: this.directVoicePeerAddress,
+            state: 'open',
+          });
+        }
+      };
+      document.body.appendChild(audio);
+      this.directVoiceRtcRemoteAudio = audio;
+    }
+    if (audio.srcObject !== stream) {
+      // A recreated peer connection delivers a new stream. Require that stream
+      // to reach actual playback before suppressing the Reticulum fallback.
+      this.directVoiceRtcMediaReadyEmitted = false;
+    }
+    audio.muted = !this.directVoiceHearCall;
+    audio.srcObject = stream;
+    await applyCallAudioOutput(this.directVoiceOutputDeviceId, {
+      audioElement: audio,
+    });
+    if (
+      lifecycleGeneration !== this.directVoiceRtcLifecycleGeneration ||
+      audio !== this.directVoiceRtcRemoteAudio
+    ) {
+      audio.pause();
+      audio.srcObject = null;
+      audio.remove();
+      return;
+    }
+    await audio.play().catch(() => {});
   }
 
   private async startDirectVoiceMedia(
@@ -1651,28 +1777,20 @@ export class GroupCallAudioEngineRuntime {
     this.directVoiceProfile =
       command.profile ?? this.snapshot.audioQualityProfile;
     this.ensureGroupCallSubscription();
+    this.directVoiceRtcTransport?.setMuted(this.directVoiceMuted);
+    if (this.directVoiceRtcRemoteAudio) {
+      this.directVoiceRtcRemoteAudio.muted = !this.directVoiceHearCall;
+      await applyCallAudioOutput(this.directVoiceOutputDeviceId, {
+        audioElement: this.directVoiceRtcRemoteAudio,
+      });
+    }
 
     await this.getDirectVoiceReceiveEngine().configure({
       outputDeviceId: this.directVoiceOutputDeviceId,
       hearCall: this.directVoiceHearCall,
       profile: this.directVoiceProfile,
     });
-    await this.directVoiceSenderEngine.startOrUpdate({
-      inputDeviceId: this.directVoiceInputDeviceId,
-      outputDeviceId: this.directVoiceOutputDeviceId,
-      muted: this.directVoiceMuted,
-      profile: this.directVoiceProfile,
-      onTimingAnomaly: (stage, detail) => {
-        this.logSenderTimingAnomaly(stage, {
-          callKind: 'dm',
-          peerAddress: truncateGcallDiagAddress(this.directVoicePeerAddress),
-          ...detail,
-        });
-      },
-      onEncodedFrame: (frame) => {
-        void this.dispatchDirectVoiceEncodedFrame(frame);
-      },
-    });
+    await this.configureDirectVoiceSender();
     const senderDiagnostics =
       this.directVoiceSenderEngine.getDiagnosticsSnapshot();
     if (typeof senderDiagnostics.unsupportedReason === 'string') {
@@ -1691,9 +1809,13 @@ export class GroupCallAudioEngineRuntime {
   private async updateDirectVoiceMedia(
     command: Extract<AudioSurfaceCommand, { type: 'update-direct-voice-media' }>
   ): Promise<AudioSurfaceResponse> {
-    if (!this.directVoiceRoomId || !this.directVoiceRoomKey) {
+    if (!this.directVoiceRoomId) {
       return { ok: true };
     }
+    const previousInputDeviceId = this.directVoiceInputDeviceId;
+    const inputDeviceChanged =
+      command.inputDeviceId !== undefined &&
+      command.inputDeviceId !== previousInputDeviceId;
     if (command.inputDeviceId !== undefined) {
       this.directVoiceInputDeviceId = command.inputDeviceId;
     }
@@ -1711,6 +1833,46 @@ export class GroupCallAudioEngineRuntime {
       this.directVoiceProfile = command.profile;
     }
 
+    if (inputDeviceChanged && this.directVoiceRtcTransport) {
+      const capture = await getUserAudioStreamForCall(
+        this.directVoiceInputDeviceId
+      );
+      const nextStream = capture.stream;
+      if (!nextStream?.getAudioTracks()[0]) {
+        nextStream?.getTracks().forEach((track) => track.stop());
+        this.directVoiceInputDeviceId = previousInputDeviceId;
+        return { ok: false, error: 'native-webrtc-microphone-unavailable' };
+      }
+      for (const track of nextStream.getAudioTracks()) {
+        track.enabled = !this.directVoiceMuted;
+      }
+      try {
+        await this.directVoiceRtcTransport.replaceLocalStream(nextStream);
+        this.directVoiceRtcLocalStream = nextStream;
+      } catch (error) {
+        nextStream.getTracks().forEach((track) => track.stop());
+        this.directVoiceInputDeviceId = previousInputDeviceId;
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    this.directVoiceRtcTransport?.setMuted(this.directVoiceMuted);
+    if (this.directVoiceRtcRemoteAudio) {
+      this.directVoiceRtcRemoteAudio.muted = !this.directVoiceHearCall;
+      if (command.outputDeviceId !== undefined) {
+        await applyCallAudioOutput(this.directVoiceOutputDeviceId, {
+          audioElement: this.directVoiceRtcRemoteAudio,
+        });
+      }
+    }
+
+    // Native WebRTC can become usable before the Reticulum room key arrives.
+    // Apply its device/mute/playback updates immediately, then update the
+    // fallback encoder only once that encrypted fallback session exists.
+    if (!this.directVoiceRoomKey) return { ok: true };
+
     if (this.directVoiceReceiveEngine) {
       await this.directVoiceReceiveEngine.configure({
         ...(command.outputDeviceId !== undefined
@@ -1722,23 +1884,40 @@ export class GroupCallAudioEngineRuntime {
         ...(command.profile ? { profile: this.directVoiceProfile } : {}),
       });
     }
-    await this.directVoiceSenderEngine.startOrUpdate({
-      inputDeviceId: this.directVoiceInputDeviceId,
-      outputDeviceId: this.directVoiceOutputDeviceId,
-      muted: this.directVoiceMuted,
-      profile: this.directVoiceProfile,
-      onTimingAnomaly: (stage, detail) => {
-        this.logSenderTimingAnomaly(stage, {
-          callKind: 'dm',
-          peerAddress: truncateGcallDiagAddress(this.directVoicePeerAddress),
-          ...detail,
-        });
-      },
-      onEncodedFrame: (frame) => {
-        void this.dispatchDirectVoiceEncodedFrame(frame);
-      },
-    });
+    await this.configureDirectVoiceSender();
     return { ok: true };
+  }
+
+  private async configureDirectVoiceSender(): Promise<void> {
+    const start = (inputStream: MediaStream | null) =>
+      this.directVoiceSenderEngine.startOrUpdate({
+        inputDeviceId: this.directVoiceInputDeviceId,
+        inputStream,
+        outputDeviceId: this.directVoiceOutputDeviceId,
+        muted: this.directVoiceMuted,
+        profile: this.directVoiceProfile,
+        onTimingAnomaly: (stage, detail) => {
+          this.logSenderTimingAnomaly(stage, {
+            callKind: 'dm',
+            peerAddress: truncateGcallDiagAddress(this.directVoicePeerAddress),
+            ...detail,
+          });
+        },
+        onEncodedFrame: (frame) => {
+          void this.dispatchDirectVoiceEncodedFrame(frame);
+        },
+      });
+    try {
+      await start(this.directVoiceRtcLocalStream);
+    } catch (error) {
+      if (!this.directVoiceRtcLocalStream) throw error;
+      this.recordDiagEvent('direct-voice-shared-capture-fallback', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // A clone/graph failure must not sacrifice the proven Reticulum path.
+      // Reopen it with its own capture while native WebRTC keeps its track.
+      await start(null);
+    }
   }
 
   private async stopDirectVoiceMedia(): Promise<void> {
@@ -1778,6 +1957,16 @@ export class GroupCallAudioEngineRuntime {
     ) {
       return;
     }
+    // Do not consume fallback sequence numbers for frames that native WebRTC
+    // carries. If ICE later fails, Reticulum then resumes from the last packet
+    // actually sent instead of presenting the receiver with an artificial gap.
+    if (
+      !isReticulumCallEnabled &&
+      this.directVoiceRtcTransport?.isOpen() &&
+      this.directVoiceRtcMediaReadyEmitted
+    ) {
+      return;
+    }
     const seq = ++this.directVoiceSeq & 0xffff;
     const packet = encodeAudioPacketV2(
       this.directVoiceLocalAddress,
@@ -1790,13 +1979,6 @@ export class GroupCallAudioEngineRuntime {
     this.directVoiceOutboundSendAttempts++;
     this.directVoiceOutboundLastSendAtMs = Date.now();
     try {
-      if (
-        !isReticulumCallEnabled &&
-        this.directVoiceRtcTransport?.send(packet)
-      ) {
-        this.directVoiceOutboundSendSuccesses++;
-        return;
-      }
       if (typeof window.groupCall?.sendAudio !== 'function') {
         throw new Error('window.groupCall.sendAudio unavailable');
       }
@@ -5572,6 +5754,15 @@ export class GroupCallAudioEngineRuntime {
   private async processDirectVoiceAudioPayload(
     audioPayload: GroupCallAudioReceivePayload
   ): Promise<void> {
+    // Once native RTP is connected, ignore any fallback frames still in flight
+    // so the two playback pipelines cannot briefly double the same voice.
+    if (
+      !isReticulumCallEnabled &&
+      this.directVoiceRtcTransport?.isOpen() &&
+      this.directVoiceRtcMediaReadyEmitted
+    ) {
+      return;
+    }
     const fromAddr =
       audioPayload.fromAddress ?? audioPayload.resolvedFromAddress ?? '';
     if (

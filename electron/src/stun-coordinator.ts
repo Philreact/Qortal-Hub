@@ -23,10 +23,11 @@ const MAX_CONCURRENT_PROBES = 3;
 const PROBE_TICK_MS = 12_000;
 const PREWARM_JITTER_MAX_MS = 15_000;
 
-// Public STUN is used by the direct-call WebRTC data plane even though the old
-// WebRTC/P2P stack is disabled. STUN only discovers candidates; all SDP and ICE
-// candidate exchange still travels over the authenticated direct Reticulum
-// link. Reticulum remains the media fallback when NAT traversal cannot connect.
+// Public STUN is used by the direct-call native WebRTC media path even though
+// the old WebRTC/P2P stack is disabled. STUN only discovers candidates; all
+// SDP and ICE candidate exchange still travels over the authenticated direct
+// Reticulum link. Reticulum remains the media fallback when NAT traversal
+// cannot connect.
 const DIRECT_CALL_PUBLIC_STUN: { urls: string }[] = [
   { urls: 'stun:stun.cloudflare.com:3478' },
   { urls: 'stun:stun.l.google.com:19302' },

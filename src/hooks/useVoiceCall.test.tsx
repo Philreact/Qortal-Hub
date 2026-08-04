@@ -256,6 +256,145 @@ describe('useVoiceCall', () => {
     expect(result.current.audioMode).toBeNull();
   });
 
+  it('starts native WebRTC only after the peer advertises native-track support', async () => {
+    let callEventHandler:
+      | ((event: string, payload: unknown) => void | Promise<void>)
+      | null = null;
+    let resolveJoin!: (value: { success: false; error: string }) => void;
+    const join = vi.fn(
+      () =>
+        new Promise<{ success: false; error: string }>((resolve) => {
+          resolveJoin = resolve;
+        })
+    );
+    const sendRtcSignal = vi.fn(async () => ({ success: true }));
+    const callApi = {
+      onEvent: vi.fn(
+        (cb: (event: string, payload: unknown) => void | Promise<void>) => {
+          callEventHandler = cb;
+          return vi.fn();
+        }
+      ),
+      setLocalAddresses: vi.fn(async () => ({ success: true })),
+      initiate: vi.fn(async () => ({ success: true })),
+      hangup: vi.fn(async () => ({ success: true })),
+      sendRtcSignal,
+    };
+    const audioSurfaceSendCommand = vi.fn(async () => ({ ok: true }));
+    Object.assign(window as any, {
+      call: callApi,
+      groupCall: {
+        onEvent: vi.fn(() => vi.fn()),
+        join,
+        setLocalAddresses: vi.fn(async () => {}),
+      },
+      audioSurface: {
+        sendCommand: audioSurfaceSendCommand,
+        onEvent: vi.fn(() => vi.fn()),
+      },
+      hub: {
+        getIceServers: vi.fn(async () => []),
+      },
+      electronAPI: {
+        ...electronApiWithGoodReadiness(),
+        reticulumGetLocalIdentityPublicKeyBase64: vi.fn(async () => ({
+          publicKeyBase64: 'cmV0aWN1bHVtLWlkZW50aXR5',
+        })),
+      },
+      sendMessage: vi.fn(async () => ({
+        signature: 'sig',
+        publicKey: 'pub',
+      })),
+    });
+    const store = createStore();
+    store.set(userInfoAtom, { address: 'Qme', publicKey: 'pub' });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={store}>{children}</Provider>
+    );
+    const { result } = renderHook(
+      () =>
+        useVoiceCall({
+          callApi,
+          createCallId: () => 'native-capability-call',
+          skipDirectFriendValidation: true,
+          skipSystemReadiness: true,
+        }),
+      { wrapper }
+    );
+
+    await act(async () => {
+      await result.current.initiateCall(
+        'Qpeer',
+        buildDirectVoiceCallChatId('Qme', 'Qpeer'),
+        async () => ({ signature: 'sig', publicKey: 'pub' })
+      );
+      await callEventHandler?.('call:accepted', {
+        callId: 'native-capability-call',
+      });
+    });
+
+    await waitFor(() =>
+      expect(sendRtcSignal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          signalType: 'capability',
+          generation: 'native_audio_v1',
+        })
+      )
+    );
+    expect(audioSurfaceSendCommand).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'start-direct-voice-rtc' })
+    );
+
+    await act(async () => {
+      await callEventHandler?.('call:rtc-signal', {
+        callId: 'native-capability-call',
+        generation: 'generation_1234',
+        signalType: 'offer',
+        payload: JSON.stringify({
+          kind: 'description',
+          generation: 'generation_1234',
+          description: { type: 'offer', sdp: 'offer' },
+        }),
+      });
+    });
+    expect(audioSurfaceSendCommand).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'start-direct-voice-rtc' })
+    );
+
+    await act(async () => {
+      await callEventHandler?.('call:rtc-signal', {
+        callId: 'native-capability-call',
+        generation: 'native_audio_v1',
+        signalType: 'capability',
+        payload: JSON.stringify({
+          kind: 'capability',
+          audio: 'native-track',
+          version: 1,
+        }),
+      });
+    });
+
+    await waitFor(() =>
+      expect(audioSurfaceSendCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'start-direct-voice-rtc',
+          roomId: expect.any(String),
+          peerAddress: 'Qpeer',
+        })
+      )
+    );
+    expect(audioSurfaceSendCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'apply-direct-voice-rtc-signal',
+        signal: expect.objectContaining({
+          kind: 'description',
+          generation: 'generation_1234',
+        }),
+      })
+    );
+    resolveJoin({ success: false, error: 'test-stop' });
+  });
+
   it('auto-rejects direct call:incoming when caller is on blocked address list', async () => {
     let eventHandler:
       | ((event: string, payload: unknown) => void | Promise<void>)

@@ -85,6 +85,10 @@ export type AudioSurfaceCommand =
       roomId: string;
       peerAddress: string;
       initiator: boolean;
+      inputDeviceId?: string | null;
+      outputDeviceId?: string | null;
+      muted?: boolean;
+      hearCall?: boolean;
       iceServers: Array<{
         urls: string | string[];
         username?: string;

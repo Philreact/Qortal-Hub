@@ -66,6 +66,7 @@ export function DirectVoiceCallNavWidget() {
   const { confirmCallSwitch } = useCallSwitchGuard();
   const {
     activeCallChatId,
+    audioMode,
     startupStatus,
     callMediaReady,
     callDuration,
@@ -216,7 +217,7 @@ export function DirectVoiceCallNavWidget() {
           display: 'flex',
           gap: 0.75,
           height: 36,
-          maxWidth: { xs: 218, sm: 320, md: 382 },
+          maxWidth: { xs: 218, sm: 320, md: 452 },
           minWidth: 0,
           px: 0.75,
         }}
@@ -304,6 +305,45 @@ export function DirectVoiceCallNavWidget() {
               ? durationLabel
               : startupStatus.headline || 'Connecting...'}
           </Typography>
+        ) : null}
+
+        {callState === 'connected' ? (
+          <Tooltip
+            title={
+              audioMode === 'webrtc'
+                ? 'Audio is using the direct WebRTC connection'
+                : audioMode === 'reticulum'
+                  ? 'Audio is using the Reticulum fallback'
+                  : 'Audio transport is being selected'
+            }
+            arrow
+          >
+            <Typography
+              component="span"
+              sx={{
+                color:
+                  audioMode === 'webrtc'
+                    ? VOICE_CONNECTED
+                    : audioMode === 'reticulum'
+                      ? theme.palette.warning.main
+                      : theme.palette.text.disabled,
+                display: { xs: 'none', md: 'block' },
+                flexShrink: 0,
+                fontSize: 9,
+                fontWeight: 900,
+                letterSpacing: '0.04em',
+                lineHeight: '16px',
+                textAlign: 'center',
+                width: 62,
+              }}
+            >
+              {audioMode === 'webrtc'
+                ? 'WEBRTC'
+                : audioMode === 'reticulum'
+                  ? 'RETICULUM'
+                  : 'SELECTING'}
+            </Typography>
+          </Tooltip>
         ) : null}
 
         <Box
