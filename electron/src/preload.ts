@@ -3735,6 +3735,19 @@ try {
         timestamp
       ),
 
+    /** Send wallet-authenticated WebRTC negotiation over the selected direct link. */
+    sendRtcSignal: async (input: {
+      callId: string;
+      generation: string;
+      signalId: string;
+      signalType: 'capability' | 'offer' | 'answer' | 'candidate';
+      payload: string;
+      payloadHash: string;
+      timestamp: number;
+      signature: string;
+      publicKey: string;
+    }) => ipcRenderer.invoke('call:rtc-signal', input),
+
     /** Register the local user's address with the call manager. */
     setLocalAddresses: async (addresses: string[]) =>
       ipcRenderer.invoke('call:setLocalAddresses', addresses),
@@ -3750,6 +3763,7 @@ try {
         'call:accepted',
         'call:rejected',
         'call:hangup',
+        'call:rtc-signal',
       ] as const;
 
       const handlers: Map<string, (...args: unknown[]) => void> = new Map();

@@ -108,6 +108,13 @@ export function DirectVoiceCallDock() {
         mode: 'reticulum' as const,
       };
     }
+    if (audioMode === 'webrtc' && callMediaReady) {
+      return {
+        label: 'Direct',
+        tooltip: 'Encrypted direct voice connection',
+        mode: 'webrtc' as const,
+      };
+    }
     return {
       label: 'Connecting…',
       tooltip: 'Establishing secure audio',
@@ -192,7 +199,9 @@ export function DirectVoiceCallDock() {
                 ? alpha('#94a3b8', 0.35)
                 : transport.mode === 'reticulum'
                   ? alpha(theme.palette.primary.main, 0.4)
-                  : alpha('#94a3b8', 0.35),
+                  : transport.mode === 'webrtc'
+                    ? alpha('#22c55e', 0.3)
+                    : alpha('#94a3b8', 0.35),
             color: '#dbdee1',
             '& .MuiChip-label': { px: 0.5, overflow: 'hidden' },
           }}

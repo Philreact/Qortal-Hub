@@ -93,6 +93,11 @@ import AudioDecryptWorker from '../../workers/audio-decrypt.worker?worker';
 import nacl from '../../encryption/nacl-fast';
 import ed2curve from '../../encryption/ed2curve';
 import Base58 from '../../encryption/Base58.js';
+import { isReticulumCallEnabled } from '../call/directVoiceCallTransport';
+import {
+  DirectVoiceWebRtcTransport,
+  type DirectVoiceRtcSignal,
+} from '../call/directVoiceWebRtcTransport';
 
 type EventListener = (event: AudioSurfaceEvent) => void;
 
@@ -1017,6 +1022,7 @@ export class GroupCallAudioEngineRuntime {
   private directVoiceOutboundLastFailureMessage: string | null = null;
   private directVoiceOutboundLastSendAtMs = 0;
   private directVoiceMediaReadyEmitted = false;
+  private directVoiceRtcTransport: DirectVoiceWebRtcTransport | null = null;
   private unsubscribeGroupCallEvents: (() => void) | null = null;
   private currentChatId = '';
   /** Logical unsigned generation of this installation's active group-call slot. */
@@ -1265,6 +1271,7 @@ export class GroupCallAudioEngineRuntime {
     this.clearParticipantRosterRefreshTimer();
     this.stopRendererThreadMonitor();
     this.closeAudioDataPlane('runtime-dispose');
+    this.closeDirectVoiceRtc('runtime-dispose');
     void this.senderEngine.stop();
     void this.directVoiceSenderEngine.stop();
     void this.receiveEngine.dispose();
@@ -1406,6 +1413,17 @@ export class GroupCallAudioEngineRuntime {
         case 'stop-direct-voice-receive':
           await this.stopDirectVoiceReceive();
           return { ok: true, payload: { idle: this.isRuntimeIdle() } };
+        case 'start-direct-voice-rtc':
+          return await this.startDirectVoiceRtc(command);
+        case 'apply-direct-voice-rtc-signal':
+          return await this.applyDirectVoiceRtcSignal(command);
+        case 'stop-direct-voice-rtc':
+          this.closeDirectVoiceRtc('host-stop');
+          if (!this.directVoiceRoomKey && !this.directVoiceLocalAddress) {
+            this.directVoiceRoomId = '';
+            this.directVoicePeerAddress = '';
+          }
+          return { ok: true, payload: { idle: this.isRuntimeIdle() } };
         case 'start-direct-voice-media':
           return await this.startDirectVoiceMedia(command);
         case 'update-direct-voice-media':
@@ -1472,6 +1490,125 @@ export class GroupCallAudioEngineRuntime {
       peerAddress: truncateGcallDiagAddress(peerAddress),
     });
     return { ok: true };
+  }
+
+  private async startDirectVoiceRtc(
+    command: Extract<AudioSurfaceCommand, { type: 'start-direct-voice-rtc' }>
+  ): Promise<AudioSurfaceResponse> {
+    const roomId = command.roomId.trim();
+    const peerAddress = command.peerAddress.trim();
+    if (!roomId || !peerAddress) {
+      return { ok: false, error: 'invalid-direct-voice-rtc-config' };
+    }
+    if (isReticulumCallEnabled) {
+      this.closeDirectVoiceRtc('reticulum-call-enabled');
+      return { ok: true, payload: { transport: 'reticulum' } };
+    }
+    if (
+      this.directVoiceRtcTransport &&
+      (this.directVoiceRoomId !== roomId ||
+        this.directVoicePeerAddress !== peerAddress)
+    ) {
+      this.closeDirectVoiceRtc('session-changed');
+    }
+    this.directVoiceRoomId = roomId;
+    this.directVoicePeerAddress = peerAddress;
+    if (!this.directVoiceRtcTransport) {
+      const iceServers = command.iceServers.map((server) => ({ ...server }));
+      this.directVoiceRtcTransport = new DirectVoiceWebRtcTransport({
+        offerer: command.initiator,
+        getIceServers: async () => iceServers,
+        onSignal: (signal) => {
+          if (
+            this.directVoiceRoomId !== roomId ||
+            this.directVoicePeerAddress !== peerAddress
+          ) {
+            return;
+          }
+          this.emit({
+            type: 'direct-voice-rtc-signal',
+            roomId,
+            peerAddress,
+            signal,
+          });
+        },
+        onPacket: (packet) => {
+          if (
+            this.directVoiceRoomId !== roomId ||
+            this.directVoicePeerAddress !== peerAddress
+          ) {
+            return;
+          }
+          void this.processDirectVoiceAudioPayload({
+            roomId,
+            fromAddress: peerAddress,
+            data: packet,
+          });
+        },
+        onState: (state) => {
+          const projected =
+            state === 'open'
+              ? 'open'
+              : state === 'closed'
+                ? 'closed'
+                : state === 'idle' ||
+                    state === 'connecting' ||
+                    state === 'recovering'
+                  ? 'connecting'
+                  : 'failed';
+          this.emit({
+            type: 'direct-voice-rtc-state',
+            roomId,
+            peerAddress,
+            state: projected,
+          });
+        },
+      });
+    }
+    try {
+      await this.directVoiceRtcTransport.start();
+      return { ok: true, payload: { transport: 'webrtc' } };
+    } catch (error) {
+      this.closeDirectVoiceRtc('start-failed');
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private async applyDirectVoiceRtcSignal(
+    command: Extract<
+      AudioSurfaceCommand,
+      { type: 'apply-direct-voice-rtc-signal' }
+    >
+  ): Promise<AudioSurfaceResponse> {
+    if (isReticulumCallEnabled) return { ok: true };
+    if (
+      !this.directVoiceRtcTransport ||
+      command.roomId !== this.directVoiceRoomId ||
+      command.peerAddress !== this.directVoicePeerAddress
+    ) {
+      return { ok: false, error: 'direct-voice-rtc-session-not-ready' };
+    }
+    try {
+      await this.directVoiceRtcTransport.handleSignal(
+        command.signal as DirectVoiceRtcSignal
+      );
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private closeDirectVoiceRtc(reason: string): void {
+    if (!this.directVoiceRtcTransport) return;
+    this.recordDiagEvent('direct-voice-rtc-closed', { reason });
+    this.directVoiceRtcTransport.close();
+    this.directVoiceRtcTransport = null;
   }
 
   private async startDirectVoiceMedia(
@@ -1626,6 +1763,7 @@ export class GroupCallAudioEngineRuntime {
     this.directVoiceProfile = this.snapshot.audioQualityProfile;
     this.directVoiceMediaReadyEmitted = false;
     await this.directVoiceReceiveEngine?.reset();
+    this.closeDirectVoiceRtc('direct-voice-media-stopped');
   }
 
   private async dispatchDirectVoiceEncodedFrame(
@@ -1640,17 +1778,6 @@ export class GroupCallAudioEngineRuntime {
     ) {
       return;
     }
-    if (typeof window.groupCall?.sendAudio !== 'function') {
-      this.directVoiceOutboundSendFailures++;
-      this.directVoiceOutboundLastFailureMessage =
-        'window.groupCall.sendAudio unavailable';
-      this.recordDiagEvent('direct-voice-audio-send-failed', {
-        roomId: this.directVoiceRoomId,
-        peerAddress: truncateGcallDiagAddress(this.directVoicePeerAddress),
-        message: this.directVoiceOutboundLastFailureMessage,
-      });
-      return;
-    }
     const seq = ++this.directVoiceSeq & 0xffff;
     const packet = encodeAudioPacketV2(
       this.directVoiceLocalAddress,
@@ -1663,6 +1790,16 @@ export class GroupCallAudioEngineRuntime {
     this.directVoiceOutboundSendAttempts++;
     this.directVoiceOutboundLastSendAtMs = Date.now();
     try {
+      if (
+        !isReticulumCallEnabled &&
+        this.directVoiceRtcTransport?.send(packet)
+      ) {
+        this.directVoiceOutboundSendSuccesses++;
+        return;
+      }
+      if (typeof window.groupCall?.sendAudio !== 'function') {
+        throw new Error('window.groupCall.sendAudio unavailable');
+      }
       const sentViaDataPlane = await this.sendAudioViaDataPlane(
         this.directVoiceRoomId,
         [this.directVoicePeerAddress],
@@ -1723,6 +1860,7 @@ export class GroupCallAudioEngineRuntime {
     this.directVoiceRoomKey = null;
     this.directVoiceMediaReadyEmitted = false;
     await this.directVoiceReceiveEngine?.reset();
+    this.closeDirectVoiceRtc('direct-voice-receive-stopped');
   }
 
   private getDirectVoiceReceiveEngine(): GroupCallAudioReceiveEngine {

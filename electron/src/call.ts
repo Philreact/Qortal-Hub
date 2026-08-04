@@ -1,21 +1,28 @@
 /**
- * Direct 1:1 call signaling over Reticulum only.
+ * Direct 1:1 call control and authenticated WebRTC negotiation over Reticulum.
  *
  * This module handles only setup / teardown signaling:
  *   - CALL_REQUEST / CALL_ACCEPT / CALL_REJECT
  *   - CALL_HANGUP
  *
- * Direct-call media is sent separately via the Reticulum group-call path.
+ * WebRTC negotiation is fragmented over the selected authenticated direct
+ * Reticulum link. Audio itself is owned by the audio surface and can use a
+ * WebRTC DataChannel while the existing Reticulum media path stays available.
  */
 
 import { EventEmitter } from 'events';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
+import { deflateRawSync, inflateRawSync } from 'zlib';
 import {
   log as loggerLog,
   error as loggerError,
   warn as loggerWarn,
 } from './logger';
-import { wireFitsReticulum } from './reticulum-wire-size';
+import {
+  byteLengthUtf8JsonWithBridgeSenderOnly,
+  RT_RETICULUM_MAX_WIRE_JSON_BYTES,
+  wireFitsReticulum,
+} from './reticulum-wire-size';
 import { deriveAddressFromPublicKey } from './presence';
 import { VerifyWorkerPool } from './verify-worker-pool';
 import type { PresenceManager, PresenceRoute } from './presence';
@@ -31,6 +38,23 @@ const CALL_WIRE_REQUEST = 'CR';
 const CALL_WIRE_ACCEPT = 'CA';
 const CALL_WIRE_REJECT = 'CX';
 const CALL_WIRE_HANGUP = 'CH';
+const CALL_WIRE_RTC_START = 'RS';
+const CALL_WIRE_RTC_AUTH = 'RH';
+const CALL_WIRE_RTC_PART = 'RP';
+const CALL_WIRE_RTC_ACK = 'RA';
+const CALL_WIRE_RTC_RESEND = 'RR';
+
+const CALL_RTC_SIGNAL_TTL_MS = 15_000;
+const CALL_RTC_FRAGMENT_CHARS = 144;
+const CALL_RTC_MAX_FRAGMENTS = 192;
+// ICE gathering can legitimately produce dozens of independently signed
+// candidates in one burst. Memory is bounded separately by buffered bytes.
+const CALL_RTC_MAX_INBOUND_SIGNALS = 128;
+const CALL_RTC_MAX_BUFFERED_BYTES = 256 * 1024;
+const CALL_RTC_MAX_RECOVERY_ROUNDS = 4;
+const CALL_RTC_RECOVERY_WAIT_MS = 350;
+const CALL_RTC_START_REPEAT_MS = 175;
+const CALL_RTC_MAX_CANDIDATES_PER_GENERATION = 96;
 
 /** If the bridge is briefly not `ready`, retry before dropping (bursty GC / transport flaps). */
 const CALL_SEND_MAX_ATTEMPTS = 40;
@@ -44,6 +68,45 @@ export type CallNetworkType =
   | 'CALL_ACCEPT'
   | 'CALL_REJECT'
   | 'CALL_HANGUP';
+
+export type DirectCallRtcSignalType =
+  | 'capability'
+  | 'offer'
+  | 'answer'
+  | 'candidate';
+
+const CALL_RTC_SIGNAL_CODE: Record<DirectCallRtcSignalType, string> = {
+  capability: 'c',
+  offer: 'o',
+  answer: 'a',
+  candidate: 'i',
+};
+
+const CALL_RTC_SIGNAL_FROM_CODE: Record<string, DirectCallRtcSignalType> = {
+  c: 'capability',
+  o: 'offer',
+  a: 'answer',
+  i: 'candidate',
+};
+
+export function buildDirectCallRtcSignedFields(input: {
+  callId: string;
+  generation: string;
+  signalId: string;
+  signalType: DirectCallRtcSignalType;
+  payloadHash: string;
+  timestamp: number;
+}): Record<string, unknown> {
+  return {
+    type: 'CALL_RTC_SIGNAL',
+    callId: input.callId,
+    generation: input.generation,
+    signalId: input.signalId,
+    signalType: input.signalType,
+    payloadHash: input.payloadHash,
+    timestamp: input.timestamp,
+  };
+}
 
 export const CALL_MESSAGE_TYPES = new Set<string>([
   'CALL_REQUEST',
@@ -333,6 +396,39 @@ interface CallRecord {
   controlRepeatTimers?: Set<ReturnType<typeof setTimeout>>;
 }
 
+interface DirectCallRtcOutboundSignal {
+  callId: string;
+  peerDestinationHash: string;
+  signalId: string;
+  startWire: Record<string, unknown>;
+  authWire: Record<string, unknown>;
+  partWires: Record<string, unknown>[];
+  createdAt: number;
+  repeatTimer?: ReturnType<typeof setTimeout>;
+  cleanupTimer?: ReturnType<typeof setTimeout>;
+}
+
+interface DirectCallRtcInboundSignal {
+  callId: string;
+  senderDestinationHash: string;
+  signalId: string;
+  signalType?: DirectCallRtcSignalType;
+  generation?: string;
+  partCount?: number;
+  payloadHash?: string;
+  timestamp?: number;
+  fromPublicKey?: string;
+  signature?: string;
+  parts: Map<number, string>;
+  bufferedBytes: number;
+  recoveryRounds: number;
+  createdAt: number;
+  verificationStarted?: boolean;
+  completed?: boolean;
+  recoveryTimer?: ReturnType<typeof setTimeout>;
+  cleanupTimer?: ReturnType<typeof setTimeout>;
+}
+
 /**
  * Events emitted (forwarded to the renderer via IPC):
  *   'call:incoming'  { callId, fromAddress, chatId }
@@ -372,6 +468,10 @@ export class CallManager extends EventEmitter {
     | null = null;
   private reticulumUnsub: (() => void) | null = null;
   private seenReticulumOverlayIds = new Map<string, number>();
+  private rtcOutboundSignals = new Map<string, DirectCallRtcOutboundSignal>();
+  private rtcInboundSignals = new Map<string, DirectCallRtcInboundSignal>();
+  private rtcInboundBufferedBytes = 0;
+  private rtcCandidateCounts = new Map<string, number>();
 
   constructor(
     presence: PresenceManager,
@@ -466,6 +566,7 @@ export class CallManager extends EventEmitter {
       this.clearControlRepeatTimers(call);
     }
     this.activeCalls.clear();
+    this.clearAllRtcSignals();
     this.seenReticulumOverlayIds.clear();
     this.pendingVerifiedIncomingWhenNoLocal = [];
     loggerLog('[Call] Manager stopped.');
@@ -494,6 +595,7 @@ export class CallManager extends EventEmitter {
       this.clearControlRepeatTimers(call);
     }
     this.activeCalls.clear();
+    this.clearAllRtcSignals();
   }
 
   /**
@@ -564,6 +666,678 @@ export class CallManager extends EventEmitter {
       if (normalized) return normalized;
     }
     return null;
+  }
+
+  /**
+   * Sends one WebRTC negotiation payload to the already selected device for an
+   * active DM call. The payload is compressed and fragmented only after its
+   * wallet signature is verified. Every fragment uses `send_call`, which is a
+   * pinned direct Reticulum-link send and never the account fanout path.
+   */
+  async sendRtcSignal(input: {
+    callId: string;
+    generation: string;
+    signalId: string;
+    signalType: DirectCallRtcSignalType;
+    payload: string;
+    payloadHash: string;
+    timestamp: number;
+    signature: string;
+    publicKey: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    if (!input || typeof input !== 'object') {
+      return { success: false, error: 'invalid-rtc-signal' };
+    }
+    const call = this.activeCalls.get(input.callId);
+    if (!call || call.state !== 'active') {
+      return { success: false, error: 'call-not-active' };
+    }
+    const peerDestinationHash = this.getRtcPeerDestinationHash(call);
+    if (!peerDestinationHash) {
+      return { success: false, error: 'selected-peer-unavailable' };
+    }
+    if (!this.isValidRtcSignalInput(input)) {
+      return { success: false, error: 'invalid-rtc-signal' };
+    }
+    const actualHash = createHash('sha256')
+      .update(input.payload, 'utf8')
+      .digest('hex');
+    if (actualHash !== input.payloadHash.toLowerCase()) {
+      return { success: false, error: 'rtc-signal-hash-mismatch' };
+    }
+    const signedFields = buildDirectCallRtcSignedFields({
+      callId: input.callId,
+      generation: input.generation,
+      signalId: input.signalId,
+      signalType: input.signalType,
+      payloadHash: actualHash,
+      timestamp: input.timestamp,
+    });
+    const verified = await this.verifyPool.verify({
+      kind: 'gc',
+      fields: signedFields,
+      signature: input.signature,
+      fromPublicKey: input.publicKey,
+      fromAddress: call.localAddress,
+    });
+    if (!verified) {
+      return { success: false, error: 'invalid-rtc-signal-signature' };
+    }
+    // Wallet verification is asynchronous. Do not emit sensitive negotiation
+    // material if the call ended, the account changed, or a different remote
+    // device became selected while verification was in flight.
+    const currentCall = this.activeCalls.get(input.callId);
+    if (
+      currentCall !== call ||
+      currentCall.state !== 'active' ||
+      this.getRtcPeerDestinationHash(currentCall) !== peerDestinationHash
+    ) {
+      return { success: false, error: 'call-route-changed' };
+    }
+
+    const compressed = deflateRawSync(Buffer.from(input.payload, 'utf8'));
+    const encoded = compressed.toString('base64');
+    const parts: string[] = [];
+    for (let i = 0; i < encoded.length; i += CALL_RTC_FRAGMENT_CHARS) {
+      parts.push(encoded.slice(i, i + CALL_RTC_FRAGMENT_CHARS));
+    }
+    if (parts.length === 0) parts.push('');
+    if (parts.length > CALL_RTC_MAX_FRAGMENTS) {
+      return { success: false, error: 'rtc-signal-too-large' };
+    }
+
+    const startWire: Record<string, unknown> = {
+      t: CALL_WIRE_RTC_START,
+      c: input.callId,
+      i: input.signalId,
+      y: CALL_RTC_SIGNAL_CODE[input.signalType],
+      v: input.generation,
+      n: parts.length,
+      z: actualHash,
+      m: input.timestamp,
+    };
+    const authWire: Record<string, unknown> = {
+      t: CALL_WIRE_RTC_AUTH,
+      c: input.callId,
+      i: input.signalId,
+      k: input.publicKey,
+      g: input.signature,
+    };
+    const partWires = parts.map((part, index) => ({
+      t: CALL_WIRE_RTC_PART,
+      c: input.callId,
+      i: input.signalId,
+      x: index,
+      p: part,
+    }));
+    if (
+      !this.rtcDirectWireFits(startWire) ||
+      !this.rtcDirectWireFits(authWire) ||
+      partWires.some((wire) => !this.rtcDirectWireFits(wire))
+    ) {
+      return { success: false, error: 'rtc-signal-wire-too-large' };
+    }
+
+    const key = this.rtcSignalKey(input.callId, input.signalId);
+    this.clearRtcOutboundSignal(key);
+    const outbound: DirectCallRtcOutboundSignal = {
+      callId: input.callId,
+      peerDestinationHash,
+      signalId: input.signalId,
+      startWire,
+      authWire,
+      partWires,
+      createdAt: Date.now(),
+    };
+    this.rtcOutboundSignals.set(key, outbound);
+    this.sendPinnedCallWireWhenReady(peerDestinationHash, startWire, 0);
+    this.sendPinnedCallWireWhenReady(peerDestinationHash, authWire, 0);
+    for (const partWire of partWires) {
+      this.sendPinnedCallWireWhenReady(peerDestinationHash, partWire, 0);
+    }
+    outbound.repeatTimer = setTimeout(() => {
+      const current = this.rtcOutboundSignals.get(key);
+      if (!current) return;
+      this.sendPinnedCallWireWhenReady(
+        current.peerDestinationHash,
+        current.startWire,
+        0
+      );
+      this.sendPinnedCallWireWhenReady(
+        current.peerDestinationHash,
+        current.authWire,
+        0
+      );
+    }, CALL_RTC_START_REPEAT_MS);
+    outbound.repeatTimer.unref?.();
+    outbound.cleanupTimer = setTimeout(
+      () => this.clearRtcOutboundSignal(key),
+      CALL_RTC_SIGNAL_TTL_MS
+    );
+    outbound.cleanupTimer.unref?.();
+    return { success: true };
+  }
+
+  private getRtcPeerDestinationHash(call: CallRecord): string | null {
+    const raw =
+      call.direction === 'outbound'
+        ? call.acceptedReticulumPeerHash
+        : call.reticulumPeerPresenceHash;
+    const normalized = raw?.trim().toLowerCase() ?? '';
+    return /^[0-9a-f]{32}$/.test(normalized) ? normalized : null;
+  }
+
+  private isValidRtcSignalInput(input: {
+    callId: string;
+    generation: string;
+    signalId: string;
+    signalType: DirectCallRtcSignalType;
+    payload: string;
+    payloadHash: string;
+    timestamp: number;
+    signature: string;
+    publicKey: string;
+  }): boolean {
+    if (typeof input.callId !== 'string' || input.callId.length > 64) {
+      return false;
+    }
+    if (typeof input.payload !== 'string') return false;
+    if (typeof input.generation !== 'string') return false;
+    if (
+      typeof input.signalId !== 'string' ||
+      !/^[A-Za-z0-9_-]{8,24}$/.test(input.signalId)
+    ) {
+      return false;
+    }
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(input.generation)) return false;
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        CALL_RTC_SIGNAL_CODE,
+        input.signalType
+      )
+    ) {
+      return false;
+    }
+    if (
+      typeof input.payloadHash !== 'string' ||
+      !/^[0-9a-f]{64}$/i.test(input.payloadHash)
+    ) {
+      return false;
+    }
+    if (
+      typeof input.signature !== 'string' ||
+      !input.signature ||
+      input.signature.length > 256 ||
+      typeof input.publicKey !== 'string' ||
+      !input.publicKey ||
+      input.publicKey.length > 256
+    ) {
+      return false;
+    }
+    if (!Number.isFinite(input.timestamp)) return false;
+    const skew = Date.now() - input.timestamp;
+    if (skew > 30_000 || skew < -10_000) return false;
+    const maxBytes =
+      input.signalType === 'capability'
+        ? 512
+        : input.signalType === 'candidate'
+          ? 8 * 1024
+          : 64 * 1024;
+    return Buffer.byteLength(input.payload, 'utf8') <= maxBytes;
+  }
+
+  private rtcSignalKey(callId: string, signalId: string): string {
+    return `${callId}|${signalId}`;
+  }
+
+  private rtcDirectWireFits(wire: Record<string, unknown>): boolean {
+    return (
+      byteLengthUtf8JsonWithBridgeSenderOnly(wire) <=
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+  }
+
+  private clearRtcOutboundSignal(key: string): void {
+    const signal = this.rtcOutboundSignals.get(key);
+    if (!signal) return;
+    if (signal.repeatTimer) clearTimeout(signal.repeatTimer);
+    if (signal.cleanupTimer) clearTimeout(signal.cleanupTimer);
+    this.rtcOutboundSignals.delete(key);
+  }
+
+  private clearRtcInboundSignal(key: string): void {
+    const signal = this.rtcInboundSignals.get(key);
+    if (!signal) return;
+    if (signal.recoveryTimer) clearTimeout(signal.recoveryTimer);
+    if (signal.cleanupTimer) clearTimeout(signal.cleanupTimer);
+    this.rtcInboundBufferedBytes = Math.max(
+      0,
+      this.rtcInboundBufferedBytes - signal.bufferedBytes
+    );
+    this.rtcInboundSignals.delete(key);
+  }
+
+  private clearRtcSignalsForCall(callId: string): void {
+    for (const [key, signal] of this.rtcOutboundSignals) {
+      if (signal.callId === callId) this.clearRtcOutboundSignal(key);
+    }
+    for (const [key, signal] of this.rtcInboundSignals) {
+      if (signal.callId === callId) this.clearRtcInboundSignal(key);
+    }
+    for (const key of this.rtcCandidateCounts.keys()) {
+      if (key.startsWith(`${callId}|`)) this.rtcCandidateCounts.delete(key);
+    }
+  }
+
+  private clearAllRtcSignals(): void {
+    for (const key of [...this.rtcOutboundSignals.keys()]) {
+      this.clearRtcOutboundSignal(key);
+    }
+    for (const key of [...this.rtcInboundSignals.keys()]) {
+      this.clearRtcInboundSignal(key);
+    }
+    this.rtcCandidateCounts.clear();
+    this.rtcInboundBufferedBytes = 0;
+  }
+
+  private getOrCreateRtcInboundSignal(
+    callId: string,
+    signalId: string,
+    senderDestinationHash: string
+  ): DirectCallRtcInboundSignal | null {
+    const key = this.rtcSignalKey(callId, signalId);
+    const existing = this.rtcInboundSignals.get(key);
+    if (existing) {
+      return existing.senderDestinationHash === senderDestinationHash
+        ? existing
+        : null;
+    }
+    if (this.rtcInboundSignals.size >= CALL_RTC_MAX_INBOUND_SIGNALS)
+      return null;
+    const signal: DirectCallRtcInboundSignal = {
+      callId,
+      senderDestinationHash,
+      signalId,
+      parts: new Map(),
+      bufferedBytes: 0,
+      recoveryRounds: 0,
+      createdAt: Date.now(),
+    };
+    signal.cleanupTimer = setTimeout(
+      () => this.clearRtcInboundSignal(key),
+      CALL_RTC_SIGNAL_TTL_MS
+    );
+    signal.cleanupTimer.unref?.();
+    this.rtcInboundSignals.set(key, signal);
+    return signal;
+  }
+
+  private isRtcWireFromSelectedPeer(
+    callId: string,
+    senderDestinationHash: string,
+    peerPresenceHash: string
+  ): { call: CallRecord; peerDestinationHash: string } | null {
+    const call = this.activeCalls.get(callId);
+    if (!call || call.state !== 'active') return null;
+    const selected = this.getRtcPeerDestinationHash(call);
+    const sender = senderDestinationHash.trim().toLowerCase();
+    const transportPeer = peerPresenceHash.trim().toLowerCase();
+    // WebRTC negotiation material is accepted only from the selected device
+    // over its authenticated direct Reticulum link. Relayed/overlay copies are
+    // deliberately ineligible even when their wallet signature is valid.
+    if (!selected || sender !== selected || transportPeer !== selected)
+      return null;
+    return { call, peerDestinationHash: selected };
+  }
+
+  private handleRtcWire(
+    wire: Record<string, unknown>,
+    senderDestinationHash: string,
+    peerPresenceHash: string
+  ): boolean {
+    const wireType = wire.t;
+    if (
+      wireType !== CALL_WIRE_RTC_START &&
+      wireType !== CALL_WIRE_RTC_AUTH &&
+      wireType !== CALL_WIRE_RTC_PART &&
+      wireType !== CALL_WIRE_RTC_ACK &&
+      wireType !== CALL_WIRE_RTC_RESEND
+    ) {
+      return false;
+    }
+    const callId = typeof wire.c === 'string' ? wire.c : '';
+    const signalId = typeof wire.i === 'string' ? wire.i : '';
+    if (!callId || !/^[A-Za-z0-9_-]{8,24}$/.test(signalId)) return true;
+    const selected = this.isRtcWireFromSelectedPeer(
+      callId,
+      senderDestinationHash,
+      peerPresenceHash
+    );
+    if (!selected) return true;
+    const key = this.rtcSignalKey(callId, signalId);
+
+    if (wireType === CALL_WIRE_RTC_ACK) {
+      const outbound = this.rtcOutboundSignals.get(key);
+      if (outbound?.peerDestinationHash === selected.peerDestinationHash) {
+        this.clearRtcOutboundSignal(key);
+      }
+      return true;
+    }
+    if (wireType === CALL_WIRE_RTC_RESEND) {
+      const outbound = this.rtcOutboundSignals.get(key);
+      if (
+        !outbound ||
+        outbound.peerDestinationHash !== selected.peerDestinationHash
+      ) {
+        return true;
+      }
+      if (wire.s === true) {
+        this.sendPinnedCallWireWhenReady(
+          outbound.peerDestinationHash,
+          outbound.startWire,
+          0
+        );
+      }
+      if (wire.a === true) {
+        this.sendPinnedCallWireWhenReady(
+          outbound.peerDestinationHash,
+          outbound.authWire,
+          0
+        );
+      }
+      const missing = Array.isArray(wire.q) ? wire.q : [];
+      for (const rawIndex of missing.slice(0, 32)) {
+        if (!Number.isInteger(rawIndex)) continue;
+        const partWire = outbound.partWires[rawIndex as number];
+        if (partWire) {
+          this.sendPinnedCallWireWhenReady(
+            outbound.peerDestinationHash,
+            partWire,
+            0
+          );
+        }
+      }
+      return true;
+    }
+
+    const signal = this.getOrCreateRtcInboundSignal(
+      callId,
+      signalId,
+      selected.peerDestinationHash
+    );
+    if (!signal) return true;
+    if (signal.completed) {
+      this.sendPinnedCallWireWhenReady(
+        selected.peerDestinationHash,
+        {
+          t: CALL_WIRE_RTC_ACK,
+          c: callId,
+          i: signalId,
+        },
+        0
+      );
+      return true;
+    }
+
+    if (wireType === CALL_WIRE_RTC_START) {
+      const signalType =
+        typeof wire.y === 'string'
+          ? CALL_RTC_SIGNAL_FROM_CODE[wire.y]
+          : undefined;
+      const generation = typeof wire.v === 'string' ? wire.v : '';
+      const partCount = typeof wire.n === 'number' ? wire.n : NaN;
+      const payloadHash =
+        typeof wire.z === 'string' ? wire.z.toLowerCase() : '';
+      const timestamp = typeof wire.m === 'number' ? wire.m : NaN;
+      if (
+        !signalType ||
+        !/^[A-Za-z0-9_-]{8,64}$/.test(generation) ||
+        !Number.isSafeInteger(partCount) ||
+        partCount < 1 ||
+        partCount > CALL_RTC_MAX_FRAGMENTS ||
+        !/^[0-9a-f]{64}$/.test(payloadHash) ||
+        !Number.isFinite(timestamp) ||
+        Date.now() - timestamp > 30_000 ||
+        Date.now() - timestamp < -10_000
+      ) {
+        this.clearRtcInboundSignal(key);
+        return true;
+      }
+      if (
+        (signal.signalType && signal.signalType !== signalType) ||
+        (signal.generation && signal.generation !== generation) ||
+        (signal.partCount && signal.partCount !== partCount) ||
+        (signal.payloadHash && signal.payloadHash !== payloadHash) ||
+        (signal.timestamp && signal.timestamp !== timestamp)
+      ) {
+        this.clearRtcInboundSignal(key);
+        return true;
+      }
+      signal.signalType = signalType;
+      signal.generation = generation;
+      signal.partCount = partCount;
+      signal.payloadHash = payloadHash;
+      signal.timestamp = timestamp;
+    } else if (wireType === CALL_WIRE_RTC_AUTH) {
+      const publicKey = typeof wire.k === 'string' ? wire.k : '';
+      const signature = typeof wire.g === 'string' ? wire.g : '';
+      if (!publicKey || !signature) {
+        this.clearRtcInboundSignal(key);
+        return true;
+      }
+      if (
+        (signal.fromPublicKey && signal.fromPublicKey !== publicKey) ||
+        (signal.signature && signal.signature !== signature)
+      ) {
+        this.clearRtcInboundSignal(key);
+        return true;
+      }
+      signal.fromPublicKey = publicKey;
+      signal.signature = signature;
+    } else if (wireType === CALL_WIRE_RTC_PART) {
+      const index = typeof wire.x === 'number' ? wire.x : NaN;
+      const part = typeof wire.p === 'string' ? wire.p : '';
+      if (
+        !Number.isSafeInteger(index) ||
+        index < 0 ||
+        index >= CALL_RTC_MAX_FRAGMENTS ||
+        part.length > CALL_RTC_FRAGMENT_CHARS ||
+        !/^[A-Za-z0-9+/]*={0,2}$/.test(part)
+      ) {
+        this.clearRtcInboundSignal(key);
+        return true;
+      }
+      if (!signal.parts.has(index)) {
+        const addedBytes = Buffer.byteLength(part, 'utf8');
+        if (
+          this.rtcInboundBufferedBytes + addedBytes >
+          CALL_RTC_MAX_BUFFERED_BYTES
+        ) {
+          this.clearRtcInboundSignal(key);
+          return true;
+        }
+        signal.parts.set(index, part);
+        signal.bufferedBytes += addedBytes;
+        this.rtcInboundBufferedBytes += addedBytes;
+      }
+    }
+
+    this.maybeCompleteRtcInboundSignal(key, selected.call);
+    return true;
+  }
+
+  private maybeCompleteRtcInboundSignal(key: string, call: CallRecord): void {
+    const signal = this.rtcInboundSignals.get(key);
+    if (!signal || signal.completed || signal.verificationStarted) return;
+    if (
+      !signal.signalType ||
+      !signal.generation ||
+      !signal.partCount ||
+      !signal.payloadHash ||
+      !signal.timestamp ||
+      !signal.fromPublicKey ||
+      !signal.signature
+    ) {
+      this.scheduleRtcRecovery(key);
+      return;
+    }
+    const missing: number[] = [];
+    for (let i = 0; i < signal.partCount; i += 1) {
+      if (!signal.parts.has(i)) missing.push(i);
+    }
+    if (missing.length > 0) {
+      this.scheduleRtcRecovery(key);
+      return;
+    }
+    signal.verificationStarted = true;
+    if (signal.recoveryTimer) {
+      clearTimeout(signal.recoveryTimer);
+      signal.recoveryTimer = undefined;
+    }
+    let payload: string;
+    try {
+      const encoded = Array.from(
+        { length: signal.partCount },
+        (_, index) => signal.parts.get(index) ?? ''
+      ).join('');
+      payload = inflateRawSync(Buffer.from(encoded, 'base64'), {
+        maxOutputLength: 64 * 1024,
+      }).toString('utf8');
+    } catch {
+      this.clearRtcInboundSignal(key);
+      return;
+    }
+    const actualHash = createHash('sha256')
+      .update(payload, 'utf8')
+      .digest('hex');
+    if (actualHash !== signal.payloadHash) {
+      this.clearRtcInboundSignal(key);
+      return;
+    }
+    const maxBytes =
+      signal.signalType === 'capability'
+        ? 512
+        : signal.signalType === 'candidate'
+          ? 8 * 1024
+          : 64 * 1024;
+    if (Buffer.byteLength(payload, 'utf8') > maxBytes) {
+      this.clearRtcInboundSignal(key);
+      return;
+    }
+    const candidateKey = `${signal.callId}|${signal.generation}`;
+    if (signal.signalType === 'candidate') {
+      const count = this.rtcCandidateCounts.get(candidateKey) ?? 0;
+      if (count >= CALL_RTC_MAX_CANDIDATES_PER_GENERATION) {
+        this.clearRtcInboundSignal(key);
+        return;
+      }
+    }
+    const signedFields = buildDirectCallRtcSignedFields({
+      callId: signal.callId,
+      generation: signal.generation,
+      signalId: signal.signalId,
+      signalType: signal.signalType,
+      payloadHash: signal.payloadHash,
+      timestamp: signal.timestamp,
+    });
+    const accountGeneration = this.localAccountGeneration;
+    void this.verifyPool
+      .verify({
+        kind: 'gc',
+        fields: signedFields,
+        signature: signal.signature,
+        fromPublicKey: signal.fromPublicKey,
+        fromAddress: call.remoteAddress,
+      })
+      .then((verified) => {
+        if (accountGeneration !== this.localAccountGeneration) return;
+        const current = this.rtcInboundSignals.get(key);
+        const active = this.activeCalls.get(signal.callId);
+        if (
+          !verified ||
+          current !== signal ||
+          active !== call ||
+          active.state !== 'active' ||
+          this.getRtcPeerDestinationHash(active) !==
+            signal.senderDestinationHash
+        ) {
+          this.clearRtcInboundSignal(key);
+          return;
+        }
+        signal.completed = true;
+        signal.parts.clear();
+        this.rtcInboundBufferedBytes = Math.max(
+          0,
+          this.rtcInboundBufferedBytes - signal.bufferedBytes
+        );
+        signal.bufferedBytes = 0;
+        if (signal.signalType === 'candidate') {
+          this.rtcCandidateCounts.set(
+            candidateKey,
+            (this.rtcCandidateCounts.get(candidateKey) ?? 0) + 1
+          );
+        }
+        this.emit('call:rtc-signal', {
+          callId: signal.callId,
+          generation: signal.generation,
+          signalType: signal.signalType,
+          payload,
+        });
+        this.sendPinnedCallWireWhenReady(
+          signal.senderDestinationHash,
+          {
+            t: CALL_WIRE_RTC_ACK,
+            c: signal.callId,
+            i: signal.signalId,
+          },
+          0
+        );
+      })
+      .catch(() => this.clearRtcInboundSignal(key));
+  }
+
+  private scheduleRtcRecovery(key: string): void {
+    const signal = this.rtcInboundSignals.get(key);
+    if (!signal || signal.recoveryTimer || signal.completed) return;
+    signal.recoveryTimer = setTimeout(
+      () => {
+        signal.recoveryTimer = undefined;
+        const current = this.rtcInboundSignals.get(key);
+        if (!current || current.completed || current.verificationStarted)
+          return;
+        if (current.recoveryRounds >= CALL_RTC_MAX_RECOVERY_ROUNDS) {
+          return;
+        }
+        current.recoveryRounds += 1;
+        const missing: number[] = [];
+        if (current.partCount) {
+          for (let i = 0; i < current.partCount; i += 1) {
+            if (!current.parts.has(i)) missing.push(i);
+          }
+        }
+        const requests = Math.max(1, Math.ceil(missing.length / 32));
+        for (let batch = 0; batch < requests; batch += 1) {
+          const resend = {
+            t: CALL_WIRE_RTC_RESEND,
+            c: current.callId,
+            i: current.signalId,
+            q: missing.slice(batch * 32, batch * 32 + 32),
+            ...(!current.partCount ? { s: true } : {}),
+            ...(current.fromPublicKey && current.signature ? {} : { a: true }),
+          };
+          if (this.rtcDirectWireFits(resend)) {
+            this.sendPinnedCallWireWhenReady(
+              current.senderDestinationHash,
+              resend,
+              0
+            );
+          }
+        }
+        this.scheduleRtcRecovery(key);
+      },
+      Math.min(2_800, CALL_RTC_RECOVERY_WAIT_MS * 2 ** signal.recoveryRounds)
+    );
+    signal.recoveryTimer.unref?.();
   }
 
   private enqueuePendingVerifiedIncomingRequest(
@@ -679,6 +1453,7 @@ export class CallManager extends EventEmitter {
         loggerLog(`[Call] Request ${callId.slice(0, 8)}… timed out.`);
         this.emitDirectCallHistory(record, 'no_answer');
         this.activeCalls.delete(callId);
+        this.clearRtcSignalsForCall(callId);
       }
     }, CALL_REQUEST_TTL_MS);
 
@@ -738,6 +1513,7 @@ export class CallManager extends EventEmitter {
     this.clearControlRepeatTimers(call);
     call.state = 'ended';
     this.activeCalls.delete(callId);
+    this.clearRtcSignalsForCall(callId);
     if (call.direction === 'inbound' && reason === 'rejected') {
       this.emitDirectCallHistory(call, 'declined', timestamp ?? Date.now());
     }
@@ -781,6 +1557,7 @@ export class CallManager extends EventEmitter {
     this.clearControlRepeatTimers(call);
     call.state = 'ended';
     this.activeCalls.delete(callId);
+    this.clearRtcSignalsForCall(callId);
     this.emitDirectCallHistory(
       call,
       previousState === 'active'
@@ -866,6 +1643,7 @@ export class CallManager extends EventEmitter {
         loggerLog(`[Call] Incoming call ${env.callId.slice(0, 8)}… timed out.`);
         this.emitDirectCallHistory(record, 'missed');
         this.activeCalls.delete(env.callId);
+        this.clearRtcSignalsForCall(env.callId);
       }
     }, CALL_REQUEST_TTL_MS);
 
@@ -1068,6 +1846,7 @@ export class CallManager extends EventEmitter {
     this.clearControlRepeatTimers(call);
     call.state = 'ended';
     this.activeCalls.delete(callId);
+    this.clearRtcSignalsForCall(callId);
     if (call.direction === 'outbound') {
       this.emitDirectCallHistory(call, 'declined', timestamp);
     }
@@ -1143,6 +1922,7 @@ export class CallManager extends EventEmitter {
         this.clearControlRepeatTimers(c);
         c.state = 'ended';
         this.activeCalls.delete(env.callId);
+        this.clearRtcSignalsForCall(env.callId);
         this.emitDirectCallHistory(
           c,
           previousState === 'active'
@@ -1162,6 +1942,9 @@ export class CallManager extends EventEmitter {
     senderDestinationHash: string,
     peerPresenceHash: string
   ): void {
+    if (this.handleRtcWire(wire, senderDestinationHash, peerPresenceHash)) {
+      return;
+    }
     // `r` is the original sender's stamped call destination. Direct legacy
     // frames may omit it, in which case the authenticated link peer is the
     // only safe fallback. Never prefer the relay/link peer when `r` exists.
@@ -1401,6 +2184,7 @@ export class CallManager extends EventEmitter {
     attempt: number
   ): void {
     if (!this.started) return;
+    if (!this.shouldSendPinnedRtcWire(peerDestinationHash, wire)) return;
     const bridge = this.reticulumBridge;
     if (!bridge || bridge.getState() !== 'ready') {
       if (attempt >= CALL_SEND_MAX_ATTEMPTS) {
@@ -1449,6 +2233,51 @@ export class CallManager extends EventEmitter {
         );
         timer.unref?.();
       });
+  }
+
+  /**
+   * RTC fragments may already have a bridge retry scheduled when a call ends
+   * or an acknowledgement completes the signal. Revalidate every retry so SDP
+   * and ICE material cannot leak past that lifecycle boundary.
+   */
+  private shouldSendPinnedRtcWire(
+    peerDestinationHash: string,
+    wire: Record<string, unknown>
+  ): boolean {
+    const type = wire.t;
+    if (
+      type !== CALL_WIRE_RTC_START &&
+      type !== CALL_WIRE_RTC_AUTH &&
+      type !== CALL_WIRE_RTC_PART &&
+      type !== CALL_WIRE_RTC_ACK &&
+      type !== CALL_WIRE_RTC_RESEND
+    ) {
+      return true;
+    }
+    const callId = typeof wire.c === 'string' ? wire.c : '';
+    const signalId = typeof wire.i === 'string' ? wire.i : '';
+    const peer = peerDestinationHash.trim().toLowerCase();
+    const call = this.activeCalls.get(callId);
+    if (
+      !call ||
+      call.state !== 'active' ||
+      this.getRtcPeerDestinationHash(call) !== peer
+    ) {
+      return false;
+    }
+    const signalKey = this.rtcSignalKey(callId, signalId);
+    if (
+      type === CALL_WIRE_RTC_START ||
+      type === CALL_WIRE_RTC_AUTH ||
+      type === CALL_WIRE_RTC_PART
+    ) {
+      return (
+        this.rtcOutboundSignals.get(signalKey)?.peerDestinationHash === peer
+      );
+    }
+    return (
+      this.rtcInboundSignals.get(signalKey)?.senderDestinationHash === peer
+    );
   }
 
   private cancelOtherRingingEndpoints(call: CallRecord): void {

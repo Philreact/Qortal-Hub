@@ -637,6 +637,17 @@ declare global {
         publicKey: string,
         timestamp: number
       ) => Promise<{ success: boolean }>;
+      sendRtcSignal: (input: {
+        callId: string;
+        generation: string;
+        signalId: string;
+        signalType: 'capability' | 'offer' | 'answer' | 'candidate';
+        payload: string;
+        payloadHash: string;
+        timestamp: number;
+        signature: string;
+        publicKey: string;
+      }) => Promise<{ success: boolean; error?: string }>;
       setLocalAddresses: (
         addresses: string[],
         source?: string

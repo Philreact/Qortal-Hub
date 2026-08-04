@@ -1,9 +1,8 @@
 /**
- * useVoiceCall — direct (1:1) voice over Reticulum only.
- *
- * Signaling (CALL_REQUEST / ACCEPT / REJECT / HANGUP) uses window.call IPC → Reticulum.
- * Media is owned by the audio surface: GC_JOIN → GC_KEY → audio-surface capture/decode →
- * window.groupCall.sendAudio → Reticulum. There is no renderer media fallback.
+ * Direct (1:1) voice call lifecycle. Control, key exchange, and WebRTC
+ * negotiation use authenticated Reticulum links. The audio surface prefers an
+ * unordered WebRTC DataChannel for encrypted Opus frames and retains the
+ * existing Reticulum media path as the always-on fallback.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -73,6 +72,8 @@ import {
 } from '../lib/group-call/groupCallAudioSenderEngine';
 import AudioDecryptWorker from '../workers/audio-decrypt.worker?worker';
 import { createRouteBoundId } from '../lib/reticulum/routeBoundId';
+import { isReticulumCallEnabled } from '../lib/call/directVoiceCallTransport';
+import type { DirectVoiceRtcSignal } from '../lib/call/directVoiceWebRtcTransport';
 
 const DM_MEDIA_RECOVERY_REQUEST_COOLDOWN_MS = 4_000;
 const DM_ROOM_KEY_REPLAY_RETRY_MS = 750;
@@ -130,10 +131,27 @@ function uint8ToBase64Local(bytes: Uint8Array): string {
   return btoa(s);
 }
 
+function createDirectVoiceRtcSignalId(): string {
+  return uint8ToBase64Local(crypto.getRandomValues(new Uint8Array(12)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+async function sha256HexUtf8(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value)
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 export type CallState = 'idle' | 'calling' | 'ringing' | 'connected' | 'ended';
 
-/** Reticulum/group-call media only (legacy UI read `audioMode`). */
-export type AudioMode = 'reticulum' | null;
+/** Active DM audio data plane reported to the existing call UI. */
+export type AudioMode = 'reticulum' | 'webrtc' | null;
 
 export interface IncomingCall {
   callId: string;
@@ -209,6 +227,17 @@ export type VoiceCallApi = {
     publicKey: string,
     timestamp: number
   ) => Promise<{ success: boolean; error?: string }>;
+  sendRtcSignal?: (input: {
+    callId: string;
+    generation: string;
+    signalId: string;
+    signalType: 'capability' | 'offer' | 'answer' | 'candidate';
+    payload: string;
+    payloadHash: string;
+    timestamp: number;
+    signature: string;
+    publicKey: string;
+  }) => Promise<{ success: boolean; error?: string }>;
   setLocalAddresses?: (
     addresses: string[]
   ) => Promise<{ success: boolean; error?: string }>;
@@ -299,6 +328,9 @@ export function useVoiceCall(
     options.callApi ??
     ((window as any).call as VoiceCallApi | undefined) ??
     null;
+  const prefersDirectVoiceWebRtc =
+    !isReticulumCallEnabled &&
+    typeof callApiRef.current?.sendRtcSignal === 'function';
 
   const [callState, setCallState] = useState<CallState>('idle');
   const [audioMode, setAudioMode] = useState<AudioMode>(null);
@@ -446,6 +478,11 @@ export function useVoiceCall(
   const startReticulumCaptureRef = useRef<() => Promise<void>>(async () => {});
   const dmMediaOnAudioSurfaceRef = useRef(false);
   const dmReceiveOnAudioSurfaceRef = useRef(false);
+  const dmRtcOnAudioSurfaceRef = useRef(false);
+  const dmRtcOpenRef = useRef(false);
+  const dmRtcOpenWaitersRef = useRef(new Set<(ready: boolean) => void>());
+  const dmRtcLifecycleGenerationRef = useRef(0);
+  const pendingDirectVoiceRtcSignalsRef = useRef<DirectVoiceRtcSignal[]>([]);
   const decryptWorkerRef = useRef<Worker | null>(null);
   const decryptWorkerKeyVersionRef = useRef(0);
   const decryptWorkerAppliedKeyVersionRef = useRef(0);
@@ -568,6 +605,98 @@ export function useVoiceCall(
       });
     }
     return response.ok === true;
+  }, []);
+
+  const applyDirectVoiceRtcSignalOnAudioSurface = useCallback(
+    async (signal: DirectVoiceRtcSignal): Promise<boolean> => {
+      const roomId = dmRoomIdRef.current;
+      const peer = peerAddressRef.current;
+      if (
+        !window.audioSurface ||
+        !roomId ||
+        !peer ||
+        !dmRtcOnAudioSurfaceRef.current
+      ) {
+        if (
+          callStateRef.current === 'connected' &&
+          pendingDirectVoiceRtcSignalsRef.current.length < 128
+        ) {
+          pendingDirectVoiceRtcSignalsRef.current.push(signal);
+        }
+        return false;
+      }
+      const response = await window.audioSurface.sendCommand({
+        type: 'apply-direct-voice-rtc-signal',
+        roomId,
+        peerAddress: peer,
+        signal,
+      });
+      return response.ok === true;
+    },
+    []
+  );
+
+  const startDirectVoiceRtcOnAudioSurface = useCallback(async () => {
+    if (!prefersDirectVoiceWebRtc) return false;
+    const roomId = dmRoomIdRef.current;
+    const peer = peerAddressRef.current;
+    if (!window.audioSurface || !roomId || !peer) return false;
+    const lifecycleGeneration = dmRtcLifecycleGenerationRef.current;
+    dmRtcOpenRef.current = false;
+    let iceServers: RTCIceServer[] = [];
+    try {
+      const discovered = await (window as any).hub?.getIceServers?.();
+      if (Array.isArray(discovered)) iceServers = discovered;
+    } catch {
+      // Host candidates can still work; Reticulum remains the media fallback.
+    }
+    if (
+      lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
+      roomId !== dmRoomIdRef.current ||
+      peer !== peerAddressRef.current
+    ) {
+      return false;
+    }
+    const response = await window.audioSurface.sendCommand({
+      type: 'start-direct-voice-rtc',
+      roomId,
+      peerAddress: peer,
+      initiator: isOutboundCallRef.current,
+      iceServers,
+    });
+    if (
+      lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
+      roomId !== dmRoomIdRef.current ||
+      peer !== peerAddressRef.current
+    ) {
+      if (response.ok) {
+        await window.audioSurface
+          .sendCommand({ type: 'stop-direct-voice-rtc' })
+          .catch(() => {});
+      }
+      return false;
+    }
+    dmRtcOnAudioSurfaceRef.current = response.ok === true;
+    if (!response.ok) return false;
+    const pending = pendingDirectVoiceRtcSignalsRef.current.splice(0);
+    for (const signal of pending) {
+      if (lifecycleGeneration !== dmRtcLifecycleGenerationRef.current) break;
+      await applyDirectVoiceRtcSignalOnAudioSurface(signal);
+    }
+    return true;
+  }, [applyDirectVoiceRtcSignalOnAudioSurface, prefersDirectVoiceWebRtc]);
+
+  const stopDirectVoiceRtcOnAudioSurface = useCallback(async () => {
+    dmRtcLifecycleGenerationRef.current += 1;
+    pendingDirectVoiceRtcSignalsRef.current = [];
+    dmRtcOnAudioSurfaceRef.current = false;
+    dmRtcOpenRef.current = false;
+    for (const resolve of dmRtcOpenWaitersRef.current) resolve(false);
+    dmRtcOpenWaitersRef.current.clear();
+    if (!window.audioSurface) return;
+    await window.audioSurface
+      .sendCommand({ type: 'stop-direct-voice-rtc' })
+      .catch(() => {});
   }, []);
 
   const startDirectVoiceMediaOnAudioSurface = useCallback(async () => {
@@ -701,7 +830,12 @@ export function useVoiceCall(
   );
 
   const waitForDmPeerMediaReadiness = useCallback(
-    async (roomId: string, peer: string, reason: string): Promise<boolean> => {
+    async (
+      roomId: string,
+      peer: string,
+      reason: string,
+      options?: { cancelled?: () => boolean }
+    ): Promise<boolean> => {
       const gc = (window as any).groupCall;
       if (!roomId || !peer) {
         pushDirectVoiceUiLog('warn', 'DM media readiness skipped: bad inputs', {
@@ -717,6 +851,7 @@ export function useVoiceCall(
 
       let deadlineReached = false;
       do {
+        if (options?.cancelled?.()) return false;
         if (
           callStateRef.current !== 'connected' ||
           !reticulumSessionActiveRef.current ||
@@ -826,6 +961,36 @@ export function useVoiceCall(
       return false;
     },
     []
+  );
+
+  /**
+   * Start capture as soon as either transport is genuinely usable. This keeps
+   * the WebRTC fast path fast without weakening the proven Reticulum fallback
+   * for older clients, failed ICE negotiation, or restrictive NATs.
+   */
+  const waitForDmMediaTransportReadiness = useCallback(
+    async (roomId: string, peer: string, reason: string): Promise<boolean> => {
+      if (!prefersDirectVoiceWebRtc) {
+        return waitForDmPeerMediaReadiness(roomId, peer, reason);
+      }
+      if (dmRtcOpenRef.current) return true;
+
+      let settled = false;
+      let resolveRtc!: (ready: boolean) => void;
+      const rtcReady = new Promise<boolean>((resolve) => {
+        resolveRtc = resolve;
+        dmRtcOpenWaitersRef.current.add(resolve);
+        if (dmRtcOpenRef.current) resolve(true);
+      });
+      const reticulumReady = waitForDmPeerMediaReadiness(roomId, peer, reason, {
+        cancelled: () => settled,
+      });
+      const ready = await Promise.race([rtcReady, reticulumReady]);
+      settled = true;
+      dmRtcOpenWaitersRef.current.delete(resolveRtc);
+      return ready;
+    },
+    [prefersDirectVoiceWebRtc, waitForDmPeerMediaReadiness]
   );
 
   const clearDmRoomKeyReplayTimers = useCallback(() => {
@@ -993,6 +1158,7 @@ export function useVoiceCall(
   const teardownReticulumMediaInner = useCallback(async () => {
     clearDmRoomKeyReplayTimers();
     clearDmRoomKeyRequestTimers();
+    await stopDirectVoiceRtcOnAudioSurface();
     await stopDirectVoiceMediaOnAudioSurface();
     await stopDirectVoiceReceiveOnAudioSurface();
     await dmReceiveEngineRef.current?.dispose();
@@ -1045,6 +1211,7 @@ export function useVoiceCall(
     clearDmRoomKeyRequestTimers,
     resetDmVoiceMediaSession,
     stopCapturePipeline,
+    stopDirectVoiceRtcOnAudioSurface,
     stopDirectVoiceMediaOnAudioSurface,
     stopDirectVoiceReceiveOnAudioSurface,
     syncDecryptWorkerRoomKey,
@@ -1385,7 +1552,7 @@ export function useVoiceCall(
       roomKeyRef.current = keyBytes;
       callSessionIdRef.current = payload.callSessionId;
       mediaGenRef.current = payload.mediaSessionGeneration >>> 0;
-      const ready = await waitForDmPeerMediaReadiness(
+      const ready = await waitForDmMediaTransportReadiness(
         dmRoomIdRef.current ?? '',
         peerAddressRef.current ?? '',
         'key-applied'
@@ -1409,7 +1576,7 @@ export function useVoiceCall(
         endCall(true);
         return;
       }
-      setAudioMode('reticulum');
+      setAudioMode((current) => (current === 'webrtc' ? current : 'reticulum'));
       clearDmRoomKeyRequestTimers();
       setCallAudioWireNonce((n) => n + 1);
       pushDirectVoiceUiLog('log', 'room key applied', {
@@ -1423,7 +1590,7 @@ export function useVoiceCall(
       resetDmVoiceMediaSession,
       showGlobalCallSnack,
       startDirectVoiceMediaOnAudioSurface,
-      waitForDmPeerMediaReadiness,
+      waitForDmMediaTransportReadiness,
     ]
   );
   applyDecryptedRoomKeyRef.current = applyDecryptedRoomKey;
@@ -1669,7 +1836,11 @@ export function useVoiceCall(
       );
     }
     dmRoomIdRef.current = roomId;
-    flushPendingDmVoiceGcallKey(roomId);
+    // Run WebRTC negotiation in parallel with the retained Reticulum media
+    // room/key setup. Waiting for GC_JOIN here would forfeit the latency gain.
+    if (prefersDirectVoiceWebRtc) {
+      void startDirectVoiceRtcOnAudioSurface().catch(() => {});
+    }
 
     pushDirectVoiceUiLog('log', 'media session start', {
       outbound: isOutboundCallRef.current,
@@ -1737,18 +1908,21 @@ export function useVoiceCall(
     callSessionIdRef.current = joinRes.callSessionId;
     mediaGenRef.current = (joinRes.mediaSessionGeneration ?? 1) >>> 0;
     reticulumSessionActiveRef.current = true;
-    setAudioMode('reticulum');
+    // A key can arrive immediately after CALL_ACCEPT, before GC_JOIN finishes.
+    // Applying it earlier makes readiness see an inactive session and can end a
+    // valid call. Replay it only after this exact media session is active.
+    flushPendingDmVoiceGcallKey(roomId);
+    setAudioMode((current) => (current === 'webrtc' ? current : 'reticulum'));
     requestDmPeerMediaWarmup(roomId, 'dm-call-start', {
       ignoreCooldown: true,
     });
-
     if (isOutboundCallRef.current) {
       const roomKey = new Uint8Array(32);
       crypto.getRandomValues(roomKey);
       roomKeyRef.current = roomKey;
       void sendCurrentDmRoomKey('dm-call-start').catch(() => {});
       scheduleDmRoomKeyReplays('dm-call-start');
-      const ready = await waitForDmPeerMediaReadiness(
+      const ready = await waitForDmMediaTransportReadiness(
         roomId,
         peer,
         'caller-start'
@@ -1802,8 +1976,9 @@ export function useVoiceCall(
     sendCurrentDmRoomKey,
     showGlobalCallSnack,
     startDirectVoiceMediaOnAudioSurface,
+    startDirectVoiceRtcOnAudioSurface,
     startReticulumCapture,
-    waitForDmPeerMediaReadiness,
+    waitForDmMediaTransportReadiness,
     userInfo?.address,
     userInfo?.publicKey,
   ]);
@@ -1900,6 +2075,14 @@ export function useVoiceCall(
         });
         return;
       }
+      if (!reticulumSessionActiveRef.current) {
+        pendingDmVoiceGcallKeyRef.current = p;
+        pushDirectVoiceUiLog(
+          'log',
+          'gcall:key queued (media session is still joining)'
+        );
+        return;
+      }
       void handleDmVoiceGcallKeyPayload(p);
       return;
     }
@@ -1938,17 +2121,72 @@ export function useVoiceCall(
   useEffect(() => {
     if (!window.audioSurface?.onEvent) return;
     return window.audioSurface.onEvent((event) => {
-      if (event.type !== 'direct-voice-media-ready') return;
       const roomId = dmRoomIdRef.current;
       const peer = peerAddressRef.current;
-      if (event.roomId !== roomId || event.peerAddress !== peer) return;
-      setCallMediaReady(true);
-      pushDirectVoiceUiLog('log', 'direct voice media ready', {
-        roomTrunc: event.roomId.slice(0, 24),
-        peerTrunc: event.peerAddress.slice(0, 8),
-      });
+      if (
+        'roomId' in event &&
+        'peerAddress' in event &&
+        (event.roomId !== roomId || event.peerAddress !== peer)
+      ) {
+        return;
+      }
+      if (event.type === 'direct-voice-media-ready') {
+        setCallMediaReady(true);
+        pushDirectVoiceUiLog('log', 'direct voice media ready', {
+          roomTrunc: event.roomId.slice(0, 24),
+          peerTrunc: event.peerAddress.slice(0, 8),
+        });
+        return;
+      }
+      if (event.type === 'direct-voice-rtc-state') {
+        dmRtcOpenRef.current = event.state === 'open';
+        if (event.state === 'open') {
+          for (const resolve of dmRtcOpenWaitersRef.current) resolve(true);
+          dmRtcOpenWaitersRef.current.clear();
+        }
+        setAudioMode(event.state === 'open' ? 'webrtc' : 'reticulum');
+        return;
+      }
+      if (event.type !== 'direct-voice-rtc-signal') return;
+      const callId = callIdRef.current;
+      const api = callApiRef.current;
+      if (!callId || !api?.sendRtcSignal || isReticulumCallEnabled) return;
+      void (async () => {
+        const payload = JSON.stringify(event.signal);
+        const payloadHash = await sha256HexUtf8(payload);
+        const signalId = createDirectVoiceRtcSignalId();
+        const signalType =
+          event.signal.kind === 'ice'
+            ? 'candidate'
+            : event.signal.description.type === 'offer'
+              ? 'offer'
+              : 'answer';
+        const timestamp = Date.now();
+        const fields = {
+          type: 'CALL_RTC_SIGNAL',
+          callId,
+          generation: event.signal.generation,
+          signalId,
+          signalType,
+          payloadHash,
+          timestamp,
+        };
+        const { signature, publicKey } = await authorizeCallSignal(fields);
+        if (!signature || !publicKey || callIdRef.current !== callId) return;
+        await api.sendRtcSignal?.({
+          callId,
+          generation: event.signal.generation,
+          signalId,
+          signalType,
+          payload,
+          payloadHash,
+          timestamp,
+          signature,
+          publicKey,
+        });
+      })().catch(() => {});
     });
-  }, []);
+  }, [authorizeCallSignal]);
 
   const startDurationTimer = useCallback(() => {
     setCallDuration(0);
@@ -1962,6 +2200,35 @@ export function useVoiceCall(
     const p = payload as Record<string, unknown>;
 
     switch (event) {
+      case 'call:rtc-signal': {
+        if (
+          isReticulumCallEnabled ||
+          p.callId !== callIdRef.current ||
+          callStateRef.current !== 'connected' ||
+          typeof p.payload !== 'string' ||
+          p.payload.length > 64 * 1024
+        ) {
+          break;
+        }
+        try {
+          const signal = JSON.parse(p.payload) as DirectVoiceRtcSignal;
+          const validGeneration =
+            typeof signal?.generation === 'string' &&
+            /^[A-Za-z0-9_-]{8,64}$/.test(signal.generation) &&
+            signal.generation === p.generation;
+          const validKind =
+            (p.signalType === 'candidate' && signal?.kind === 'ice') ||
+            ((p.signalType === 'offer' || p.signalType === 'answer') &&
+              signal?.kind === 'description' &&
+              signal.description?.type === p.signalType);
+          if (!validGeneration || !validKind) break;
+          await applyDirectVoiceRtcSignalOnAudioSurface(signal);
+        } catch {
+          // Invalid authenticated payloads are ignored without touching media.
+        }
+        break;
+      }
+
       case 'call:incoming': {
         const incCallId = p.callId as string;
         const incFrom = p.fromAddress as string;
@@ -2036,7 +2303,6 @@ export function useVoiceCall(
           try {
             const roomId = await buildDmVoiceRoomId(chatIdForRoom);
             dmRoomIdRef.current = roomId;
-            flushPendingDmVoiceGcallKey(roomId);
             pushDirectVoiceUiLog('log', 'DM voice room id ready (caller)', {
               roomTrunc: roomId.slice(0, 32),
             });
@@ -2367,7 +2633,6 @@ export function useVoiceCall(
       try {
         const roomId = await buildDmVoiceRoomId(acceptedChatId);
         dmRoomIdRef.current = roomId;
-        flushPendingDmVoiceGcallKey(roomId);
         pushDirectVoiceUiLog('log', 'DM voice room id ready (callee)', {
           roomTrunc: roomId.slice(0, 32),
         });
@@ -2416,7 +2681,6 @@ export function useVoiceCall(
   }, [
     endCall,
     authorizeCallSignal,
-    flushPendingDmVoiceGcallKey,
     startDurationTimer,
     startReticulumMediaSession,
     showSystemNotReadyForCall,

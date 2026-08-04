@@ -53,6 +53,34 @@ export type AudioSurfaceCommand =
     }
   | { type: 'stop-direct-voice-receive' }
   | {
+      type: 'start-direct-voice-rtc';
+      roomId: string;
+      peerAddress: string;
+      initiator: boolean;
+      iceServers: Array<{
+        urls: string | string[];
+        username?: string;
+        credential?: string;
+      }>;
+    }
+  | {
+      type: 'apply-direct-voice-rtc-signal';
+      roomId: string;
+      peerAddress: string;
+      signal:
+        | {
+            kind: 'description';
+            generation: string;
+            description: RTCSessionDescriptionInit;
+          }
+        | {
+            kind: 'ice';
+            generation: string;
+            candidate: RTCIceCandidateInit | null;
+          };
+    }
+  | { type: 'stop-direct-voice-rtc' }
+  | {
       type: 'start-direct-voice-media';
       roomId: string;
       peerAddress: string;
@@ -110,6 +138,33 @@ export type AudioSurfaceEvent =
   | {
       type: 'engine-error';
       message: string;
+    }
+  | {
+      type: 'direct-voice-media-ready';
+      roomId: string;
+      peerAddress: string;
+    }
+  | {
+      type: 'direct-voice-rtc-signal';
+      roomId: string;
+      peerAddress: string;
+      signal:
+        | {
+            kind: 'description';
+            generation: string;
+            description: RTCSessionDescriptionInit;
+          }
+        | {
+            kind: 'ice';
+            generation: string;
+            candidate: RTCIceCandidateInit | null;
+          };
+    }
+  | {
+      type: 'direct-voice-rtc-state';
+      roomId: string;
+      peerAddress: string;
+      state: 'connecting' | 'open' | 'closed' | 'failed';
     };
 
 export interface AudioSurfaceBridgeStateLike {

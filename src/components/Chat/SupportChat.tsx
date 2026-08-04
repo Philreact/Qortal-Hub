@@ -1655,7 +1655,7 @@ export function SupportChat() {
           </Typography>
 
           {/* Transport mode badge */}
-          {audioMode === 'reticulum' && (
+          {audioMode && (
             <Typography
               variant="caption"
               sx={{
@@ -1669,7 +1669,7 @@ export function SupportChat() {
                 letterSpacing: 0.3,
               }}
             >
-              Reticulum
+              {audioMode === 'webrtc' ? 'Direct' : 'Reticulum'}
             </Typography>
           )}
 

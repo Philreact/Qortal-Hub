@@ -77,6 +77,7 @@ import {
 import {
   startStunCoordinator,
   getStunCoordinator,
+  getDirectCallFallbackIceServers,
   GET_ICE_SERVERS_DEADLINE_MS,
 } from './stun-coordinator';
 import {
@@ -2022,7 +2023,10 @@ ipcMain.handle(
 );
 
 ipcMain.handle('hub:getIceServers', async () => {
-  if (isDisabledLegacy) return [];
+  // The old P2P network is disabled, but DM calls still need public STUN for
+  // their WebRTC audio fast path. This does not revive legacy signaling: SDP,
+  // candidates, call control, and keys continue over direct Reticulum links.
+  if (isDisabledLegacy) return getDirectCallFallbackIceServers();
   const c = getStunCoordinator();
   if (!c) return [];
   return await new Promise<{ urls: string }[]>((resolve, reject) => {
@@ -6306,6 +6310,13 @@ export function attachCallListeners(
   manager.on('call:accepted', forward('call:accepted'));
   manager.on('call:rejected', forward('call:rejected'));
   manager.on('call:hangup', forward('call:hangup'));
+  manager.on('call:rtc-signal', (payload: unknown) => {
+    for (const webContents of callSubscribers) {
+      if (!webContents.isDestroyed() && isMainShellSender(webContents)) {
+        webContents.send('call:rtc-signal', payload);
+      }
+    }
+  });
   manager.on('call:history', (payload: unknown) => {
     void getReticulumChatManager()?.recordDirectCallHistory(payload as any);
   });
@@ -6400,6 +6411,31 @@ ipcMain.handle(
     if (!mgr) return { success: false, error: 'Call manager not running' };
     mgr.hangUp(callId, signature, publicKey, timestamp);
     return { success: true };
+  }
+);
+
+ipcMain.handle(
+  'call:rtc-signal',
+  async (
+    _event,
+    input: {
+      callId: string;
+      generation: string;
+      signalId: string;
+      signalType: 'capability' | 'offer' | 'answer' | 'candidate';
+      payload: string;
+      payloadHash: string;
+      timestamp: number;
+      signature: string;
+      publicKey: string;
+    }
+  ) => {
+    if (!isMainShellSender(_event.sender)) {
+      return { success: false, error: 'Main shell required' };
+    }
+    const mgr = getCallManager();
+    if (!mgr) return { success: false, error: 'Call manager not running' };
+    return mgr.sendRtcSignal(input);
   }
 );
 
@@ -7140,6 +7176,7 @@ ipcMain.handle(
       !hasUsableAudioWindow &&
       (command.type === 'logout-cleanup' ||
         command.type === 'leave-group-call' ||
+        command.type === 'stop-direct-voice-rtc' ||
         command.type === 'stop-direct-voice-media' ||
         command.type === 'stop-direct-voice-receive')
     ) {
@@ -7183,6 +7220,7 @@ ipcMain.handle(
     if (
       commandDurationMs >= 250 &&
       (command.type === 'stop-direct-voice-media' ||
+        command.type === 'stop-direct-voice-rtc' ||
         command.type === 'stop-direct-voice-receive')
     ) {
       loggerWarn('[GCall:audio-surface] slow direct-voice stop', {
@@ -7214,6 +7252,7 @@ ipcMain.handle(
       (response as { ok?: boolean }).ok === true &&
       responsePayload?.idle === true &&
       (command.type === 'leave-group-call' ||
+        command.type === 'stop-direct-voice-rtc' ||
         command.type === 'stop-direct-voice-media' ||
         command.type === 'stop-direct-voice-receive')
     ) {
