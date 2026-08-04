@@ -3379,23 +3379,38 @@ export function attachPresenceListeners(
 ): void {
   if (!manager) return;
   loggerLog('[Presence] Attaching manager listeners.');
+  let hasObservedUsableReticulumTopology = false;
   manager.on('presence-updated', broadcastPresenceUpdate);
   manager.on('reticulum-overlay-changed', (payload: unknown) => {
-    void syncReticulumOverlayStateToBridge(manager);
     const state = payload as {
       activeNeighbors?: unknown;
       publishFanout?: unknown;
       verified?: unknown;
+      topologyChanged?: unknown;
     };
     const activeNeighbors =
       typeof state?.activeNeighbors === 'number' ? state.activeNeighbors : 0;
     const publishFanout =
       typeof state?.publishFanout === 'number' ? state.publishFanout : 0;
     const verified = typeof state?.verified === 'number' ? state.verified : 0;
-    if (activeNeighbors > 0 || publishFanout > 0 || verified > 0) {
+    const hasUsableTopology =
+      activeNeighbors > 0 || publishFanout > 0 || verified > 0;
+    const topologyChanged = state?.topologyChanged === true;
+    const firstUsableTopology =
+      hasUsableTopology && !hasObservedUsableReticulumTopology;
+    const lostUsableTopology =
+      !hasUsableTopology && hasObservedUsableReticulumTopology;
+    // Candidate announce refreshes do not change anything sent to the bridge.
+    // Actual route transitions are synchronized immediately; the maintenance
+    // timer remains the recovery fallback for a missed or failed sync.
+    if (topologyChanged || firstUsableTopology || lostUsableTopology) {
+      void syncReticulumOverlayStateToBridge(manager);
+    }
+    if (hasUsableTopology && (topologyChanged || firstUsableTopology)) {
       scheduleReticulumChatSubscriptionReplay();
       getReticulumChatManager()?.notifyOverlayHealthChanged(true);
     }
+    hasObservedUsableReticulumTopology = hasUsableTopology;
   });
   manager.on('reticulum-account-endpoints-changed', () => {
     void syncReticulumOverlayStateToBridge(manager);

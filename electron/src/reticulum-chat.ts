@@ -375,6 +375,11 @@ interface ReticulumChatQueuedDigestSend {
   reason: string;
   offset: number;
   limit: number;
+  // Preserve whether this send had a usable interest route when it was
+  // queued. Snapshot preparation may delay the send long enough for an
+  // unrelated route to appear; that must not turn an already queued fallback
+  // broadcast into a second, unexpected direct response.
+  routeKnownAtEnqueue: boolean;
   enqueuedAt: number;
   coalescedCount: number;
 }
@@ -2429,6 +2434,10 @@ const RETICULUM_CHAT_DM_PROBE_MAX_HOPS = 5;
 const RETICULUM_CHAT_DM_DISCOVERY_ROUTE_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_DM_DISCOVERY_ROUTE_MAX = 4096;
 const RETICULUM_CHAT_DM_PROBE_REFRESH_MS = 30_000;
+// Probes remain frequent so an online/reconnecting recipient discovers missing
+// DMs quickly. Full proactive summary fanout is only a fallback and does not
+// need to repeat with every probe cycle.
+const RETICULUM_CHAT_DM_SUMMARY_REFRESH_MS = 2 * 60_000;
 const RETICULUM_CHAT_SELF_DM_PINNED_PEER_MAX = 4;
 const RETICULUM_CHAT_ACTIVE_DM_LINK_GRACE_MS = 5 * 60_000;
 const RETICULUM_CHAT_GROUP_ROUTE_TTL_MS = 5 * 60_000;
@@ -6303,6 +6312,7 @@ export class ReticulumChatManager extends EventEmitter {
   private publicGroupActivityLastRequestedAt = 0;
   private publicGroupActivityPeerOffset = 0;
   private localDmAddresses = new Set<string>();
+  private lastDmSummaryBroadcastAt: number | null = null;
   private silenceCache = new Map<string, ReticulumChatSilenceRecord | null>();
   private silenceExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   private silenceExpiryAt = 0;
@@ -8689,6 +8699,7 @@ export class ReticulumChatManager extends EventEmitter {
       [...nextAddresses].every((address) => this.localDmAddresses.has(address));
     if (unchanged) return;
     this.localDmAddresses = nextAddresses;
+    this.lastDmSummaryBroadcastAt = null;
     void this.reconcileSelfDmWarmLinks();
     if (this.localDmAddresses.size > 0) {
       this.pendingInitialDmDiscovery = true;
@@ -14928,6 +14939,9 @@ export class ReticulumChatManager extends EventEmitter {
       reason: item.reason,
       offset,
       limit,
+      routeKnownAtEnqueue:
+        item.mode === 'subscription' &&
+        this.getGroupInterestNextHops(groupId).length > 0,
       enqueuedAt: this.now(),
       coalescedCount: 0,
     });
@@ -15019,7 +15033,27 @@ export class ReticulumChatManager extends EventEmitter {
       if (item.mode === 'peer') {
         void this.sendToPeer(item.peerHash, wire);
       } else {
-        this.enqueueSubscriptionFanouts([wire]);
+        const fanoutKey = this.subscriptionFanoutKey(wire);
+        const lastSentAt = fanoutKey
+          ? (this.subscriptionFanoutLastSentAt.get(fanoutKey) ?? 0)
+          : 0;
+        if (
+          fanoutKey &&
+          this.now() - lastSentAt <
+            RETICULUM_CHAT_SUBSCRIPTION_FANOUT_DEDUPE_MS
+        ) {
+          return;
+        }
+        const result = item.routeKnownAtEnqueue
+          ? await this.sendGroupRoutedControl(item.groupId, wire, {
+              fallbackFanout: true,
+              useRetryQueue: true,
+              context: `digest-${item.reason}`,
+            })
+          : await this.fanout(wire);
+        if (result.ok && fanoutKey) {
+          this.subscriptionFanoutLastSentAt.set(fanoutKey, this.now());
+        }
       }
     } catch (err) {
       loggerWarn(
@@ -24737,7 +24771,15 @@ export class ReticulumChatManager extends EventEmitter {
     const startedAt = this.now();
     try {
       await this.broadcastDmProbes();
-      await this.broadcastDmNotificationsForLocalAddresses();
+      const now = this.now();
+      if (
+        this.lastDmSummaryBroadcastAt === null ||
+        now - this.lastDmSummaryBroadcastAt >=
+          RETICULUM_CHAT_DM_SUMMARY_REFRESH_MS
+      ) {
+        await this.broadcastDmNotificationsForLocalAddresses();
+        this.lastDmSummaryBroadcastAt = this.now();
+      }
       await this.broadcastSelfDmNotifications();
       this.hydrateAllPendingReadSync();
       void this.replayReadStatesToOwnDevices();
@@ -35636,9 +35678,6 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.enqueueSubscriptionFanouts(wires);
     for (const groupId of this.getDigestRefreshGroups(groups)) {
-      void this.buildGroupStateDigestWire(groupId).then((stateDigest) => {
-        if (stateDigest) this.enqueueSubscriptionFanouts([stateDigest]);
-      });
       this.enqueueDigestSend({
         mode: 'subscription',
         groupId,

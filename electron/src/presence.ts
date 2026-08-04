@@ -948,7 +948,7 @@ export class PresenceManager extends EventEmitter {
     this.pruneSelfFromReticulumOverlayState();
     const changed = this.recomputeReticulumActiveNeighbors(Date.now());
     if (changed) {
-      this.emitReticulumOverlayChanged();
+      this.emitReticulumOverlayChanged(true);
     }
   }
 
@@ -1615,7 +1615,7 @@ export class PresenceManager extends EventEmitter {
     );
     const neighborsChanged = this.recomputeReticulumActiveNeighbors(now);
     if (wasVerified || wasActive || neighborsChanged) {
-      this.emitReticulumOverlayChanged();
+      this.emitReticulumOverlayChanged(true);
     }
   }
 
@@ -1643,8 +1643,8 @@ export class PresenceManager extends EventEmitter {
     loggerLog(
       `[Presence] Reticulum candidate discovered sender_hash=${hash} source=${source} proof_deadline=${peer.proofDeadlineAt}`
     );
-    this.recomputeReticulumActiveNeighbors(now);
-    this.emitReticulumOverlayChanged();
+    const topologyChanged = this.recomputeReticulumActiveNeighbors(now);
+    this.emitReticulumOverlayChanged(topologyChanged);
   }
 
   noteReticulumCandidateFailure(
@@ -1679,8 +1679,8 @@ export class PresenceManager extends EventEmitter {
       reason,
       failureCount: existing.failureCount,
     });
-    this.recomputeReticulumActiveNeighbors(now);
-    this.emitReticulumOverlayChanged();
+    const topologyChanged = this.recomputeReticulumActiveNeighbors(now);
+    this.emitReticulumOverlayChanged(topologyChanged);
   }
 
   /**
@@ -1991,7 +1991,7 @@ export class PresenceManager extends EventEmitter {
         this.recomputeReticulumActiveNeighbors(now);
       }
       if (wasClosed && canClearClosedState) {
-        this.emitReticulumOverlayChanged();
+        this.emitReticulumOverlayChanged(true);
       }
       return;
     }
@@ -2009,7 +2009,7 @@ export class PresenceManager extends EventEmitter {
       lastSeen: now,
       source,
     });
-    this.emitReticulumOverlayChanged();
+    this.emitReticulumOverlayChanged(true);
   }
 
   private pruneReticulumOverlayState(now: number = Date.now()): void {
@@ -2031,7 +2031,7 @@ export class PresenceManager extends EventEmitter {
     }
     const neighborsChanged = this.recomputeReticulumActiveNeighbors(now);
     if (changed || neighborsChanged) {
-      this.emitReticulumOverlayChanged();
+      this.emitReticulumOverlayChanged(true);
     }
   }
 
@@ -2156,12 +2156,13 @@ export class PresenceManager extends EventEmitter {
     return verifiedChanged || publishChanged;
   }
 
-  private emitReticulumOverlayChanged(): void {
+  private emitReticulumOverlayChanged(topologyChanged = false): void {
     this.emit('reticulum-overlay-changed', {
       candidates: this.reticulumCandidates.size,
       verified: this.verifiedReticulumPeers.size,
       activeNeighbors: this.activeReticulumNeighborHashes.length,
       publishFanout: this.activeReticulumPublishHashes.length,
+      topologyChanged,
     });
   }
 

@@ -25,6 +25,25 @@ function promoteVerifiedPeers(
 }
 
 describe('PresenceManager Reticulum overlay mesh slots', () => {
+  it('distinguishes routine candidate refreshes from usable topology changes', () => {
+    const manager = new PresenceManager();
+    const changes: Array<{ topologyChanged?: boolean }> = [];
+    manager.on('reticulum-overlay-changed', (event) => changes.push(event));
+
+    manager.noteReticulumCandidateDiscovered('peer-refresh', 'announce', 1_000);
+    manager.noteReticulumCandidateDiscovered('peer-refresh', 'announce', 2_000);
+
+    expect(changes).toHaveLength(2);
+    expect(changes[0]).toMatchObject({
+      publishFanout: 1,
+      topologyChanged: true,
+    });
+    expect(changes[1]).toMatchObject({
+      publishFanout: 1,
+      topologyChanged: false,
+    });
+  });
+
   it('matches the Python Qortal game-handshake address derivation fixture', () => {
     expect(
       deriveAddressFromPublicKey('1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE')

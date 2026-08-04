@@ -7062,6 +7062,40 @@ describe('reticulum chat manager', () => {
     }
   });
 
+  it('keeps DM probes fast without rebroadcasting every summary each cycle', async () => {
+    vi.useFakeTimers();
+    try {
+      const local = createDmIdentity();
+      const manager = new ReticulumChatManager({
+        dbPath: tempDbPath(),
+        signLocalFields: createDmSigner(local),
+        hasGoodOverlayHealth: () => true,
+        bridge: {
+          on: () => undefined,
+          off: () => undefined,
+          getLocalDestinationHash: () => 'a'.repeat(32),
+          fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        } as any,
+      });
+      const broadcastSummaries = vi
+        .spyOn(manager as any, 'broadcastDmNotificationsForLocalAddresses')
+        .mockResolvedValue(undefined);
+
+      manager.setLocalDmAddresses([local.address]);
+      await flushAsyncWork();
+      expect(broadcastSummaries).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(broadcastSummaries).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(broadcastSummaries).toHaveBeenCalledTimes(2);
+      manager.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('marks direct DM pages as continued when more events remain', async () => {
     const sender = createDmIdentity();
     const recipient = createDmIdentity();
@@ -18894,6 +18928,60 @@ describe('reticulum chat manager', () => {
     expect(
       sent.filter((wire) => wire.k === 'group_state_digest_v3')
     ).toHaveLength(3);
+    manager.close();
+  });
+
+  it('sends refreshed group digests through known interest routes', async () => {
+    let now = 80_000;
+    const fanout: Record<string, unknown>[] = [];
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'local-peer',
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[]
+        ) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+    });
+
+    manager.setLocalGroupMemberships([56]);
+    manager.subscribeGroup(56);
+    await flushQueuedWork();
+    now += 31_000;
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [56], mode: 'summary' },
+      'peer-a'
+    );
+    await flushQueuedWork();
+    fanout.length = 0;
+    direct.length = 0;
+
+    manager.reannounceSubscriptions();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(
+      direct.some(
+        ({ peer, wire }) =>
+          peer === 'peer-a' && wire.k === 'group_state_digest_v3'
+      )
+    ).toBe(true);
+    expect(
+      fanout.some((wire) => wire.k === 'group_state_digest_v3')
+    ).toBe(false);
     manager.close();
   });
 
