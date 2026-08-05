@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildGroupCallTopology,
+  DEFAULT_GROUP_CALL_CLUSTER_SIZE,
   getReticulumTransportTargets,
   isResolvedGroupCallParticipantAddress,
 } from './groupCallTopology';
@@ -38,5 +39,20 @@ describe('group-call topology participant identities', () => {
     });
 
     expect(targets).toEqual(['Q-peer']);
+  });
+
+  it('uses one forwarder through 15 participants and clusters at 16', () => {
+    expect(DEFAULT_GROUP_CALL_CLUSTER_SIZE).toBe(15);
+
+    const fifteen = Array.from({ length: 15 }, (_, index) => `Q-peer-${index}`);
+    const singleForwarder = buildGroupCallTopology(fifteen, 1);
+    expect(singleForwarder.clusters).toHaveLength(1);
+    expect(singleForwarder.clusters[0]?.members).toEqual(fifteen);
+
+    const sixteen = [...fifteen, 'Q-peer-15'];
+    const clustered = buildGroupCallTopology(sixteen, 2);
+    expect(clustered.clusters).toHaveLength(2);
+    expect(clustered.clusters[0]?.members).toHaveLength(15);
+    expect(clustered.clusters[1]?.members).toEqual(['Q-peer-15']);
   });
 });

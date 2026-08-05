@@ -5,7 +5,7 @@
  * All GC_* messages are ephemeral (never stored to disk).
  *
  * Architecture (handled entirely in the renderer):
- *   - Adaptive topology: ≤10 members → single forwarder, 11-50 → hierarchical
+ *   - Adaptive topology: ≤15 members → single forwarder, 16-50 → hierarchical
  *   - WebRTC DataChannels for low-latency encrypted audio, with Reticulum per-edge fallback
  *   - End-to-end encryption: v2/v3 wire nonce||secretbox(inner); v1 decode fallback in renderer
  *
@@ -238,7 +238,7 @@ export const GC_JOIN_MAX_AGE_MS = GC_JOIN_TTL_MS + GC_JOIN_SKEW_ALLOWANCE_MS;
  */
 export const GCALL_DISABLE_ROOM_BOOTSTRAP_CACHE = true;
 
-export const MAX_QORTAL_GROUP_CALL_PARTICIPANTS = 7;
+export const MAX_QORTAL_GROUP_CALL_PARTICIPANTS = 15;
 const GC_RETICULUM_ACTIVITY_HEARTBEAT_INTERVAL_MS = 5_000;
 /** Must exceed heartbeat interval so peers do not drop `GA` as stale between beats. */
 const GC_RETICULUM_ACTIVITY_MAX_AGE_MS = 7_000;

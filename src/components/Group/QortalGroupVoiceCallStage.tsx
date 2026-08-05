@@ -64,7 +64,7 @@ const SPEAKING = '#23a559';
 const DANGER = '#f23f42';
 const QCALL_STAGE_Z_INDEX = 1590;
 const QCALL_TOOLTIP_Z_INDEX = QCALL_STAGE_Z_INDEX + 20;
-const MAX_QORTAL_GROUP_CALL_PARTICIPANTS = 7;
+const MAX_QORTAL_GROUP_CALL_PARTICIPANTS = 15;
 
 type SidebarMode = 'none' | 'participants';
 

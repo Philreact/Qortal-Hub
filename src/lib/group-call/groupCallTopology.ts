@@ -22,7 +22,8 @@ export type GroupCallRole =
   | 'root-forwarder'
   | 'standby-forwarder';
 
-export const DEFAULT_GROUP_CALL_CLUSTER_SIZE = 10;
+/** Keep calls with up to 15 participants on one forwarder; cluster at 16+. */
+export const DEFAULT_GROUP_CALL_CLUSTER_SIZE = 15;
 
 /**
  * Transport diagnostics may temporarily use `unknown` when an inbound audio

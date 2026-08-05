@@ -56,7 +56,7 @@ const RELEASE_HIGHLIGHTS: ReleaseHighlight[] = [
     icon: <CallRoundedIcon />,
     title: 'Calls that stay out of the way',
     description:
-      'Start one-to-one and group calls without leaving Q-Chat. Group calls support up to seven people and begin in a compact view that can be expanded whenever you need it.',
+      'Start one-to-one and group calls without leaving Q-Chat. Group calls support up to 15 people and begin in a compact view that can be expanded whenever you need it.',
   },
   {
     icon: <SportsEsportsRoundedIcon />,
