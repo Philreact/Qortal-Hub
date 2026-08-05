@@ -69,16 +69,12 @@ export class GroupCallWebRtcDataChannelTransport {
         this.pc.signalingState === 'have-local-offer' &&
         Date.now() - this.lastOfferAt >= NEGOTIATION_RETRY_MS
       ) {
-        await this.pc.setLocalDescription({ type: 'rollback' });
+        await this.resendPendingOffer();
+        return;
       }
       if (this.pc.signalingState !== 'stable') return;
       if (!this.pc.localDescription) {
         await this.createAndSendOffer(false);
-      } else if (
-        !this.isOpen() &&
-        Date.now() - this.lastOfferAt >= NEGOTIATION_RETRY_MS
-      ) {
-        await this.createAndSendOffer(true);
       }
     }
   }
@@ -108,13 +104,20 @@ export class GroupCallWebRtcDataChannelTransport {
     }
     const pc = this.pc ?? this.createPeerConnection();
     if (signal.type === 'offer') {
-      await pc.setRemoteDescription(signal.description);
+      let answerPc = pc;
+      try {
+        await answerPc.setRemoteDescription(signal.description);
+      } catch (error) {
+        if (!this.isIncompatibleReplacementOffer(error, answerPc)) throw error;
+        answerPc = this.replacePeerConnectionForRemoteRestart();
+        await answerPc.setRemoteDescription(signal.description);
+      }
       await this.flushCandidates();
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
+      const answer = await answerPc.createAnswer();
+      await answerPc.setLocalDescription(answer);
       await this.options.onSignal({
         type: 'answer',
-        description: pc.localDescription ?? answer,
+        description: answerPc.localDescription ?? answer,
       });
       return;
     }
@@ -262,6 +265,68 @@ export class GroupCallWebRtcDataChannelTransport {
       type: 'offer',
       description: pc.localDescription ?? offer,
     });
+  }
+
+  private async resendPendingOffer(): Promise<void> {
+    const pc = this.pc;
+    const description = pc?.localDescription;
+    if (
+      !pc ||
+      pc.signalingState !== 'have-local-offer' ||
+      description?.type !== 'offer'
+    ) {
+      return;
+    }
+    this.lastOfferAt = Date.now();
+    await this.options.onSignal({ type: 'offer', description });
+  }
+
+  private isIncompatibleReplacementOffer(
+    error: unknown,
+    pc: RTCPeerConnection
+  ): boolean {
+    if (!pc.remoteDescription) return false;
+    const detail = error instanceof Error ? error.message : String(error);
+    return detail.includes('order of m-lines in subsequent offer');
+  }
+
+  /**
+   * A peer can recreate its RTCPeerConnection after an ICE failure while its
+   * account, call session, and topology edge remain unchanged. Chromium will
+   * reject that new connection's SDP when its media layout differs from the
+   * previous connection. Replace only the local WebRTC edge and keep the
+   * Reticulum call/session alive so negotiation can recover in place.
+   */
+  private replacePeerConnectionForRemoteRestart(): RTCPeerConnection {
+    this.clearDisconnectTimer();
+    const channel = this.channel;
+    this.channel = null;
+    if (channel) {
+      channel.onopen = null;
+      channel.onclose = null;
+      channel.onerror = null;
+      channel.onmessage = null;
+      try {
+        channel.close();
+      } catch {
+        // Already closed by Chromium.
+      }
+    }
+    const pc = this.pc;
+    this.pc = null;
+    if (pc) {
+      pc.onicecandidate = null;
+      pc.ondatachannel = null;
+      pc.onconnectionstatechange = null;
+      try {
+        pc.close();
+      } catch {
+        // Already closed by Chromium.
+      }
+    }
+    this.pendingCandidates = [];
+    this.options.onState('connecting');
+    return this.createPeerConnection();
   }
 
   private async flushCandidates(): Promise<void> {
