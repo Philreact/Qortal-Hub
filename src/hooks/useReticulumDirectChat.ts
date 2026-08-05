@@ -50,6 +50,24 @@ const conversationIdFor = async (addressA: string, addressB: string) => {
   return sha256Hex(`rchat-dm-v1:${a}:${b}`);
 };
 
+export const isReticulumDmEventForConversation = (
+  event: Pick<
+    ReticulumDmEvent,
+    'conversationId' | 'senderAddress' | 'recipientAddress'
+  >,
+  conversationId: string,
+  myAddress: string,
+  peerAddress: string
+): boolean => {
+  if (!conversationId || event.conversationId !== conversationId) return false;
+  return (
+    (event.senderAddress === myAddress &&
+      event.recipientAddress === peerAddress) ||
+    (event.senderAddress === peerAddress &&
+      event.recipientAddress === myAddress)
+  );
+};
+
 const parsePayload = (payload: string): any => {
   try {
     const parsed = JSON.parse(payload);
@@ -374,17 +392,27 @@ export function useReticulumDirectChat(
     void refreshHistory();
     const off = window.reticulumChat?.onDirectEvent?.(({ event }) => {
       const candidate = event as ReticulumDmEvent;
-      if (
-        candidate?.senderAddress !== myAddress &&
-        candidate?.recipientAddress !== myAddress
-      )
+      if (!candidate) return;
+      const applyEvent = (conversationId: string) => {
+        if (
+          cancelled ||
+          activeConversationGenerationRef.current !== generation ||
+          !isReticulumDmEventForConversation(
+            candidate,
+            conversationId,
+            myAddress,
+            peerAddress
+          )
+        ) {
+          return;
+        }
+        enqueue(candidate);
+      };
+      if (currentConversationId) {
+        applyEvent(currentConversationId);
         return;
-      if (
-        candidate?.senderAddress !== peerAddress &&
-        candidate?.recipientAddress !== peerAddress
-      )
-        return;
-      enqueue(candidate);
+      }
+      void currentConversationIdPromise.then(applyEvent);
     });
     const offTyping = window.reticulumChat?.onDirectTyping?.((payload) => {
       if (!payload || typeof payload !== 'object') return;
