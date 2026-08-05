@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildGroupCallTopology,
+  classifyGroupRtcTopologyEdgeTransition,
   DEFAULT_GROUP_CALL_CLUSTER_SIZE,
   getReticulumTransportTargets,
   isResolvedGroupCallParticipantAddress,
+  shouldOfferGroupRtcTransport,
 } from './groupCallTopology';
 
 describe('group-call topology participant identities', () => {
@@ -54,5 +56,108 @@ describe('group-call topology participant identities', () => {
     expect(clustered.clusters).toHaveLength(2);
     expect(clustered.clusters[0]?.members).toHaveLength(15);
     expect(clustered.clusters[1]?.members).toEqual(['Q-peer-15']);
+  });
+});
+
+describe('group-call WebRTC topology transitions', () => {
+  const initial = buildGroupCallTopology(['Q-root', 'Q-a', 'Q-b'], 1);
+
+  it('keeps deterministic offer ownership on each topology edge', () => {
+    expect(shouldOfferGroupRtcTransport('Q-root', 'Q-a', initial)).toBe(false);
+    expect(shouldOfferGroupRtcTransport('Q-a', 'Q-root', initial)).toBe(true);
+
+    const clustered = buildGroupCallTopology(
+      Array.from({ length: 16 }, (_, index) => `Q-${index}`),
+      2
+    );
+    expect(shouldOfferGroupRtcTransport('Q-15', 'Q-0', clustered)).toBe(true);
+    expect(shouldOfferGroupRtcTransport('Q-0', 'Q-15', clustered)).toBe(false);
+  });
+
+  it('preserves existing WebRTC edges when another participant joins', () => {
+    const joined = buildGroupCallTopology(
+      ['Q-root', 'Q-a', 'Q-b', 'Q-c'],
+      2
+    );
+    expect(
+      classifyGroupRtcTopologyEdgeTransition(
+        'Q-a',
+        'Q-root',
+        true,
+        initial,
+        joined
+      )
+    ).toBe('preserve');
+    expect(
+      classifyGroupRtcTopologyEdgeTransition(
+        'Q-root',
+        'Q-a',
+        true,
+        initial,
+        joined
+      )
+    ).toBe('preserve');
+  });
+
+  it('preserves remaining WebRTC edges when a non-root participant leaves', () => {
+    const left = buildGroupCallTopology(['Q-root', 'Q-a'], 2);
+    expect(
+      classifyGroupRtcTopologyEdgeTransition(
+        'Q-a',
+        'Q-root',
+        true,
+        initial,
+        left
+      )
+    ).toBe('preserve');
+    expect(
+      classifyGroupRtcTopologyEdgeTransition(
+        'Q-root',
+        'Q-a',
+        true,
+        initial,
+        left
+      )
+    ).toBe('preserve');
+    expect(
+      classifyGroupRtcTopologyEdgeTransition(
+        'Q-root',
+        'Q-b',
+        true,
+        initial,
+        left
+      )
+    ).toBe('remove');
+  });
+
+  it('removes obsolete edges and restarts only incompatible negotiations', () => {
+    const newRoot = buildGroupCallTopology(['Q-a', 'Q-b'], 2);
+    expect(
+      classifyGroupRtcTopologyEdgeTransition(
+        'Q-b',
+        'Q-root',
+        true,
+        initial,
+        newRoot
+      )
+    ).toBe('remove');
+    expect(
+      classifyGroupRtcTopologyEdgeTransition(
+        'Q-root',
+        'Q-a',
+        false,
+        initial,
+        newRoot
+      )
+    ).toBe('restart');
+    expect(
+      classifyGroupRtcTopologyEdgeTransition(
+        'Q-root',
+        'Q-a',
+        true,
+        initial,
+        newRoot
+      )
+    ).toBe('preserve');
   });
 });

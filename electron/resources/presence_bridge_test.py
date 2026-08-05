@@ -3655,13 +3655,13 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             ["history"],
         )
 
-    def test_dm_history_page_uses_bulk_lane(self):
+    def test_dm_page_uses_fast_lane_for_live_delivery(self):
         self.assertEqual(
             self.bridge._resource_session_lane(
                 self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
                 "reticulum_chat_dm_page",
             ),
-            "bulk",
+            "fast",
         )
 
     def test_prepare_command_reuses_pending_session_and_reports_state(self):
@@ -4537,6 +4537,13 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
                 "reticulum_chat_history_page",
             ),
             "history",
+        )
+        self.assertEqual(
+            self.bridge._resource_session_provider_class(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_dm_page",
+            ),
+            "live",
         )
         self.assertEqual(
             self.bridge._resource_session_provider_class(

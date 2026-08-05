@@ -72,12 +72,14 @@ import {
 } from './groupCallLocalConnectionHint';
 import {
   buildGroupCallTopology,
+  classifyGroupRtcTopologyEdgeTransition,
   computeGroupCallRole,
   DEFAULT_GROUP_CALL_CLUSTER_SIZE,
   findAssignedForwarder,
   getReticulumTransportTargets,
   isResolvedGroupCallParticipantAddress,
   normalizeGroupCallTopology,
+  shouldOfferGroupRtcTransport,
   type GroupCallTopology,
 } from './groupCallTopology';
 import { chooseSameEpochTopologyWinner } from './groupCallTopologyAuthority';
@@ -874,6 +876,9 @@ const REMOTE_SPEECH_RECOVERY_WINDOW_MS = 4_000;
 const INTENTIONAL_IDLE_OUTPUT_FADE_DELAY_MS = 80;
 const INTENTIONAL_IDLE_SOURCE_RELEASE_MS = 1_000;
 const INTENTIONAL_IDLE_MIN_FALSE_PACKETS = 3;
+const INTENTIONAL_IDLE_PLAYOUT_DRAINED_MS = 20;
+const INTENTIONAL_IDLE_PLAYOUT_RECHECK_MIN_MS = 20;
+const INTENTIONAL_IDLE_PLAYOUT_RECHECK_MAX_MS = 100;
 const GCALL_CONNECTION_HINT_BAD_MS = 2_800;
 const GCALL_CONNECTION_HINT_SEVERE_MS = 1_200;
 const GCALL_CONNECTION_HINT_GOOD_MS = 4_500;
@@ -6039,13 +6044,9 @@ export class GroupCallAudioEngineRuntime {
     const existing = this.groupRtcTransports.get(peerAddress);
     if (existing) return existing;
     const localAddress = this.userInfo?.address?.trim() ?? '';
-    const role = this.topology
-      ? computeGroupCallRole(localAddress, this.topology)
-      : 'participant';
-    const offerer =
-      role === 'cluster-forwarder'
-        ? peerAddress === this.topology?.rootForwarder
-        : role !== 'root-forwarder' && role !== 'cluster-forwarder';
+    const offerer = this.topology
+      ? shouldOfferGroupRtcTransport(localAddress, peerAddress, this.topology)
+      : true;
     const transport = new GroupCallWebRtcDataChannelTransport({
       peerAddress,
       // Preserve the original topology direction: participants dial their
@@ -6322,6 +6323,44 @@ export class GroupCallAudioEngineRuntime {
     for (const peerAddress of [...this.groupRtcTransports.keys()]) {
       this.closeGroupRtcTransport(peerAddress, reason);
     }
+  }
+
+  private reconcileGroupRtcTransportsForTopologyChange(
+    previousTopology: GroupCallTopology,
+    nextTopology: GroupCallTopology
+  ): void {
+    const localAddress = this.userInfo?.address?.trim() ?? '';
+    if (!localAddress || this.groupRtcTransports.size === 0) return;
+    let preserved = 0;
+    let removed = 0;
+    let restarted = 0;
+    for (const [peerAddress, transport] of [
+      ...this.groupRtcTransports.entries(),
+    ]) {
+      const transition = classifyGroupRtcTopologyEdgeTransition(
+        localAddress,
+        peerAddress,
+        transport.isOpen(),
+        previousTopology,
+        nextTopology
+      );
+      if (transition === 'preserve') {
+        preserved += 1;
+        continue;
+      }
+      if (transition === 'remove') {
+        removed += 1;
+        this.closeGroupRtcTransport(peerAddress, 'topology-edge-removed');
+        continue;
+      }
+      restarted += 1;
+      this.closeGroupRtcTransport(peerAddress, 'topology-offer-role-changed');
+    }
+    this.recordDiagEvent('group-rtc-topology-reconciled', {
+      preserved,
+      removed,
+      restarted,
+    });
   }
 
   private ensureGroupRtcMaintenance(): void {
@@ -9021,7 +9060,7 @@ export class GroupCallAudioEngineRuntime {
       (current?.rootForwarder !== normalized.rootForwarder ||
         current?.topologyEpoch !== normalized.topologyEpoch);
     if (current) {
-      this.closeAllGroupRtcTransports('topology-changed');
+      this.reconcileGroupRtcTransportsForTopologyChange(current, normalized);
     }
     this.topology = {
       ...normalized,
@@ -9445,7 +9484,10 @@ export class GroupCallAudioEngineRuntime {
     }
   }
 
-  private scheduleRemoteAudioIdleFade(address: string): void {
+  private scheduleRemoteAudioIdleFade(
+    address: string,
+    minimumDelayMs = 0
+  ): void {
     const state = this.remoteAudioIdleState.get(address);
     if (
       !state ||
@@ -9454,6 +9496,7 @@ export class GroupCallAudioEngineRuntime {
       return;
     const remainingMs = Math.max(
       1,
+      minimumDelayMs,
       INTENTIONAL_IDLE_OUTPUT_FADE_DELAY_MS -
         (Date.now() - state.lastPacketAtMs)
     );
@@ -9472,6 +9515,21 @@ export class GroupCallAudioEngineRuntime {
         return;
       }
       if (!this.receiveEngine.hasSource(address)) return;
+      const playoutBacklogMs =
+        this.receiveEngine.getSourcePlayoutBacklogMs(address);
+      if (playoutBacklogMs > INTENTIONAL_IDLE_PLAYOUT_DRAINED_MS) {
+        this.scheduleRemoteAudioIdleFade(
+          address,
+          Math.max(
+            INTENTIONAL_IDLE_PLAYOUT_RECHECK_MIN_MS,
+            Math.min(
+              INTENTIONAL_IDLE_PLAYOUT_RECHECK_MAX_MS,
+              playoutBacklogMs - INTENTIONAL_IDLE_PLAYOUT_DRAINED_MS
+            )
+          )
+        );
+        return;
+      }
       this.remoteAudioSilencedSources.add(address);
       this.receiveEngine.setSourceIntentionalSilence(address, true);
       this.recordDiagEvent('intentional-idle-source-silenced', {
@@ -9483,7 +9541,10 @@ export class GroupCallAudioEngineRuntime {
     this.remoteAudioIdleFadeTimers.set(address, timer);
   }
 
-  private scheduleRemoteAudioIdleRelease(address: string): void {
+  private scheduleRemoteAudioIdleRelease(
+    address: string,
+    minimumDelayMs = 0
+  ): void {
     const state = this.remoteAudioIdleState.get(address);
     if (
       !state ||
@@ -9492,6 +9553,7 @@ export class GroupCallAudioEngineRuntime {
       return;
     const remainingMs = Math.max(
       1,
+      minimumDelayMs,
       INTENTIONAL_IDLE_SOURCE_RELEASE_MS - (Date.now() - state.lastPacketAtMs)
     );
     const timer = setTimeout(() => {
@@ -9509,6 +9571,21 @@ export class GroupCallAudioEngineRuntime {
         return;
       }
       if (!this.receiveEngine.hasSource(address)) return;
+      const playoutBacklogMs =
+        this.receiveEngine.getSourcePlayoutBacklogMs(address);
+      if (playoutBacklogMs > INTENTIONAL_IDLE_PLAYOUT_DRAINED_MS) {
+        this.scheduleRemoteAudioIdleRelease(
+          address,
+          Math.max(
+            INTENTIONAL_IDLE_PLAYOUT_RECHECK_MIN_MS,
+            Math.min(
+              INTENTIONAL_IDLE_PLAYOUT_RECHECK_MAX_MS,
+              playoutBacklogMs - INTENTIONAL_IDLE_PLAYOUT_DRAINED_MS
+            )
+          )
+        );
+        return;
+      }
       this.idleSourceReleases++;
       this.recordDiagEvent('intentional-idle-source-released', {
         roomId: this.snapshot.roomId,

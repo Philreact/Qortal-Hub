@@ -1432,6 +1432,27 @@ export class GroupCallAudioReceiveEngine {
     return normalized ? this.playouts.has(normalized) : false;
   }
 
+  /**
+   * Conservative estimate of audio that still has to pass through this
+   * source's jitter/decode/playout pipeline. Intentional-idle cleanup must use
+   * playout progress rather than packet-arrival time: Reticulum can deliver a
+   * burst containing several hundred milliseconds of valid speech, and
+   * muting the source while that burst is buffered clips the entire burst.
+   */
+  getSourcePlayoutBacklogMs(sourceAddr: string): number {
+    const normalized = sourceAddr.trim();
+    if (!normalized) return 0;
+    const state = this.liveMultiSourceStateBySource.get(normalized);
+    if (!state) return 0;
+    const latestPcmBufferedMs = state.recentOpusBufferedMs.at(-1) ?? 0;
+    return Math.max(
+      0,
+      latestPcmBufferedMs,
+      state.preProcessBufferedFrames * OPUS_FRAME_DURATION_MS,
+      state.lastJitterBufferedFrames * OPUS_FRAME_DURATION_MS
+    );
+  }
+
   setSourceSpatial(sourceAddr: string, gain: number, pan: number): void {
     const normalized = sourceAddr.trim();
     if (!normalized) return;

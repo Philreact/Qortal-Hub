@@ -196,6 +196,55 @@ export function getReticulumTransportTargets(
   return [...targets];
 }
 
+/**
+ * Keep WebRTC offer ownership deterministic for every topology edge. The
+ * DataChannel is bidirectional once open, but both ends must agree about who
+ * creates it while an edge is being negotiated.
+ */
+export function shouldOfferGroupRtcTransport(
+  myAddress: string,
+  peerAddress: string,
+  topology: GroupCallTopology
+): boolean {
+  const normalized = normalizeGroupCallTopology(topology);
+  const role = computeGroupCallRole(myAddress, normalized);
+  return role === 'cluster-forwarder'
+    ? peerAddress === normalized.rootForwarder
+    : role !== 'root-forwarder' && role !== 'cluster-forwarder';
+}
+
+export type GroupRtcTopologyEdgeTransition =
+  | 'preserve'
+  | 'remove'
+  | 'restart';
+
+/**
+ * Reconcile one existing WebRTC edge across a topology update. Open channels
+ * remain usable in either direction, so only an obsolete edge or an in-flight
+ * negotiation whose offer ownership changed needs to be torn down.
+ */
+export function classifyGroupRtcTopologyEdgeTransition(
+  myAddress: string,
+  peerAddress: string,
+  isOpen: boolean,
+  previousTopology: GroupCallTopology,
+  nextTopology: GroupCallTopology
+): GroupRtcTopologyEdgeTransition {
+  if (
+    !getReticulumTransportTargets(myAddress, nextTopology).includes(peerAddress)
+  ) {
+    return 'remove';
+  }
+  if (isOpen) return 'preserve';
+  return shouldOfferGroupRtcTransport(
+    myAddress,
+    peerAddress,
+    previousTopology
+  ) === shouldOfferGroupRtcTransport(myAddress, peerAddress, nextTopology)
+    ? 'preserve'
+    : 'restart';
+}
+
 export function getRootInboundWarmPeers(
   myAddress: string,
   topology: GroupCallTopology

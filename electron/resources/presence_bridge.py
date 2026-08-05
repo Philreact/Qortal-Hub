@@ -19471,9 +19471,13 @@ def handle_send_call(req_id: str, payload: Dict[str, Any]) -> None:
 def _resource_session_lane(resource_type: str, logical_resource_type: str = "") -> str:
     normalized = str(resource_type or "").strip().lower()
     logical_type = str(logical_resource_type or "").strip().lower()
+    # DM pages carry the live message bodies after a compact dm_notify. Keep
+    # them off the bulk/history pool so an idle or recovering history link
+    # cannot delay delivery of an active conversation.
+    if logical_type == "reticulum_chat_dm_page":
+        return "fast"
     if logical_type in {
         "reticulum_chat_history_page",
-        "reticulum_chat_dm_page",
         "reticulum_chat_metadata_snapshot",
         "reticulum_chat_event_page",
         "reticulum_chat_calendar",
@@ -19488,6 +19492,8 @@ def _resource_session_provider_class(
 ) -> str:
     normalized = str(resource_type or "").strip().lower()
     logical_type = str(logical_resource_type or "").strip().lower()
+    if logical_type == "reticulum_chat_dm_page":
+        return "live"
     if (
         logical_type == "reticulum_resource_range"
         or logical_type.endswith("_resource_range")
@@ -19502,7 +19508,6 @@ def _resource_session_provider_class(
         return "metadata"
     if logical_type in {
         "reticulum_chat_history_page",
-        "reticulum_chat_dm_page",
         "reticulum_chat_event_page",
     }:
         return "history"

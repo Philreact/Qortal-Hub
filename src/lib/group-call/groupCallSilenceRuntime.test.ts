@@ -18,6 +18,7 @@ describe('group-call remote intentional silence', () => {
     };
     instance.receiveEngine = {
       hasSource: vi.fn(() => true),
+      getSourcePlayoutBacklogMs: vi.fn(() => 0),
       removeSource: vi.fn().mockResolvedValue(undefined),
       setSourceIntentionalSilence: vi.fn(),
     };
@@ -50,6 +51,28 @@ describe('group-call remote intentional silence', () => {
     expect(instance.receiveEngine.removeSource).not.toHaveBeenCalled();
   });
 
+  it('does not silence speech that is still buffered for playout', async () => {
+    const instance = runtime();
+    instance.receiveEngine.getSourcePlayoutBacklogMs.mockReturnValue(400);
+    instance.noteRemoteAudioActivity('Q-peer', false, 1_000);
+    instance.noteRemoteAudioActivity('Q-peer', false, 1_020);
+    instance.noteRemoteAudioActivity('Q-peer', false, 1_040);
+
+    vi.setSystemTime(1_200);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(
+      instance.receiveEngine.setSourceIntentionalSilence
+    ).not.toHaveBeenCalledWith('Q-peer', true);
+    expect(instance.receiveEngine.removeSource).not.toHaveBeenCalled();
+
+    instance.receiveEngine.getSourcePlayoutBacklogMs.mockReturnValue(0);
+    vi.setSystemTime(1_300);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(
+      instance.receiveEngine.setSourceIntentionalSilence
+    ).toHaveBeenCalledWith('Q-peer', true);
+  });
+
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -64,6 +87,24 @@ describe('group-call remote intentional silence', () => {
 
     expect(instance.receiveEngine.removeSource).toHaveBeenCalledWith('Q-peer');
     expect(instance.snapshot.participants).toEqual([{ address: 'Q-peer' }]);
+    expect(instance.idleSourceReleases).toBe(1);
+  });
+
+  it('does not release a source until its playout backlog is drained', async () => {
+    const instance = runtime();
+    instance.receiveEngine.getSourcePlayoutBacklogMs.mockReturnValue(400);
+    instance.noteRemoteAudioActivity('Q-peer', false, 1_000);
+    instance.noteRemoteAudioActivity('Q-peer', false, 1_020);
+    instance.noteRemoteAudioActivity('Q-peer', false, 1_040);
+
+    vi.setSystemTime(2_100);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(instance.receiveEngine.removeSource).not.toHaveBeenCalled();
+
+    instance.receiveEngine.getSourcePlayoutBacklogMs.mockReturnValue(0);
+    vi.setSystemTime(2_200);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(instance.receiveEngine.removeSource).toHaveBeenCalledWith('Q-peer');
     expect(instance.idleSourceReleases).toBe(1);
   });
 
