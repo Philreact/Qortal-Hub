@@ -40,7 +40,13 @@ import { persistReticulumSharedTransportState } from './reticulum-daemon';
 import { error as loggerError } from './logger';
 import { base58Decode, getPresenceManager } from './presence';
 import type { PresenceEnvelope } from './presence';
-import { ReticulumBridge } from './reticulum-bridge';
+import {
+  ReticulumBridge,
+  restartReticulumBridge,
+  startReticulumBridge,
+  stopReticulumBridge,
+  stopReticulumBridgeAndWait,
+} from './reticulum-bridge';
 
 describe('ReticulumBridge presence subscriptions', () => {
   it('logs structured Python bridge error diagnostics', () => {
@@ -191,6 +197,91 @@ describe('ReticulumBridge presence subscriptions', () => {
     unsubscribe();
 
     expect(onReady).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ReticulumBridge singleton lifecycle', () => {
+  it('keeps the authoritative wrapper when restarting its Python child', async () => {
+    const start = vi
+      .spyOn(ReticulumBridge.prototype, 'start')
+      .mockResolvedValue(undefined);
+    const bridge = await startReticulumBridge();
+    const restart = vi
+      .spyOn(bridge, 'restartAndWait')
+      .mockResolvedValue(undefined);
+
+    const restarted = await restartReticulumBridge();
+
+    expect(restarted).toBe(bridge);
+    expect(restart).toHaveBeenCalledTimes(1);
+    stopReticulumBridge();
+    await stopReticulumBridgeAndWait();
+    start.mockRestore();
+  });
+
+  it('does not replace the singleton until a synchronous stop confirms exit', async () => {
+    const start = vi
+      .spyOn(ReticulumBridge.prototype, 'start')
+      .mockResolvedValue(undefined);
+    const bridge = await startReticulumBridge();
+    let releaseStop: (() => void) | undefined;
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    vi.spyOn(bridge, 'retireAndWait').mockImplementation(async () => stopGate);
+
+    stopReticulumBridge();
+    const startingAgain = startReticulumBridge();
+    await Promise.resolve();
+
+    expect(start).toHaveBeenCalledTimes(1);
+
+    releaseStop?.();
+    const replacement = await startingAgain;
+
+    expect(replacement).not.toBe(bridge);
+    expect(start).toHaveBeenCalledTimes(2);
+    stopReticulumBridge();
+    await stopReticulumBridgeAndWait();
+    start.mockRestore();
+  });
+
+  it('does not spawn after a previous child fails to confirm exit', async () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new ReticulumBridge();
+      const internal = bridge as any;
+      const child = Object.assign(new EventEmitter(), {
+        exitCode: null as number | null,
+        signalCode: null as NodeJS.Signals | null,
+        killed: false,
+        kill: vi.fn(),
+      });
+      internal.child = child;
+      internal.state = 'ready';
+
+      const stopping = bridge.stopAndWait(10).then(
+        () => null,
+        (error: unknown) => error
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      const stopError = await stopping;
+      expect(stopError).toBeInstanceOf(Error);
+      expect((stopError as Error).message).toContain(
+        'did not exit after force stop'
+      );
+      await expect(bridge.start()).rejects.toThrow(
+        'Previous Reticulum bridge process has not confirmed exit'
+      );
+
+      child.exitCode = 0;
+      child.emit('exit', 0, null);
+      expect(internal.unconfirmedStoppedChild).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -541,6 +632,45 @@ describe('ReticulumBridge group audio support', () => {
     expect(() => controlPipe.emit('error', epipe)).not.toThrow();
     expect(() => audioPipe.emit('error', epipe)).not.toThrow();
     expect(internal.state).toBe('stopped');
+  });
+
+  it('makes concurrent starts join one in-place lifecycle restart', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    let releaseStop: (() => void) | undefined;
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const stopAndWait = vi
+      .spyOn(bridge, 'stopAndWait')
+      .mockImplementation(async () => stopGate);
+    const startInternal = vi
+      .spyOn(internal, 'startInternal')
+      .mockResolvedValue(undefined);
+
+    const recovery = bridge.restartAndWait();
+    const backgroundManagerStart = bridge.start();
+    await Promise.resolve();
+
+    expect(stopAndWait).toHaveBeenCalledTimes(1);
+    expect(startInternal).not.toHaveBeenCalled();
+
+    releaseStop?.();
+    await Promise.all([recovery, backgroundManagerStart]);
+
+    expect(startInternal).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not allow a retired bridge wrapper to be revived', async () => {
+    const bridge = new ReticulumBridge();
+    bridge.retire();
+
+    await expect(bridge.start()).rejects.toThrow(
+      'Reticulum bridge instance is retired'
+    );
+    await expect(bridge.restartAndWait()).rejects.toThrow(
+      'Reticulum bridge instance is retired'
+    );
   });
 
   it('enqueueGroupAudio returns not-ready when bridge is down', () => {
