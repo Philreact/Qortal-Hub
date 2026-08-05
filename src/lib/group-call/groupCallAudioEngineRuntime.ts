@@ -52,6 +52,10 @@ import {
   GroupCallAudioSenderEngine,
   type GroupCallAudioSenderFrame,
 } from './groupCallAudioSenderEngine';
+import {
+  GroupCallSilenceGate,
+  GROUP_CALL_SILENCE_SUPPRESSION_ENABLED,
+} from './groupCallSilenceGate';
 import type { GroupCallAudioQualityProfile } from './groupCallAudioProfile';
 import {
   GroupCallAudioReceiveEngine,
@@ -70,6 +74,7 @@ import {
   buildGroupCallTopology,
   computeGroupCallRole,
   DEFAULT_GROUP_CALL_CLUSTER_SIZE,
+  findAssignedForwarder,
   getReticulumTransportTargets,
   isResolvedGroupCallParticipantAddress,
   normalizeGroupCallTopology,
@@ -765,6 +770,8 @@ type OutboundMediaDiagnostics = {
   lastMainDiagnostics: GcallSendAudioDiagnostics | null;
   lastTargets: string[];
   targets: OutboundMediaTargetDiagnostics[];
+  silenceSuppression: ReturnType<GroupCallSilenceGate['getDiagnostics']>;
+  idleSourceReleases: number;
 };
 
 const GCALL_KEY_MESSAGE_VERSION = 3;
@@ -860,6 +867,9 @@ const GCALL_CALL_QUALITY_WORSENED_MISSING_DELTA_MIN = 300;
 const GCALL_CALL_QUALITY_WORSENED_CONCEALMENT_DELTA_MIN = 80;
 const MAX_ACTIVE_SPEAKERS_GLOBAL = 3;
 const ACTIVE_SPEAKER_WINDOW_MS = 2_000;
+const REMOTE_SPEECH_RECOVERY_WINDOW_MS = 4_000;
+const INTENTIONAL_IDLE_SOURCE_RELEASE_MS = 1_000;
+const INTENTIONAL_IDLE_MIN_FALSE_PACKETS = 3;
 const GCALL_CONNECTION_HINT_BAD_MS = 2_800;
 const GCALL_CONNECTION_HINT_SEVERE_MS = 1_200;
 const GCALL_CONNECTION_HINT_GOOD_MS = 4_500;
@@ -1009,6 +1019,10 @@ export class GroupCallAudioEngineRuntime {
   private bootstrapRevisionApplied = 0;
   private readonly listeners = new Set<EventListener>();
   private readonly senderEngine = new GroupCallAudioSenderEngine();
+  private readonly groupCallSilenceGate = new GroupCallSilenceGate();
+  private groupCallSilenceGateSenderFingerprint = '';
+  private groupCallSilenceGatePipelineGeneration = '';
+  private lastOutboundCaptureTimestampMs = -1;
   private readonly directVoiceSenderEngine = new GroupCallAudioSenderEngine();
   private readonly receiveEngine: GroupCallAudioReceiveEngine;
   private directVoiceReceiveEngine: GroupCallAudioReceiveEngine | null = null;
@@ -1129,6 +1143,16 @@ export class GroupCallAudioEngineRuntime {
   private provisionalLocalRootRemoteCount = 0;
   private readonly electionDigestCache = new Map<string, string>();
   private readonly activeSpeakerLastSeenAt = new Map<string, number>();
+  private readonly remoteSpeechLastSeenAt = new Map<string, number>();
+  private readonly remoteAudioIdleState = new Map<
+    string,
+    { lastPacketAtMs: number; consecutiveVadFalse: number }
+  >();
+  private readonly remoteAudioIdleTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private idleSourceReleases = 0;
   private readonly participantDecodedMediaLastSeenAt = new Map<
     string,
     number
@@ -1310,6 +1334,8 @@ export class GroupCallAudioEngineRuntime {
     this.clearActiveSpeakerRefreshTimer();
     this.clearMemberGateRefreshTimer();
     this.clearParticipantRosterRefreshTimer();
+    this.clearAllRemoteAudioIdleState();
+    this.groupCallSilenceGate.reset({ initialOpen: false });
     this.stopRendererThreadMonitor();
     this.closeAudioDataPlane('runtime-dispose');
     this.closeDirectVoiceRtc('runtime-dispose');
@@ -3439,6 +3465,13 @@ export class GroupCallAudioEngineRuntime {
   }
 
   private resetOutboundMediaDiagnostics(): void {
+    this.clearAllRemoteAudioIdleState();
+    this.groupCallSilenceGate.reset({ initialOpen: false });
+    this.groupCallSilenceGate.resetDiagnostics();
+    this.groupCallSilenceGateSenderFingerprint = '';
+    this.groupCallSilenceGatePipelineGeneration = '';
+    this.lastOutboundCaptureTimestampMs = -1;
+    this.idleSourceReleases = 0;
     this.outboundEncodedFrameCallbacks = 0;
     this.outboundPacketBuildAttempts = 0;
     this.outboundSendAttempts = 0;
@@ -3520,6 +3553,10 @@ export class GroupCallAudioEngineRuntime {
       lastMainDiagnostics: this.outboundLastMainDiagnostics,
       lastTargets: [...this.outboundLastTargets],
       targets: [...this.outboundTargetDiagnostics.values()],
+      silenceSuppression: this.groupCallSilenceGate.getDiagnostics(
+        performance.now()
+      ),
+      idleSourceReleases: this.idleSourceReleases,
     };
   }
 
@@ -4259,6 +4296,49 @@ export class GroupCallAudioEngineRuntime {
     return this.filterBootstrapOnlyMediaTargets([...new Set(targets)]);
   }
 
+  private resolveMediaIngressTargetForSource(
+    sourceValue: string
+  ): string | null {
+    const source = sourceValue.trim();
+    const myAddress = this.userInfo?.address?.trim() ?? '';
+    const topology = this.topology;
+    if (!source || !myAddress || !topology || source === myAddress) return null;
+    if (myAddress === topology.rootForwarder) {
+      const sourceCluster = topology.clusters.find((cluster) =>
+        cluster.members.includes(source)
+      );
+      if (!sourceCluster) return source;
+      return sourceCluster.forwarder === myAddress
+        ? source
+        : sourceCluster.forwarder.trim() || source;
+    }
+    if (topology.clusters.some((cluster) => cluster.forwarder === myAddress)) {
+      const myCluster = topology.clusters.find(
+        (cluster) => cluster.forwarder === myAddress
+      );
+      if (myCluster?.members.includes(source)) return source;
+      return topology.rootForwarder.trim() || source;
+    }
+    return findAssignedForwarder(myAddress, topology).trim() || source;
+  }
+
+  private hasRecentSpeechForMediaRecoveryTarget(
+    targetValue: string,
+    nowMs = Date.now()
+  ): boolean {
+    const target = targetValue.trim();
+    if (!target) return false;
+    for (const source of this.remoteSpeechLastSeenAt.keys()) {
+      if (
+        this.hasRecentRemoteSpeechFrom(source, nowMs) &&
+        this.resolveMediaIngressTargetForSource(source) === target
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private getMediaTargetSettleAnchorMs(address: string): number {
     const firstAttemptAtMs =
       this.outboundTargetDiagnostics.get(address)?.firstAttemptAtMs ?? 0;
@@ -4281,7 +4361,8 @@ export class GroupCallAudioEngineRuntime {
       !this.userInfo?.address ||
       metrics.packetsReceived > 0 ||
       this.outboundSendSuccesses <
-        ZERO_INBOUND_MEDIA_RECOVERY_MIN_OUTBOUND_FRAMES
+        ZERO_INBOUND_MEDIA_RECOVERY_MIN_OUTBOUND_FRAMES ||
+      !this.hasRecentRemoteSpeech()
     ) {
       return;
     }
@@ -4294,6 +4375,7 @@ export class GroupCallAudioEngineRuntime {
     if (uniqueTargets.length === 0) return;
     const now = Date.now();
     for (const address of uniqueTargets) {
+      if (!this.hasRecentSpeechForMediaRecoveryTarget(address, now)) continue;
       const settleAgeMs = this.getMediaTargetSettleAgeMs(address, now);
       if (settleAgeMs < LOW_INBOUND_MEDIA_RECOVERY_STARTUP_GRACE_MS) {
         this.recordThrottledDiagEvent(
@@ -4349,7 +4431,8 @@ export class GroupCallAudioEngineRuntime {
       !this.userInfo?.address ||
       metrics.packetsReceived <= 0 ||
       this.outboundSendSuccesses <
-        LOW_INBOUND_MEDIA_RECOVERY_MIN_OUTBOUND_FRAMES
+        LOW_INBOUND_MEDIA_RECOVERY_MIN_OUTBOUND_FRAMES ||
+      !this.hasRecentRemoteSpeech()
     ) {
       return;
     }
@@ -4408,6 +4491,7 @@ export class GroupCallAudioEngineRuntime {
       return;
     }
     for (const address of uniqueTargets) {
+      if (!this.hasRecentSpeechForMediaRecoveryTarget(address, now)) continue;
       const lastAt =
         this.zeroInboundMediaRecoveryLastAtByAddress.get(address) ?? 0;
       if (
@@ -4666,6 +4750,7 @@ export class GroupCallAudioEngineRuntime {
     const address = addressValue?.trim() ?? '';
     const myAddress = this.userInfo?.address?.trim() ?? '';
     if (!address || address === myAddress) return;
+    this.clearRemoteAudioIdleState(address);
     this.activeSpeakerLastSeenAt.delete(address);
     this.participantDecodedMediaLastSeenAt.delete(address);
     this.participantLiveEvidenceLastSeenAt.delete(address);
@@ -5028,6 +5113,7 @@ export class GroupCallAudioEngineRuntime {
     this.clearRecentWindowTrends();
     this.throttledDiagEvents.clear();
     this.zeroInboundMediaRecoveryLastAtByAddress.clear();
+    this.clearAllRemoteAudioIdleState();
     this.resetOutboundMediaDiagnostics();
     this.lastAwaitingAuthoritativeKeyFailureLogAt = 0;
     this.activeSpeakerLastSeenAt.clear();
@@ -9283,6 +9369,7 @@ export class GroupCallAudioEngineRuntime {
         this.upsertParticipantFromRuntimeEvent(packet.sourceAddr);
         this.noteParticipantDecodedMedia(packet.sourceAddr, now);
         this.noteRootDecodedMedia(packet.sourceAddr, now);
+        this.noteRemoteAudioActivity(packet.sourceAddr, packet.vad, now);
       }
       if (!packet.vad || !packet.sourceAddr) continue;
       this.noteRootSpeakerActivity(packet.sourceAddr, now);
@@ -9292,6 +9379,111 @@ export class GroupCallAudioEngineRuntime {
     if (!sawVad) return;
     this.refreshActiveSpeakerState(now);
     this.scheduleActiveSpeakerRefresh(now);
+  }
+
+  private noteRemoteAudioActivity(
+    addressValue: string,
+    vad: boolean,
+    nowMs: number
+  ): void {
+    const address = addressValue.trim();
+    if (!address) return;
+    if (vad) {
+      this.remoteSpeechLastSeenAt.set(address, nowMs);
+      this.clearRemoteAudioIdleTimer(address);
+      this.remoteAudioIdleState.set(address, {
+        lastPacketAtMs: nowMs,
+        consecutiveVadFalse: 0,
+      });
+      return;
+    }
+    const previous = this.remoteAudioIdleState.get(address);
+    const next = {
+      lastPacketAtMs: nowMs,
+      consecutiveVadFalse: (previous?.consecutiveVadFalse ?? 0) + 1,
+    };
+    this.remoteAudioIdleState.set(address, next);
+    if (
+      next.consecutiveVadFalse >= INTENTIONAL_IDLE_MIN_FALSE_PACKETS &&
+      !this.remoteAudioIdleTimers.has(address)
+    ) {
+      this.scheduleRemoteAudioIdleRelease(address);
+    }
+  }
+
+  private scheduleRemoteAudioIdleRelease(address: string): void {
+    const state = this.remoteAudioIdleState.get(address);
+    if (
+      !state ||
+      state.consecutiveVadFalse < INTENTIONAL_IDLE_MIN_FALSE_PACKETS
+    )
+      return;
+    const remainingMs = Math.max(
+      1,
+      INTENTIONAL_IDLE_SOURCE_RELEASE_MS - (Date.now() - state.lastPacketAtMs)
+    );
+    const timer = setTimeout(() => {
+      this.remoteAudioIdleTimers.delete(address);
+      const latest = this.remoteAudioIdleState.get(address);
+      if (
+        !latest ||
+        latest.consecutiveVadFalse < INTENTIONAL_IDLE_MIN_FALSE_PACKETS
+      ) {
+        return;
+      }
+      const idleForMs = Date.now() - latest.lastPacketAtMs;
+      if (idleForMs < INTENTIONAL_IDLE_SOURCE_RELEASE_MS) {
+        this.scheduleRemoteAudioIdleRelease(address);
+        return;
+      }
+      if (!this.receiveEngine.hasSource(address)) return;
+      this.idleSourceReleases++;
+      this.recordDiagEvent('intentional-idle-source-released', {
+        roomId: this.snapshot.roomId,
+        peer: truncateGcallDiagAddress(address),
+        idleForMs,
+      });
+      // removeSource drops decoder/playout resources only. Roster, topology,
+      // transport and the authenticated sequence watermark remain intact.
+      void this.receiveEngine.removeSource(address);
+    }, remainingMs);
+    this.remoteAudioIdleTimers.set(address, timer);
+  }
+
+  private clearRemoteAudioIdleTimer(address: string): void {
+    const timer = this.remoteAudioIdleTimers.get(address);
+    if (timer) clearTimeout(timer);
+    this.remoteAudioIdleTimers.delete(address);
+  }
+
+  private clearRemoteAudioIdleState(address: string): void {
+    this.clearRemoteAudioIdleTimer(address);
+    this.remoteAudioIdleState.delete(address);
+    this.remoteSpeechLastSeenAt.delete(address);
+  }
+
+  private clearAllRemoteAudioIdleState(): void {
+    for (const timer of this.remoteAudioIdleTimers.values())
+      clearTimeout(timer);
+    this.remoteAudioIdleTimers.clear();
+    this.remoteAudioIdleState.clear();
+    this.remoteSpeechLastSeenAt.clear();
+  }
+
+  private hasRecentRemoteSpeech(nowMs = Date.now()): boolean {
+    for (const seenAtMs of this.remoteSpeechLastSeenAt.values()) {
+      if (nowMs - seenAtMs <= REMOTE_SPEECH_RECOVERY_WINDOW_MS) return true;
+    }
+    return false;
+  }
+
+  private hasRecentRemoteSpeechFrom(
+    addressValue: string,
+    nowMs = Date.now()
+  ): boolean {
+    const address = addressValue.trim();
+    const seenAtMs = this.remoteSpeechLastSeenAt.get(address) ?? 0;
+    return seenAtMs > 0 && nowMs - seenAtMs <= REMOTE_SPEECH_RECOVERY_WINDOW_MS;
   }
 
   private noteParticipantDecodedMedia(
@@ -10091,10 +10283,31 @@ export class GroupCallAudioEngineRuntime {
     try {
       if (!this.shouldMaintainActiveSender()) {
         this.clearSenderSyncRetryTimer();
+        this.groupCallSilenceGate.reset({ initialOpen: false });
+        this.groupCallSilenceGateSenderFingerprint = '';
         await this.senderEngine.stop();
         return;
       }
       this.clearSenderSyncRetryTimer();
+      const silenceGateFingerprint = JSON.stringify([
+        this.snapshot.roomId,
+        this.callSessionId,
+        this.mediaSessionGeneration,
+        this.inputDeviceId,
+        this.outputDeviceId,
+        this.snapshot.audioQualityProfile,
+        this.cpuDegradedActive,
+        this.snapshot.muted,
+      ]);
+      if (
+        silenceGateFingerprint !== this.groupCallSilenceGateSenderFingerprint
+      ) {
+        this.groupCallSilenceGate.reset({
+          initialOpen: !this.snapshot.muted,
+          nowPerfMs: performance.now(),
+        });
+        this.groupCallSilenceGateSenderFingerprint = silenceGateFingerprint;
+      }
       await this.senderEngine.startOrUpdate({
         inputDeviceId: this.inputDeviceId,
         outputDeviceId: this.outputDeviceId,
@@ -10117,6 +10330,7 @@ export class GroupCallAudioEngineRuntime {
           capturePerfMs,
           encoderInputPerfMs,
           encodeOutPerfMs,
+          pipelineGeneration,
         }) => {
           this.outboundEncodedFrameCallbacks++;
           this.outboundLastEncodedFrameAtMs = Date.now();
@@ -10161,7 +10375,54 @@ export class GroupCallAudioEngineRuntime {
             workletToEncoderOutputMs,
             mainThreadToEncoderOutputMs,
           });
-          void this.dispatchEncodedFrame(opusFrame, vad, encodeOutPerfMs);
+          const encodedFrame: GroupCallAudioSenderFrame = {
+            opusFrame,
+            vad,
+            capturePerfMs,
+            encoderInputPerfMs,
+            encodeOutPerfMs,
+            pipelineGeneration,
+          };
+          if (!GROUP_CALL_SILENCE_SUPPRESSION_ENABLED) {
+            void this.dispatchEncodedFrame(encodedFrame);
+            return;
+          }
+          if (
+            pipelineGeneration !== this.groupCallSilenceGatePipelineGeneration
+          ) {
+            this.groupCallSilenceGate.reset({
+              initialOpen: true,
+              nowPerfMs: capturePerfMs,
+            });
+            this.groupCallSilenceGatePipelineGeneration = pipelineGeneration;
+          }
+          const estimatedPacketBytes =
+            opusFrame.byteLength + 49 + (this.userInfo?.address?.length ?? 34);
+          const decision = this.groupCallSilenceGate.process(
+            encodedFrame,
+            estimatedPacketBytes
+          );
+          if (decision.enteredSilence || decision.exitedSilence) {
+            const diagnostics =
+              this.groupCallSilenceGate.getDiagnostics(capturePerfMs);
+            this.recordDiagEvent(
+              decision.enteredSilence
+                ? 'outbound-audio-suppression-started'
+                : 'outbound-audio-suppression-ended',
+              {
+                roomId: this.snapshot.roomId,
+                suppressionDurationMs: diagnostics.suppressionDurationMs,
+                preRollFrames: decision.framesToTransmit.length - 1,
+                discardedStalePreRollFrames:
+                  decision.discardedStalePreRollFrames,
+              }
+            );
+          }
+          for (const pendingFrame of decision.framesToTransmit) {
+            // dispatchEncodedFrame assigns the sequence synchronously before
+            // its first await, preserving oldest-first pre-roll ordering.
+            void this.dispatchEncodedFrame(pendingFrame);
+          }
         },
       });
     } catch (error) {
@@ -10310,10 +10571,9 @@ export class GroupCallAudioEngineRuntime {
   }
 
   private async dispatchEncodedFrame(
-    opusFrame: Uint8Array,
-    vad = this.senderEngine.getVad(),
-    encodeOutPerfMs?: number
+    frame: GroupCallAudioSenderFrame
   ): Promise<void> {
+    const { opusFrame, vad, encodeOutPerfMs, capturePerfMs } = frame;
     if (!this.roomKey) {
       this.recordOutboundSkip('no-room-key');
       return;
@@ -10374,11 +10634,25 @@ export class GroupCallAudioEngineRuntime {
       );
     }
     const seq = this.seq++ & 0xffff;
+    const captureWallMs =
+      Number.isFinite(capturePerfMs) &&
+      typeof performance.timeOrigin === 'number'
+        ? performance.timeOrigin + capturePerfMs
+        : Date.now();
+    const rawCaptureTimestampMs = Math.max(
+      0,
+      Math.round(captureWallMs - this.callEpochMs)
+    );
+    const captureTimestampMs = Math.max(
+      rawCaptureTimestampMs,
+      this.lastOutboundCaptureTimestampMs + 1
+    );
+    this.lastOutboundCaptureTimestampMs = captureTimestampMs;
     const packet = encodeAudioPacketV2(
       this.userInfo.address,
       vad,
       seq,
-      Math.max(0, Date.now() - this.callEpochMs),
+      captureTimestampMs,
       opusFrame,
       this.roomKey
     );

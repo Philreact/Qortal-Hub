@@ -69,6 +69,7 @@ export interface GroupCallAudioSenderFrame {
   capturePerfMs: number;
   encoderInputPerfMs: number;
   encodeOutPerfMs: number;
+  pipelineGeneration: string;
 }
 
 type CaptureWorkletMessage = {
@@ -679,6 +680,7 @@ export class GroupCallAudioSenderEngine {
           capturePerfMs,
           encoderInputPerfMs,
           encodeOutPerfMs,
+          pipelineGeneration: `main:${generation}`,
         });
       },
       error: (error) => {
@@ -863,6 +865,7 @@ export class GroupCallAudioSenderEngine {
         encoderInputPerfMs:
           data.encoderInputPerfMs ?? this.lastEncoderInputPerfMs,
         encodeOutPerfMs: data.encodeOutPerfMs ?? performance.now(),
+        pipelineGeneration: `worker:${data.generation ?? this.encodeWorkerConfiguredGeneration}`,
       });
       return;
     }
