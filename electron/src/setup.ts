@@ -6570,6 +6570,7 @@ export function attachGroupCallListeners(
   });
   manager.on('gcall:key-request', forward('gcall:key-request'));
   manager.on('gcall:session-updated', forward('gcall:session-updated'));
+  manager.on('gcall:rtc-signal', forward('gcall:rtc-signal'));
   manager.on('gcall:qortal-group-call-activity', (payload: unknown) =>
     broadcastToSet(
       gcallActivitySubscribers,
@@ -6763,6 +6764,18 @@ ipcMain.handle(
     if (!mgr) return { success: false, error: 'GroupCall manager not running' };
     mgr.sendClusterHeartbeat(roomId, payload, signature);
     return { success: true };
+  }
+);
+
+ipcMain.handle(
+  'gcall:sendRtcSignal',
+  async (_event, input: import('./group-call').GroupCallRtcSignalInput) => {
+    if (!isAudioSurfaceHostSender(_event.sender)) {
+      return { success: false, error: 'Audio surface required' };
+    }
+    const mgr = getGroupCallManager();
+    if (!mgr) return { success: false, error: 'GroupCall manager not running' };
+    return await mgr.sendRtcSignal(input);
   }
 );
 

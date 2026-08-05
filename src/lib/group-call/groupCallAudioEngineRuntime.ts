@@ -11,6 +11,7 @@ import type {
   AudioEngineUserIdentity,
   AudioEngineParticipant,
   AudioEngineRole,
+  AudioEngineTopologyLabel,
 } from './audioEngineTypes';
 import {
   buildGcallDiagnosticsExportJson,
@@ -98,6 +99,11 @@ import nacl from '../../encryption/nacl-fast';
 import ed2curve from '../../encryption/ed2curve';
 import Base58 from '../../encryption/Base58.js';
 import { isReticulumCallEnabled } from '../call/directVoiceCallTransport';
+import { isReticulumGroupCallEnabled } from './groupCallTransport';
+import {
+  GroupCallWebRtcDataChannelTransport,
+  type GroupCallRtcSignal,
+} from './groupCallWebRtcDataChannelTransport';
 import {
   DirectVoiceWebRtcTransport,
   type DirectVoiceRtcSignal,
@@ -1036,6 +1042,16 @@ export class GroupCallAudioEngineRuntime {
   /** Logical unsigned generation of this installation's active group-call slot. */
   private localGroupJoinGeneration: number | null = null;
   private topology: GroupCallTopology | null = null;
+  private readonly groupRtcTransports = new Map<
+    string,
+    GroupCallWebRtcDataChannelTransport
+  >();
+  private readonly groupRtcCapabilities = new Set<string>();
+  private readonly groupRtcCapabilityLastSentAt = new Map<string, number>();
+  private groupRtcIceServers: RTCIceServer[] = [];
+  private groupRtcIceServersLoaded = false;
+  private groupRtcMaintenanceTimer: ReturnType<typeof setInterval> | null =
+    null;
   private roomKey: Uint8Array | null = null;
   private appliedRoomKeyCommitment = '';
   private callEpochMs = 0;
@@ -1196,6 +1212,18 @@ export class GroupCallAudioEngineRuntime {
       timestamps: AudioStageTimingTimestamps;
     }
   >();
+  /**
+   * WebRTC packets are forwarded only after the decrypt worker authenticates
+   * them. Reticulum packets are already forwarded by the main-process data
+   * plane and therefore never enter this map.
+   */
+  private readonly pendingGroupRtcForwardByDecryptId = new Map<
+    number,
+    {
+      ingressPeerAddress: string;
+      packet: ArrayBuffer;
+    }
+  >();
   private readonly rootDecodeFailureWindowStartedAtBySource = new Map<
     string,
     number
@@ -1265,6 +1293,8 @@ export class GroupCallAudioEngineRuntime {
   }
 
   dispose(): void {
+    this.stopGroupRtcMaintenance();
+    this.closeAllGroupRtcTransports('runtime-dispose');
     this.unsubscribeGroupCallEvents?.();
     this.unsubscribeGroupCallEvents = null;
     this.stopTopologyHeartbeat();
@@ -4283,6 +4313,10 @@ export class GroupCallAudioEngineRuntime {
         address,
         'path-degraded-warm'
       ).catch(() => {});
+      void this.groupRtcTransports
+        .get(address)
+        ?.requestRecovery()
+        .catch(() => {});
     }
   }
 
@@ -4386,6 +4420,10 @@ export class GroupCallAudioEngineRuntime {
         address,
         'path-degraded-warm'
       ).catch(() => {});
+      void this.groupRtcTransports
+        .get(address)
+        ?.requestRecovery()
+        .catch(() => {});
     }
   }
 
@@ -4540,7 +4578,7 @@ export class GroupCallAudioEngineRuntime {
       metrics,
       mediaViable,
       localConnectionHint,
-      topologyLabel: 'Reticulum',
+      topologyLabel: this.deriveGroupCallTransportLabel(),
     };
   }
 
@@ -4935,6 +4973,8 @@ export class GroupCallAudioEngineRuntime {
     this.callSessionId = '';
     this.mediaSessionGeneration = 1;
     this.topology = null;
+    this.closeAllGroupRtcTransports('joining-new-room');
+    this.stopGroupRtcMaintenance();
     this.lastObservedTopologyEpoch = 0;
     this.resetRootAuthorityTracking();
     this.resetRootPeerLiveness();
@@ -5254,6 +5294,8 @@ export class GroupCallAudioEngineRuntime {
     this.callSessionId = '';
     this.mediaSessionGeneration = 1;
     this.topology = null;
+    this.closeAllGroupRtcTransports('left-room');
+    this.stopGroupRtcMaintenance();
     this.lastObservedTopologyEpoch = 0;
     this.resetRootAuthorityTracking();
     this.resetRootPeerLiveness();
@@ -5477,6 +5519,10 @@ export class GroupCallAudioEngineRuntime {
       await this.applyTopology(topology, 'remote-event');
       return;
     }
+    if (event === 'gcall:rtc-signal') {
+      await this.handleGroupRtcSignal(payload);
+      return;
+    }
     if (event === 'gcall:heartbeat') {
       const heartbeat = payload as
         | { roomId?: string; rootForwarder?: string; lastSeen?: number | null }
@@ -5536,6 +5582,7 @@ export class GroupCallAudioEngineRuntime {
             payload as { address?: string } | null | undefined
           )?.address;
           if (leavingAddress) {
+            this.closeGroupRtcTransport(leavingAddress, 'participant-left');
             this.participantJoinIdentityByAddress.delete(leavingAddress.trim());
             this.occupiedRoomElectionWaitJoinIdentityByAddress.delete(
               leavingAddress.trim()
@@ -5712,6 +5759,8 @@ export class GroupCallAudioEngineRuntime {
       this.callSessionId = p.callSessionId ?? this.callSessionId;
       this.mediaSessionGeneration =
         (p.mediaSessionGeneration ?? this.mediaSessionGeneration ?? 1) >>> 0;
+      this.closeAllGroupRtcTransports('media-session-updated');
+      await this.syncGroupRtcTransports();
       this.roomKey = null;
       this.appliedRoomKeyCommitment = '';
       this.ownsRoomKey = false;
@@ -5749,6 +5798,407 @@ export class GroupCallAudioEngineRuntime {
         }
       );
     }
+  }
+
+  private groupRtcConnectionId(peerAddress: string): string {
+    const localAddress = this.userInfo?.address?.trim() ?? '';
+    const pair = [localAddress, peerAddress.trim()].sort().join(':');
+    return `${this.callSessionId}:${this.mediaSessionGeneration >>> 0}:${pair}`;
+  }
+
+  private async sendGroupRtcSignal(
+    peerAddress: string,
+    signal: GroupCallRtcSignal
+  ): Promise<void> {
+    const fromAddress = this.userInfo?.address?.trim() ?? '';
+    const roomId = this.snapshot.roomId;
+    if (
+      isReticulumGroupCallEnabled ||
+      !fromAddress ||
+      !roomId ||
+      !this.callSessionId ||
+      !window.groupCall?.sendRtcSignal
+    ) {
+      return;
+    }
+    const payload = JSON.stringify(signal);
+    const digest = await crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(payload)
+    );
+    const payloadHash = Array.from(new Uint8Array(digest), (value) =>
+      value.toString(16).padStart(2, '0')
+    ).join('');
+    const signalId = crypto.randomUUID();
+    const timestamp = Date.now();
+    const connectionId = this.groupRtcConnectionId(peerAddress);
+    const signature = await signGroupCallFields({
+      type: 'GC_RTC_SIGNAL',
+      roomId,
+      callSessionId: this.callSessionId,
+      mediaSessionGeneration: this.mediaSessionGeneration >>> 0,
+      fromAddress,
+      toAddress: peerAddress,
+      connectionId,
+      signalId,
+      signalType: signal.type,
+      payloadHash,
+      fromPublicKey: this.userInfo?.publicKey ?? '',
+      timestamp,
+    }).catch(() => '');
+    if (!signature) return;
+    const result = await window.groupCall
+      .sendRtcSignal({
+        roomId,
+        callSessionId: this.callSessionId,
+        mediaSessionGeneration: this.mediaSessionGeneration >>> 0,
+        fromAddress,
+        toAddress: peerAddress,
+        connectionId,
+        signalId,
+        signalType: signal.type,
+        payload,
+        payloadHash,
+        timestamp,
+        signature,
+        publicKey: this.userInfo?.publicKey ?? '',
+      })
+      .catch((error) => ({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    if (!result?.success) {
+      this.recordThrottledDiagEvent(
+        'group-rtc-signal-send-failed',
+        `${peerAddress}:${signal.type}`,
+        {
+          peerAddress: truncateGcallDiagAddress(peerAddress),
+          signalType: signal.type,
+          error: result?.error,
+        }
+      );
+    }
+  }
+
+  private createGroupRtcTransport(
+    peerAddress: string
+  ): GroupCallWebRtcDataChannelTransport {
+    const existing = this.groupRtcTransports.get(peerAddress);
+    if (existing) return existing;
+    const localAddress = this.userInfo?.address?.trim() ?? '';
+    const role = this.topology
+      ? computeGroupCallRole(localAddress, this.topology)
+      : 'participant';
+    const offerer =
+      role === 'cluster-forwarder'
+        ? peerAddress === this.topology?.rootForwarder
+        : role !== 'root-forwarder' && role !== 'cluster-forwarder';
+    const transport = new GroupCallWebRtcDataChannelTransport({
+      peerAddress,
+      // Preserve the original topology direction: participants dial their
+      // forwarder; cluster forwarders dial the root; forwarders answer.
+      offerer,
+      iceServers: this.groupRtcIceServers,
+      onSignal: (signal) => this.sendGroupRtcSignal(peerAddress, signal),
+      onPacket: (packet) => {
+        void this.handleGroupRtcPacket(peerAddress, packet).catch((error) => {
+          this.recordThrottledDiagEvent(
+            'group-rtc-packet-processing-failed',
+            peerAddress,
+            {
+              peerAddress: truncateGcallDiagAddress(peerAddress),
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+        });
+      },
+      onState: (state) => {
+        this.recordDiagEvent('group-rtc-state', {
+          peerAddress: truncateGcallDiagAddress(peerAddress),
+          state,
+        });
+        this.refreshGroupRtcTransportIndicator();
+        if (state === 'closed' || state === 'failed') {
+          queueMicrotask(() => {
+            if (this.groupRtcTransports.get(peerAddress) !== transport) return;
+            this.closeGroupRtcTransport(peerAddress, `channel-${state}`);
+            void this.syncGroupRtcTransports();
+          });
+        }
+      },
+    });
+    this.groupRtcTransports.set(peerAddress, transport);
+    void transport.start(false).catch((error) => {
+      this.recordThrottledDiagEvent(
+        'group-rtc-start-failed',
+        peerAddress,
+        {
+          peerAddress: truncateGcallDiagAddress(peerAddress),
+          error: error instanceof Error ? error.message : String(error),
+        }
+      );
+      if (this.groupRtcTransports.get(peerAddress) === transport) {
+        this.closeGroupRtcTransport(peerAddress, 'start-failed');
+      }
+    });
+    return transport;
+  }
+
+  private async syncGroupRtcTransports(): Promise<void> {
+    if (
+      isReticulumGroupCallEnabled ||
+      !this.topology ||
+      !this.userInfo?.address ||
+      !this.callSessionId
+    ) {
+      this.closeAllGroupRtcTransports('transport-disabled-or-not-ready');
+      return;
+    }
+    this.ensureGroupRtcMaintenance();
+    if (!this.groupRtcIceServersLoaded) {
+      this.groupRtcIceServersLoaded = true;
+      try {
+        const servers = await window.hub?.getIceServers?.();
+        if (Array.isArray(servers)) {
+          this.groupRtcIceServers = servers
+            .filter((server) => typeof server?.urls === 'string')
+            .map((server) => ({ urls: server.urls }));
+        }
+      } catch {
+        // Host candidates still support LAN calls when STUN discovery is unavailable.
+      }
+    }
+    const targets = new Set(
+      getReticulumTransportTargets(this.userInfo.address, this.topology)
+        .map((address) => address.trim())
+        .filter(Boolean)
+    );
+    for (const peerAddress of this.groupRtcTransports.keys()) {
+      if (!targets.has(peerAddress)) {
+        this.closeGroupRtcTransport(peerAddress, 'topology-edge-removed');
+      }
+    }
+    const now = Date.now();
+    for (const peerAddress of targets) {
+      const transport = this.createGroupRtcTransport(peerAddress);
+      const lastCapabilityAt =
+        this.groupRtcCapabilityLastSentAt.get(peerAddress) ?? 0;
+      if (!transport.isOpen() && now - lastCapabilityAt >= 3_000) {
+        this.groupRtcCapabilityLastSentAt.set(peerAddress, now);
+        void this.sendGroupRtcSignal(peerAddress, {
+          type: 'capability',
+          version: 1,
+        });
+      }
+      if (this.groupRtcCapabilities.has(peerAddress)) {
+        void transport.enableNegotiation().catch((error) => {
+          this.recordThrottledDiagEvent(
+            'group-rtc-negotiation-failed',
+            peerAddress,
+            {
+              peerAddress: truncateGcallDiagAddress(peerAddress),
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+        });
+      }
+    }
+  }
+
+  private async handleGroupRtcSignal(payload: unknown): Promise<void> {
+    const input = payload as {
+      roomId?: string;
+      callSessionId?: string;
+      mediaSessionGeneration?: number;
+      fromAddress?: string;
+      toAddress?: string;
+      connectionId?: string;
+      signalType?: string;
+      payload?: string;
+      verified?: boolean;
+    };
+    const peerAddress = input.fromAddress?.trim() ?? '';
+    if (
+      isReticulumGroupCallEnabled ||
+      input.verified !== true ||
+      input.roomId !== this.snapshot.roomId ||
+      input.callSessionId !== this.callSessionId ||
+      (input.mediaSessionGeneration ?? -1) >>> 0 !==
+        this.mediaSessionGeneration >>> 0 ||
+      input.toAddress !== this.userInfo?.address ||
+      input.connectionId !== this.groupRtcConnectionId(peerAddress) ||
+      !peerAddress ||
+      typeof input.payload !== 'string'
+    ) {
+      return;
+    }
+    const requiredPeers = new Set(
+      this.topology && this.userInfo?.address
+        ? getReticulumTransportTargets(this.userInfo.address, this.topology)
+        : []
+    );
+    if (!requiredPeers.has(peerAddress)) return;
+    let signal: GroupCallRtcSignal;
+    try {
+      signal = JSON.parse(input.payload) as GroupCallRtcSignal;
+    } catch {
+      return;
+    }
+    if (
+      !signal ||
+      !['capability', 'offer', 'answer', 'candidate', 'reconnect'].includes(
+        signal.type
+      ) ||
+      signal.type !== input.signalType
+    ) {
+      return;
+    }
+    if (signal.type === 'capability') {
+      if (signal.version !== 1) return;
+      const firstCapability = !this.groupRtcCapabilities.has(peerAddress);
+      this.groupRtcCapabilities.add(peerAddress);
+      const transport = this.createGroupRtcTransport(peerAddress);
+      if (firstCapability) {
+        await this.sendGroupRtcSignal(peerAddress, {
+          type: 'capability',
+          version: 1,
+        });
+      }
+      await transport.enableNegotiation().catch((error) => {
+        this.recordThrottledDiagEvent(
+          'group-rtc-negotiation-failed',
+          peerAddress,
+          {
+            peerAddress: truncateGcallDiagAddress(peerAddress),
+            error: error instanceof Error ? error.message : String(error),
+          }
+        );
+      });
+      return;
+    }
+    // Reticulum verifies each envelope asynchronously, so an offer/candidate
+    // can legitimately finish verification before the separate capability
+    // envelope sent just ahead of it. A valid signed RTC signal is itself
+    // proof that the peer supports this transport; accepting it avoids an
+    // unnecessary negotiation retry while old clients remain unaffected.
+    this.groupRtcCapabilities.add(peerAddress);
+    await this.createGroupRtcTransport(peerAddress)
+      .handleSignal(signal)
+      .catch((error) => {
+        this.recordThrottledDiagEvent(
+          'group-rtc-signal-apply-failed',
+          `${peerAddress}:${signal.type}`,
+          {
+            peerAddress: truncateGcallDiagAddress(peerAddress),
+            signalType: signal.type,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        );
+      });
+  }
+
+  private async handleGroupRtcPacket(
+    ingressPeerAddress: string,
+    packet: ArrayBuffer
+  ): Promise<void> {
+    if (
+      !this.snapshot.roomId ||
+      !this.roomKey ||
+      packet.byteLength === 0 ||
+      packet.byteLength > GCALL_AUDIO_DATA_PLANE_MAX_PAYLOAD_BYTES
+    ) {
+      return;
+    }
+    await this.processIncomingAudioPayload({
+      roomId: this.snapshot.roomId,
+      fromAddress: ingressPeerAddress,
+      resolvedFromAddress: ingressPeerAddress,
+      data: packet,
+      transport: 'webrtc',
+    });
+  }
+
+  private async forwardAuthenticatedGroupRtcPacket(
+    ingressPeerAddress: string,
+    packet: ArrayBuffer
+  ): Promise<void> {
+    if (!this.topology || !this.userInfo?.address) return;
+    const topologyTargets = getReticulumTransportTargets(
+      this.userInfo.address,
+      this.topology
+    );
+    // A decrypt result can arrive just after a topology transition. Do not
+    // relay a packet from an edge that is no longer part of the active tree.
+    if (!topologyTargets.includes(ingressPeerAddress)) return;
+    const targets = topologyTargets.filter(
+      (address) => address !== ingressPeerAddress
+    );
+    if (targets.length === 0) return;
+    await this.sendGroupPacketToTargets(new Uint8Array(packet), targets);
+  }
+
+  private closeGroupRtcTransport(peerAddress: string, reason: string): void {
+    const transport = this.groupRtcTransports.get(peerAddress);
+    this.groupRtcTransports.delete(peerAddress);
+    if (transport) transport.close();
+    this.groupRtcCapabilities.delete(peerAddress);
+    this.groupRtcCapabilityLastSentAt.delete(peerAddress);
+    this.refreshGroupRtcTransportIndicator();
+    this.recordDiagEvent('group-rtc-closed', {
+      peerAddress: truncateGcallDiagAddress(peerAddress),
+      reason,
+    });
+  }
+
+  private closeAllGroupRtcTransports(reason: string): void {
+    for (const peerAddress of [...this.groupRtcTransports.keys()]) {
+      this.closeGroupRtcTransport(peerAddress, reason);
+    }
+  }
+
+  private ensureGroupRtcMaintenance(): void {
+    if (this.groupRtcMaintenanceTimer) return;
+    this.groupRtcMaintenanceTimer = setInterval(() => {
+      void this.syncGroupRtcTransports().catch((error) => {
+        this.recordThrottledDiagEvent(
+          'group-rtc-maintenance-failed',
+          this.snapshot.roomId || 'none',
+          { error: error instanceof Error ? error.message : String(error) }
+        );
+      });
+    }, 3_000);
+  }
+
+  private stopGroupRtcMaintenance(): void {
+    if (this.groupRtcMaintenanceTimer) {
+      clearInterval(this.groupRtcMaintenanceTimer);
+      this.groupRtcMaintenanceTimer = null;
+    }
+  }
+
+  private deriveGroupCallTransportLabel(): AudioEngineTopologyLabel {
+    if (
+      isReticulumGroupCallEnabled ||
+      !this.topology ||
+      !this.userInfo?.address
+    ) {
+      return 'Reticulum';
+    }
+    const targets = getReticulumTransportTargets(
+      this.userInfo.address,
+      this.topology
+    );
+    return targets.length > 0 &&
+      targets.every((address) => this.groupRtcTransports.get(address)?.isOpen())
+      ? 'WebRTC'
+      : 'Reticulum';
+  }
+
+  private refreshGroupRtcTransportIndicator(): void {
+    const next = this.deriveGroupCallTransportLabel();
+    if (this.snapshot.topologyLabel === next) return;
+    this.snapshot = { ...this.snapshot, topologyLabel: next };
+    this.emitSnapshot();
   }
 
   private async processDirectVoiceAudioPayload(
@@ -5860,6 +6310,12 @@ export class GroupCallAudioEngineRuntime {
         sourceAddr: ingressPeerAddress,
         timestamps: stageTimestamps,
       });
+      if (audioPayload.transport === 'webrtc') {
+        this.pendingGroupRtcForwardByDecryptId.set(decryptId, {
+          ingressPeerAddress,
+          packet: audioPayload.data,
+        });
+      }
       const posted = this.decryptPool!.postDecrypt(
         ingressPeerAddress,
         decryptId,
@@ -5871,6 +6327,7 @@ export class GroupCallAudioEngineRuntime {
       }
       this.pendingDecryptIngressById.delete(decryptId);
       this.pendingDecryptStageById.delete(decryptId);
+      this.pendingGroupRtcForwardByDecryptId.delete(decryptId);
       traceGcallAudioSurface(
         'pipeline: decrypt pool postDecrypt returned false, falling back',
         {
@@ -5898,6 +6355,12 @@ export class GroupCallAudioEngineRuntime {
       { ...audioPayload, audioStageTimestamps: syncStageTimestamps },
       this.roomKey
     );
+    if (decodedCount > 0 && audioPayload.transport === 'webrtc') {
+      await this.forwardAuthenticatedGroupRtcPacket(
+        fromAddr,
+        audioPayload.data
+      );
+    }
     const syncDecodeEndAtWallMs = Date.now();
     this.recordAudioStageGap(
       'syncDecodeEnd',
@@ -7345,6 +7808,7 @@ export class GroupCallAudioEngineRuntime {
     this.workerDecodeFailureRecoveryLastAt = 0;
     this.pendingDecryptIngressById.clear();
     this.pendingDecryptStageById.clear();
+    this.pendingGroupRtcForwardByDecryptId.clear();
     this.rootDecodeFailureWindowStartedAtBySource.clear();
     this.rootDecodeFailureCountBySource.clear();
     this.rootDecodeFailureKeyReplayLastAtBySource.clear();
@@ -8375,6 +8839,7 @@ export class GroupCallAudioEngineRuntime {
       await this.maybeReplayRetainedKeysAfterTopology(this.topology);
       await this.syncTopologyHeartbeat();
       this.refreshAudioDataPlaneRoutesForCurrentRoom(`same-topology:${source}`);
+      await this.syncGroupRtcTransports();
       return false;
     }
 
@@ -8383,6 +8848,9 @@ export class GroupCallAudioEngineRuntime {
       Boolean(current) &&
       (current?.rootForwarder !== normalized.rootForwarder ||
         current?.topologyEpoch !== normalized.topologyEpoch);
+    if (current) {
+      this.closeAllGroupRtcTransports('topology-changed');
+    }
     this.topology = {
       ...normalized,
       roomId: this.snapshot.roomId,
@@ -8415,6 +8883,7 @@ export class GroupCallAudioEngineRuntime {
       myRole: computeGroupCallRole(myAddress, this.topology),
     };
     this.emitSnapshot();
+    await this.syncGroupRtcTransports();
     traceGcallAudioSurface('pipeline: topology applied', {
       roomId: this.topology.roomId,
       source,
@@ -9695,6 +10164,10 @@ export class GroupCallAudioEngineRuntime {
     this.pendingDecryptIngressById.delete(entry.id);
     const stageEntry = this.pendingDecryptStageById.get(entry.id);
     this.pendingDecryptStageById.delete(entry.id);
+    const pendingRtcForward = this.pendingGroupRtcForwardByDecryptId.get(
+      entry.id
+    );
+    this.pendingGroupRtcForwardByDecryptId.delete(entry.id);
     const decryptResultAtWallMs = Date.now();
     if (stageEntry) {
       this.recordAudioStageGap(
@@ -9732,6 +10205,7 @@ export class GroupCallAudioEngineRuntime {
     const decodedPackets = entry.decoded
       ? [entry.decoded]
       : (entry.decodedMulti ?? []);
+    if (decodedPackets.length === 0) return;
     const jitterPushAtWallMs = Date.now();
     if (stageEntry) {
       this.recordAudioStageGap(
@@ -9752,7 +10226,15 @@ export class GroupCallAudioEngineRuntime {
         jitterPushAtWallMs
       );
     }
-    await this.receiveEngine.handleDecodedPackets(decodedPackets);
+    await Promise.all([
+      this.receiveEngine.handleDecodedPackets(decodedPackets),
+      pendingRtcForward
+        ? this.forwardAuthenticatedGroupRtcPacket(
+            pendingRtcForward.ingressPeerAddress,
+            pendingRtcForward.packet
+          )
+        : Promise.resolve(),
+    ]);
   }
 
   private async dispatchEncodedFrame(
@@ -9862,6 +10344,21 @@ export class GroupCallAudioEngineRuntime {
         message,
       });
     };
+    if (!isReticulumGroupCallEnabled) {
+      const fallbackTargets: string[] = [];
+      for (const target of targets) {
+        const transport = this.groupRtcTransports.get(target);
+        if (!transport?.isOpen()) {
+          fallbackTargets.push(target);
+          continue;
+        }
+        const diag = markAttempt(target);
+        if (transport.send(packet)) markSuccess(diag);
+        else fallbackTargets.push(target);
+      }
+      targets = fallbackTargets;
+      if (targets.length === 0) return;
+    }
     if (
       targets.length > 1 &&
       typeof window.groupCall?.sendAudioBatch === 'function'
@@ -9974,5 +10471,29 @@ export class GroupCallAudioEngineRuntime {
         }
       })
     );
+  }
+
+  private async sendGroupPacketToTargets(
+    packet: Uint8Array,
+    targets: string[]
+  ): Promise<void> {
+    const fallbackTargets: string[] = [];
+    for (const target of [...new Set(targets)]) {
+      const rtc = isReticulumGroupCallEnabled
+        ? null
+        : this.groupRtcTransports.get(target);
+      if (!rtc?.send(packet)) fallbackTargets.push(target);
+    }
+    if (
+      fallbackTargets.length > 0 &&
+      this.snapshot.roomId &&
+      window.groupCall?.sendAudioBatch
+    ) {
+      await window.groupCall.sendAudioBatch(
+        this.snapshot.roomId,
+        fallbackTargets,
+        packet
+      );
+    }
   }
 }

@@ -1518,6 +1518,26 @@ declare global {
           };
         };
       }>;
+      sendRtcSignal: (input: {
+        roomId: string;
+        callSessionId: string;
+        mediaSessionGeneration: number;
+        fromAddress: string;
+        toAddress: string;
+        connectionId: string;
+        signalId: string;
+        signalType:
+          | 'capability'
+          | 'offer'
+          | 'answer'
+          | 'candidate'
+          | 'reconnect';
+        payload: string;
+        payloadHash: string;
+        timestamp: number;
+        signature: string;
+        publicKey: string;
+      }) => Promise<{ success: boolean; error?: string }>;
       sendAudioBatch?: (
         roomId: string,
         toAddresses: string[],

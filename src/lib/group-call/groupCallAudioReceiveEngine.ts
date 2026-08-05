@@ -625,7 +625,7 @@ function disconnectNodeSafe(node: AudioNode | null): void {
 export interface GroupCallAudioReceivePayload {
   roomId: string;
   data: ArrayBuffer;
-  transport?: 'link' | 'packet' | 'unknown';
+  transport?: 'link' | 'packet' | 'webrtc' | 'unknown';
   bridgeReceivedAtWallMs?: number | null;
   audioStageTimestamps?: {
     bridgeReceivedAtWallMs?: number | null;

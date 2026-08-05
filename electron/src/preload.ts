@@ -3918,6 +3918,22 @@ try {
         timing
       ),
 
+    sendRtcSignal: async (input: {
+      roomId: string;
+      callSessionId: string;
+      mediaSessionGeneration: number;
+      fromAddress: string;
+      toAddress: string;
+      connectionId: string;
+      signalId: string;
+      signalType: 'capability' | 'offer' | 'answer' | 'candidate' | 'reconnect';
+      payload: string;
+      payloadHash: string;
+      timestamp: number;
+      signature: string;
+      publicKey: string;
+    }) => ipcRenderer.invoke('gcall:sendRtcSignal', input),
+
     requestPeerMediaRecovery: async (
       roomId: string,
       address: string,
@@ -4115,6 +4131,7 @@ try {
         'gcall:key',
         'gcall:key-request',
         'gcall:session-updated',
+        'gcall:rtc-signal',
       ] as const;
 
       const handlers: Map<string, (...args: unknown[]) => void> = new Map();

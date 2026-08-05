@@ -7,7 +7,6 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
-  useReducer,
   useState,
 } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
@@ -61,7 +60,7 @@ export function QortalGroupVoiceCallDock() {
     roomId,
     participants,
     activeSpeakers,
-    metrics,
+    topologyLabel,
     startupStatus,
     leaveGroupCall,
     setMuted,
@@ -102,29 +101,26 @@ export function QortalGroupVoiceCallDock() {
   const active =
     isQortal && (roomState === 'connected' || roomState === 'joining');
 
-  const [transportTick, bumpTransport] = useReducer((n: number) => n + 1, 0);
-  useEffect(() => {
-    if (!active || !minimized) return;
-    const id = window.setInterval(bumpTransport, 700);
-    return () => window.clearInterval(id);
-  }, [active, minimized]);
   const transport = useMemo(() => {
     if (roomState === 'connected' && !mediaViable) {
       return {
         mode: 'connecting' as const,
-        label: 'Reticulum',
-        tooltip:
-          'Reticulum audio is still establishing; you may not hear others yet.',
+        label: topologyLabel,
+        tooltip: `${topologyLabel} audio is still establishing; you may not hear others yet.`,
       };
     }
-    void metrics;
-    void transportTick;
     return {
-      mode: 'reticulum' as const,
-      label: 'Reticulum',
-      tooltip: 'Encrypted voice over Reticulum',
+      mode:
+        topologyLabel === 'WebRTC'
+          ? ('webrtc' as const)
+          : ('reticulum' as const),
+      label: topologyLabel,
+      tooltip:
+        topologyLabel === 'WebRTC'
+          ? 'Encrypted voice over a WebRTC DataChannel'
+          : 'Encrypted voice over Reticulum',
     };
-  }, [roomState, mediaViable, metrics, transportTick, t]);
+  }, [roomState, mediaViable, topologyLabel]);
 
   const title =
     memberGateGroupName?.trim() ||
@@ -244,7 +240,9 @@ export function QortalGroupVoiceCallDock() {
             bgcolor:
               transport.mode === 'connecting'
                 ? alpha('#94a3b8', 0.35)
-                : alpha('#22c55e', 0.35),
+                : transport.mode === 'webrtc'
+                  ? alpha('#3b82f6', 0.38)
+                  : alpha('#22c55e', 0.35),
             color: '#dbdee1',
             '& .MuiChip-label': { px: 0.5, overflow: 'hidden' },
           }}

@@ -6,7 +6,7 @@
  *
  * Architecture (handled entirely in the renderer):
  *   - Adaptive topology: ≤10 members → single forwarder, 11-50 → hierarchical
- *   - Reticulum Links for audio transport (Opus ~24 kbps)
+ *   - WebRTC DataChannels for low-latency encrypted audio, with Reticulum per-edge fallback
  *   - End-to-end encryption: v2/v3 wire nonce||secretbox(inner); v1 decode fallback in renderer
  *
  * This module handles only the signaling layer:
@@ -16,10 +16,13 @@
  *   GC_KEY                   — room media key distribution (Reticulum)
  *
  * Security: GC_JOIN, GC_LEAVE, GC_TOPOLOGY, GC_CLUSTER_HEARTBEAT, GC_KEY, and
- * GC_KEY_REQUEST carry Ed25519 signatures. In-room peers verify before use.
+ * GC_KEY_REQUEST and direct GC_RTC_SIGNAL envelopes carry Ed25519 signatures.
+ * RTC descriptions/candidates travel only over authenticated point-to-point
+ * Reticulum audio links; they are never sent through group overlay fanout.
  */
 
 import * as nodeCrypto from 'crypto';
+import * as nodeZlib from 'zlib';
 import { EventEmitter } from 'events';
 import {
   log as loggerLog,
@@ -110,6 +113,12 @@ const GCALL_AUDIO_TIMING_DELAY_LOG_THRESHOLD_MS = 80;
 const GCALL_AUDIO_TIMING_GAP_LOG_THRESHOLD_MS = 320;
 const GCALL_AUDIO_TIMING_LOG_THROTTLE_MS = 2_000;
 const GCALL_AUDIO_DATA_PLANE_V2_ENABLED = true;
+const GCALL_RTC_SIGNAL_TTL_MS = 20_000;
+const GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES = 96 * 1024;
+const GCALL_RTC_SIGNAL_FRAGMENT_CHARS = 120;
+const GCALL_RTC_SIGNAL_MAX_FRAGMENTS = 192;
+const GCALL_RTC_SIGNAL_MAX_REASSEMBLIES = 64;
+const GCALL_RTC_SIGNAL_MAX_REPLAY_IDS = 2_048;
 
 type ReticulumAudioTimingMetadata = {
   rendererSendAtMs?: number;
@@ -1156,6 +1165,32 @@ interface GroupRoom {
   dmVoicePeerDestinationHash?: string;
 }
 
+export interface GroupCallRtcSignalInput {
+  roomId: string;
+  callSessionId: string;
+  mediaSessionGeneration: number;
+  fromAddress: string;
+  toAddress: string;
+  connectionId: string;
+  signalId: string;
+  signalType: 'capability' | 'offer' | 'answer' | 'candidate' | 'reconnect';
+  payload: string;
+  payloadHash: string;
+  timestamp: number;
+  signature: string;
+  publicKey: string;
+}
+
+type GroupCallRtcReassembly = {
+  roomId: string;
+  digest: string;
+  partCount: number;
+  parts: Map<number, string>;
+  senderDestinationHash: string;
+  peerPresenceHash: string;
+  deadline: number;
+};
+
 interface ReticulumAudioPendingFrame {
   roomId: string;
   data: Buffer;
@@ -1881,6 +1916,11 @@ export function getGroupCallManager(): GroupCallManager | null {
 }
 
 export class GroupCallManager extends EventEmitter {
+  private readonly rtcSignalReassemblies = new Map<
+    string,
+    GroupCallRtcReassembly
+  >();
+  private readonly receivedRtcSignalIds = new Map<string, number>();
   private presence: PresenceManager;
   private reticulumBridge: ReticulumBridge | null;
   private started = false;
@@ -2831,6 +2871,8 @@ export class GroupCallManager extends EventEmitter {
     this.reticulumAudioFlushCursor = 0;
     this.rooms.clear();
     this.verifiedGcSignatures.clear();
+    this.rtcSignalReassemblies.clear();
+    this.receivedRtcSignalIds.clear();
     this.inFlightGcVerify.clear();
     this.lastStaleTopologyLogAt = 0;
     this.joinDropLogAt.clear();
@@ -4688,18 +4730,263 @@ export class GroupCallManager extends EventEmitter {
       return;
     }
 
+    if (t === 'GO0') {
+      this.handleRtcSignalStartWire(
+        wire,
+        senderDestinationHash,
+        peerPresenceHash,
+        now
+      );
+      return;
+    }
+    if (t === 'GO1') {
+      this.handleRtcSignalPartWire(
+        wire,
+        senderDestinationHash,
+        peerPresenceHash,
+        now
+      );
+      return;
+    }
+
     if (
       t === 'GX' ||
       t === 'GO' ||
       t === 'GE' ||
-      t === 'GO0' ||
-      t === 'GO1' ||
       t === 'GE0' ||
       t === 'GE1' ||
       t === 'GF'
     ) {
       return;
     }
+  }
+
+  private sweepRtcSignalState(now = Date.now()): void {
+    for (const [key, entry] of this.rtcSignalReassemblies) {
+      if (entry.deadline <= now) this.rtcSignalReassemblies.delete(key);
+    }
+    for (const [key, expiresAt] of this.receivedRtcSignalIds) {
+      if (expiresAt <= now) this.receivedRtcSignalIds.delete(key);
+    }
+    while (
+      this.rtcSignalReassemblies.size >= GCALL_RTC_SIGNAL_MAX_REASSEMBLIES
+    ) {
+      const key = this.rtcSignalReassemblies.keys().next().value as
+        | string
+        | undefined;
+      if (!key) break;
+      this.rtcSignalReassemblies.delete(key);
+    }
+    while (this.receivedRtcSignalIds.size >= GCALL_RTC_SIGNAL_MAX_REPLAY_IDS) {
+      const key = this.receivedRtcSignalIds.keys().next().value as
+        | string
+        | undefined;
+      if (!key) break;
+      this.receivedRtcSignalIds.delete(key);
+    }
+  }
+
+  private handleRtcSignalStartWire(
+    wire: Record<string, unknown>,
+    senderDestinationHash: string,
+    peerPresenceHash: string,
+    now: number
+  ): void {
+    const roomId = typeof wire.R === 'string' ? wire.R : '';
+    const digest = typeof wire.z === 'string' ? wire.z : '';
+    const partCount = Number(wire.n);
+    if (
+      !roomId ||
+      !/^[0-9a-f]{64}$/iu.test(digest) ||
+      !Number.isInteger(partCount) ||
+      partCount < 1 ||
+      partCount > GCALL_RTC_SIGNAL_MAX_FRAGMENTS
+    ) {
+      return;
+    }
+    this.sweepRtcSignalState(now);
+    const key = `${roomId}:${digest}`;
+    const existing = this.rtcSignalReassemblies.get(key);
+    const normalizedSenderHash = senderDestinationHash.trim().toLowerCase();
+    const normalizedPresenceHash = peerPresenceHash.trim().toLowerCase();
+    if (
+      existing &&
+      existing.partCount === partCount &&
+      existing.senderDestinationHash === normalizedSenderHash &&
+      existing.peerPresenceHash === normalizedPresenceHash
+    ) {
+      existing.deadline = now + GCALL_RTC_SIGNAL_TTL_MS;
+      return;
+    }
+    this.rtcSignalReassemblies.set(key, {
+      roomId,
+      digest,
+      partCount,
+      parts: new Map(),
+      senderDestinationHash: normalizedSenderHash,
+      peerPresenceHash: normalizedPresenceHash,
+      deadline: now + GCALL_RTC_SIGNAL_TTL_MS,
+    });
+  }
+
+  private handleRtcSignalPartWire(
+    wire: Record<string, unknown>,
+    senderDestinationHash: string,
+    peerPresenceHash: string,
+    now: number
+  ): void {
+    const roomId = typeof wire.R === 'string' ? wire.R : '';
+    const digest = typeof wire.z === 'string' ? wire.z : '';
+    const partCount = Number(wire.n);
+    const index = Number(wire.x);
+    const part = typeof wire.p === 'string' ? wire.p : '';
+    const key = `${roomId}:${digest}`;
+    const entry = this.rtcSignalReassemblies.get(key);
+    if (
+      !entry ||
+      entry.deadline <= now ||
+      entry.senderDestinationHash !==
+        senderDestinationHash.trim().toLowerCase() ||
+      entry.peerPresenceHash !== peerPresenceHash.trim().toLowerCase() ||
+      partCount !== entry.partCount ||
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= partCount ||
+      part.length > GCALL_RTC_SIGNAL_FRAGMENT_CHARS
+    ) {
+      return;
+    }
+    entry.parts.set(index, part);
+    if (entry.parts.size !== entry.partCount) return;
+    this.rtcSignalReassemblies.delete(key);
+    const encoded = Array.from({ length: entry.partCount }, (_, i) =>
+      entry.parts.get(i)
+    );
+    if (encoded.some((value) => typeof value !== 'string')) return;
+    const compressed = Buffer.from(encoded.join(''), 'base64url');
+    if (
+      compressed.length === 0 ||
+      compressed.length > GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES ||
+      nodeCrypto.createHash('sha256').update(compressed).digest('hex') !==
+        entry.digest
+    ) {
+      return;
+    }
+    let input: GroupCallRtcSignalInput;
+    try {
+      const inflated = nodeZlib.inflateRawSync(compressed, {
+        maxOutputLength: GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES,
+      });
+      input = JSON.parse(inflated.toString('utf8')) as GroupCallRtcSignalInput;
+    } catch {
+      return;
+    }
+    void this.verifyAndDeliverRtcSignal(
+      input,
+      entry.senderDestinationHash,
+      entry.peerPresenceHash,
+      now
+    );
+  }
+
+  private async verifyAndDeliverRtcSignal(
+    input: GroupCallRtcSignalInput,
+    senderDestinationHash: string,
+    peerPresenceHash: string,
+    now: number
+  ): Promise<void> {
+    if (!this.isValidRtcSignalInput(input, now)) return;
+    const room = this.rooms.get(input.roomId);
+    if (!room || !this.localAddresses.has(input.toAddress)) return;
+    if (
+      input.callSessionId !== room.callSessionId ||
+      input.mediaSessionGeneration >>> 0 !== room.mediaSessionGeneration >>> 0
+    ) {
+      return;
+    }
+    const source = room.participants.get(input.fromAddress);
+    const target = room.participants.get(input.toAddress);
+    if (!source || !target) return;
+    if (source.publicKey && source.publicKey !== input.publicKey) return;
+    const expectedHash = source.reticulumDestinationHash.trim().toLowerCase();
+    const transportHash = resolveGroupCallSourcePeerHash(
+      senderDestinationHash,
+      peerPresenceHash
+    );
+    // RTC negotiation is accepted only from the exact authenticated link
+    // selected for this participant. A signed account claim alone is not
+    // enough to inject SDP or ICE data through another transport route.
+    if (!expectedHash || !transportHash || expectedHash !== transportHash) {
+      return;
+    }
+    if (
+      nodeCrypto
+        .createHash('sha256')
+        .update(input.payload, 'utf8')
+        .digest('hex') !== input.payloadHash
+    ) {
+      return;
+    }
+    const replayKey = `${input.roomId}:${input.fromAddress}:${input.signalId}`;
+    this.sweepRtcSignalState(now);
+    if (this.receivedRtcSignalIds.has(replayKey)) return;
+    const fields = {
+      type: 'GC_RTC_SIGNAL',
+      roomId: input.roomId,
+      callSessionId: input.callSessionId,
+      mediaSessionGeneration: input.mediaSessionGeneration >>> 0,
+      fromAddress: input.fromAddress,
+      toAddress: input.toAddress,
+      connectionId: input.connectionId,
+      signalId: input.signalId,
+      signalType: input.signalType,
+      payloadHash: input.payloadHash,
+      fromPublicKey: input.publicKey,
+      timestamp: input.timestamp,
+    };
+    const ok = await this.verifyPool.verify({
+      kind: 'gc',
+      fields,
+      signature: input.signature,
+      fromPublicKey: input.publicKey,
+      fromAddress: input.fromAddress,
+    });
+    if (!ok) return;
+    // Verification runs asynchronously, so another copy may have completed
+    // while this one was awaiting the worker.
+    if (this.receivedRtcSignalIds.has(replayKey)) return;
+    this.receivedRtcSignalIds.set(replayKey, now + GCALL_RTC_SIGNAL_TTL_MS * 2);
+    this.emit('gcall:rtc-signal', { ...input, verified: true });
+  }
+
+  private isValidRtcSignalInput(
+    input: GroupCallRtcSignalInput,
+    now = Date.now()
+  ): boolean {
+    return Boolean(
+      input &&
+      typeof input.roomId === 'string' &&
+      typeof input.callSessionId === 'string' &&
+      input.callSessionId.length <= 128 &&
+      Number.isInteger(input.mediaSessionGeneration) &&
+      typeof input.fromAddress === 'string' &&
+      typeof input.toAddress === 'string' &&
+      typeof input.connectionId === 'string' &&
+      input.connectionId.length <= 160 &&
+      typeof input.signalId === 'string' &&
+      input.signalId.length <= 128 &&
+      ['capability', 'offer', 'answer', 'candidate', 'reconnect'].includes(
+        input.signalType
+      ) &&
+      typeof input.payload === 'string' &&
+      Buffer.byteLength(input.payload, 'utf8') <=
+        GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES &&
+      /^[0-9a-f]{64}$/iu.test(input.payloadHash) &&
+      typeof input.signature === 'string' &&
+      typeof input.publicKey === 'string' &&
+      Number.isFinite(input.timestamp) &&
+      Math.abs(now - input.timestamp) <= GCALL_RTC_SIGNAL_TTL_MS
+    );
   }
 
   private flushQortalGroupCallActivity(): void {
@@ -5305,6 +5592,112 @@ export class GroupCallManager extends EventEmitter {
   /**
    * Send encrypted group audio over a persistent Reticulum link.
    */
+  async sendRtcSignal(input: GroupCallRtcSignalInput): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    const now = Date.now();
+    if (!this.isValidRtcSignalInput(input, now)) {
+      return { success: false, error: 'invalid-rtc-signal' };
+    }
+    const room = this.rooms.get(input.roomId);
+    if (!room) return { success: false, error: 'room-not-found' };
+    if (!this.localAddresses.has(input.fromAddress)) {
+      return { success: false, error: 'sender-not-local' };
+    }
+    if (
+      !room.participants.has(input.fromAddress) ||
+      !room.participants.has(input.toAddress)
+    ) {
+      return { success: false, error: 'participant-not-found' };
+    }
+    const source = room.participants.get(input.fromAddress)!;
+    if (source.publicKey && source.publicKey !== input.publicKey) {
+      return { success: false, error: 'sender-public-key-mismatch' };
+    }
+    if (
+      input.callSessionId !== room.callSessionId ||
+      input.mediaSessionGeneration >>> 0 !== room.mediaSessionGeneration >>> 0
+    ) {
+      return { success: false, error: 'media-session-mismatch' };
+    }
+    if (
+      nodeCrypto
+        .createHash('sha256')
+        .update(input.payload, 'utf8')
+        .digest('hex') !== input.payloadHash
+    ) {
+      return { success: false, error: 'payload-hash-mismatch' };
+    }
+    const verified = await this.verifyPool.verify({
+      kind: 'gc',
+      fields: {
+        type: 'GC_RTC_SIGNAL',
+        roomId: input.roomId,
+        callSessionId: input.callSessionId,
+        mediaSessionGeneration: input.mediaSessionGeneration >>> 0,
+        fromAddress: input.fromAddress,
+        toAddress: input.toAddress,
+        connectionId: input.connectionId,
+        signalId: input.signalId,
+        signalType: input.signalType,
+        payloadHash: input.payloadHash,
+        fromPublicKey: input.publicKey,
+        timestamp: input.timestamp,
+      },
+      signature: input.signature,
+      fromPublicKey: input.publicKey,
+      fromAddress: input.fromAddress,
+    });
+    if (!verified) return { success: false, error: 'invalid-signature' };
+    const compressed = nodeZlib.deflateRawSync(
+      Buffer.from(JSON.stringify(input), 'utf8')
+    );
+    if (compressed.length > GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES) {
+      return { success: false, error: 'rtc-signal-too-large' };
+    }
+    const encoded = compressed.toString('base64url');
+    const partCount = Math.ceil(
+      encoded.length / GCALL_RTC_SIGNAL_FRAGMENT_CHARS
+    );
+    if (partCount < 1 || partCount > GCALL_RTC_SIGNAL_MAX_FRAGMENTS) {
+      return { success: false, error: 'rtc-signal-too-large' };
+    }
+    const digest = nodeCrypto
+      .createHash('sha256')
+      .update(compressed)
+      .digest('hex');
+    const frames: Record<string, unknown>[] = [
+      { t: 'GO0', R: input.roomId, z: digest, n: partCount },
+    ];
+    for (let index = 0; index < partCount; index++) {
+      frames.push({
+        t: 'GO1',
+        R: input.roomId,
+        z: digest,
+        n: partCount,
+        x: index,
+        p: encoded.slice(
+          index * GCALL_RTC_SIGNAL_FRAGMENT_CHARS,
+          (index + 1) * GCALL_RTC_SIGNAL_FRAGMENT_CHARS
+        ),
+      });
+    }
+    if (frames.some((frame) => !wireFitsReticulum(frame))) {
+      return { success: false, error: 'rtc-signal-fragment-too-large' };
+    }
+    const result = this.sendReticulumLinkControlToAddresses(
+      input.roomId,
+      frames,
+      [input.toAddress],
+      new Set(),
+      `rtc-${input.signalType}`
+    );
+    return result.sentLinks > 0
+      ? { success: true }
+      : { success: false, error: 'direct-link-not-ready' };
+  }
+
   private computeReticulumAudioTargetsForRoom(room: GroupRoom): Set<string> {
     const targets = new Set<string>();
     const topology = room.lastTopology;
@@ -6932,7 +7325,10 @@ export class GroupCallManager extends EventEmitter {
           skippedLinks++;
         }
       }
-      if (enqueuedForLink > 0) sentLinks++;
+      // Fragmented control messages are useful only when every frame reaches
+      // the same link. Reporting a partial enqueue as success suppresses the
+      // caller's retry and leaves an unreconstructable envelope at the peer.
+      if (enqueuedForLink === encodedFrames.length) sentLinks++;
     }
     if (sentLinks > 0) {
       this.scheduleReticulumAudioFlush();

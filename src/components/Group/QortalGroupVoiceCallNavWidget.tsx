@@ -50,6 +50,7 @@ export function QortalGroupVoiceCallNavWidget() {
     roomId,
     participants,
     activeSpeakers,
+    topologyLabel,
     leaveGroupCall,
     setMuted,
     muted,
@@ -138,7 +139,7 @@ export function QortalGroupVoiceCallNavWidget() {
         display: 'flex',
         gap: 0.75,
         height: 36,
-        maxWidth: { xs: 208, sm: 300, md: 360 },
+        maxWidth: { xs: 208, sm: 300, md: 430 },
         minWidth: 0,
         px: 0.75,
       }}
@@ -194,6 +195,37 @@ export function QortalGroupVoiceCallNavWidget() {
           {title}
         </Typography>
       </ButtonBase>
+
+      {roomState === 'connected' ? (
+        <Tooltip
+          title={
+            topologyLabel === 'WebRTC'
+              ? 'Audio is using WebRTC DataChannels'
+              : 'Audio is using the Reticulum fallback'
+          }
+          arrow
+        >
+          <Typography
+            component="span"
+            sx={{
+              color:
+                topologyLabel === 'WebRTC'
+                  ? theme.palette.primary.light
+                  : theme.palette.warning.main,
+              display: { xs: 'none', md: 'block' },
+              flexShrink: 0,
+              fontSize: 9,
+              fontWeight: 900,
+              letterSpacing: '0.04em',
+              lineHeight: '16px',
+              textAlign: 'center',
+              width: 62,
+            }}
+          >
+            {topologyLabel.toUpperCase()}
+          </Typography>
+        </Tooltip>
+      ) : null}
 
       <Box
         sx={{

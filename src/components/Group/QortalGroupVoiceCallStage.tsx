@@ -7,7 +7,6 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
-  useReducer,
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -84,7 +83,7 @@ export function QortalGroupVoiceCallStage() {
     roomId,
     participants,
     activeSpeakers,
-    metrics,
+    topologyLabel,
     localConnectionHint,
     startupStatus,
     leaveGroupCall,
@@ -133,29 +132,26 @@ export function QortalGroupVoiceCallStage() {
     }
   }, [visible, setQcallPrimaryNames]);
 
-  const [transportTick, bumpTransport] = useReducer((n: number) => n + 1, 0);
-  useEffect(() => {
-    if (!visible) return;
-    const id = window.setInterval(bumpTransport, 700);
-    return () => window.clearInterval(id);
-  }, [visible]);
   const transport = useMemo(() => {
     if (roomState === 'connected' && !mediaViable) {
       return {
         mode: 'connecting' as const,
-        label: 'Reticulum',
-        tooltip:
-          'Reticulum audio is still establishing; you may not hear others yet.',
+        label: topologyLabel,
+        tooltip: `${topologyLabel} audio is still establishing; you may not hear others yet.`,
       };
     }
-    void metrics;
-    void transportTick;
     return {
-      mode: 'reticulum' as const,
-      label: 'Reticulum',
-      tooltip: 'Encrypted voice over Reticulum',
+      mode:
+        topologyLabel === 'WebRTC'
+          ? ('webrtc' as const)
+          : ('reticulum' as const),
+      label: topologyLabel,
+      tooltip:
+        topologyLabel === 'WebRTC'
+          ? 'Encrypted voice over a WebRTC DataChannel'
+          : 'Encrypted voice over Reticulum',
     };
-  }, [roomState, mediaViable, metrics, transportTick, t]);
+  }, [roomState, mediaViable, topologyLabel]);
 
   useEffect(() => {
     if (
@@ -404,13 +400,21 @@ export function QortalGroupVoiceCallStage() {
                 bgcolor:
                   transport.mode === 'connecting'
                     ? alpha('#94a3b8', 0.16)
-                    : alpha('#22c55e', 0.18),
+                    : transport.mode === 'webrtc'
+                      ? alpha('#3b82f6', 0.2)
+                      : alpha('#22c55e', 0.18),
                 color:
-                  transport.mode === 'connecting' ? '#cbd5e1' : '#9ee6b4',
+                  transport.mode === 'connecting'
+                    ? '#cbd5e1'
+                    : transport.mode === 'webrtc'
+                      ? '#bfdbfe'
+                      : '#9ee6b4',
                 border: `1px solid ${
                   transport.mode === 'connecting'
                     ? alpha('#94a3b8', 0.2)
-                    : alpha('#22c55e', 0.28)
+                    : transport.mode === 'webrtc'
+                      ? alpha('#60a5fa', 0.34)
+                      : alpha('#22c55e', 0.28)
                 }`,
                 '& .MuiChip-label': { px: 0.75 },
               }}
