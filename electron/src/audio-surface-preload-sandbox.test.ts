@@ -36,5 +36,6 @@ describe('audio-surface sandbox preload', () => {
     expect(source).toContain("ipcRenderer.invoke('gcall:sendRtcSignal', input)");
     expect(source).toContain("'gcall:rtc-signal'");
     expect(source).toContain("'gcall:local-session-taken-over'");
+    expect(source).toContain("ipcRenderer.invoke('hub:getIceServers')");
   });
 });

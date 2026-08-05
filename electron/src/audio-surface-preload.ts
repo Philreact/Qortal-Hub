@@ -41,6 +41,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }>,
 });
 
+// Group WebRTC is owned by this hidden audio renderer, so it needs the same
+// ICE discovery input as the main renderer without exposing any unrelated Hub
+// APIs into the hardened audio window.
+contextBridge.exposeInMainWorld('hub', {
+  getIceServers: () =>
+    ipcRenderer.invoke('hub:getIceServers') as Promise<{ urls: string }[]>,
+});
+
 contextBridge.exposeInMainWorld('groupCall', {
   join: async (...args: GroupCallJoinIpcArguments) =>
     // Electron sandboxed preloads cannot runtime-require local modules. Keep
