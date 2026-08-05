@@ -82,6 +82,36 @@ _MAX_ENCRYPTED_WIRE_BYTES = int(getattr(RNS.Packet, "ENCRYPTED_MDU", RNS.Packet.
 # Grep logs for this string to confirm the rebuilt script is running (sync with GC_RETICULUM_WIRE_BUILD_MARKER in group-call-wire-reticulum.ts).
 PRESENCE_BRIDGE_BUILD = "wire404-multidevice-size-safe-v1"
 
+_GROUP_AUDIO_CONTROL_CHANNEL_VERSION = 1
+_GROUP_AUDIO_CONTROL_CHANNEL_DATA = 1
+_GROUP_AUDIO_CONTROL_CAPABILITY_WIRE_TYPE = "GCC1"
+_GROUP_AUDIO_CONTROL_CAPABILITY_HELLO = "H"
+_GROUP_AUDIO_CONTROL_CAPABILITY_ACK = "A"
+# One GO0 header plus the maximum 192 GO1 fragments accepted by
+# GroupCallManager. Keep this aligned with GCALL_RTC_SIGNAL_MAX_FRAGMENTS.
+_GROUP_AUDIO_CONTROL_CHANNEL_MAX_FRAMES = 193
+_GROUP_AUDIO_CONTROL_CHANNEL_MAX_BYTES = 256 * 1024
+
+
+class GroupAudioControlChannelMessage(RNS.MessageBase):
+    """Small reliable control message carried by the audio link's RNS Channel."""
+
+    MSGTYPE = 0x5143
+
+    def __init__(self, kind: int = 0, data: bytes = b""):
+        self.kind = int(kind)
+        self.data = bytes(data or b"")
+
+    def pack(self) -> bytes:
+        return bytes((_GROUP_AUDIO_CONTROL_CHANNEL_VERSION, self.kind)) + self.data
+
+    def unpack(self, raw: bytes):
+        value = bytes(raw or b"")
+        if len(value) < 2 or value[0] != _GROUP_AUDIO_CONTROL_CHANNEL_VERSION:
+            raise ValueError("Unsupported group control channel message")
+        self.kind = int(value[1])
+        self.data = value[2:]
+
 # Peer cache: must match TS base58 in electron/src/presence.ts (Qortal alphabet).
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _BASE58_MAP = {c: i for i, c in enumerate(_BASE58_ALPHABET)}
@@ -602,6 +632,7 @@ _AUDIO_LINK_FORCE_PATH_REFRESH_TIMEOUTS = 2
 _PACKET_PATH_INBOUND_FRESH_SECONDS = 3.0
 _PACKET_PATH_POLL_INTERVAL_SECONDS = 0.01
 _SCHEDULER_AUDIO_SHARDS = 4
+_SCHEDULER_GCALL_CONTROL_SHARDS = 8
 _SCHEDULER_PRESENCE_FANOUT_SHARDS = 8
 _SCHEDULER_LAND_STATE_SHARDS = 4
 _SCHEDULER_RESOURCE_OPEN_SHARDS = 4
@@ -620,6 +651,9 @@ _SCHEDULER_QUEUE_MAX_BY_LANE: Dict[str, int] = {
     "game-control": 128,
     "proximity-media": 32,
 }
+for _gcall_control_shard in range(_SCHEDULER_GCALL_CONTROL_SHARDS):
+    _SCHEDULER_QUEUE_MAX_BY_LANE[f"gcall-control-{_gcall_control_shard}"] = 64
+    _SCHEDULER_QUEUE_MAX_BY_LANE[f"gcall-control-command-{_gcall_control_shard}"] = 64
 for _audio_shard in range(_SCHEDULER_AUDIO_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"audio-send-{_audio_shard}"] = 64
 for _presence_shard in range(_SCHEDULER_PRESENCE_FANOUT_SHARDS):
@@ -885,7 +919,10 @@ _LAND_STATE_MAX_HOPS = 8
 _LAND_STATE_MAX_AGE_MS = 2 * 60_000
 _LAND_STATE_MAX_FUTURE_SKEW_MS = 30_000
 _AUDIO_LINK_WIRE_TYPES = frozenset(
-    {_GROUP_AUDIO_HEARTBEAT_WIRE_TYPE}
+    {
+        _GROUP_AUDIO_HEARTBEAT_WIRE_TYPE,
+        _GROUP_AUDIO_CONTROL_CAPABILITY_WIRE_TYPE,
+    }
 )
 
 _PRIORITY_EVENT_NAMES = frozenset(
@@ -4958,6 +4995,14 @@ def _audio_scheduler_lane_for_route(route_key: str) -> str:
     return f"audio-send-{shard}"
 
 
+def _gcall_control_scheduler_lane(link_id: str) -> str:
+    digest = hashlib.blake2s(
+        str(link_id or "unknown").encode("utf-8"), digest_size=2
+    ).digest()
+    shard = int.from_bytes(digest, "big") % max(1, _SCHEDULER_GCALL_CONTROL_SHARDS)
+    return f"gcall-control-{shard}"
+
+
 def _resource_open_scheduler_lane(peer_hash: str) -> str:
     digest = hashlib.blake2s(
         str(peer_hash or "unknown").strip().lower().encode("utf-8"),
@@ -5045,7 +5090,7 @@ def _handle_rns_command_message(
     if land_state_queued is not None:
         _emit_audio_queue_state()
         return True
-    lane = _scheduler_lane_for_command(action)
+    lane = _scheduler_lane_for_command(action, message)
     ok = _enqueue_scheduler_task(lane, f"cmd:{action or 'unknown'}", handle_command, message)
     if not ok:
         req_id = str(message.get("id") or "") if isinstance(message, dict) else ""
@@ -5069,10 +5114,22 @@ def _handle_rns_command_message(
     return True
 
 
-def _scheduler_lane_for_command(action: Any) -> str:
+def _scheduler_lane_for_command(
+    action: Any,
+    message: Optional[Dict[str, Any]] = None,
+) -> str:
     action_name = str(action or "")
     if action_name in {"clear_group_audio_diagnostics"}:
         return "control-send"
+    if action_name == "send_group_audio_link_control":
+        payload = message.get("payload") if isinstance(message, dict) else None
+        route_key = ""
+        if isinstance(payload, dict):
+            route_key = str(
+                payload.get("linkId") or payload.get("peerPresenceHash") or ""
+            )
+        base_lane = _gcall_control_scheduler_lane(route_key)
+        return base_lane.replace("gcall-control-", "gcall-control-command-", 1)
     if action_name in {
         "open_group_audio_link",
         "close_group_audio_link",
@@ -16277,6 +16334,14 @@ def _ensure_audio_link_lifecycle_fields(state: Dict[str, Any]) -> Dict[str, Any]
         state["rtt_consecutive_timeouts"] = 0
     if "rtt_last_ack_at" not in state:
         state["rtt_last_ack_at"] = 0.0
+    if "control_channel_supported" not in state:
+        state["control_channel_supported"] = False
+    if "control_channel_configured" not in state:
+        state["control_channel_configured"] = False
+    if "control_channel_last_probe_at" not in state:
+        state["control_channel_last_probe_at"] = 0.0
+    if "control_channel_probe_failed_until" not in state:
+        state["control_channel_probe_failed_until"] = 0.0
     return state
 
 
@@ -17958,6 +18023,28 @@ def _handle_audio_link_packet(message, packet) -> None:
         return
     command = str(decoded.get("c") or "")
     if (
+        decoded.get("t") == _GROUP_AUDIO_CONTROL_CAPABILITY_WIRE_TYPE
+        and command
+        in (
+            _GROUP_AUDIO_CONTROL_CAPABILITY_HELLO,
+            _GROUP_AUDIO_CONTROL_CAPABILITY_ACK,
+        )
+    ):
+        with _state_lock:
+            state["control_channel_supported"] = True
+            state["control_channel_probe_failed_until"] = 0.0
+            state["last_rx_at"] = time.time()
+            state["last_activity_at"] = state["last_rx_at"]
+        if command == _GROUP_AUDIO_CONTROL_CAPABILITY_HELLO:
+            _enqueue_scheduler_task(
+                _gcall_control_scheduler_lane(link_id),
+                f"gcall-control-capability-ack:{link_id}",
+                _send_group_audio_control_capability,
+                link_id,
+                _GROUP_AUDIO_CONTROL_CAPABILITY_ACK,
+            )
+        return
+    if (
         decoded.get("t") == _GROUP_AUDIO_RTT_WIRE_TYPE
         and command in (_GROUP_AUDIO_RTT_PROBE_COMMAND, _GROUP_AUDIO_RTT_ACK_COMMAND)
     ):
@@ -18031,6 +18118,182 @@ def on_audio_link_packet(message, packet) -> None:
         _note_callback_duration("audio", started_at, message)
 
 
+class _GroupAudioControlPacketProxy:
+    def __init__(self, link: Any):
+        self.link = link
+        self.packet_hash = None
+
+
+def _send_group_audio_control_capability(
+    link_id: str,
+    command: str = _GROUP_AUDIO_CONTROL_CAPABILITY_HELLO,
+) -> bool:
+    if command not in (
+        _GROUP_AUDIO_CONTROL_CAPABILITY_HELLO,
+        _GROUP_AUDIO_CONTROL_CAPABILITY_ACK,
+    ):
+        return False
+    deadline = time.monotonic() + 2.0
+    while not _shutdown.is_set():
+        state = get_audio_link_state(link_id)
+        if state is None or state.get("closing") is True:
+            return False
+        if state.get("established") is not True:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+            continue
+        link = state.get("link")
+        if link is None or not _link_manager_generation_current("audio", link_id, link):
+            return False
+        encoded = _encode_group_signal_wire(
+            {
+                "t": _GROUP_AUDIO_CONTROL_CAPABILITY_WIRE_TYPE,
+                "c": command,
+            }
+        )
+        if not encoded.get("ok"):
+            return False
+        try:
+            result, _duration_ms = _send_packet_on_audio_link_bounded(
+                link_id,
+                link,
+                encoded["wire_bytes"],
+                "gcall_control_capability",
+            )
+            return result is True
+        except Exception:
+            return False
+    return False
+
+
+def _send_group_audio_control_channel_message(
+    link_id: str,
+    kind: int,
+    data: bytes = b"",
+    wait_seconds: float = 2.0,
+) -> bool:
+    deadline = time.monotonic() + max(0.05, wait_seconds)
+    while not _shutdown.is_set():
+        state = get_audio_link_state(link_id)
+        if state is None or state.get("closing") is True:
+            return False
+        if state.get("established") is not True:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+            continue
+        link = state.get("link")
+        channel = state.get("control_channel")
+        if link is None or channel is None or not _link_manager_generation_current("audio", link_id, link):
+            return False
+        try:
+            if channel.is_ready_to_send():
+                message = GroupAudioControlChannelMessage(kind, data)
+                if len(message.pack()) > int(channel.mdu):
+                    return False
+                channel.send(message)
+                return True
+        except Exception as exc:
+            log(
+                "[presence_bridge] target=gcall-control-channel send_failed "
+                f"link={link_id} kind={kind} err={str(exc)[:160]}"
+            )
+            return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+    return False
+
+
+def _send_group_audio_control_bundle(
+    link_id: str,
+    room_id: str,
+    frames: List[bytes],
+) -> None:
+    sent = 0
+    started_at = time.monotonic()
+    for frame in frames:
+        try:
+            wire = make_group_audio_wire(room_id, frame)
+        except Exception as exc:
+            log(
+                "[presence_bridge] target=gcall-control-channel encode_failed "
+                f"link={link_id} room={room_id} err={str(exc)[:160]}"
+            )
+            return
+        if not _send_group_audio_control_channel_message(
+            link_id,
+            _GROUP_AUDIO_CONTROL_CHANNEL_DATA,
+            wire,
+            wait_seconds=6.0,
+        ):
+            log(
+                "[presence_bridge] target=gcall-control-channel bundle_send_failed "
+                f"link={link_id} room={room_id} sent={sent} total={len(frames)}"
+            )
+            return
+        sent += 1
+    elapsed_ms = int((time.monotonic() - started_at) * 1000)
+    log(
+        "[presence_bridge] target=gcall-control-channel bundle_queued "
+        f"link={link_id} room={room_id} frames={sent} duration_ms={elapsed_ms}"
+    )
+
+
+def _handle_group_audio_control_channel_message(link: Any, message: Any) -> bool:
+    if not isinstance(message, GroupAudioControlChannelMessage):
+        return False
+    link_id = get_audio_link_id(link)
+    if link_id is None or not _link_manager_generation_current("audio", link_id, link):
+        return True
+    state = get_audio_link_state(link_id)
+    if state is None:
+        return True
+    with _state_lock:
+        state["last_activity_at"] = time.time()
+    if message.kind != _GROUP_AUDIO_CONTROL_CHANNEL_DATA or not message.data:
+        return True
+    # Reuse the existing authenticated-link receive path. Signature, account,
+    # room and selected-device validation still happens in GroupCallManager.
+    _handle_audio_link_packet(
+        message.data,
+        _GroupAudioControlPacketProxy(link),
+    )
+    return True
+
+
+def _configure_group_audio_control_channel(link: Any, link_id: str) -> None:
+    state = get_audio_link_state(link_id)
+    if state is None:
+        return
+    with _state_lock:
+        _ensure_audio_link_lifecycle_fields(state)
+        if state.get("control_channel_configured") is True:
+            return
+    try:
+        channel = link.get_channel()
+        channel.register_message_type(GroupAudioControlChannelMessage)
+
+        def handler(message: Any) -> bool:
+            return _handle_group_audio_control_channel_message(link, message)
+
+        channel.add_message_handler(handler)
+        with _state_lock:
+            current = _audio_links_by_id.get(link_id)
+            if current is not state:
+                channel.remove_message_handler(handler)
+                return
+            state["control_channel"] = channel
+            state["control_channel_handler"] = handler
+            state["control_channel_configured"] = True
+    except Exception as exc:
+        log(
+            "[presence_bridge] target=gcall-control-channel configure_failed "
+            f"link={link_id} err={str(exc)[:160]}"
+        )
+
+
 def configure_audio_link(link, link_id: str) -> None:
     link.set_link_closed_callback(on_audio_link_closed)
     link.set_packet_callback(on_audio_link_packet)
@@ -18041,6 +18304,13 @@ def configure_audio_link(link, link_id: str) -> None:
             _ensure_audio_link_lifecycle_fields(state)
             _set_link_manager_generation(link, state)
         _audio_link_ids_by_object[id(link)] = link_id
+    _configure_group_audio_control_channel(link, link_id)
+    _enqueue_scheduler_task(
+        _gcall_control_scheduler_lane(link_id),
+        f"gcall-control-capability:{link_id}",
+        _send_group_audio_control_capability,
+        link_id,
+    )
     _activate_audio_rtt_sampling(link_id)
 
 
@@ -22377,6 +22647,183 @@ def handle_warm_group_audio_path(req_id: str, payload: Dict[str, Any]) -> None:
     )
 
 
+def handle_send_group_audio_link_control(req_id: str, payload: Dict[str, Any]) -> None:
+    room_id = str(payload.get("roomId") or "")
+    encoded_frames = payload.get("frames")
+    if (
+        not room_id
+        or len(room_id.encode("utf-8")) > AUDIO_MAX_ROOM_ID_LEN
+        or not isinstance(encoded_frames, list)
+        or not encoded_frames
+        or len(encoded_frames) > _GROUP_AUDIO_CONTROL_CHANNEL_MAX_FRAMES
+    ):
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "invalid_control_frames"},
+            error="Missing roomId or invalid control frames",
+        )
+        return
+
+    link_id = str(payload.get("linkId") or "").strip()
+    peer_key = str(payload.get("peerPresenceHash") or "").strip().lower()
+    resolved_link_id = link_id
+    state = get_audio_link_state(resolved_link_id) if resolved_link_id else None
+    fallback_peer_key = str(
+        (state or {}).get("peerPresenceHash") or peer_key
+    ).strip().lower()
+    state_is_ready = (
+        state is not None
+        and state.get("established") is True
+        and state.get("link") is not None
+        and state.get("closing") is not True
+        and _link_manager_generation_current(
+            "audio", resolved_link_id, state.get("link")
+        )
+    )
+    if not state_is_ready and fallback_peer_key:
+        candidate = _best_established_audio_link_id_for_peer(fallback_peer_key)
+        if candidate:
+            candidate_state = get_audio_link_state(candidate)
+            candidate_link = (candidate_state or {}).get("link")
+            if (
+                candidate_state is not None
+                and candidate_state.get("established") is True
+                and candidate_link is not None
+                and candidate_state.get("closing") is not True
+                and _link_manager_generation_current(
+                    "audio", candidate, candidate_link
+                )
+            ):
+                resolved_link_id = candidate
+                state = candidate_state
+    if state is None:
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "audio_link_not_ready"},
+            error="Audio link not ready",
+        )
+        return
+    link = state.get("link")
+    if (
+        state.get("established") is not True
+        or link is None
+        or state.get("closing") is True
+        or not _link_manager_generation_current("audio", resolved_link_id, link)
+    ):
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "audio_link_not_ready"},
+            error="Audio link not ready",
+        )
+        return
+    if (
+        state.get("control_channel_supported") is not True
+        or state.get("control_channel_configured") is not True
+        or state.get("control_channel") is None
+    ):
+        now_monotonic = time.monotonic()
+        with _state_lock:
+            probe_failed_until = float(
+                state.get("control_channel_probe_failed_until") or 0.0
+            )
+            last_probe_at = float(state.get("control_channel_last_probe_at") or 0.0)
+            should_probe = now_monotonic - last_probe_at >= 0.5
+            if should_probe:
+                state["control_channel_last_probe_at"] = now_monotonic
+        if now_monotonic < probe_failed_until:
+            emit_resp(
+                req_id,
+                False,
+                payload={"code": "control_channel_not_ready"},
+                error="Peer control channel is not ready",
+            )
+            return
+        if should_probe:
+            _enqueue_scheduler_task(
+                _gcall_control_scheduler_lane(resolved_link_id),
+                f"gcall-control-capability-retry:{resolved_link_id}",
+                _send_group_audio_control_capability,
+                resolved_link_id,
+            )
+        # The first offer can race the capability round trip immediately after
+        # link classification. This command runs on its per-peer command shard,
+        # while the probe and ACK use the separate transport shard, so waiting
+        # briefly cannot block link lifecycle or the capability exchange.
+        ready_deadline = time.monotonic() + 0.75
+        while time.monotonic() < ready_deadline and not _shutdown.is_set():
+            current = get_audio_link_state(resolved_link_id)
+            if current is not state or current.get("closing") is True:
+                break
+            if (
+                current.get("control_channel_supported") is True
+                and current.get("control_channel_configured") is True
+                and current.get("control_channel") is not None
+            ):
+                break
+            time.sleep(0.01)
+    if (
+        state.get("control_channel_supported") is not True
+        or state.get("control_channel_configured") is not True
+        or state.get("control_channel") is None
+    ):
+        with _state_lock:
+            state["control_channel_probe_failed_until"] = time.monotonic() + 1.0
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "control_channel_not_ready"},
+            error="Peer control channel is not ready",
+        )
+        return
+
+    frames: List[bytes] = []
+    total_bytes = 0
+    try:
+        for encoded in encoded_frames:
+            if not isinstance(encoded, str) or not encoded:
+                raise ValueError("Invalid base64 frame")
+            raw = base64.b64decode(encoded, validate=True)
+            if not raw or len(raw) > AUDIO_MAX_PAYLOAD:
+                raise ValueError("Control frame is too large")
+            total_bytes += len(raw)
+            if total_bytes > _GROUP_AUDIO_CONTROL_CHANNEL_MAX_BYTES:
+                raise ValueError("Control bundle is too large")
+            frames.append(raw)
+    except Exception as exc:
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "invalid_control_frames"},
+            error=str(exc),
+        )
+        return
+
+    queued = _enqueue_scheduler_task(
+        _gcall_control_scheduler_lane(resolved_link_id),
+        f"gcall-control-bundle:{resolved_link_id}:{room_id}",
+        _send_group_audio_control_bundle,
+        resolved_link_id,
+        room_id,
+        frames,
+    )
+    if not queued:
+        emit_resp(
+            req_id,
+            False,
+            payload={"code": "scheduler_queue_full"},
+            error="Group call control queue is full",
+        )
+        return
+    emit_resp(
+        req_id,
+        True,
+        payload={"linkId": resolved_link_id, "frames": len(frames)},
+    )
+
+
 def handle_send_group_audio_link_heartbeat(req_id: str, payload: Dict[str, Any]) -> None:
     room_id = str(payload.get("roomId") or "")
     command = str(payload.get("command") or "")
@@ -22606,6 +23053,8 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_reset_group_audio_peer_state(req_id, payload)
     elif action == "warm_group_audio_path":
         handle_warm_group_audio_path(req_id, payload)
+    elif action == "send_group_audio_link_control":
+        handle_send_group_audio_link_control(req_id, payload)
     elif action == "send_group_audio_link_heartbeat":
         handle_send_group_audio_link_heartbeat(req_id, payload)
     elif action == "clear_group_audio_diagnostics":

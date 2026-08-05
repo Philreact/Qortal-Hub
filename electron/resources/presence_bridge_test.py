@@ -383,6 +383,40 @@ class FakeLink:
         self.teardown_called = True
 
 
+class FakeChannel:
+    def __init__(self):
+        self.mdu = 4096
+        self.message_types = []
+        self.handlers = []
+        self.sent = []
+
+    def register_message_type(self, message_type):
+        self.message_types.append(message_type)
+
+    def add_message_handler(self, handler):
+        self.handlers.append(handler)
+
+    def remove_message_handler(self, handler):
+        if handler in self.handlers:
+            self.handlers.remove(handler)
+
+    def is_ready_to_send(self):
+        return True
+
+    def send(self, message):
+        self.sent.append(message)
+        return object()
+
+
+class FakeChannelLink(FakeLink):
+    def __init__(self):
+        super().__init__()
+        self.channel = FakeChannel()
+
+    def get_channel(self):
+        return self.channel
+
+
 class FakeSessionReceipt:
     FAILED = 0
     SENT = 1
@@ -1400,6 +1434,198 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
             responses[0].get("payload", {}).get("linkId"),
             "current-audio-link",
         )
+
+    def test_reliable_control_requires_peer_channel_handshake(self):
+        self.install_audio_state("current-audio-link", link=FakeChannelLink())
+
+        self.bridge.handle_send_group_audio_link_control(
+            "req-control",
+            {
+                "linkId": "current-audio-link",
+                "roomId": "gcall-qortal-1",
+                "frames": [base64.b64encode(b"control").decode("ascii")],
+            },
+        )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertFalse(responses[0].get("ok"))
+        self.assertEqual(
+            responses[0].get("payload", {}).get("code"),
+            "control_channel_not_ready",
+        )
+
+    def test_control_capability_enables_channel_and_queues_ack(self):
+        link = self.install_audio_state("current-audio-link")
+        capability = json.dumps(
+            {
+                "t": self.bridge._GROUP_AUDIO_CONTROL_CAPABILITY_WIRE_TYPE,
+                "c": self.bridge._GROUP_AUDIO_CONTROL_CAPABILITY_HELLO,
+                "r": self.sender_peer_hash,
+            }
+        ).encode("utf-8")
+        queued = []
+
+        def capture(lane, task_name, callback, *args, **kwargs):
+            queued.append((lane, task_name, callback, args, kwargs))
+            return True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", side_effect=capture
+        ):
+            self.bridge.on_audio_link_packet(capability, FakePacket(link))
+
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.assertTrue(state.get("control_channel_supported"))
+        self.assertEqual(len(queued), 1)
+        self.assertIs(queued[0][2], self.bridge._send_group_audio_control_capability)
+        self.assertEqual(
+            queued[0][3][1],
+            self.bridge._GROUP_AUDIO_CONTROL_CAPABILITY_ACK,
+        )
+
+    def test_reliable_control_uses_dedicated_scheduler_after_handshake(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+        queued = []
+
+        def capture(lane, task_name, callback, *args, **kwargs):
+            queued.append((lane, task_name, callback, args, kwargs))
+            return True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", side_effect=capture
+        ):
+            self.bridge.handle_send_group_audio_link_control(
+                "req-control",
+                {
+                    "linkId": "current-audio-link",
+                    "roomId": "gcall-qortal-1",
+                    "frames": [base64.b64encode(b"control").decode("ascii")],
+                },
+            )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertTrue(responses[0].get("ok"))
+        self.assertEqual(len(queued), 1)
+        self.assertTrue(queued[0][0].startswith("gcall-control-"))
+        self.assertIs(queued[0][2], self.bridge._send_group_audio_control_bundle)
+        self.assertEqual(queued[0][3][2], [b"control"])
+
+    def test_reliable_control_accepts_full_typescript_fragment_budget(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+        encoded_frames = [
+            base64.b64encode(f"frame-{index}".encode("ascii")).decode("ascii")
+            for index in range(193)
+        ]
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ):
+            self.bridge.handle_send_group_audio_link_control(
+                "req-control",
+                {
+                    "linkId": "current-audio-link",
+                    "roomId": "gcall-qortal-1",
+                    "frames": encoded_frames,
+                },
+            )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertTrue(responses[0].get("ok"))
+        self.assertEqual(responses[0].get("payload", {}).get("frames"), 193)
+
+    def test_reliable_control_queue_full_returns_structured_failure(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=False
+        ):
+            self.bridge.handle_send_group_audio_link_control(
+                "req-control",
+                {
+                    "linkId": "current-audio-link",
+                    "roomId": "gcall-qortal-1",
+                    "frames": [base64.b64encode(b"control").decode("ascii")],
+                },
+            )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertFalse(responses[0].get("ok"))
+        self.assertEqual(
+            responses[0].get("payload", {}).get("code"),
+            "scheduler_queue_full",
+        )
+
+    def test_reliable_control_replaces_stale_link_for_same_peer(self):
+        self.install_audio_state("stale-audio-link", established=False)
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ) as enqueue:
+            self.bridge.handle_send_group_audio_link_control(
+                "req-control",
+                {
+                    "linkId": "stale-audio-link",
+                    "peerPresenceHash": self.sender_peer_hash,
+                    "roomId": "gcall-qortal-1",
+                    "frames": [base64.b64encode(b"control").decode("ascii")],
+                },
+            )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertTrue(responses[0].get("ok"))
+        self.assertEqual(
+            responses[0].get("payload", {}).get("linkId"),
+            "current-audio-link",
+        )
+        self.assertEqual(enqueue.call_args.args[3], "current-audio-link")
+
+    def test_reliable_channel_data_reuses_authenticated_audio_receive_path(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        message = self.bridge.GroupAudioControlChannelMessage(
+            self.bridge._GROUP_AUDIO_CONTROL_CHANNEL_DATA,
+            b"reliable-wire",
+        )
+
+        with mock.patch.object(self.bridge, "_handle_audio_link_packet") as receive:
+            handled = self.bridge._handle_group_audio_control_channel_message(
+                link, message
+            )
+
+        self.assertTrue(handled)
+        receive.assert_called_once()
+        self.assertEqual(receive.call_args.args[0], b"reliable-wire")
+        self.assertIs(receive.call_args.args[1].link, link)
 
     def test_audio_rtt_probe_uses_established_audio_link(self):
         self.install_fake_rns_packet()

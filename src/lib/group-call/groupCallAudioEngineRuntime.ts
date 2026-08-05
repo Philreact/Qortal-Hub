@@ -868,6 +868,10 @@ const GCALL_CALL_QUALITY_WORSENED_CONCEALMENT_DELTA_MIN = 80;
 const MAX_ACTIVE_SPEAKERS_GLOBAL = 3;
 const ACTIVE_SPEAKER_WINDOW_MS = 2_000;
 const REMOTE_SPEECH_RECOVERY_WINDOW_MS = 4_000;
+// The sender has already transmitted 600 ms of vad=false hangover before it
+// becomes quiet. Fade shortly after those packets stop, ahead of the normal
+// jitter-buffer under-run/PLC boundary, while retaining ample speech safety.
+const INTENTIONAL_IDLE_OUTPUT_FADE_DELAY_MS = 80;
 const INTENTIONAL_IDLE_SOURCE_RELEASE_MS = 1_000;
 const INTENTIONAL_IDLE_MIN_FALSE_PACKETS = 3;
 const GCALL_CONNECTION_HINT_BAD_MS = 2_800;
@@ -1152,6 +1156,11 @@ export class GroupCallAudioEngineRuntime {
     string,
     ReturnType<typeof setTimeout>
   >();
+  private readonly remoteAudioIdleFadeTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly remoteAudioSilencedSources = new Set<string>();
   private idleSourceReleases = 0;
   private readonly participantDecodedMediaLastSeenAt = new Map<
     string,
@@ -4361,8 +4370,7 @@ export class GroupCallAudioEngineRuntime {
       !this.userInfo?.address ||
       metrics.packetsReceived > 0 ||
       this.outboundSendSuccesses <
-        ZERO_INBOUND_MEDIA_RECOVERY_MIN_OUTBOUND_FRAMES ||
-      !this.hasRecentRemoteSpeech()
+        ZERO_INBOUND_MEDIA_RECOVERY_MIN_OUTBOUND_FRAMES
     ) {
       return;
     }
@@ -4375,7 +4383,6 @@ export class GroupCallAudioEngineRuntime {
     if (uniqueTargets.length === 0) return;
     const now = Date.now();
     for (const address of uniqueTargets) {
-      if (!this.hasRecentSpeechForMediaRecoveryTarget(address, now)) continue;
       const settleAgeMs = this.getMediaTargetSettleAgeMs(address, now);
       if (settleAgeMs < LOW_INBOUND_MEDIA_RECOVERY_STARTUP_GRACE_MS) {
         this.recordThrottledDiagEvent(
@@ -9388,9 +9395,12 @@ export class GroupCallAudioEngineRuntime {
   ): void {
     const address = addressValue.trim();
     if (!address) return;
+    if (this.remoteAudioSilencedSources.delete(address)) {
+      this.receiveEngine.setSourceIntentionalSilence(address, false);
+    }
     if (vad) {
       this.remoteSpeechLastSeenAt.set(address, nowMs);
-      this.clearRemoteAudioIdleTimer(address);
+      this.clearRemoteAudioIdleTimers(address);
       this.remoteAudioIdleState.set(address, {
         lastPacketAtMs: nowMs,
         consecutiveVadFalse: 0,
@@ -9403,12 +9413,52 @@ export class GroupCallAudioEngineRuntime {
       consecutiveVadFalse: (previous?.consecutiveVadFalse ?? 0) + 1,
     };
     this.remoteAudioIdleState.set(address, next);
-    if (
-      next.consecutiveVadFalse >= INTENTIONAL_IDLE_MIN_FALSE_PACKETS &&
-      !this.remoteAudioIdleTimers.has(address)
-    ) {
-      this.scheduleRemoteAudioIdleRelease(address);
+    if (next.consecutiveVadFalse >= INTENTIONAL_IDLE_MIN_FALSE_PACKETS) {
+      if (!this.remoteAudioIdleFadeTimers.has(address)) {
+        this.scheduleRemoteAudioIdleFade(address);
+      }
+      if (!this.remoteAudioIdleTimers.has(address)) {
+        this.scheduleRemoteAudioIdleRelease(address);
+      }
     }
+  }
+
+  private scheduleRemoteAudioIdleFade(address: string): void {
+    const state = this.remoteAudioIdleState.get(address);
+    if (
+      !state ||
+      state.consecutiveVadFalse < INTENTIONAL_IDLE_MIN_FALSE_PACKETS
+    )
+      return;
+    const remainingMs = Math.max(
+      1,
+      INTENTIONAL_IDLE_OUTPUT_FADE_DELAY_MS -
+        (Date.now() - state.lastPacketAtMs)
+    );
+    const timer = setTimeout(() => {
+      this.remoteAudioIdleFadeTimers.delete(address);
+      const latest = this.remoteAudioIdleState.get(address);
+      if (
+        !latest ||
+        latest.consecutiveVadFalse < INTENTIONAL_IDLE_MIN_FALSE_PACKETS
+      ) {
+        return;
+      }
+      const idleForMs = Date.now() - latest.lastPacketAtMs;
+      if (idleForMs < INTENTIONAL_IDLE_OUTPUT_FADE_DELAY_MS) {
+        this.scheduleRemoteAudioIdleFade(address);
+        return;
+      }
+      if (!this.receiveEngine.hasSource(address)) return;
+      this.remoteAudioSilencedSources.add(address);
+      this.receiveEngine.setSourceIntentionalSilence(address, true);
+      this.recordDiagEvent('intentional-idle-source-silenced', {
+        roomId: this.snapshot.roomId,
+        peer: truncateGcallDiagAddress(address),
+        idleForMs,
+      });
+    }, remainingMs);
+    this.remoteAudioIdleFadeTimers.set(address, timer);
   }
 
   private scheduleRemoteAudioIdleRelease(address: string): void {
@@ -9445,29 +9495,43 @@ export class GroupCallAudioEngineRuntime {
       });
       // removeSource drops decoder/playout resources only. Roster, topology,
       // transport and the authenticated sequence watermark remain intact.
+      this.remoteAudioSilencedSources.delete(address);
       void this.receiveEngine.removeSource(address);
     }, remainingMs);
     this.remoteAudioIdleTimers.set(address, timer);
   }
 
-  private clearRemoteAudioIdleTimer(address: string): void {
+  private clearRemoteAudioIdleTimers(address: string): void {
     const timer = this.remoteAudioIdleTimers.get(address);
     if (timer) clearTimeout(timer);
     this.remoteAudioIdleTimers.delete(address);
+    const fadeTimer = this.remoteAudioIdleFadeTimers.get(address);
+    if (fadeTimer) clearTimeout(fadeTimer);
+    this.remoteAudioIdleFadeTimers.delete(address);
   }
 
   private clearRemoteAudioIdleState(address: string): void {
-    this.clearRemoteAudioIdleTimer(address);
+    this.clearRemoteAudioIdleTimers(address);
     this.remoteAudioIdleState.delete(address);
     this.remoteSpeechLastSeenAt.delete(address);
+    if (this.remoteAudioSilencedSources.delete(address)) {
+      this.receiveEngine.setSourceIntentionalSilence(address, false);
+    }
   }
 
   private clearAllRemoteAudioIdleState(): void {
     for (const timer of this.remoteAudioIdleTimers.values())
       clearTimeout(timer);
     this.remoteAudioIdleTimers.clear();
+    for (const timer of this.remoteAudioIdleFadeTimers.values())
+      clearTimeout(timer);
+    this.remoteAudioIdleFadeTimers.clear();
     this.remoteAudioIdleState.clear();
     this.remoteSpeechLastSeenAt.clear();
+    for (const address of this.remoteAudioSilencedSources) {
+      this.receiveEngine.setSourceIntentionalSilence(address, false);
+    }
+    this.remoteAudioSilencedSources.clear();
   }
 
   private hasRecentRemoteSpeech(nowMs = Date.now()): boolean {

@@ -35,6 +35,7 @@ export type GroupCallSilenceGateDiagnostics = {
   estimatedBytesSaved: number;
   currentlySuppressing: boolean;
   bufferedPreRollFrames: number;
+  speechDetectionProven: boolean;
 };
 
 type BufferedFrame = {
@@ -53,6 +54,7 @@ export class GroupCallSilenceGate {
   private suppressing = false;
   private suppressionStartedPerfMs: number | null = null;
   private lastCapturePerfMs: number | null = null;
+  private speechDetectionProven = false;
   private transmittedFrames = 0;
   private suppressedFrames = 0;
   private preRollFrames = 0;
@@ -76,6 +78,7 @@ export class GroupCallSilenceGate {
     this.suppressing = false;
     this.suppressionStartedPerfMs = null;
     this.lastCapturePerfMs = null;
+    this.speechDetectionProven = false;
     const initialOpen = options?.initialOpen !== false;
     const nowPerfMs = options?.nowPerfMs;
     this.openUntilPerfMs =
@@ -116,6 +119,7 @@ export class GroupCallSilenceGate {
     }
 
     if (frame.vad) {
+      this.speechDetectionProven = true;
       this.openUntilPerfMs = capturePerfMs + GROUP_CALL_SILENCE_HANGOVER_MS;
       if (!this.suppressing) {
         this.preRoll = [];
@@ -145,6 +149,15 @@ export class GroupCallSilenceGate {
         exitedSilence: true,
         discardedStalePreRollFrames,
       };
+    }
+
+    // Fail open until this capture pipeline has positively detected speech.
+    // A low-gain or unusual microphone can otherwise report vad=false for
+    // real voice and the gate would suppress every audible frame. Once VAD has
+    // proved itself, the normal hangover/pre-roll behavior applies.
+    if (!this.speechDetectionProven) {
+      this.transmittedFrames++;
+      return this.decision([frame]);
     }
 
     if (
@@ -191,6 +204,7 @@ export class GroupCallSilenceGate {
       estimatedBytesSaved: this.estimatedBytesSaved,
       currentlySuppressing: this.suppressing,
       bufferedPreRollFrames: this.preRoll.length,
+      speechDetectionProven: this.speechDetectionProven,
     };
   }
 

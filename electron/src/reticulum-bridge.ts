@@ -220,6 +220,7 @@ type BridgeCmdFrame = {
     | 'send_reticulum_chat'
     | 'send_reticulum_chat_targets'
     | 'fanout_reticulum_chat'
+    | 'send_group_audio_link_control'
     | 'send_group_audio_link_heartbeat'
     | 'open_group_audio_link'
     | 'close_group_audio_link'
@@ -2102,6 +2103,44 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       ...(typeof opts.packetRxRecent === 'boolean'
         ? { packetRxRecent: opts.packetRxRecent }
         : {}),
+    });
+  }
+
+  /**
+   * Queue call-control frames on the reliable RNS Channel attached to an
+   * authenticated group-audio link. Unlike enqueueGroupAudio(), this path is
+   * ordered, receipt-backed and never competes with the lossy Opus queue.
+   */
+  async sendGroupAudioLinkControlDetailed(opts: {
+    roomId: string;
+    frames: Buffer[];
+    peerPresenceHash?: string;
+    linkId?: string;
+  }): Promise<ReticulumSendResult> {
+    const linkId = typeof opts.linkId === 'string' ? opts.linkId.trim() : '';
+    const peerPresenceHash =
+      typeof opts.peerPresenceHash === 'string'
+        ? opts.peerPresenceHash.trim().toLowerCase()
+        : '';
+    if (!linkId && !peerPresenceHash) {
+      return {
+        ok: false,
+        reason: 'send-command-failed',
+        error: 'Missing linkId or peerPresenceHash',
+      };
+    }
+    if (!Array.isArray(opts.frames) || opts.frames.length === 0) {
+      return {
+        ok: false,
+        reason: 'send-command-failed',
+        error: 'Missing control frames',
+      };
+    }
+    return this.sendDetailed('send_group_audio_link_control', {
+      roomId: opts.roomId,
+      frames: opts.frames.map((frame) => frame.toString('base64')),
+      ...(linkId ? { linkId } : {}),
+      ...(peerPresenceHash ? { peerPresenceHash } : {}),
     });
   }
 
@@ -5318,6 +5357,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       | 'fanout_group_call'
       | 'send_reticulum_chat'
       | 'fanout_reticulum_chat'
+      | 'send_group_audio_link_control'
       | 'send_group_audio_link_heartbeat'
       | 'close_group_audio_link'
       | 'reset_group_audio_peer_state'

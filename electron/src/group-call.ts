@@ -5789,16 +5789,50 @@ export class GroupCallManager extends EventEmitter {
     if (frames.some((frame) => !wireFitsReticulum(frame))) {
       return { success: false, error: 'rtc-signal-fragment-too-large' };
     }
-    const result = this.sendReticulumLinkControlToAddresses(
-      input.roomId,
-      frames,
-      [input.toAddress],
-      new Set(),
-      `rtc-${input.signalType}`
-    );
-    return result.sentLinks > 0
-      ? { success: true }
-      : { success: false, error: 'direct-link-not-ready' };
+    const encodedFrames = frames
+      .map((frame) => encodeGcLinkControlWire(frame))
+      .filter((frame): frame is Buffer => Buffer.isBuffer(frame));
+    if (encodedFrames.length !== frames.length) {
+      return { success: false, error: 'rtc-signal-fragment-encode-failed' };
+    }
+
+    const bridge = this.reticulumBridge;
+    const linkState = this.reticulumAudioPeersByAddress.get(input.toAddress);
+    if (
+      bridge?.getState() === 'ready' &&
+      linkState?.established &&
+      linkState.linkId &&
+      this.isReticulumAudioLinkVerifiedForAddress(
+        input.toAddress,
+        linkState.peerPresenceHash,
+        linkState.peerDestinationHash
+      )
+    ) {
+      const channelResult = await bridge.sendGroupAudioLinkControlDetailed({
+        roomId: input.roomId,
+        frames: encodedFrames,
+        linkId: linkState.linkId,
+        peerPresenceHash: linkState.peerPresenceHash,
+      });
+      if (channelResult.ok) {
+        loggerLog(
+          `[GCall] Queued rtc-${input.signalType} over reliable Reticulum link channel room=${input.roomId} link=${linkState.linkId.slice(0, 16)} frames=${encodedFrames.length}`
+        );
+        return { success: true };
+      }
+      const channelFailure = channelResult as Extract<
+        typeof channelResult,
+        { ok: false }
+      >;
+      loggerWarn(
+        `[GCall] Reliable rtc-${input.signalType} channel unavailable room=${input.roomId} reason=${channelFailure.reason}${channelFailure.error ? `:${channelFailure.error}` : ''}`
+      );
+      return {
+        success: false,
+        error: channelFailure.error ?? channelFailure.reason,
+      };
+    }
+    return { success: false, error: 'direct-link-not-ready' };
   }
 
   private computeReticulumAudioTargetsForRoom(room: GroupRoom): Set<string> {

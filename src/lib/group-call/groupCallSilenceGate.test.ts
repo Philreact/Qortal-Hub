@@ -14,10 +14,24 @@ const frame = (capturePerfMs: number, vad: boolean, id = capturePerfMs) => ({
 });
 
 describe('GroupCallSilenceGate', () => {
-  it('keeps startup open for 600 ms, then suppresses silence', () => {
+  it('fails open until VAD has positively identified speech', () => {
     const gate = new GroupCallSilenceGate();
     gate.reset({ initialOpen: true, nowPerfMs: 0 });
     expect(gate.process(frame(0, false), 100).framesToTransmit).toHaveLength(1);
+    expect(
+      gate.process(frame(GROUP_CALL_SILENCE_HANGOVER_MS + 20, false), 100)
+        .framesToTransmit
+    ).toHaveLength(1);
+    expect(
+      gate.getDiagnostics(GROUP_CALL_SILENCE_HANGOVER_MS + 20)
+        .speechDetectionProven
+    ).toBe(false);
+  });
+
+  it('keeps startup open for 600 ms after proven speech, then suppresses silence', () => {
+    const gate = new GroupCallSilenceGate();
+    gate.reset({ initialOpen: true, nowPerfMs: 0 });
+    expect(gate.process(frame(0, true), 100).framesToTransmit).toHaveLength(1);
     expect(
       gate.process(frame(GROUP_CALL_SILENCE_HANGOVER_MS, false), 100)
         .framesToTransmit
@@ -50,6 +64,7 @@ describe('GroupCallSilenceGate', () => {
   it('flushes exactly 120 ms of fresh pre-roll oldest-first', () => {
     const gate = new GroupCallSilenceGate();
     gate.reset({ initialOpen: false });
+    gate.process(frame(-620, true), 100);
     for (let time = 0; time <= 180; time += 20) {
       gate.process(frame(time, false, time / 20), 100);
     }
@@ -64,6 +79,7 @@ describe('GroupCallSilenceGate', () => {
   it('never flushes stale pre-roll after sleep or an encoder stall', () => {
     const gate = new GroupCallSilenceGate();
     gate.reset({ initialOpen: false });
+    gate.process(frame(-620, true), 100);
     gate.process(frame(0, false, 1), 100);
     gate.process(frame(20, false, 2), 100);
     const decision = gate.process(frame(10_000, true, 3), 100);
@@ -79,6 +95,7 @@ describe('GroupCallSilenceGate', () => {
   it('discards buffered frames on mute, device, session, or teardown reset', () => {
     const gate = new GroupCallSilenceGate();
     gate.reset({ initialOpen: false });
+    gate.process(frame(-620, true), 100);
     gate.process(frame(0, false), 100);
     gate.reset({ initialOpen: true, nowPerfMs: 1_000 });
     expect(gate.process(frame(1_000, true, 7), 100).framesToTransmit).toEqual([
@@ -90,6 +107,7 @@ describe('GroupCallSilenceGate', () => {
   it('reports at least 80% suppression during sustained silence', () => {
     const gate = new GroupCallSilenceGate();
     gate.reset({ initialOpen: true, nowPerfMs: 0 });
+    gate.process(frame(0, true), 100);
     for (let time = 0; time < 10_000; time += 20) {
       gate.process(frame(time, false), 100);
     }
