@@ -129,6 +129,21 @@ contextBridge.exposeInMainWorld('groupCall', {
       data,
       timing
     ),
+  sendRtcSignal: async (input: {
+    roomId: string;
+    callSessionId: string;
+    mediaSessionGeneration: number;
+    fromAddress: string;
+    toAddress: string;
+    connectionId: string;
+    signalId: string;
+    signalType: 'capability' | 'offer' | 'answer' | 'candidate' | 'reconnect';
+    payload: string;
+    payloadHash: string;
+    timestamp: number;
+    signature: string;
+    publicKey: string;
+  }) => ipcRenderer.invoke('gcall:sendRtcSignal', input),
   getAudioDataPlaneSession: async (roomId: string, toAddresses: string[]) =>
     ipcRenderer.invoke('gcall:getAudioDataPlaneSession', roomId, toAddresses),
   requestPeerMediaRecovery: async (
@@ -211,6 +226,7 @@ contextBridge.exposeInMainWorld('groupCall', {
     const channels = [
       'gcall:participant-joined',
       'gcall:participant-left',
+      'gcall:local-session-taken-over',
       'gcall:topology',
       'gcall:cluster-heartbeat',
       'gcall:heartbeat',
@@ -218,6 +234,7 @@ contextBridge.exposeInMainWorld('groupCall', {
       'gcall:key',
       'gcall:key-request',
       'gcall:session-updated',
+      'gcall:rtc-signal',
     ] as const;
 
     const handlers = new Map<string, (...args: unknown[]) => void>();
