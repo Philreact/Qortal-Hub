@@ -311,6 +311,15 @@ export class DirectVoiceWebRtcTransport {
       } else {
         await this.sendOffer(true);
       }
+      // Sending a restart offer does not guarantee that the peer received it
+      // or that ICE became connected again. A connection already in the
+      // `disconnected` state may not emit another state-change event, so arm a
+      // watchdog here instead of relying on one. A successful reconnect clears
+      // this timer in handleConnectionState(); otherwise tryRestart() performs
+      // the next bounded attempt after the minimum restart interval.
+      if (!this.closed && !this.isOpen()) {
+        this.scheduleRecovery();
+      }
     } catch {
       // A transient createOffer/setLocalDescription failure must not leave the
       // transport permanently stuck in "connecting". Keep Reticulum active and

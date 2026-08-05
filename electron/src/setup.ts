@@ -6767,7 +6767,8 @@ ipcMain.handle(
     topology: unknown,
     signature: string,
     publicKey: string,
-    timestamp: number
+    timestamp: number,
+    localAuthorityProvisional = false
   ) => {
     const mgr = getGroupCallManager();
     if (!mgr) return { success: false, error: 'GroupCall manager not running' };
@@ -6776,7 +6777,8 @@ ipcMain.handle(
       topology as any,
       signature,
       publicKey,
-      timestamp
+      timestamp,
+      localAuthorityProvisional
     );
     return { success: true };
   }

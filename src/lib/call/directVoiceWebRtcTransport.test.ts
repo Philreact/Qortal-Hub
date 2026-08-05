@@ -53,6 +53,7 @@ class MockPeerConnection {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   MockPeerConnection.instances = [];
 });
@@ -192,6 +193,90 @@ describe('DirectVoiceWebRtcTransport', () => {
     expect(onRemoteStream).toHaveBeenCalledWith(remoteStream);
     expect(pc.replaceTrack).toHaveBeenCalledWith(nextTrack);
     expect(previousTrack.stop).toHaveBeenCalledOnce();
+    transport.close();
+  });
+
+  it('retries recovery when a restart offer receives no answer', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      MockPeerConnection as unknown as typeof RTCPeerConnection
+    );
+    const emitted: DirectVoiceRtcSignal[] = [];
+    const transport = new DirectVoiceWebRtcTransport({
+      offerer: true,
+      getIceServers: async () => [],
+      localStream,
+      onSignal: (signal) => emitted.push(signal),
+      onRemoteStream: vi.fn(),
+    });
+
+    await transport.start();
+    const pc = MockPeerConnection.instances[0]!;
+    pc.connectionState = 'connected';
+    pc.ontrack?.({
+      track: { kind: 'audio' } as MediaStreamTrack,
+      streams: [{} as MediaStream],
+    } as RTCTrackEvent);
+    pc.onconnectionstatechange?.();
+    expect(transport.isOpen()).toBe(true);
+
+    pc.connectionState = 'disconnected';
+    pc.onconnectionstatechange?.();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(pc.createOffer).toHaveBeenCalledTimes(2);
+    expect(pc.createOffer).toHaveBeenLastCalledWith({ iceRestart: true });
+
+    // No answer and no further connection-state event: the watchdog must
+    // still produce another restart attempt rather than remaining on the
+    // Reticulum fallback forever.
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(pc.createOffer).toHaveBeenCalledTimes(3);
+    expect(
+      emitted.filter(
+        (signal) =>
+          signal.kind === 'description' && signal.description.type === 'offer'
+      )
+    ).toHaveLength(3);
+
+    transport.close();
+  });
+
+  it('cancels the recovery watchdog after WebRTC reconnects', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      MockPeerConnection as unknown as typeof RTCPeerConnection
+    );
+    const transport = new DirectVoiceWebRtcTransport({
+      offerer: true,
+      getIceServers: async () => [],
+      localStream,
+      onSignal: vi.fn(),
+      onRemoteStream: vi.fn(),
+    });
+
+    await transport.start();
+    const pc = MockPeerConnection.instances[0]!;
+    pc.connectionState = 'connected';
+    pc.ontrack?.({
+      track: { kind: 'audio' } as MediaStreamTrack,
+      streams: [{} as MediaStream],
+    } as RTCTrackEvent);
+    pc.onconnectionstatechange?.();
+
+    pc.connectionState = 'disconnected';
+    pc.onconnectionstatechange?.();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(pc.createOffer).toHaveBeenCalledTimes(2);
+
+    pc.connectionState = 'connected';
+    pc.onconnectionstatechange?.();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(transport.isOpen()).toBe(true);
+    expect(pc.createOffer).toHaveBeenCalledTimes(2);
     transport.close();
   });
 });

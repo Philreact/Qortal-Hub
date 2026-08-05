@@ -3,15 +3,159 @@ import {
   GroupCallManager,
   buildParticipantFromVerifiedJoin,
   decodeGroupCallLogicalJoinGeneration,
+  isAuthorizedMainRootTransition,
   reticulumAudioResetReasonForVerifiedJoin,
   resolveVerifiedJoinTakeoverAt,
   resolveDmVoiceAudioLinkOpenDecision,
   resolveGroupCallSourcePeerHash,
   resolveVerifiedGroupCallControlPeerHash,
   resolveGroupCallSignedJoinGeneration,
+  resolveMainLocalTopologyProvisional,
+  resolveMainRootObservationTime,
   shouldApplyGroupCallLeaveToSession,
+  shouldProtectHealthyMainTopologyRoot,
   shouldRefreshParticipantFromVerifiedJoin,
 } from './group-call';
+
+describe('group-call root authority protection', () => {
+  const base = {
+    currentRoot: 'Q-current',
+    incomingRoot: 'Q-returning',
+    incomingAuthor: 'Q-returning',
+    currentRootPresent: true,
+    currentTopologyObservedAtMs: 10_000,
+    nowMs: 15_000,
+    localTopologyProvisional: false,
+    healthyWindowMs: 11_500,
+  };
+
+  it('keeps a healthy incumbent when a returning peer republishes itself as root', () => {
+    expect(shouldProtectHealthyMainTopologyRoot(base)).toBe(true);
+  });
+
+  it('lets the incumbent author an intentional root transition', () => {
+    expect(
+      shouldProtectHealthyMainTopologyRoot({
+        ...base,
+        incomingAuthor: base.currentRoot,
+      })
+    ).toBe(false);
+  });
+
+  it('lets a newly joined provisional root reconcile to the incumbent', () => {
+    expect(
+      shouldProtectHealthyMainTopologyRoot({
+        ...base,
+        localTopologyProvisional: true,
+      })
+    ).toBe(false);
+  });
+
+  it('allows standby failover after the incumbent heartbeat expires', () => {
+    expect(
+      shouldProtectHealthyMainTopologyRoot({
+        ...base,
+        nowMs: 21_501,
+      })
+    ).toBe(false);
+  });
+
+  it('does not protect a root that has left the verified roster', () => {
+    expect(
+      shouldProtectHealthyMainTopologyRoot({
+        ...base,
+        currentRootPresent: false,
+      })
+    ).toBe(false);
+  });
+
+  it('refreshes root liveness only when the claimed root authored the topology', () => {
+    expect(
+      resolveMainRootObservationTime({
+        previousRoot: 'Q-root',
+        nextRoot: 'Q-root',
+        topologyAuthor: 'Q-root',
+        previousObservedAtMs: 10_000,
+        nowMs: 12_000,
+      })
+    ).toBe(12_000);
+    expect(
+      resolveMainRootObservationTime({
+        previousRoot: 'Q-root',
+        nextRoot: 'Q-root',
+        topologyAuthor: 'Q-member',
+        previousObservedAtMs: 10_000,
+        nowMs: 12_000,
+      })
+    ).toBe(10_000);
+  });
+
+  it('waits for evidence from a newly selected root', () => {
+    expect(
+      resolveMainRootObservationTime({
+        previousRoot: 'Q-old-root',
+        nextRoot: 'Q-new-root',
+        topologyAuthor: 'Q-old-root',
+        previousObservedAtMs: 10_000,
+        nowMs: 12_000,
+      })
+    ).toBe(0);
+  });
+
+  it('does not let an unrelated same-root update erase provisional state', () => {
+    expect(
+      resolveMainLocalTopologyProvisional({
+        currentRoot: 'Q-provisional',
+        incomingRoot: 'Q-provisional',
+        currentlyProvisional: true,
+        reconciledWithIncumbent: false,
+      })
+    ).toBe(true);
+  });
+
+  it('clears provisional state after incumbent reconciliation', () => {
+    expect(
+      resolveMainLocalTopologyProvisional({
+        currentRoot: 'Q-provisional',
+        incomingRoot: 'Q-incumbent',
+        currentlyProvisional: true,
+        reconciledWithIncumbent: true,
+      })
+    ).toBe(false);
+  });
+
+  it('only lets the designated standby replace a present unresponsive root', () => {
+    const base = {
+      currentRoot: 'Q-root',
+      incomingRoot: 'Q-former-root',
+      incomingAuthor: 'Q-former-root',
+      currentStandby: 'Q-standby',
+      currentRootPresent: true,
+      reconcileProvisionalLocalRoot: false,
+    };
+    expect(isAuthorizedMainRootTransition(base)).toBe(false);
+    expect(
+      isAuthorizedMainRootTransition({
+        ...base,
+        incomingRoot: 'Q-standby',
+        incomingAuthor: 'Q-standby',
+      })
+    ).toBe(true);
+  });
+
+  it('allows a self-authored successor when the old root has left', () => {
+    expect(
+      isAuthorizedMainRootTransition({
+        currentRoot: 'Q-departed',
+        incomingRoot: 'Q-successor',
+        incomingAuthor: 'Q-successor',
+        currentStandby: 'Q-departed-standby',
+        currentRootPresent: false,
+        reconcileProvisionalLocalRoot: false,
+      })
+    ).toBe(true);
+  });
+});
 
 describe('group-call relayed endpoint ownership', () => {
   it('uses the original sender instead of the relay hop', () => {

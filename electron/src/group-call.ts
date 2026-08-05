@@ -1151,6 +1151,10 @@ interface GroupRoom {
     clusters: ClusterDef[];
     lastSeen?: number | null;
   };
+  /** Local receipt time, used for incumbent liveness without trusting peer clocks. */
+  lastTopologyObservedAtMs?: number;
+  /** True only while this installation's renderer is reconciling a self-election. */
+  localTopologyProvisional?: boolean;
   joinTimestamp?: number;
   /** Main-owned media session id; immutable until room is empty. */
   callSessionId: string;
@@ -1688,6 +1692,94 @@ export function chooseMainTopologyAuthority(
   return { acceptIncoming: false, reason: 'same-topology' };
 }
 
+export function shouldProtectHealthyMainTopologyRoot(opts: {
+  currentRoot: string;
+  incomingRoot: string;
+  incomingAuthor: string;
+  currentRootPresent: boolean;
+  currentTopologyObservedAtMs: number;
+  nowMs: number;
+  localTopologyProvisional: boolean;
+  healthyWindowMs?: number;
+}): boolean {
+  const currentRoot = opts.currentRoot.trim();
+  const incomingRoot = opts.incomingRoot.trim();
+  const incomingAuthor = opts.incomingAuthor.trim();
+  if (
+    !currentRoot ||
+    !incomingRoot ||
+    currentRoot === incomingRoot ||
+    incomingAuthor === currentRoot ||
+    !opts.currentRootPresent
+  ) {
+    return false;
+  }
+  // A joining renderer can briefly self-elect while discovering the live root.
+  // Only a topology authored by its claimed root may reconcile that provisional state.
+  if (opts.localTopologyProvisional && incomingAuthor === incomingRoot) {
+    return false;
+  }
+  const observedAt = opts.currentTopologyObservedAtMs;
+  const healthyWindowMs = opts.healthyWindowMs ?? GC_HEALTHY_ROOT_AUTHORITY_MS;
+  return (
+    observedAt > 0 &&
+    Number.isFinite(observedAt) &&
+    opts.nowMs - observedAt <= healthyWindowMs
+  );
+}
+
+export function resolveMainRootObservationTime(opts: {
+  previousRoot: string;
+  nextRoot: string;
+  topologyAuthor: string;
+  previousObservedAtMs: number;
+  nowMs: number;
+}): number {
+  const previousRoot = opts.previousRoot.trim();
+  const nextRoot = opts.nextRoot.trim();
+  if (nextRoot && opts.topologyAuthor.trim() === nextRoot) {
+    return opts.nowMs;
+  }
+  return previousRoot === nextRoot ? opts.previousObservedAtMs : 0;
+}
+
+export function resolveMainLocalTopologyProvisional(opts: {
+  currentRoot: string;
+  incomingRoot: string;
+  currentlyProvisional: boolean;
+  reconciledWithIncumbent: boolean;
+}): boolean {
+  if (
+    opts.reconciledWithIncumbent ||
+    opts.currentRoot.trim() !== opts.incomingRoot.trim()
+  ) {
+    return false;
+  }
+  return opts.currentlyProvisional;
+}
+
+export function isAuthorizedMainRootTransition(opts: {
+  currentRoot: string;
+  incomingRoot: string;
+  incomingAuthor: string;
+  currentStandby: string;
+  currentRootPresent: boolean;
+  reconcileProvisionalLocalRoot: boolean;
+}): boolean {
+  const currentRoot = opts.currentRoot.trim();
+  const incomingRoot = opts.incomingRoot.trim();
+  const incomingAuthor = opts.incomingAuthor.trim();
+  if (!currentRoot || !incomingRoot || currentRoot === incomingRoot) {
+    return true;
+  }
+  if (incomingAuthor === currentRoot) return true;
+  if (incomingAuthor !== incomingRoot) return false;
+  if (opts.reconcileProvisionalLocalRoot || !opts.currentRootPresent) {
+    return true;
+  }
+  return incomingRoot === opts.currentStandby.trim();
+}
+
 function sha256Hex(input: string): string {
   return nodeCrypto.createHash('sha256').update(input).digest('hex');
 }
@@ -1828,6 +1920,8 @@ const GC_MAX_PENDING_VERIFY = 4096;
 const GC_VERIFIED_SIGNATURE_CACHE_MAX = 4096;
 /** Rate-limit stale topology logs (hot path under mesh relay). */
 const GC_STALE_TOPOLOGY_LOG_MIN_MS = 5_000;
+/** Must match the renderer's root-heartbeat failover window. */
+const GC_HEALTHY_ROOT_AUTHORITY_MS = 11_500;
 /** Rate-limit GC_JOIN drop logs per (reason, fromAddress). */
 const GC_JOIN_DROP_LOG_MIN_MS = 5_000;
 /** Throttle broadcastTopology with no local room (ordering / race diagnostic). */
@@ -5488,7 +5582,8 @@ export class GroupCallManager extends EventEmitter {
     >,
     signature: string,
     publicKey: string,
-    timestamp: number
+    timestamp: number,
+    localAuthorityProvisional = false
   ): void {
     const env: GcTopologyEnvelope = {
       type: 'GC_TOPOLOGY',
@@ -5511,6 +5606,14 @@ export class GroupCallManager extends EventEmitter {
         clusters: topology.clusters,
         lastSeen: topology.lastSeen,
       };
+      room.lastTopologyObservedAtMs = resolveMainRootObservationTime({
+        previousRoot,
+        nextRoot: topology.rootForwarder,
+        topologyAuthor: topology.fromAddress,
+        previousObservedAtMs: room.lastTopologyObservedAtMs ?? 0,
+        nowMs: Date.now(),
+      });
+      room.localTopologyProvisional = localAuthorityProvisional;
       if (
         previousRoot &&
         topology.rootForwarder &&
@@ -11083,35 +11186,71 @@ export class GroupCallManager extends EventEmitter {
     }
     this.noteRecentCallActivity(env.roomId, env.fromAddress, env.timestamp);
     this.noteRecentCallActivityForTopology(env.roomId, env, env.timestamp);
+    const verifiedObservedAtMs = Date.now();
     // Update local epoch tracking
     const room = this.rooms.get(env.roomId);
     const topologySignature = buildTopologySignature(env);
     let emitFullTopology = true;
     if (room) {
+      const now = verifiedObservedAtMs;
       const previousRoot = room.lastTopology?.rootForwarder ?? '';
       const incomingTopology = {
         topologyEpoch: env.topologyEpoch,
         rootForwarder: env.rootForwarder,
         standbyForwarder: env.standbyForwarder,
         clusters: env.clusters,
-        lastSeen: env.lastSeen,
+        lastSeen: now,
       };
       const currentRoot = room.lastTopology?.rootForwarder?.trim() ?? '';
       const incomingRoot = incomingTopology.rootForwarder?.trim() ?? '';
-      const acceptRemoteAuthorityOverLocalRoot =
+      const rootChanged =
+        Boolean(currentRoot) &&
+        Boolean(incomingRoot) &&
+        currentRoot !== incomingRoot;
+      const reconcileProvisionalLocalRoot =
         Boolean(currentRoot) &&
         this.localAddresses.has(currentRoot) &&
+        room.localTopologyProvisional === true &&
         Boolean(incomingRoot) &&
         !this.localAddresses.has(incomingRoot) &&
-        room.participants.has(incomingRoot) &&
-        [...room.participants.keys()].filter(
-          (address) => address && !this.localAddresses.has(address)
-        ).length >= 2;
+        env.fromAddress === incomingRoot &&
+        room.participants.has(incomingRoot);
+      if (
+        rootChanged &&
+        !isAuthorizedMainRootTransition({
+          currentRoot,
+          incomingRoot,
+          incomingAuthor: env.fromAddress,
+          currentStandby: room.lastTopology?.standbyForwarder?.trim() ?? '',
+          currentRootPresent: room.participants.has(currentRoot),
+          reconcileProvisionalLocalRoot,
+        })
+      ) {
+        loggerWarn(
+          `[GCall] Dropped unauthorized GC_TOPOLOGY root transition room=${env.roomId} currentRoot=${currentRoot} standby=${room.lastTopology?.standbyForwarder ?? ''} incomingRoot=${incomingRoot} author=${env.fromAddress}`
+        );
+        return;
+      }
+      if (
+        shouldProtectHealthyMainTopologyRoot({
+          currentRoot,
+          incomingRoot,
+          incomingAuthor: env.fromAddress,
+          currentRootPresent: room.participants.has(currentRoot),
+          currentTopologyObservedAtMs: room.lastTopologyObservedAtMs ?? 0,
+          nowMs: now,
+          localTopologyProvisional: room.localTopologyProvisional === true,
+        })
+      ) {
+        loggerLog(
+          `[GCall] Dropped GC_TOPOLOGY root takeover while incumbent is healthy room=${env.roomId} currentRoot=${currentRoot} incomingRoot=${incomingRoot} author=${env.fromAddress}`
+        );
+        return;
+      }
       if (
         env.topologyEpoch < room.topologyEpoch &&
-        !acceptRemoteAuthorityOverLocalRoot
+        !reconcileProvisionalLocalRoot
       ) {
-        const now = Date.now();
         if (now - this.lastStaleTopologyLogAt >= GC_STALE_TOPOLOGY_LOG_MIN_MS) {
           this.lastStaleTopologyLogAt = now;
           loggerLog(
@@ -11122,16 +11261,17 @@ export class GroupCallManager extends EventEmitter {
       }
       if (
         env.topologyEpoch < room.topologyEpoch &&
-        acceptRemoteAuthorityOverLocalRoot
+        reconcileProvisionalLocalRoot
       ) {
         loggerLog(
-          `[GCall] Accepted stale remote-root GC_TOPOLOGY to resolve local-root split-brain room=${env.roomId} incomingEpoch=${env.topologyEpoch} currentEpoch=${room.topologyEpoch} currentRoot=${currentRoot} incomingRoot=${incomingRoot}`
+          `[GCall] Accepted stale incumbent GC_TOPOLOGY to reconcile provisional local root room=${env.roomId} incomingEpoch=${env.topologyEpoch} currentEpoch=${room.topologyEpoch} currentRoot=${currentRoot} incomingRoot=${incomingRoot}`
         );
       }
       if (
         room.lastTopology &&
         incomingTopology.topologyEpoch === room.lastTopology.topologyEpoch &&
-        incomingTopology.rootForwarder !== room.lastTopology.rootForwarder
+        incomingTopology.rootForwarder !== room.lastTopology.rootForwarder &&
+        !reconcileProvisionalLocalRoot
       ) {
         const decision = chooseMainTopologyAuthority(
           room.lastTopology,
@@ -11151,6 +11291,22 @@ export class GroupCallManager extends EventEmitter {
       room.topologyEpoch = env.topologyEpoch;
       room.topologySignature = topologySignature;
       room.lastTopology = incomingTopology;
+      // Only a verified message authored by the claimed root proves that the
+      // root itself is alive. A relayed topology authored by another member
+      // must not be able to keep a departed root protected indefinitely.
+      room.lastTopologyObservedAtMs = resolveMainRootObservationTime({
+        previousRoot: currentRoot,
+        nextRoot: incomingRoot,
+        topologyAuthor: env.fromAddress,
+        previousObservedAtMs: room.lastTopologyObservedAtMs ?? 0,
+        nowMs: now,
+      });
+      room.localTopologyProvisional = resolveMainLocalTopologyProvisional({
+        currentRoot,
+        incomingRoot,
+        currentlyProvisional: room.localTopologyProvisional === true,
+        reconciledWithIncumbent: reconcileProvisionalLocalRoot,
+      });
       if (
         previousRoot &&
         incomingTopology.rootForwarder &&
@@ -11168,12 +11324,13 @@ export class GroupCallManager extends EventEmitter {
         rootForwarder: env.rootForwarder,
         standbyForwarder: env.standbyForwarder,
         clusters: env.clusters,
-        lastSeen: env.lastSeen,
+        lastSeen: verifiedObservedAtMs,
+        fromAddress: env.fromAddress,
       });
-    } else if (room) {
+    } else if (room && env.fromAddress === env.rootForwarder) {
       this.emit('gcall:heartbeat', {
         roomId: env.roomId,
-        lastSeen: env.lastSeen,
+        lastSeen: verifiedObservedAtMs,
         rootForwarder: env.rootForwarder,
       });
     }

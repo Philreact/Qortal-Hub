@@ -71,6 +71,7 @@ import {
   computeGroupCallRole,
   DEFAULT_GROUP_CALL_CLUSTER_SIZE,
   getReticulumTransportTargets,
+  isResolvedGroupCallParticipantAddress,
   normalizeGroupCallTopology,
   type GroupCallTopology,
 } from './groupCallTopology';
@@ -811,7 +812,9 @@ function buildEmptyRootPeerLivenessRecord(): RootPeerLivenessRecord {
 }
 const GROUP_CALL_SELF_ONLY_JOIN_ELECTION_WAIT_MS = 1_000;
 const OCCUPIED_JOIN_AUTHORITY_WAIT_MS = TOPOLOGY_HEARTBEAT_MS + 250;
-const OCCUPIED_JOIN_ROOT_DISCOVERY_WAIT_MS = 6_000;
+// Give a live incumbent one complete failover window to identify itself before
+// a returning participant is allowed to self-elect.
+const OCCUPIED_JOIN_ROOT_DISCOVERY_WAIT_MS = ROOT_HEARTBEAT_FAILOVER_TIMEOUT_MS;
 const GROUP_CALL_SENDER_SYNC_RETRY_MS = 1_500;
 const RECENTLY_LEFT_PARTICIPANT_SUPPRESS_MS = 10 * 60_000;
 const PARTICIPANT_ROSTER_REFRESH_INTERVAL_MS = TOPOLOGY_HEARTBEAT_MS;
@@ -1695,7 +1698,9 @@ export class GroupCallAudioEngineRuntime {
       this.directVoiceRtcTransport.close();
     }
     this.directVoiceRtcTransport = null;
-    this.directVoiceRtcLocalStream?.getTracks().forEach((track) => track.stop());
+    this.directVoiceRtcLocalStream
+      ?.getTracks()
+      .forEach((track) => track.stop());
     this.directVoiceRtcLocalStream = null;
     const remoteAudio = this.directVoiceRtcRemoteAudio;
     this.directVoiceRtcRemoteAudio = null;
@@ -3129,9 +3134,22 @@ export class GroupCallAudioEngineRuntime {
       .filter((address) => address && address !== myAddress).length;
   }
 
-  private shouldMarkLocalRootProvisional(): boolean {
+  private shouldMarkLocalRootProvisional(
+    previousRootValue: string,
+    electionAddresses: readonly string[]
+  ): boolean {
     const myAddress = this.userInfo?.address?.trim() ?? '';
     if (!myAddress) return false;
+    const previousRoot = previousRootValue.trim();
+    // Keeping the same root, or replacing a root that has definitively left
+    // the verified roster, is an authoritative transition rather than a
+    // speculative join-time self-election.
+    if (
+      previousRoot === myAddress ||
+      (previousRoot && !electionAddresses.includes(previousRoot))
+    ) {
+      return false;
+    }
     return (
       this.countRemoteParticipants() > 0 || this.startupHydratedRemoteCount > 0
     );
@@ -4691,7 +4709,12 @@ export class GroupCallAudioEngineRuntime {
     const nextByAddress = new Map<string, AudioEngineParticipant>();
     const ensureParticipant = (address: string, publicKey = ''): void => {
       const normalizedAddress = address.trim();
-      if (!normalizedAddress || nextByAddress.has(normalizedAddress)) return;
+      if (
+        !isResolvedGroupCallParticipantAddress(normalizedAddress) ||
+        nextByAddress.has(normalizedAddress)
+      ) {
+        return;
+      }
       if (this.shouldSuppressRecentlyLeftParticipant(normalizedAddress)) return;
       nextByAddress.set(normalizedAddress, {
         address: normalizedAddress,
@@ -4702,7 +4725,7 @@ export class GroupCallAudioEngineRuntime {
     };
     for (const participant of participants) {
       const address = participant.address?.trim() ?? '';
-      if (!address) continue;
+      if (!isResolvedGroupCallParticipantAddress(address)) continue;
       if (this.shouldSuppressRecentlyLeftParticipant(address)) continue;
       nextByAddress.set(address, participant);
     }
@@ -4726,7 +4749,7 @@ export class GroupCallAudioEngineRuntime {
     publicKeyValue?: string | null
   ): void {
     const address = addressValue?.trim() ?? '';
-    if (!address) return;
+    if (!isResolvedGroupCallParticipantAddress(address)) return;
     this.bootstrapOnlyParticipantAddresses.delete(address);
     const existing = this.snapshot.participants.find(
       (participant) => participant.address === address
@@ -5554,16 +5577,26 @@ export class GroupCallAudioEngineRuntime {
         if (!currentRoot || currentRoot === rootForwarder) {
           this.updateTrustedRemoteRoot(rootForwarder, seenAtMs);
           this.clearConflictingRemoteRootIfMatches(rootForwarder);
-        } else if (
-          !this.reconcileProvisionalLocalRootFromRemoteAuthority(
-            rootForwarder,
-            seenAtMs,
-            'heartbeat'
-          )
-        ) {
-          this.noteConflictingRemoteRoot(rootForwarder, seenAtMs, 'heartbeat');
         } else {
-          this.noteRootVerifiedControl(rootForwarder, seenAtMs);
+          // Main only emits this event for a verified topology authored by the
+          // claimed root, so it is sufficient authority to reconcile a
+          // provisional self-election even if the full topology event raced.
+          this.updateTrustedRemoteRoot(rootForwarder, seenAtMs);
+          if (
+            !this.reconcileProvisionalLocalRootFromRemoteAuthority(
+              rootForwarder,
+              seenAtMs,
+              'heartbeat'
+            )
+          ) {
+            this.noteConflictingRemoteRoot(
+              rootForwarder,
+              seenAtMs,
+              'heartbeat'
+            );
+          } else {
+            this.noteRootVerifiedControl(rootForwarder, seenAtMs);
+          }
         }
       } else if (this.trustedRemoteRoot) {
         this.trustedRemoteRootLastSeenAt = Math.max(
@@ -5953,14 +5986,10 @@ export class GroupCallAudioEngineRuntime {
     });
     this.groupRtcTransports.set(peerAddress, transport);
     void transport.start(false).catch((error) => {
-      this.recordThrottledDiagEvent(
-        'group-rtc-start-failed',
-        peerAddress,
-        {
-          peerAddress: truncateGcallDiagAddress(peerAddress),
-          error: error instanceof Error ? error.message : String(error),
-        }
-      );
+      this.recordThrottledDiagEvent('group-rtc-start-failed', peerAddress, {
+        peerAddress: truncateGcallDiagAddress(peerAddress),
+        error: error instanceof Error ? error.message : String(error),
+      });
       if (this.groupRtcTransports.get(peerAddress) === transport) {
         this.closeGroupRtcTransport(peerAddress, 'start-failed');
       }
@@ -6310,9 +6339,7 @@ export class GroupCallAudioEngineRuntime {
     if (poolReady && audioPayload.data instanceof ArrayBuffer) {
       this.receiveEngine.noteIncomingAudio(audioPayload.bridgeReceivedAtWallMs);
       const ingressPeerAddress =
-        audioPayload.fromAddress ??
-        audioPayload.resolvedFromAddress ??
-        'unknown';
+        audioPayload.fromAddress ?? audioPayload.resolvedFromAddress ?? '';
       const decryptSubmitAtWallMs = Date.now();
       const stageTimestamps = this.cloneAudioStageTimestamps(audioPayload, {
         decryptSubmitAtWallMs,
@@ -6345,6 +6372,10 @@ export class GroupCallAudioEngineRuntime {
         decryptId,
         audioPayload.data.slice(0)
       );
+      // The transport route can be unresolved briefly (for example while a
+      // fresh Reticulum link snapshot is being installed). Do not turn the
+      // diagnostic `unknown`/empty route into a participant. The authenticated
+      // source embedded in the decrypted media packet is observed below.
       this.noteParticipantLiveEvidence(ingressPeerAddress, Date.now());
       if (posted) {
         return 1;
@@ -6712,7 +6743,9 @@ export class GroupCallAudioEngineRuntime {
     const rosterAddresses = new Set<string>();
     for (const participant of roster ?? []) {
       const address = participant?.address?.trim?.() ?? '';
-      if (address) rosterAddresses.add(address);
+      if (isResolvedGroupCallParticipantAddress(address)) {
+        rosterAddresses.add(address);
+      }
     }
 
     const participantMap = new Map<
@@ -6720,7 +6753,7 @@ export class GroupCallAudioEngineRuntime {
       { address: string; publicKey: string }
     >();
     for (const participant of this.snapshot.participants) {
-      if (participant.address) {
+      if (isResolvedGroupCallParticipantAddress(participant.address)) {
         const address = participant.address.trim();
         const publicKey = participant.publicKey?.trim() ?? '';
         const existing = participantMap.get(address);
@@ -6730,7 +6763,7 @@ export class GroupCallAudioEngineRuntime {
       }
     }
     for (const participant of bootstrap?.participants ?? []) {
-      if (participant?.address) {
+      if (isResolvedGroupCallParticipantAddress(participant?.address)) {
         const address = participant.address.trim();
         const publicKey = participant.publicKey?.trim() ?? '';
         if (
@@ -6747,7 +6780,7 @@ export class GroupCallAudioEngineRuntime {
       }
     }
     for (const participant of roster ?? []) {
-      if (participant?.address) {
+      if (isResolvedGroupCallParticipantAddress(participant?.address)) {
         const address = participant.address.trim();
         const publicKey = participant.publicKey?.trim() ?? '';
         this.bootstrapOnlyParticipantAddresses.delete(address);
@@ -7479,6 +7512,18 @@ export class GroupCallAudioEngineRuntime {
     ) {
       return;
     }
+    const shouldArmProvisionalLocalRoot =
+      topology.rootForwarder === myAddress &&
+      this.shouldMarkLocalRootProvisional(currentRoot, addresses);
+    // Set this before applyTopology(): becoming root starts an immediate
+    // topology heartbeat, and main must receive the correct authority state
+    // on that first IPC rather than briefly treating a speculative root as
+    // established.
+    if (shouldArmProvisionalLocalRoot) {
+      this.markProvisionalLocalRoot(reason, nowMs);
+    } else {
+      this.clearProvisionalLocalRoot();
+    }
     if (
       this.isSameTopologyStructureIgnoringEpoch(this.topology, topology) &&
       this.isTopologyRepresentedInSnapshotRoster(this.topology)
@@ -7499,14 +7544,6 @@ export class GroupCallAudioEngineRuntime {
     }
     const applied = await this.applyTopology(topology, 'local-election');
     if (applied) {
-      if (
-        topology.rootForwarder === myAddress &&
-        this.shouldMarkLocalRootProvisional()
-      ) {
-        this.markProvisionalLocalRoot(reason, nowMs);
-      } else if (topology.rootForwarder !== myAddress) {
-        this.clearProvisionalLocalRoot();
-      }
       await this.broadcastTopology(topology, reason);
     }
   }
@@ -8046,7 +8083,8 @@ export class GroupCallAudioEngineRuntime {
       },
       signature,
       this.userInfo.publicKey ?? '',
-      timestamp
+      timestamp,
+      this.isProvisionalLocalRootActive(timestamp)
     );
     traceGcallAudioSurface('pipeline: topology broadcast sent', {
       roomId: this.snapshot.roomId,
@@ -8327,10 +8365,7 @@ export class GroupCallAudioEngineRuntime {
     if (!currentRoot || !incomingRoot || currentRoot === incomingRoot) {
       return false;
     }
-    if (opts.incoming.topologyEpoch <= opts.current.topologyEpoch) {
-      return false;
-    }
-    if (!opts.incomingAuthor || opts.incomingAuthor === currentRoot) {
+    if (opts.incomingAuthor === currentRoot) {
       return false;
     }
     if (
@@ -8720,19 +8755,17 @@ export class GroupCallAudioEngineRuntime {
     const incomingAuthor =
       (topology as unknown as { fromAddress?: string }).fromAddress?.trim() ??
       '';
+    const incomingAuthoredByClaimedRoot =
+      source === 'remote-event' &&
+      Boolean(incomingRoot) &&
+      incomingAuthor === incomingRoot;
     const myAddress = this.userInfo?.address ?? '';
     const acceptProvisionalIncumbentTopology =
       source === 'remote-event' &&
       current?.rootForwarder?.trim() === myAddress.trim() &&
-      this.canReconcileProvisionalLocalRootWithRemote(incomingRoot, nowMs);
-    const acceptRemoteAuthorityOverLocalRoot =
-      source === 'remote-event' &&
-      Boolean(current) &&
-      current?.rootForwarder?.trim() === myAddress.trim() &&
-      Boolean(incomingRoot) &&
-      incomingRoot !== myAddress.trim() &&
-      this.countRemoteParticipants() >= 2 &&
-      this.canReconcileProvisionalLocalRootWithRemote(incomingRoot, nowMs);
+      this.isProvisionalLocalRootActive(nowMs) &&
+      incomingAuthoredByClaimedRoot &&
+      this.isAddressInCurrentRoster(incomingRoot);
     if (
       this.shouldRejectRemoteTopologyDemotingHealthyRoot({
         current,
@@ -8748,8 +8781,7 @@ export class GroupCallAudioEngineRuntime {
     if (
       current &&
       normalized.topologyEpoch < current.topologyEpoch &&
-      !acceptProvisionalIncumbentTopology &&
-      !acceptRemoteAuthorityOverLocalRoot
+      !acceptProvisionalIncumbentTopology
     ) {
       traceGcallAudioSurface('pipeline: topology dropped as stale', {
         roomId: normalized.roomId,
@@ -8762,7 +8794,7 @@ export class GroupCallAudioEngineRuntime {
     if (
       current &&
       normalized.topologyEpoch < current.topologyEpoch &&
-      acceptRemoteAuthorityOverLocalRoot
+      acceptProvisionalIncumbentTopology
     ) {
       this.recordDiagEvent('local-root-demoted-by-stale-remote-topology', {
         roomId: normalized.roomId,
@@ -8849,7 +8881,8 @@ export class GroupCallAudioEngineRuntime {
       };
       if (
         this.topology.rootForwarder?.trim() &&
-        this.topology.rootForwarder !== myAddress
+        this.topology.rootForwarder !== myAddress &&
+        incomingAuthoredByClaimedRoot
       ) {
         this.noteRootHeartbeat(
           this.topology.rootForwarder,
@@ -8887,7 +8920,8 @@ export class GroupCallAudioEngineRuntime {
     }
     if (
       this.topology.rootForwarder?.trim() &&
-      this.topology.rootForwarder !== myAddress
+      this.topology.rootForwarder !== myAddress &&
+      incomingAuthoredByClaimedRoot
     ) {
       this.noteRootHeartbeat(
         this.topology.rootForwarder,
@@ -9127,7 +9161,7 @@ export class GroupCallAudioEngineRuntime {
     const rosterByAddress = new Map<string, { publicKey: string }>();
     for (const participant of roster) {
       const address = participant?.address?.trim?.() ?? '';
-      if (!address) continue;
+      if (!isResolvedGroupCallParticipantAddress(address)) continue;
       if (this.shouldSuppressRecentlyLeftParticipant(address)) {
         continue;
       }
@@ -9144,7 +9178,14 @@ export class GroupCallAudioEngineRuntime {
     const now = Date.now();
     for (const participant of this.snapshot.participants) {
       const address = participant.address?.trim() ?? '';
-      if (!address || address === myAddress) continue;
+      if (!isResolvedGroupCallParticipantAddress(address)) {
+        removedAddresses.push(address);
+        nextParticipants = nextParticipants.filter(
+          (current) => current.address !== address
+        );
+        continue;
+      }
+      if (address === myAddress) continue;
       if (rosterByAddress.has(address)) continue;
       if (this.hasRecentParticipantActivityEvidence(address, now)) {
         this.participantRosterMissingSinceMs.delete(address);
@@ -9277,7 +9318,12 @@ export class GroupCallAudioEngineRuntime {
   ): void {
     const address = addressValue?.trim() ?? '';
     const myAddress = this.userInfo?.address?.trim() ?? '';
-    if (!address || address === myAddress) return;
+    if (
+      !isResolvedGroupCallParticipantAddress(address) ||
+      address === myAddress
+    ) {
+      return;
+    }
     if (this.shouldSuppressRecentlyLeftParticipant(address)) return;
     const effectiveSeenAt =
       seenAtMs > 0 && Number.isFinite(seenAtMs) ? seenAtMs : Date.now();
@@ -9326,7 +9372,9 @@ export class GroupCallAudioEngineRuntime {
     const addresses = new Set<string>();
     const add = (addressValue: string | null | undefined): void => {
       const address = addressValue?.trim() ?? '';
-      if (address) addresses.add(address);
+      if (isResolvedGroupCallParticipantAddress(address)) {
+        addresses.add(address);
+      }
     };
     add(topology.rootForwarder);
     add(topology.standbyForwarder);
@@ -9344,7 +9392,7 @@ export class GroupCallAudioEngineRuntime {
     const addRecent = (address: string, seenAtMs: number): void => {
       const normalized = address.trim();
       if (
-        !normalized ||
+        !isResolvedGroupCallParticipantAddress(normalized) ||
         this.shouldSuppressRecentlyLeftParticipant(normalized) ||
         seenAtMs <= 0 ||
         !Number.isFinite(seenAtMs) ||

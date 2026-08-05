@@ -34,6 +34,17 @@ export function DirectVoiceScreenShareOverlay({
   } = useVoiceCallContext();
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
+  const ensureVideoPlayback = useCallback(
+    (video: HTMLVideoElement | null = videoRef.current) => {
+      if (!video || !video.srcObject) return;
+      void video.play().catch(() => {
+        // A subsequent loadedmetadata/canplay event retries playback. Screen
+        // video is always muted, so this does not affect the call's audio.
+      });
+    },
+    []
+  );
+
   const attachVideo = useCallback(
     (video: HTMLVideoElement | null) => {
       const previousVideo = videoRef.current;
@@ -47,9 +58,9 @@ export function DirectVoiceScreenShareOverlay({
       videoRef.current = video;
       if (!video) return;
       video.srcObject = screenShareStream;
-      if (screenShareStream) void video.play().catch(() => {});
+      if (screenShareStream) ensureVideoPlayback(video);
     },
-    [screenShareStream]
+    [ensureVideoPlayback, screenShareStream]
   );
 
   useEffect(() => {
@@ -293,7 +304,11 @@ export function DirectVoiceScreenShareOverlay({
                 ref={attachVideo}
                 autoPlay
                 playsInline
-                muted={sharing}
+                muted
+                onLoadedMetadata={(event) =>
+                  ensureVideoPlayback(event.currentTarget)
+                }
+                onCanPlay={(event) => ensureVideoPlayback(event.currentTarget)}
                 sx={{
                   display: 'block',
                   maxHeight: '68vh',

@@ -3875,7 +3875,8 @@ try {
       topology: unknown,
       signature: string,
       publicKey: string,
-      timestamp: number
+      timestamp: number,
+      localAuthorityProvisional = false
     ) =>
       ipcRenderer.invoke(
         'gcall:broadcastTopology',
@@ -3883,7 +3884,8 @@ try {
         topology,
         signature,
         publicKey,
-        timestamp
+        timestamp,
+        localAuthorityProvisional
       ),
 
     sendClusterHeartbeat: async (

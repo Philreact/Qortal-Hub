@@ -49,6 +49,7 @@ import {
 } from './qortalGroupCallParticipantUi';
 import { CallAudioSettingsButton } from '../Chat/CallAudioDeviceSelectors';
 import { GroupCallStartupBanner } from '../Chat/GroupCallStartupBanner';
+import { isResolvedGroupCallParticipantAddress } from '../../lib/group-call/groupCallTopology';
 
 const BG_MAIN = '#0d1016';
 const BG_HEADER = '#1b2028';
@@ -170,7 +171,9 @@ export function QortalGroupVoiceCallStage() {
         if (response?.success && response.stats) {
           const localAddress = userInfo?.address ?? '';
           const remoteParticipantCount = participants.filter(
-            (participant) => participant.address !== localAddress
+            (participant) =>
+              participant.address !== localAddress &&
+              isResolvedGroupCallParticipantAddress(participant.address)
           ).length;
           setLinkStats({
             establishedLinks: Math.max(0, response.stats.establishedLinks),
@@ -199,7 +202,9 @@ export function QortalGroupVoiceCallStage() {
 
   const sortedTiles = useMemo(() => {
     const my = userInfo?.address ?? '';
-    const list = [...participants];
+    const list = participants.filter((participant) =>
+      isResolvedGroupCallParticipantAddress(participant.address)
+    );
     list.sort((a, b) => {
       if (a.address === my) return -1;
       if (b.address === my) return 1;

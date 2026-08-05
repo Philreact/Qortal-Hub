@@ -1392,7 +1392,8 @@ declare global {
         topology: unknown,
         signature: string,
         publicKey: string,
-        timestamp: number
+        timestamp: number,
+        localAuthorityProvisional?: boolean
       ) => Promise<{ success: boolean }>;
       sendClusterHeartbeat?: (
         roomId: string,

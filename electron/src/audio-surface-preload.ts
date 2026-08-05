@@ -89,7 +89,8 @@ contextBridge.exposeInMainWorld('groupCall', {
     topology: unknown,
     signature: string,
     publicKey: string,
-    timestamp: number
+    timestamp: number,
+    localAuthorityProvisional = false
   ) =>
     ipcRenderer.invoke(
       'gcall:broadcastTopology',
@@ -97,7 +98,8 @@ contextBridge.exposeInMainWorld('groupCall', {
       topology,
       signature,
       publicKey,
-      timestamp
+      timestamp,
+      localAuthorityProvisional
     ),
   sendClusterHeartbeat: async (
     roomId: string,
