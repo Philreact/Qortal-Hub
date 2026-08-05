@@ -262,6 +262,23 @@ const presenceSchemas: Readonly<Record<string, SigningSchema>> = {
     'keyMessageVersion',
     'timestamp',
   ]),
+  // Group-call WebRTC SDP/ICE remains outside the wallet signer. As with
+  // direct calls, only the bounded routing and payload-digest envelope is
+  // signed so peers can authenticate negotiation received over Reticulum.
+  GC_RTC_SIGNAL: schema([
+    'type',
+    'roomId',
+    'callSessionId',
+    'mediaSessionGeneration',
+    'fromAddress',
+    'toAddress',
+    'connectionId',
+    'signalId',
+    'signalType',
+    'payloadHash',
+    'fromPublicKey',
+    'timestamp',
+  ]),
 };
 
 const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
@@ -722,6 +739,51 @@ function assertSafeProximityCapability(payload: Record<string, unknown>): void {
   }
 }
 
+function assertSafeGroupRtcSignal(payload: Record<string, unknown>): void {
+  const now = Date.now();
+  const isBoundedString = (key: string, maxLength: number): boolean =>
+    typeof payload[key] === 'string' &&
+    String(payload[key]).length > 0 &&
+    String(payload[key]).length <= maxLength;
+  const isQortalIdentity = (key: string): boolean =>
+    isBoundedString(key, 64) &&
+    String(payload[key]).length >= 20 &&
+    /^[1-9A-HJ-NP-Za-km-z]+$/.test(String(payload[key]));
+  const expectedConnectionId = `${String(payload.callSessionId)}:${String(
+    payload.mediaSessionGeneration
+  )}:${[String(payload.fromAddress), String(payload.toAddress)]
+    .sort()
+    .join(':')}`;
+
+  if (
+    !isBoundedString('roomId', 128) ||
+    !isBoundedString('callSessionId', 128) ||
+    typeof payload.mediaSessionGeneration !== 'number' ||
+    !Number.isSafeInteger(payload.mediaSessionGeneration) ||
+    payload.mediaSessionGeneration < 0 ||
+    payload.mediaSessionGeneration > 0xffffffff ||
+    !isQortalIdentity('fromAddress') ||
+    !isQortalIdentity('toAddress') ||
+    !isBoundedString('connectionId', 160) ||
+    payload.connectionId !== expectedConnectionId ||
+    typeof payload.signalId !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      payload.signalId
+    ) ||
+    !['capability', 'offer', 'answer', 'candidate', 'reconnect'].includes(
+      String(payload.signalType)
+    ) ||
+    typeof payload.payloadHash !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(payload.payloadHash) ||
+    !isQortalIdentity('fromPublicKey') ||
+    typeof payload.timestamp !== 'number' ||
+    !Number.isSafeInteger(payload.timestamp) ||
+    Math.abs(payload.timestamp - now) > 2 * 60 * 1000
+  ) {
+    throw new Error('Group WebRTC signal envelope is invalid');
+  }
+}
+
 function assertPayload(
   payload: unknown,
   schemas: Readonly<Record<string, SigningSchema>>,
@@ -744,6 +806,9 @@ function assertPayload(
     }
     if (type === 'QORTAL_LAND_PROXIMITY_VOICE_SESSION') {
       assertSafeProximityCapability(payload);
+    }
+    if (type === 'GC_RTC_SIGNAL') {
+      assertSafeGroupRtcSignal(payload);
     }
     return;
   }

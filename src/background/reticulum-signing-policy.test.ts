@@ -88,6 +88,29 @@ describe('Reticulum wallet signing policy', () => {
     expect(() => assertAllowedPresenceSigningPayload(resumeWithoutRound)).toThrow();
   });
   it('allows every current presence, call, and file-auth control type', () => {
+    const now = Date.now();
+    const address = 'QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q';
+    const peerAddress = 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91';
+    const publicKey = '1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE';
+    const rtcSignal = {
+      type: 'GC_RTC_SIGNAL',
+      roomId: 'gcall-qortal-1144',
+      callSessionId: '00112233-4455-4677-8899-aabbccddeeff',
+      mediaSessionGeneration: 1,
+      fromAddress: address,
+      toAddress: peerAddress,
+      connectionId: `00112233-4455-4677-8899-aabbccddeeff:1:${[
+        address,
+        peerAddress,
+      ]
+        .sort()
+        .join(':')}`,
+      signalId: '11112233-4455-4677-8899-aabbccddeeff',
+      signalType: 'offer',
+      payloadHash: 'ab'.repeat(32),
+      fromPublicKey: publicKey,
+      timestamp: now,
+    };
     const payloads: Record<string, unknown>[] = [
       {
         type: 'PRESENCE_ANNOUNCE',
@@ -227,6 +250,7 @@ describe('Reticulum wallet signing policy', () => {
         keyMessageVersion: 1,
         timestamp: 1,
       },
+      rtcSignal,
     ];
     for (const payload of payloads) {
       expectAllowed(assertAllowedPresenceSigningPayload, payload);
@@ -237,6 +261,24 @@ describe('Reticulum wallet signing policy', () => {
         callId: 'c',
         reason: 'x'.repeat(33),
         timestamp: 1,
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...rtcSignal,
+        signalType: 'audio',
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...rtcSignal,
+        payloadHash: 'not-a-digest',
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...rtcSignal,
+        connectionId: 'different-edge',
       })
     ).toThrow();
   });

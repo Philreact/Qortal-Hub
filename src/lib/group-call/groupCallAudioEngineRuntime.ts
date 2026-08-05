@@ -5266,6 +5266,10 @@ export class GroupCallAudioEngineRuntime {
     await this.hydrateBootstrapState(roomId);
     if (!this.topology?.rootForwarder) {
       this.scheduleTopologyElection('post-join');
+    } else {
+      // Bootstrap hydration installs an existing topology directly rather
+      // than passing through applyTopology(), so start its WebRTC edges now.
+      await this.syncGroupRtcTransports();
     }
     return { ok: true, payload: result };
   }
@@ -5832,21 +5836,41 @@ export class GroupCallAudioEngineRuntime {
     const signalId = crypto.randomUUID();
     const timestamp = Date.now();
     const connectionId = this.groupRtcConnectionId(peerAddress);
-    const signature = await signGroupCallFields({
-      type: 'GC_RTC_SIGNAL',
-      roomId,
-      callSessionId: this.callSessionId,
-      mediaSessionGeneration: this.mediaSessionGeneration >>> 0,
-      fromAddress,
-      toAddress: peerAddress,
-      connectionId,
-      signalId,
-      signalType: signal.type,
-      payloadHash,
-      fromPublicKey: this.userInfo?.publicKey ?? '',
-      timestamp,
-    }).catch(() => '');
-    if (!signature) return;
+    let signature = '';
+    try {
+      signature = await signGroupCallFields({
+        type: 'GC_RTC_SIGNAL',
+        roomId,
+        callSessionId: this.callSessionId,
+        mediaSessionGeneration: this.mediaSessionGeneration >>> 0,
+        fromAddress,
+        toAddress: peerAddress,
+        connectionId,
+        signalId,
+        signalType: signal.type,
+        payloadHash,
+        fromPublicKey: this.userInfo?.publicKey ?? '',
+        timestamp,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      traceGcallAudioSurface('group WebRTC signal signing failed', {
+        roomId,
+        peerAddress: truncateGcallDiagAddress(peerAddress),
+        signalType: signal.type,
+        error: detail,
+      });
+      this.recordThrottledDiagEvent(
+        'group-rtc-signal-sign-failed',
+        `${peerAddress}:${signal.type}`,
+        {
+          peerAddress: truncateGcallDiagAddress(peerAddress),
+          signalType: signal.type,
+          error: detail,
+        }
+      );
+      return;
+    }
     const result = await window.groupCall
       .sendRtcSignal({
         roomId,
