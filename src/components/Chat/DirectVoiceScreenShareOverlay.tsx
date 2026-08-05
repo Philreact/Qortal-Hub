@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import {
   Box,
   Button,
@@ -34,15 +34,23 @@ export function DirectVoiceScreenShareOverlay({
   } = useVoiceCallContext();
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.srcObject = screenShareStream;
-    if (screenShareStream) void video.play().catch(() => {});
-    return () => {
-      if (video.srcObject === screenShareStream) video.srcObject = null;
-    };
-  }, [screenShareStream, screenShareState]);
+  const attachVideo = useCallback(
+    (video: HTMLVideoElement | null) => {
+      const previousVideo = videoRef.current;
+      if (
+        previousVideo &&
+        previousVideo !== video &&
+        previousVideo.srcObject === screenShareStream
+      ) {
+        previousVideo.srcObject = null;
+      }
+      videoRef.current = video;
+      if (!video) return;
+      video.srcObject = screenShareStream;
+      if (screenShareStream) void video.play().catch(() => {});
+    },
+    [screenShareStream]
+  );
 
   useEffect(() => {
     if (!isAppLocked) return;
@@ -282,7 +290,7 @@ export function DirectVoiceScreenShareOverlay({
             {screenShareStream ? (
               <Box
                 component="video"
-                ref={videoRef}
+                ref={attachVideo}
                 autoPlay
                 playsInline
                 muted={sharing}
