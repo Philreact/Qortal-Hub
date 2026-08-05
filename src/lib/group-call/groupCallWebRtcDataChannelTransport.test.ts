@@ -38,6 +38,7 @@ class FakePeerConnection {
   createOfferCalls = 0;
   rollbackCalls = 0;
   rejectNextOfferAsIncompatible = false;
+  readonly addedCandidates: RTCIceCandidateInit[] = [];
 
   constructor() {
     FakePeerConnection.latest = this;
@@ -85,7 +86,9 @@ class FakePeerConnection {
       description.type === 'offer' ? 'have-remote-offer' : 'stable';
   }
 
-  async addIceCandidate(): Promise<void> {}
+  async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
+    this.addedCandidates.push(candidate);
+  }
   close(): void {
     this.connectionState = 'closed';
   }
@@ -94,6 +97,7 @@ class FakePeerConnection {
 const originalPeerConnection = globalThis.RTCPeerConnection;
 
 afterEach(() => {
+  vi.useRealTimers();
   globalThis.RTCPeerConnection = originalPeerConnection;
   FakePeerConnection.latest = null;
   FakePeerConnection.instances = [];
@@ -166,6 +170,72 @@ describe('GroupCallWebRtcDataChannelTransport', () => {
     ]);
 
     expect(signals).toEqual(['offer']);
+  });
+
+  it('batches locally gathered ICE candidates into one signal', async () => {
+    vi.useFakeTimers();
+    globalThis.RTCPeerConnection =
+      FakePeerConnection as unknown as typeof RTCPeerConnection;
+    const signals: Array<{ type: string; count?: number }> = [];
+    const transport = new GroupCallWebRtcDataChannelTransport({
+      peerAddress: 'peer',
+      offerer: true,
+      iceServers: [],
+      onSignal: (signal) =>
+        signals.push({
+          type: signal.type,
+          count: signal.type === 'candidates' ? signal.candidates.length : undefined,
+        }),
+      onPacket: vi.fn(),
+      onState: vi.fn(),
+    });
+
+    await transport.start(false);
+    const pc = FakePeerConnection.latest!;
+    for (const index of [1, 2, 3]) {
+      pc.onicecandidate?.({
+        candidate: {
+          toJSON: () => ({ candidate: `candidate-${index}` }),
+        },
+      } as unknown as RTCPeerConnectionIceEvent);
+    }
+    expect(signals).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(75);
+
+    expect(signals).toEqual([{ type: 'candidates', count: 3 }]);
+    transport.close();
+  });
+
+  it('applies every candidate in a received candidate batch', async () => {
+    globalThis.RTCPeerConnection =
+      FakePeerConnection as unknown as typeof RTCPeerConnection;
+    const transport = new GroupCallWebRtcDataChannelTransport({
+      peerAddress: 'peer',
+      offerer: false,
+      iceServers: [],
+      onSignal: vi.fn(),
+      onPacket: vi.fn(),
+      onState: vi.fn(),
+    });
+
+    await transport.start(false);
+    await transport.handleSignal({
+      type: 'offer',
+      description: { type: 'offer', sdp: 'offer-sdp' },
+    });
+    await transport.handleSignal({
+      type: 'candidates',
+      candidates: [
+        { candidate: 'candidate-1' },
+        { candidate: 'candidate-2' },
+      ],
+    });
+
+    expect(FakePeerConnection.latest!.addedCandidates).toEqual([
+      { candidate: 'candidate-1' },
+      { candidate: 'candidate-2' },
+    ]);
   });
 
   it('resends the pending offer without rolling it back or changing its SDP', async () => {

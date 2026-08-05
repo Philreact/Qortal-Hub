@@ -115,8 +115,12 @@ const GCALL_AUDIO_TIMING_LOG_THROTTLE_MS = 2_000;
 const GCALL_AUDIO_DATA_PLANE_V2_ENABLED = true;
 const GCALL_RTC_SIGNAL_TTL_MS = 20_000;
 const GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES = 96 * 1024;
-const GCALL_RTC_SIGNAL_FRAGMENT_CHARS = 120;
-const GCALL_RTC_SIGNAL_MAX_FRAGMENTS = 192;
+const GCALL_RTC_SIGNAL_MAX_ENCODED_CHARS =
+  Math.ceil((GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES * 4) / 3) + 4;
+// The Python bridge fragments outbound signals against the actual RNS Channel
+// MDU. This is only a defensive receive bound, not an outbound packet size.
+const GCALL_RTC_SIGNAL_FRAGMENT_CHARS = 384;
+const GCALL_RTC_SIGNAL_MAX_FRAGMENTS = 1_024;
 const GCALL_RTC_SIGNAL_MAX_REASSEMBLIES = 64;
 const GCALL_RTC_SIGNAL_MAX_REPLAY_IDS = 2_048;
 
@@ -1177,7 +1181,13 @@ export interface GroupCallRtcSignalInput {
   toAddress: string;
   connectionId: string;
   signalId: string;
-  signalType: 'capability' | 'offer' | 'answer' | 'candidate' | 'reconnect';
+  signalType:
+    | 'capability'
+    | 'offer'
+    | 'answer'
+    | 'candidate'
+    | 'candidates'
+    | 'reconnect';
   payload: string;
   payloadHash: string;
   timestamp: number;
@@ -1190,6 +1200,7 @@ type GroupCallRtcReassembly = {
   digest: string;
   partCount: number;
   parts: Map<number, string>;
+  encodedChars: number;
   senderDestinationHash: string;
   peerPresenceHash: string;
   deadline: number;
@@ -4917,6 +4928,7 @@ export class GroupCallManager extends EventEmitter {
       digest,
       partCount,
       parts: new Map(),
+      encodedChars: 0,
       senderDestinationHash: normalizedSenderHash,
       peerPresenceHash: normalizedPresenceHash,
       deadline: now + GCALL_RTC_SIGNAL_TTL_MS,
@@ -4950,7 +4962,15 @@ export class GroupCallManager extends EventEmitter {
     ) {
       return;
     }
+    const previousPart = entry.parts.get(index);
+    const nextEncodedChars =
+      entry.encodedChars - (previousPart?.length ?? 0) + part.length;
+    if (nextEncodedChars > GCALL_RTC_SIGNAL_MAX_ENCODED_CHARS) {
+      this.rtcSignalReassemblies.delete(key);
+      return;
+    }
     entry.parts.set(index, part);
+    entry.encodedChars = nextEncodedChars;
     if (entry.parts.size !== entry.partCount) return;
     this.rtcSignalReassemblies.delete(key);
     const encoded = Array.from({ length: entry.partCount }, (_, i) =>
@@ -5069,9 +5089,14 @@ export class GroupCallManager extends EventEmitter {
       input.connectionId.length <= 160 &&
       typeof input.signalId === 'string' &&
       input.signalId.length <= 128 &&
-      ['capability', 'offer', 'answer', 'candidate', 'reconnect'].includes(
-        input.signalType
-      ) &&
+      [
+        'capability',
+        'offer',
+        'answer',
+        'candidate',
+        'candidates',
+        'reconnect',
+      ].includes(input.signalType) &&
       typeof input.payload === 'string' &&
       Buffer.byteLength(input.payload, 'utf8') <=
         GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES &&
@@ -5759,43 +5784,6 @@ export class GroupCallManager extends EventEmitter {
     if (compressed.length > GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES) {
       return { success: false, error: 'rtc-signal-too-large' };
     }
-    const encoded = compressed.toString('base64url');
-    const partCount = Math.ceil(
-      encoded.length / GCALL_RTC_SIGNAL_FRAGMENT_CHARS
-    );
-    if (partCount < 1 || partCount > GCALL_RTC_SIGNAL_MAX_FRAGMENTS) {
-      return { success: false, error: 'rtc-signal-too-large' };
-    }
-    const digest = nodeCrypto
-      .createHash('sha256')
-      .update(compressed)
-      .digest('hex');
-    const frames: Record<string, unknown>[] = [
-      { t: 'GO0', R: input.roomId, z: digest, n: partCount },
-    ];
-    for (let index = 0; index < partCount; index++) {
-      frames.push({
-        t: 'GO1',
-        R: input.roomId,
-        z: digest,
-        n: partCount,
-        x: index,
-        p: encoded.slice(
-          index * GCALL_RTC_SIGNAL_FRAGMENT_CHARS,
-          (index + 1) * GCALL_RTC_SIGNAL_FRAGMENT_CHARS
-        ),
-      });
-    }
-    if (frames.some((frame) => !wireFitsReticulum(frame))) {
-      return { success: false, error: 'rtc-signal-fragment-too-large' };
-    }
-    const encodedFrames = frames
-      .map((frame) => encodeGcLinkControlWire(frame))
-      .filter((frame): frame is Buffer => Buffer.isBuffer(frame));
-    if (encodedFrames.length !== frames.length) {
-      return { success: false, error: 'rtc-signal-fragment-encode-failed' };
-    }
-
     const bridge = this.reticulumBridge;
     const linkState = this.reticulumAudioPeersByAddress.get(input.toAddress);
     if (
@@ -5810,13 +5798,16 @@ export class GroupCallManager extends EventEmitter {
     ) {
       const channelResult = await bridge.sendGroupAudioLinkControlDetailed({
         roomId: input.roomId,
-        frames: encodedFrames,
+        payload: compressed,
+        signalType: input.signalType,
+        signalId: input.signalId,
+        callSessionId: input.callSessionId,
         linkId: linkState.linkId,
         peerPresenceHash: linkState.peerPresenceHash,
       });
       if (channelResult.ok) {
         loggerLog(
-          `[GCall] Queued rtc-${input.signalType} over reliable Reticulum link channel room=${input.roomId} link=${linkState.linkId.slice(0, 16)} frames=${encodedFrames.length}`
+          `[GCall] Queued rtc-${input.signalType} over reliable Reticulum link channel room=${input.roomId} link=${linkState.linkId.slice(0, 16)} bytes=${compressed.length}`
         );
         return { success: true };
       }

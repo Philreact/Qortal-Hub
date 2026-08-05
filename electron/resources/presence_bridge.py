@@ -87,10 +87,12 @@ _GROUP_AUDIO_CONTROL_CHANNEL_DATA = 1
 _GROUP_AUDIO_CONTROL_CAPABILITY_WIRE_TYPE = "GCC1"
 _GROUP_AUDIO_CONTROL_CAPABILITY_HELLO = "H"
 _GROUP_AUDIO_CONTROL_CAPABILITY_ACK = "A"
-# One GO0 header plus the maximum 192 GO1 fragments accepted by
-# GroupCallManager. Keep this aligned with GCALL_RTC_SIGNAL_MAX_FRAGMENTS.
-_GROUP_AUDIO_CONTROL_CHANNEL_MAX_FRAMES = 193
-_GROUP_AUDIO_CONTROL_CHANNEL_MAX_BYTES = 256 * 1024
+# Outbound signaling is fragmented here against the live Channel MDU. Keep
+# these defensive bounds aligned with GroupCallManager's receive limits.
+_GROUP_AUDIO_CONTROL_CHANNEL_MAX_FRAGMENTS = 1024
+_GROUP_AUDIO_CONTROL_CHANNEL_MAX_FRAGMENT_CHARS = 384
+_GROUP_AUDIO_CONTROL_CHANNEL_MAX_BYTES = 96 * 1024
+_group_audio_control_pending_dedupe: set[str] = set()
 
 
 class GroupAudioControlChannelMessage(RNS.MessageBase):
@@ -18209,19 +18211,97 @@ def _send_group_audio_control_channel_message(
 def _send_group_audio_control_bundle(
     link_id: str,
     room_id: str,
-    frames: List[bytes],
+    payload: bytes,
+    signal_type: str,
+    signal_id: str,
 ) -> None:
+    state = get_audio_link_state(link_id)
+    channel = (state or {}).get("control_channel")
+    if state is None or channel is None:
+        return
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    digest = hashlib.sha256(payload).hexdigest()
+
+    def encode_frame(frame: Dict[str, Any]) -> Optional[bytes]:
+        raw = _GC_LINK_CONTROL_MAGIC + _call_wire_json_bytes(frame)
+        try:
+            wire = make_group_audio_wire(room_id, raw)
+            message = GroupAudioControlChannelMessage(
+                _GROUP_AUDIO_CONTROL_CHANNEL_DATA,
+                wire,
+            )
+            return raw if len(message.pack()) <= int(channel.mdu) else None
+        except Exception:
+            return None
+
+    # Use the real negotiated Channel MDU instead of the conservative packet
+    # JSON limit used by the legacy lossy path. A worst-case fragment/count is
+    # used for the search so every generated GO1 frame is guaranteed to fit.
+    low = 1
+    high = min(_GROUP_AUDIO_CONTROL_CHANNEL_MAX_FRAGMENT_CHARS, len(encoded))
+    chunk_chars = 0
+    while low <= high:
+        middle = (low + high) // 2
+        probe = encode_frame(
+            {
+                "t": "GO1",
+                "R": room_id,
+                "z": digest,
+                "n": _GROUP_AUDIO_CONTROL_CHANNEL_MAX_FRAGMENTS,
+                "x": _GROUP_AUDIO_CONTROL_CHANNEL_MAX_FRAGMENTS - 1,
+                "p": "A" * middle,
+            }
+        )
+        if probe is not None:
+            chunk_chars = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    if chunk_chars <= 0:
+        log(
+            "[presence_bridge] target=gcall-control-channel fragment_budget_failed "
+            f"link={link_id} room={room_id} signal={signal_type}"
+        )
+        return
+    part_count = (len(encoded) + chunk_chars - 1) // chunk_chars
+    if part_count < 1 or part_count > _GROUP_AUDIO_CONTROL_CHANNEL_MAX_FRAGMENTS:
+        log(
+            "[presence_bridge] target=gcall-control-channel fragment_count_invalid "
+            f"link={link_id} room={room_id} signal={signal_type} parts={part_count}"
+        )
+        return
+    frames: List[bytes] = []
+    start_frame = encode_frame(
+        {"t": "GO0", "R": room_id, "z": digest, "n": part_count}
+    )
+    if start_frame is None:
+        return
+    frames.append(start_frame)
+    for index in range(part_count):
+        frame = encode_frame(
+            {
+                "t": "GO1",
+                "R": room_id,
+                "z": digest,
+                "n": part_count,
+                "x": index,
+                "p": encoded[
+                    index * chunk_chars : (index + 1) * chunk_chars
+                ],
+            }
+        )
+        if frame is None:
+            log(
+                "[presence_bridge] target=gcall-control-channel fragment_encode_failed "
+                f"link={link_id} room={room_id} signal={signal_type} index={index}"
+            )
+            return
+        frames.append(frame)
+
     sent = 0
     started_at = time.monotonic()
     for frame in frames:
-        try:
-            wire = make_group_audio_wire(room_id, frame)
-        except Exception as exc:
-            log(
-                "[presence_bridge] target=gcall-control-channel encode_failed "
-                f"link={link_id} room={room_id} err={str(exc)[:160]}"
-            )
-            return
+        wire = make_group_audio_wire(room_id, frame)
         if not _send_group_audio_control_channel_message(
             link_id,
             _GROUP_AUDIO_CONTROL_CHANNEL_DATA,
@@ -18230,15 +18310,39 @@ def _send_group_audio_control_bundle(
         ):
             log(
                 "[presence_bridge] target=gcall-control-channel bundle_send_failed "
-                f"link={link_id} room={room_id} sent={sent} total={len(frames)}"
+                f"link={link_id} room={room_id} signal={signal_type} "
+                f"id={signal_id[:12]} sent={sent} total={len(frames)}"
             )
             return
         sent += 1
     elapsed_ms = int((time.monotonic() - started_at) * 1000)
     log(
         "[presence_bridge] target=gcall-control-channel bundle_queued "
-        f"link={link_id} room={room_id} frames={sent} duration_ms={elapsed_ms}"
+        f"link={link_id} room={room_id} signal={signal_type} id={signal_id[:12]} "
+        f"frames={sent} chunk_chars={chunk_chars} duration_ms={elapsed_ms}"
     )
+
+
+def _send_group_audio_control_bundle_task(
+    link_id: str,
+    room_id: str,
+    payload: bytes,
+    signal_type: str,
+    signal_id: str,
+    dedupe_key: str,
+) -> None:
+    try:
+        _send_group_audio_control_bundle(
+            link_id,
+            room_id,
+            payload,
+            signal_type,
+            signal_id,
+        )
+    finally:
+        if dedupe_key:
+            with _state_lock:
+                _group_audio_control_pending_dedupe.discard(dedupe_key)
 
 
 def _handle_group_audio_control_channel_message(link: Any, message: Any) -> bool:
@@ -22649,19 +22753,27 @@ def handle_warm_group_audio_path(req_id: str, payload: Dict[str, Any]) -> None:
 
 def handle_send_group_audio_link_control(req_id: str, payload: Dict[str, Any]) -> None:
     room_id = str(payload.get("roomId") or "")
-    encoded_frames = payload.get("frames")
+    encoded_payload = payload.get("payload")
+    signal_type = str(payload.get("signalType") or "")
+    signal_id = str(payload.get("signalId") or "")
+    call_session_id = str(payload.get("callSessionId") or "")
     if (
         not room_id
         or len(room_id.encode("utf-8")) > AUDIO_MAX_ROOM_ID_LEN
-        or not isinstance(encoded_frames, list)
-        or not encoded_frames
-        or len(encoded_frames) > _GROUP_AUDIO_CONTROL_CHANNEL_MAX_FRAMES
+        or not isinstance(encoded_payload, str)
+        or not encoded_payload
+        or signal_type
+        not in {"capability", "offer", "answer", "candidate", "candidates", "reconnect"}
+        or not signal_id
+        or len(signal_id) > 128
+        or not call_session_id
+        or len(call_session_id) > 128
     ):
         emit_resp(
             req_id,
             False,
-            payload={"code": "invalid_control_frames"},
-            error="Missing roomId or invalid control frames",
+            payload={"code": "invalid_control_payload"},
+            error="Missing roomId or invalid control payload",
         )
         return
 
@@ -22779,37 +22891,54 @@ def handle_send_group_audio_link_control(req_id: str, payload: Dict[str, Any]) -
         )
         return
 
-    frames: List[bytes] = []
-    total_bytes = 0
     try:
-        for encoded in encoded_frames:
-            if not isinstance(encoded, str) or not encoded:
-                raise ValueError("Invalid base64 frame")
-            raw = base64.b64decode(encoded, validate=True)
-            if not raw or len(raw) > AUDIO_MAX_PAYLOAD:
-                raise ValueError("Control frame is too large")
-            total_bytes += len(raw)
-            if total_bytes > _GROUP_AUDIO_CONTROL_CHANNEL_MAX_BYTES:
-                raise ValueError("Control bundle is too large")
-            frames.append(raw)
+        raw_payload = base64.b64decode(encoded_payload, validate=True)
+        if not raw_payload or len(raw_payload) > _GROUP_AUDIO_CONTROL_CHANNEL_MAX_BYTES:
+            raise ValueError("Control payload is too large")
     except Exception as exc:
         emit_resp(
             req_id,
             False,
-            payload={"code": "invalid_control_frames"},
+            payload={"code": "invalid_control_payload"},
             error=str(exc),
         )
         return
 
+    dedupe_key = (
+        f"{resolved_link_id}:{room_id}:{call_session_id}:{signal_type}"
+        if signal_type in {"capability", "reconnect"}
+        else ""
+    )
+    if dedupe_key:
+        with _state_lock:
+            if dedupe_key in _group_audio_control_pending_dedupe:
+                emit_resp(
+                    req_id,
+                    True,
+                    payload={
+                        "linkId": resolved_link_id,
+                        "payloadBytes": len(raw_payload),
+                        "coalesced": True,
+                    },
+                )
+                return
+            _group_audio_control_pending_dedupe.add(dedupe_key)
+
     queued = _enqueue_scheduler_task(
         _gcall_control_scheduler_lane(resolved_link_id),
-        f"gcall-control-bundle:{resolved_link_id}:{room_id}",
-        _send_group_audio_control_bundle,
+        f"gcall-control-bundle:{signal_type}:{resolved_link_id}:{room_id}:{signal_id[:12]}",
+        _send_group_audio_control_bundle_task,
         resolved_link_id,
         room_id,
-        frames,
+        raw_payload,
+        signal_type,
+        signal_id,
+        dedupe_key,
     )
     if not queued:
+        if dedupe_key:
+            with _state_lock:
+                _group_audio_control_pending_dedupe.discard(dedupe_key)
         emit_resp(
             req_id,
             False,
@@ -22820,7 +22949,7 @@ def handle_send_group_audio_link_control(req_id: str, payload: Dict[str, Any]) -
     emit_resp(
         req_id,
         True,
-        payload={"linkId": resolved_link_id, "frames": len(frames)},
+        payload={"linkId": resolved_link_id, "payloadBytes": len(raw_payload)},
     )
 
 

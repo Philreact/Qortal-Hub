@@ -1443,7 +1443,10 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
             {
                 "linkId": "current-audio-link",
                 "roomId": "gcall-qortal-1",
-                "frames": [base64.b64encode(b"control").decode("ascii")],
+                "payload": base64.b64encode(b"control").decode("ascii"),
+                "signalType": "offer",
+                "callSessionId": "call-session-1",
+                "signalId": "signal-1",
             },
         )
 
@@ -1506,7 +1509,10 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
                 {
                     "linkId": "current-audio-link",
                     "roomId": "gcall-qortal-1",
-                    "frames": [base64.b64encode(b"control").decode("ascii")],
+                    "payload": base64.b64encode(b"control").decode("ascii"),
+                    "signalType": "offer",
+                    "callSessionId": "call-session-1",
+                    "signalId": "signal-1",
                 },
             )
 
@@ -1515,10 +1521,13 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
         self.assertTrue(responses[0].get("ok"))
         self.assertEqual(len(queued), 1)
         self.assertTrue(queued[0][0].startswith("gcall-control-"))
-        self.assertIs(queued[0][2], self.bridge._send_group_audio_control_bundle)
-        self.assertEqual(queued[0][3][2], [b"control"])
+        self.assertIs(
+            queued[0][2], self.bridge._send_group_audio_control_bundle_task
+        )
+        self.assertEqual(queued[0][3][2], b"control")
+        self.assertEqual(queued[0][3][3:], ("offer", "signal-1", ""))
 
-    def test_reliable_control_accepts_full_typescript_fragment_budget(self):
+    def test_reliable_control_coalesces_pending_capability(self):
         link = FakeChannelLink()
         self.install_audio_state("current-audio-link", link=link)
         state = self.bridge.get_audio_link_state("current-audio-link")
@@ -1526,10 +1535,39 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
         state["control_channel"] = link.channel
         state["control_channel_configured"] = True
         state["control_channel_supported"] = True
-        encoded_frames = [
-            base64.b64encode(f"frame-{index}".encode("ascii")).decode("ascii")
-            for index in range(193)
-        ]
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ) as enqueue:
+            for signal_id in ("signal-1", "signal-2"):
+                self.bridge.handle_send_group_audio_link_control(
+                    signal_id,
+                    {
+                        "linkId": "current-audio-link",
+                        "roomId": "gcall-qortal-1",
+                        "payload": base64.b64encode(b"capability").decode("ascii"),
+                        "signalType": "capability",
+                        "callSessionId": "call-session-1",
+                        "signalId": signal_id,
+                    },
+                )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 2)
+        self.assertTrue(all(response.get("ok") for response in responses))
+        self.assertIsNone(responses[0].get("payload", {}).get("coalesced"))
+        self.assertTrue(responses[1].get("payload", {}).get("coalesced"))
+        self.assertEqual(enqueue.call_count, 1)
+
+    def test_reliable_control_accepts_full_payload_budget(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+        raw_payload = b"x" * self.bridge._GROUP_AUDIO_CONTROL_CHANNEL_MAX_BYTES
 
         with mock.patch.object(
             self.bridge, "_enqueue_scheduler_task", return_value=True
@@ -1539,14 +1577,20 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
                 {
                     "linkId": "current-audio-link",
                     "roomId": "gcall-qortal-1",
-                    "frames": encoded_frames,
+                    "payload": base64.b64encode(raw_payload).decode("ascii"),
+                    "signalType": "answer",
+                    "callSessionId": "call-session-1",
+                    "signalId": "signal-max",
                 },
             )
 
         responses = self.drain_json_responses()
         self.assertEqual(len(responses), 1)
         self.assertTrue(responses[0].get("ok"))
-        self.assertEqual(responses[0].get("payload", {}).get("frames"), 193)
+        self.assertEqual(
+            responses[0].get("payload", {}).get("payloadBytes"),
+            len(raw_payload),
+        )
 
     def test_reliable_control_queue_full_returns_structured_failure(self):
         link = FakeChannelLink()
@@ -1565,7 +1609,10 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
                 {
                     "linkId": "current-audio-link",
                     "roomId": "gcall-qortal-1",
-                    "frames": [base64.b64encode(b"control").decode("ascii")],
+                    "payload": base64.b64encode(b"control").decode("ascii"),
+                    "signalType": "offer",
+                    "callSessionId": "call-session-1",
+                    "signalId": "signal-1",
                 },
             )
 
@@ -1596,7 +1643,10 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
                     "linkId": "stale-audio-link",
                     "peerPresenceHash": self.sender_peer_hash,
                     "roomId": "gcall-qortal-1",
-                    "frames": [base64.b64encode(b"control").decode("ascii")],
+                    "payload": base64.b64encode(b"control").decode("ascii"),
+                    "signalType": "offer",
+                    "callSessionId": "call-session-1",
+                    "signalId": "signal-1",
                 },
             )
 
@@ -1608,6 +1658,52 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
             "current-audio-link",
         )
         self.assertEqual(enqueue.call_args.args[3], "current-audio-link")
+
+    def test_reliable_control_fragments_against_live_channel_mdu(self):
+        self.bridge._destination = FakeDestination()
+        link = FakeChannelLink()
+        link.channel.mdu = 441
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+        raw_payload = bytes(range(256)) * 4
+
+        self.bridge._send_group_audio_control_bundle(
+            "current-audio-link",
+            "gcall-qortal-1",
+            raw_payload,
+            "answer",
+            "signal-compact",
+        )
+
+        self.assertGreater(len(link.channel.sent), 1)
+        self.assertLessEqual(len(link.channel.sent), 7)
+        frames = []
+        for message in link.channel.sent:
+            self.assertLessEqual(len(message.pack()), link.channel.mdu)
+            decoded = self.bridge._decode_group_audio_wire(message.data)
+            self.assertIsNotNone(decoded)
+            frame_payload = decoded[2]
+            self.assertTrue(frame_payload.startswith(self.bridge._GC_LINK_CONTROL_MAGIC))
+            frames.append(
+                json.loads(
+                    frame_payload[len(self.bridge._GC_LINK_CONTROL_MAGIC) :].decode(
+                        "utf-8"
+                    )
+                )
+            )
+        start = frames[0]
+        self.assertEqual(start.get("t"), "GO0")
+        parts = sorted(
+            (frame for frame in frames[1:] if frame.get("t") == "GO1"),
+            key=lambda frame: frame["x"],
+        )
+        encoded = "".join(frame["p"] for frame in parts)
+        padding = "=" * ((4 - len(encoded) % 4) % 4)
+        self.assertEqual(base64.urlsafe_b64decode(encoded + padding), raw_payload)
 
     def test_reliable_channel_data_reuses_authenticated_audio_receive_path(self):
         link = FakeChannelLink()

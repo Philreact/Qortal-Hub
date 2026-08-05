@@ -147,7 +147,13 @@ contextBridge.exposeInMainWorld('groupCall', {
     toAddress: string;
     connectionId: string;
     signalId: string;
-    signalType: 'capability' | 'offer' | 'answer' | 'candidate' | 'reconnect';
+    signalType:
+      | 'capability'
+      | 'offer'
+      | 'answer'
+      | 'candidate'
+      | 'candidates'
+      | 'reconnect';
     payload: string;
     payloadHash: string;
     timestamp: number;

@@ -2,7 +2,8 @@ export type GroupCallRtcSignal =
   | { type: 'capability'; version: 1 }
   | { type: 'reconnect' }
   | { type: 'offer' | 'answer'; description: RTCSessionDescriptionInit }
-  | { type: 'candidate'; candidate: RTCIceCandidateInit | null };
+  | { type: 'candidate'; candidate: RTCIceCandidateInit | null }
+  | { type: 'candidates'; candidates: RTCIceCandidateInit[] };
 
 export interface GroupCallWebRtcDataChannelTransportOptions {
   peerAddress: string;
@@ -16,12 +17,15 @@ export interface GroupCallWebRtcDataChannelTransportOptions {
 const DISCONNECT_GRACE_MS = 8_000;
 const NEGOTIATION_RETRY_MS = 6_000;
 const MAX_PENDING_ICE_CANDIDATES = 128;
+const LOCAL_ICE_CANDIDATE_BATCH_MS = 75;
 
 /** One encrypted-packet DataChannel connection for one topology edge. */
 export class GroupCallWebRtcDataChannelTransport {
   private pc: RTCPeerConnection | null = null;
   private channel: RTCDataChannel | null = null;
   private pendingCandidates: RTCIceCandidateInit[] = [];
+  private pendingLocalCandidates: RTCIceCandidateInit[] = [];
+  private localCandidateTimer: ReturnType<typeof setTimeout> | null = null;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
   private closed = false;
@@ -128,15 +132,22 @@ export class GroupCallWebRtcDataChannelTransport {
       }
       return;
     }
-    if (signal.candidate === null) return;
-    if (!pc.remoteDescription) {
-      if (this.pendingCandidates.length >= MAX_PENDING_ICE_CANDIDATES) {
-        this.pendingCandidates.shift();
+    const candidates =
+      signal.type === 'candidates'
+        ? signal.candidates.slice(-MAX_PENDING_ICE_CANDIDATES)
+        : signal.candidate === null
+          ? []
+          : [signal.candidate];
+    for (const candidate of candidates) {
+      if (!pc.remoteDescription) {
+        if (this.pendingCandidates.length >= MAX_PENDING_ICE_CANDIDATES) {
+          this.pendingCandidates.shift();
+        }
+        this.pendingCandidates.push(candidate);
+      } else {
+        await pc.addIceCandidate(candidate);
       }
-      this.pendingCandidates.push(signal.candidate);
-      return;
     }
-    await pc.addIceCandidate(signal.candidate);
   }
 
   private async restartIceInternal(): Promise<void> {
@@ -180,6 +191,7 @@ export class GroupCallWebRtcDataChannelTransport {
       }
     }
     this.pendingCandidates = [];
+    this.clearLocalCandidateBatch();
     this.options.onState('closed');
   }
 
@@ -189,10 +201,12 @@ export class GroupCallWebRtcDataChannelTransport {
     const pc = new RTCPeerConnection({ iceServers: this.options.iceServers });
     this.pc = pc;
     pc.onicecandidate = (event) => {
-      void this.options.onSignal({
-        type: 'candidate',
-        candidate: event.candidate?.toJSON() ?? null,
-      });
+      const candidate = event.candidate?.toJSON();
+      if (candidate) {
+        this.queueLocalCandidate(candidate);
+      } else {
+        this.flushLocalCandidateBatch();
+      }
     };
     pc.ondatachannel = (event) => this.attachChannel(event.channel);
     pc.onconnectionstatechange = () => {
@@ -325,8 +339,40 @@ export class GroupCallWebRtcDataChannelTransport {
       }
     }
     this.pendingCandidates = [];
+    this.clearLocalCandidateBatch();
     this.options.onState('connecting');
     return this.createPeerConnection();
+  }
+
+  private queueLocalCandidate(candidate: RTCIceCandidateInit): void {
+    if (this.closed) return;
+    if (this.pendingLocalCandidates.length >= MAX_PENDING_ICE_CANDIDATES) {
+      this.pendingLocalCandidates.shift();
+    }
+    this.pendingLocalCandidates.push(candidate);
+    if (this.localCandidateTimer) return;
+    this.localCandidateTimer = setTimeout(() => {
+      this.localCandidateTimer = null;
+      this.flushLocalCandidateBatch();
+    }, LOCAL_ICE_CANDIDATE_BATCH_MS);
+  }
+
+  private flushLocalCandidateBatch(): void {
+    if (this.closed || this.pendingLocalCandidates.length === 0) return;
+    if (this.localCandidateTimer) {
+      clearTimeout(this.localCandidateTimer);
+      this.localCandidateTimer = null;
+    }
+    const candidates = this.pendingLocalCandidates.splice(0);
+    void this.options.onSignal({ type: 'candidates', candidates });
+  }
+
+  private clearLocalCandidateBatch(): void {
+    if (this.localCandidateTimer) {
+      clearTimeout(this.localCandidateTimer);
+      this.localCandidateTimer = null;
+    }
+    this.pendingLocalCandidates = [];
   }
 
   private async flushCandidates(): Promise<void> {

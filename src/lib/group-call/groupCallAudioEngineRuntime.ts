@@ -879,6 +879,9 @@ const GCALL_CONNECTION_HINT_SEVERE_MS = 1_200;
 const GCALL_CONNECTION_HINT_GOOD_MS = 4_500;
 const ZERO_INBOUND_MEDIA_RECOVERY_MIN_OUTBOUND_FRAMES = 100;
 const ZERO_INBOUND_MEDIA_RECOVERY_COOLDOWN_MS = 3_000;
+// RNS Channel retries accepted capability messages itself. A short periodic
+// resend only creates head-of-line blocking for SDP and ICE on slower links.
+const GROUP_RTC_CAPABILITY_RETRY_MS = 12_000;
 const LOW_INBOUND_MEDIA_RECOVERY_MIN_OUTBOUND_FRAMES = 300;
 const LOW_INBOUND_MEDIA_RECOVERY_MAX_INBOUND_TO_OUTBOUND_RATIO = 0.35;
 const LOW_INBOUND_MEDIA_RECOVERY_UNDERTARGET_MIN = 0.12;
@@ -6129,7 +6132,10 @@ export class GroupCallAudioEngineRuntime {
       const transport = this.createGroupRtcTransport(peerAddress);
       const lastCapabilityAt =
         this.groupRtcCapabilityLastSentAt.get(peerAddress) ?? 0;
-      if (!transport.isOpen() && now - lastCapabilityAt >= 3_000) {
+      if (
+        !transport.isOpen() &&
+        now - lastCapabilityAt >= GROUP_RTC_CAPABILITY_RETRY_MS
+      ) {
         this.groupRtcCapabilityLastSentAt.set(peerAddress, now);
         void this.sendGroupRtcSignal(peerAddress, {
           type: 'capability',
@@ -6192,10 +6198,26 @@ export class GroupCallAudioEngineRuntime {
     }
     if (
       !signal ||
-      !['capability', 'offer', 'answer', 'candidate', 'reconnect'].includes(
-        signal.type
-      ) ||
+      ![
+        'capability',
+        'offer',
+        'answer',
+        'candidate',
+        'candidates',
+        'reconnect',
+      ].includes(signal.type) ||
       signal.type !== input.signalType
+    ) {
+      return;
+    }
+    if (
+      signal.type === 'candidates' &&
+      (!Array.isArray(signal.candidates) ||
+        signal.candidates.length === 0 ||
+        signal.candidates.length > 128 ||
+        signal.candidates.some(
+          (candidate) => !candidate || typeof candidate !== 'object'
+        ))
     ) {
       return;
     }

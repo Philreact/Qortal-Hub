@@ -1542,6 +1542,7 @@ declare global {
           | 'offer'
           | 'answer'
           | 'candidate'
+          | 'candidates'
           | 'reconnect';
         payload: string;
         payloadHash: string;

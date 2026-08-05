@@ -2113,7 +2113,10 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
    */
   async sendGroupAudioLinkControlDetailed(opts: {
     roomId: string;
-    frames: Buffer[];
+    payload: Buffer;
+    signalType: string;
+    signalId: string;
+    callSessionId: string;
     peerPresenceHash?: string;
     linkId?: string;
   }): Promise<ReticulumSendResult> {
@@ -2129,16 +2132,19 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         error: 'Missing linkId or peerPresenceHash',
       };
     }
-    if (!Array.isArray(opts.frames) || opts.frames.length === 0) {
+    if (!Buffer.isBuffer(opts.payload) || opts.payload.length === 0) {
       return {
         ok: false,
         reason: 'send-command-failed',
-        error: 'Missing control frames',
+        error: 'Missing control payload',
       };
     }
     return this.sendDetailed('send_group_audio_link_control', {
       roomId: opts.roomId,
-      frames: opts.frames.map((frame) => frame.toString('base64')),
+      payload: opts.payload.toString('base64'),
+      signalType: opts.signalType,
+      signalId: opts.signalId,
+      callSessionId: opts.callSessionId,
       ...(linkId ? { linkId } : {}),
       ...(peerPresenceHash ? { peerPresenceHash } : {}),
     });
