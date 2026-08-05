@@ -17,6 +17,7 @@ import MicOffRoundedIcon from '@mui/icons-material/MicOffRounded';
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded';
 import VolumeOffRoundedIcon from '@mui/icons-material/VolumeOffRounded';
 import VolumeUpRoundedIcon from '@mui/icons-material/VolumeUpRounded';
+import ScreenShareRoundedIcon from '@mui/icons-material/ScreenShareRounded';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import {
@@ -77,6 +78,10 @@ export function DirectVoiceCallNavWidget() {
     isMuted,
     toggleHearCall,
     toggleMute,
+    screenShareState,
+    screenShareSupported,
+    openScreenSharePicker,
+    setScreenShareViewerOpen,
   } = useVoiceCallContext();
   const portalTarget = useLivePortalTarget(DIRECT_VOICE_CALL_NAV_SLOT_ID);
 
@@ -372,6 +377,56 @@ export function DirectVoiceCallNavWidget() {
             />
           </Box>
         ) : null}
+
+        <Tooltip
+          title={
+            audioMode !== 'webrtc'
+              ? 'Screen sharing requires a direct WebRTC call'
+              : !screenShareSupported
+                ? 'The other person does not support screen sharing'
+                : screenShareState === 'viewing'
+                  ? 'View shared screen'
+                  : screenShareState === 'sharing'
+                    ? 'View your screen share'
+                    : 'Share your screen'
+          }
+          arrow
+        >
+          <span>
+            <IconButton
+              disabled={
+                callState !== 'connected' ||
+                !callMediaReady ||
+                audioMode !== 'webrtc' ||
+                !screenShareSupported
+              }
+              size="small"
+              onClick={() => {
+                if (
+                  screenShareState === 'sharing' ||
+                  screenShareState === 'viewing' ||
+                  screenShareState === 'starting'
+                ) {
+                  setScreenShareViewerOpen(true);
+                } else {
+                  void openScreenSharePicker();
+                }
+              }}
+              sx={{
+                color:
+                  screenShareState === 'sharing' ||
+                  screenShareState === 'viewing'
+                    ? theme.palette.primary.main
+                    : theme.palette.text.secondary,
+                flexShrink: 0,
+                height: 28,
+                width: 28,
+              }}
+            >
+              <ScreenShareRoundedIcon sx={{ fontSize: 17 }} />
+            </IconButton>
+          </span>
+        </Tooltip>
 
         <Tooltip
           title={

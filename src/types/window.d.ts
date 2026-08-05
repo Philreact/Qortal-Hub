@@ -130,6 +130,16 @@ declare global {
       ) => () => void;
       onSystemLockRequested?: (callback: () => void) => () => void;
       getPlatform?: () => Promise<string>;
+      listScreenShareSources?: () => Promise<{
+        success: boolean;
+        error?: string;
+        sources: Array<{
+          id: string;
+          name: string;
+          thumbnail: string;
+          appIcon: string;
+        }>;
+      }>;
       getSystemCallReadiness?: () => Promise<{
         status: 'good' | 'warning' | 'blocked' | 'unknown';
         reasons: string[];

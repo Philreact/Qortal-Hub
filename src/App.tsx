@@ -54,6 +54,7 @@ import { LazyAuthenticatedShell } from './components/App/LazyAuthenticatedShell'
 import { SupportChat, SUPPORT_ADDRESSES } from './components/Chat/SupportChat';
 import { VoiceCallProvider } from './context/VoiceCallContext';
 import { DirectVoiceCallGlobalOverlay } from './components/Chat/DirectVoiceCallGlobalOverlay';
+import { DirectVoiceScreenShareOverlay } from './components/Chat/DirectVoiceScreenShareOverlay';
 import { DirectVoiceCallNavWidget } from './components/Group/DirectVoiceCallNavWidget';
 import { AgentSupportDashboard } from './components/Chat/AgentSupportDashboard';
 import {
@@ -1749,6 +1750,9 @@ function App() {
                         <DirectVoiceCallNavWidget />
                         <QortalGroupVoiceCallStage />
                         <DirectVoiceCallGlobalOverlay
+                          isAppLocked={isAppLocked}
+                        />
+                        <DirectVoiceScreenShareOverlay
                           isAppLocked={isAppLocked}
                         />
                       </>

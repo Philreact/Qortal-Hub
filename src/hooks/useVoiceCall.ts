@@ -74,6 +74,10 @@ import AudioDecryptWorker from '../workers/audio-decrypt.worker?worker';
 import { createRouteBoundId } from '../lib/reticulum/routeBoundId';
 import { isReticulumCallEnabled } from '../lib/call/directVoiceCallTransport';
 import type { DirectVoiceRtcSignal } from '../lib/call/directVoiceWebRtcTransport';
+import {
+  DirectScreenShareWebRtcTransport,
+  type DirectScreenShareRtcSignal,
+} from '../lib/call/directScreenShareWebRtcTransport';
 
 const DM_MEDIA_RECOVERY_REQUEST_COOLDOWN_MS = 4_000;
 const DM_ROOM_KEY_REPLAY_RETRY_MS = 750;
@@ -142,8 +146,51 @@ const DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION = 'native_audio_v1';
 const DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_PAYLOAD = JSON.stringify({
   kind: 'capability',
   audio: 'native-track',
+  screen: 'video-track',
+  screenVersion: 1,
   version: 1,
 });
+
+function isDirectScreenShareRtcSignal(
+  value: unknown
+): value is DirectScreenShareRtcSignal {
+  if (!value || typeof value !== 'object') return false;
+  const signal = value as Record<string, unknown>;
+  if (
+    typeof signal.generation !== 'string' ||
+    !/^[A-Za-z0-9_-]{8,64}$/.test(signal.generation)
+  ) {
+    return false;
+  }
+  if (signal.kind === 'screen-stop') return true;
+  if (signal.kind === 'screen-ice') {
+    if (!signal.candidate || typeof signal.candidate !== 'object') return false;
+    const candidate = signal.candidate as RTCIceCandidateInit;
+    return (
+      typeof candidate.candidate === 'string' &&
+      candidate.candidate.length <= 8 * 1024 &&
+      (candidate.sdpMid === undefined ||
+        candidate.sdpMid === null ||
+        typeof candidate.sdpMid === 'string') &&
+      (candidate.sdpMLineIndex === undefined ||
+        candidate.sdpMLineIndex === null ||
+        (Number.isInteger(candidate.sdpMLineIndex) &&
+          Number(candidate.sdpMLineIndex) >= 0))
+    );
+  }
+  if (signal.kind !== 'screen-description') return false;
+  if (!signal.description || typeof signal.description !== 'object') {
+    return false;
+  }
+  const type = (signal.description as RTCSessionDescriptionInit).type;
+  const sdp = (signal.description as RTCSessionDescriptionInit).sdp;
+  return (
+    (type === 'offer' || type === 'answer') &&
+    typeof sdp === 'string' &&
+    sdp.length > 0 &&
+    sdp.length <= 64 * 1024
+  );
+}
 
 async function sha256HexUtf8(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -159,6 +206,20 @@ export type CallState = 'idle' | 'calling' | 'ringing' | 'connected' | 'ended';
 
 /** Active DM audio data plane reported to the existing call UI. */
 export type AudioMode = 'reticulum' | 'webrtc' | null;
+
+export type DirectScreenShareState =
+  | 'idle'
+  | 'choosing'
+  | 'starting'
+  | 'sharing'
+  | 'viewing';
+
+export interface DirectScreenShareSource {
+  id: string;
+  name: string;
+  thumbnail: string;
+  appIcon: string;
+}
 
 export interface IncomingCall {
   callId: string;
@@ -185,6 +246,12 @@ export interface UseVoiceCallReturn {
   callDuration: number;
   incomingCall: IncomingCall | null;
   activeCallChatId: string | null;
+  screenShareState: DirectScreenShareState;
+  screenShareSupported: boolean;
+  screenShareSources: DirectScreenShareSource[];
+  screenShareStream: MediaStream | null;
+  screenShareViewerOpen: boolean;
+  screenShareIsLocal: boolean;
   initiateCall: (
     targetAddress: string,
     chatId: string,
@@ -199,6 +266,11 @@ export interface UseVoiceCallReturn {
   toggleMute: () => void;
   setHearCall: (hear: boolean) => void;
   toggleHearCall: () => void;
+  openScreenSharePicker: () => Promise<void>;
+  cancelScreenSharePicker: () => void;
+  startScreenShare: (sourceId: string) => Promise<void>;
+  stopScreenShare: () => Promise<void>;
+  setScreenShareViewerOpen: (open: boolean) => void;
 }
 
 export type VoiceCallApi = {
@@ -347,8 +419,21 @@ export function useVoiceCall(
   const [callDuration, setCallDuration] = useState(0);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
   const [activeCallChatId, setActiveCallChatId] = useState<string | null>(null);
+  const [screenShareState, setScreenShareState] =
+    useState<DirectScreenShareState>('idle');
+  const [screenShareSupported, setScreenShareSupported] = useState(false);
+  const screenShareSupportedRef = useRef(false);
+  const [screenShareSources, setScreenShareSources] = useState<
+    DirectScreenShareSource[]
+  >([]);
+  const [screenShareStream, setScreenShareStream] =
+    useState<MediaStream | null>(null);
+  const [screenShareViewerOpen, setScreenShareViewerOpen] = useState(false);
+  const [screenShareIsLocal, setScreenShareIsLocal] = useState(false);
   const [callAudioWireNonce, setCallAudioWireNonce] = useState(0);
   const [startupClock, setStartupClock] = useState(0);
+  const audioModeRef = useRef<AudioMode>(null);
+  audioModeRef.current = audioMode;
 
   const callAudioDevices = useAtomValue(callAudioDevicesAtom);
   const setCallAudioDevices = useSetAtom(callAudioDevicesAtom);
@@ -491,6 +576,21 @@ export function useVoiceCall(
   const dmRtcLifecycleGenerationRef = useRef(0);
   const dmRtcStartPromiseRef = useRef<Promise<boolean> | null>(null);
   const dmRtcPeerNativeCapabilityCallIdRef = useRef<string | null>(null);
+  const screenShareTransportRef =
+    useRef<DirectScreenShareWebRtcTransport | null>(null);
+  const screenShareStateRef = useRef<DirectScreenShareState>('idle');
+  const screenShareStreamRef = useRef<MediaStream | null>(null);
+  const screenShareCaptureAttemptRef = useRef(0);
+  const screenSharePendingIceRef = useRef(
+    new Map<string, DirectScreenShareRtcSignal[]>()
+  );
+  const screenShareTerminalGenerationsRef = useRef(new Set<string>());
+  const screenShareSignalHandlerRef = useRef<
+    (signal: DirectScreenShareRtcSignal) => Promise<void>
+  >(async () => {});
+  const stopScreenShareRef = useRef<(notifyPeer: boolean) => Promise<void>>(
+    async () => {}
+  );
   const pendingDirectVoiceRtcSignalsRef = useRef<DirectVoiceRtcSignal[]>([]);
   const decryptWorkerRef = useRef<Worker | null>(null);
   const decryptWorkerKeyVersionRef = useRef(0);
@@ -516,6 +616,14 @@ export function useVoiceCall(
     callStateRef.current = nextState;
     setCallState(nextState);
   }, []);
+
+  const updateScreenShareState = useCallback(
+    (nextState: DirectScreenShareState) => {
+      screenShareStateRef.current = nextState;
+      setScreenShareState(nextState);
+    },
+    []
+  );
 
   const updateIncomingCall = useCallback(
     (nextIncomingCall: IncomingCall | null) => {
@@ -817,6 +925,385 @@ export function useVoiceCall(
         payload: DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_PAYLOAD,
       }),
     [sendAuthenticatedDirectVoiceRtcPayload]
+  );
+
+  const sendDirectScreenShareSignal = useCallback(
+    async (signal: DirectScreenShareRtcSignal): Promise<boolean> => {
+      const signalType =
+        signal.kind === 'screen-ice'
+          ? 'candidate'
+          : signal.kind === 'screen-description'
+            ? signal.description.type === 'offer'
+              ? 'offer'
+              : 'answer'
+            : 'capability';
+      return sendAuthenticatedDirectVoiceRtcPayload({
+        generation: signal.generation,
+        signalType,
+        payload: JSON.stringify(signal),
+      });
+    },
+    [sendAuthenticatedDirectVoiceRtcPayload]
+  );
+
+  const markScreenShareGenerationTerminal = useCallback(
+    (generation: string) => {
+      const generations = screenShareTerminalGenerationsRef.current;
+      generations.delete(generation);
+      generations.add(generation);
+      while (generations.size > 32) {
+        const oldest = generations.values().next().value;
+        if (typeof oldest !== 'string') break;
+        generations.delete(oldest);
+      }
+      screenSharePendingIceRef.current.delete(generation);
+    },
+    []
+  );
+
+  const resetScreenShare = useCallback(
+    async (notifyPeer: boolean): Promise<void> => {
+      screenShareCaptureAttemptRef.current += 1;
+      const transport = screenShareTransportRef.current;
+      const generation = transport?.getGeneration() ?? '';
+      if (generation) markScreenShareGenerationTerminal(generation);
+      screenShareTransportRef.current = null;
+      transport?.close();
+      const stream = screenShareStreamRef.current;
+      screenShareStreamRef.current = null;
+      stream?.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // Already stopped by the operating system.
+        }
+      });
+      screenSharePendingIceRef.current.clear();
+      setScreenShareStream(null);
+      setScreenShareSources([]);
+      setScreenShareViewerOpen(false);
+      setScreenShareIsLocal(false);
+      updateScreenShareState('idle');
+      if (notifyPeer && generation && callStateRef.current === 'connected') {
+        await sendDirectScreenShareSignal({
+          kind: 'screen-stop',
+          generation,
+        }).catch(() => false);
+      }
+    },
+    [
+      markScreenShareGenerationTerminal,
+      sendDirectScreenShareSignal,
+      updateScreenShareState,
+    ]
+  );
+  stopScreenShareRef.current = resetScreenShare;
+
+  const createScreenShareTransport = useCallback(
+    (
+      sender: boolean,
+      generation: string,
+      localStream?: MediaStream
+    ): DirectScreenShareWebRtcTransport => {
+      const transport = new DirectScreenShareWebRtcTransport({
+        generation,
+        sender,
+        localStream,
+        getIceServers: async () => {
+          const servers = await window.hub?.getIceServers?.();
+          return Array.isArray(servers) ? servers : [];
+        },
+        onSignal: (signal) => sendDirectScreenShareSignal(signal),
+        onRemoteStream: (stream) => {
+          if (screenShareTransportRef.current !== transport) {
+            stream.getTracks().forEach((track) => track.stop());
+            return;
+          }
+          screenShareStreamRef.current = stream;
+          setScreenShareStream(stream);
+          setScreenShareViewerOpen(true);
+          for (const track of stream.getVideoTracks()) {
+            track.onended = () => {
+              if (screenShareTransportRef.current === transport) {
+                void resetScreenShare(false);
+              }
+            };
+          }
+        },
+        onState: (state) => {
+          if (screenShareTransportRef.current !== transport) return;
+          pushDirectVoiceUiLog(
+            state === 'failed' ? 'warn' : 'log',
+            'Screen share WebRTC state',
+            {
+              state,
+              role: sender ? 'sender' : 'receiver',
+              generation: generation.slice(0, 8),
+            }
+          );
+          if (state === 'open') {
+            updateScreenShareState(sender ? 'sharing' : 'viewing');
+            setScreenShareViewerOpen(true);
+            return;
+          }
+          if (state === 'failed') {
+            showGlobalCallSnack(
+              'info',
+              'Screen sharing stopped because the direct connection was lost.'
+            );
+            void resetScreenShare(true);
+          }
+        },
+      });
+      return transport;
+    },
+    [
+      resetScreenShare,
+      sendDirectScreenShareSignal,
+      showGlobalCallSnack,
+      updateScreenShareState,
+    ]
+  );
+
+  const handleDirectScreenShareSignal = useCallback(
+    async (signal: DirectScreenShareRtcSignal): Promise<void> => {
+      if (
+        callStateRef.current !== 'connected' ||
+        audioModeRef.current !== 'webrtc'
+      ) {
+        return;
+      }
+      if (
+        signal.kind !== 'screen-stop' &&
+        screenShareTerminalGenerationsRef.current.has(signal.generation)
+      ) {
+        return;
+      }
+      if (signal.kind === 'screen-stop') {
+        markScreenShareGenerationTerminal(signal.generation);
+        if (
+          screenShareTransportRef.current?.getGeneration() === signal.generation
+        ) {
+          await resetScreenShare(false);
+        }
+        return;
+      }
+      let transport = screenShareTransportRef.current;
+      if (
+        signal.kind === 'screen-description' &&
+        signal.description.type === 'offer'
+      ) {
+        // Candidates can overtake an offer while its wallet signature is
+        // being verified. Capture them before any simultaneous-share cleanup.
+        const pendingForOffer =
+          screenSharePendingIceRef.current.get(signal.generation) ?? [];
+        if (transport?.isSender()) {
+          const localAddress = userInfo?.address?.trim() ?? '';
+          const peerAddress = peerAddressRef.current?.trim() ?? '';
+          // Deterministically resolve the rare case where both users press
+          // Share at once. The lexicographically smaller address keeps its
+          // share; both clients independently reach the same decision.
+          const keepLocalShare =
+            localAddress && peerAddress
+              ? localAddress < peerAddress
+              : transport.getGeneration() < signal.generation;
+          if (keepLocalShare) return;
+          await resetScreenShare(false);
+          transport = null;
+        }
+        if (!transport || transport.getGeneration() !== signal.generation) {
+          const previousGeneration = transport?.getGeneration();
+          if (previousGeneration) {
+            markScreenShareGenerationTerminal(previousGeneration);
+          }
+          await resetScreenShare(false);
+          if (pendingForOffer.length > 0) {
+            screenSharePendingIceRef.current.set(
+              signal.generation,
+              pendingForOffer
+            );
+          }
+          transport = createScreenShareTransport(false, signal.generation);
+          screenShareTransportRef.current = transport;
+          updateScreenShareState('starting');
+        }
+      }
+      if (!transport || transport.getGeneration() !== signal.generation) {
+        if (signal.kind === 'screen-ice') {
+          const pending =
+            screenSharePendingIceRef.current.get(signal.generation) ?? [];
+          if (pending.length < 128) pending.push(signal);
+          screenSharePendingIceRef.current.set(signal.generation, pending);
+          while (screenSharePendingIceRef.current.size > 4) {
+            const oldest = screenSharePendingIceRef.current.keys().next().value;
+            if (typeof oldest !== 'string') break;
+            screenSharePendingIceRef.current.delete(oldest);
+          }
+        }
+        return;
+      }
+      await transport.handleSignal(signal);
+      const pending =
+        screenSharePendingIceRef.current.get(signal.generation) ?? [];
+      screenSharePendingIceRef.current.delete(signal.generation);
+      for (const candidate of pending) {
+        await transport.handleSignal(candidate);
+      }
+    },
+    [
+      createScreenShareTransport,
+      markScreenShareGenerationTerminal,
+      resetScreenShare,
+      updateScreenShareState,
+      userInfo?.address,
+    ]
+  );
+  screenShareSignalHandlerRef.current = handleDirectScreenShareSignal;
+
+  const openScreenSharePicker = useCallback(async (): Promise<void> => {
+    if (
+      callStateRef.current !== 'connected' ||
+      audioModeRef.current !== 'webrtc' ||
+      !screenShareSupportedRef.current
+    ) {
+      return;
+    }
+    if (screenShareStateRef.current === 'sharing') {
+      setScreenShareViewerOpen(true);
+      return;
+    }
+    const listSources = window.electronAPI?.listScreenShareSources;
+    if (!listSources) {
+      showGlobalCallSnack('error', 'Screen sharing is unavailable.');
+      return;
+    }
+    updateScreenShareState('choosing');
+    setScreenShareViewerOpen(true);
+    const result = await listSources().catch(() => ({
+      success: false,
+      error: 'Unable to access screens and windows',
+      sources: [],
+    }));
+    if (
+      callStateRef.current !== 'connected' ||
+      screenShareStateRef.current !== 'choosing'
+    ) {
+      return;
+    }
+    if (!result.success || result.sources.length === 0) {
+      await resetScreenShare(false);
+      showGlobalCallSnack(
+        'error',
+        result.error || 'No screens or windows are available to share.'
+      );
+      return;
+    }
+    setScreenShareSources(result.sources);
+  }, [resetScreenShare, showGlobalCallSnack, updateScreenShareState]);
+
+  const cancelScreenSharePicker = useCallback(() => {
+    if (screenShareStateRef.current === 'choosing') {
+      void resetScreenShare(false);
+    } else {
+      setScreenShareViewerOpen(false);
+    }
+  }, [resetScreenShare]);
+
+  const startScreenShare = useCallback(
+    async (sourceId: string): Promise<void> => {
+      if (
+        callStateRef.current !== 'connected' ||
+        audioModeRef.current !== 'webrtc' ||
+        !screenShareSupportedRef.current ||
+        screenShareStateRef.current !== 'choosing' ||
+        !screenShareSources.some((source) => source.id === sourceId)
+      ) {
+        return;
+      }
+      updateScreenShareState('starting');
+      setScreenShareIsLocal(true);
+      setScreenShareSources([]);
+      const captureAttempt = ++screenShareCaptureAttemptRef.current;
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: sourceId,
+              maxWidth: 1920,
+              maxHeight: 1080,
+              maxFrameRate: 30,
+            },
+          } as unknown as MediaTrackConstraints,
+        });
+      } catch (error) {
+        await resetScreenShare(false);
+        showGlobalCallSnack(
+          'error',
+          error instanceof DOMException && error.name === 'NotAllowedError'
+            ? 'Screen sharing permission was not granted.'
+            : 'Unable to start screen sharing.'
+        );
+        return;
+      }
+      if (screenShareCaptureAttemptRef.current !== captureAttempt) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      if (
+        screenShareStateRef.current !== 'starting' ||
+        callStateRef.current !== 'connected' ||
+        audioModeRef.current !== 'webrtc'
+      ) {
+        stream.getTracks().forEach((track) => track.stop());
+        await resetScreenShare(false);
+        return;
+      }
+      const track = stream.getVideoTracks()[0];
+      if (!track) {
+        stream.getTracks().forEach((entry) => entry.stop());
+        await resetScreenShare(false);
+        showGlobalCallSnack('error', 'No screen video was captured.');
+        return;
+      }
+      track.contentHint = 'detail';
+      const generation = createDirectVoiceRtcSignalId();
+      pushDirectVoiceUiLog('log', 'Starting screen share', {
+        generation: generation.slice(0, 8),
+      });
+      const transport = createScreenShareTransport(true, generation, stream);
+      screenShareTransportRef.current = transport;
+      screenShareStreamRef.current = stream;
+      setScreenShareStream(stream);
+      setScreenShareViewerOpen(true);
+      track.onended = () => {
+        if (screenShareTransportRef.current === transport) {
+          void resetScreenShare(true);
+        }
+      };
+      try {
+        await transport.startSender();
+      } catch {
+        if (screenShareTransportRef.current === transport) {
+          await resetScreenShare(true);
+          showGlobalCallSnack('error', 'Unable to establish screen sharing.');
+        }
+      }
+    },
+    [
+      createScreenShareTransport,
+      resetScreenShare,
+      screenShareSources,
+      showGlobalCallSnack,
+      updateScreenShareState,
+    ]
+  );
+
+  const stopScreenShare = useCallback(
+    () => resetScreenShare(true),
+    [resetScreenShare]
   );
 
   const startDirectVoiceMediaOnAudioSurface = useCallback(async () => {
@@ -1283,6 +1770,9 @@ export function useVoiceCall(
   const teardownReticulumMediaInner = useCallback(async () => {
     clearDmRoomKeyReplayTimers();
     clearDmRoomKeyRequestTimers();
+    await resetScreenShare(false);
+    screenShareSupportedRef.current = false;
+    setScreenShareSupported(false);
     await stopDirectVoiceRtcOnAudioSurface();
     await stopDirectVoiceMediaOnAudioSurface();
     await stopDirectVoiceReceiveOnAudioSurface();
@@ -1329,12 +1819,14 @@ export function useVoiceCall(
     audioSeqRef.current = 0;
     isSpeakingRef.current = false;
     resetDmVoiceMediaSession();
+    audioModeRef.current = null;
     setAudioMode(null);
   }, [
     clearPendingWorkerJobs,
     clearDmRoomKeyReplayTimers,
     clearDmRoomKeyRequestTimers,
     resetDmVoiceMediaSession,
+    resetScreenShare,
     stopCapturePipeline,
     stopDirectVoiceRtcOnAudioSurface,
     stopDirectVoiceMediaOnAudioSurface,
@@ -1701,7 +2193,10 @@ export function useVoiceCall(
         endCall(true);
         return;
       }
-      setAudioMode((current) => (current === 'webrtc' ? current : 'reticulum'));
+      if (audioModeRef.current !== 'webrtc') {
+        audioModeRef.current = 'reticulum';
+        setAudioMode('reticulum');
+      }
       clearDmRoomKeyRequestTimers();
       setCallAudioWireNonce((n) => n + 1);
       pushDirectVoiceUiLog('log', 'room key applied', {
@@ -2041,7 +2536,10 @@ export function useVoiceCall(
     // Applying it earlier makes readiness see an inactive session and can end a
     // valid call. Replay it only after this exact media session is active.
     flushPendingDmVoiceGcallKey(roomId);
-    setAudioMode((current) => (current === 'webrtc' ? current : 'reticulum'));
+    if (audioModeRef.current !== 'webrtc') {
+      audioModeRef.current = 'reticulum';
+      setAudioMode('reticulum');
+    }
     requestDmPeerMediaWarmup(roomId, 'dm-call-start', {
       ignoreCooldown: true,
     });
@@ -2283,7 +2781,15 @@ export function useVoiceCall(
           for (const resolve of dmRtcOpenWaitersRef.current) resolve(true);
           dmRtcOpenWaitersRef.current.clear();
         }
-        setAudioMode(event.state === 'open' ? 'webrtc' : 'reticulum');
+        const nextAudioMode = event.state === 'open' ? 'webrtc' : 'reticulum';
+        audioModeRef.current = nextAudioMode;
+        setAudioMode(nextAudioMode);
+        if (
+          (event.state === 'failed' || event.state === 'closed') &&
+          screenShareStateRef.current !== 'idle'
+        ) {
+          void stopScreenShareRef.current(true);
+        }
         return;
       }
       if (event.type !== 'direct-voice-rtc-signal') return;
@@ -2331,8 +2837,36 @@ export function useVoiceCall(
           break;
         }
         try {
+          const decoded = JSON.parse(p.payload);
+          if (isDirectScreenShareRtcSignal(decoded)) {
+            const expectedSignalType =
+              decoded.kind === 'screen-ice'
+                ? 'candidate'
+                : decoded.kind === 'screen-stop'
+                  ? 'capability'
+                  : decoded.description.type;
+            if (
+              decoded.generation !== p.generation ||
+              expectedSignalType !== p.signalType
+            ) {
+              break;
+            }
+            try {
+              await screenShareSignalHandlerRef.current(decoded);
+            } catch (error) {
+              pushDirectVoiceUiLog('warn', 'Screen share signaling failed', {
+                error: error instanceof Error ? error.message : String(error),
+              });
+              await resetScreenShare(true);
+              showGlobalCallSnack(
+                'info',
+                'Screen sharing stopped because the direct connection could not be established.'
+              );
+            }
+            break;
+          }
           if (p.signalType === 'capability') {
-            const capability = JSON.parse(p.payload) as Record<string, unknown>;
+            const capability = decoded as Record<string, unknown>;
             if (
               p.generation !==
                 DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION ||
@@ -2344,15 +2878,21 @@ export function useVoiceCall(
             }
             const callId = callIdRef.current;
             dmRtcPeerNativeCapabilityCallIdRef.current = callId;
+            const supportsScreenShare =
+              capability.screen === 'video-track' &&
+              capability.screenVersion === 1;
+            screenShareSupportedRef.current = supportsScreenShare;
+            setScreenShareSupported(supportsScreenShare);
             pushDirectVoiceUiLog('log', 'peer supports native WebRTC audio', {
               callTrunc: callId?.slice(0, 8) ?? '',
+              screenShare: supportsScreenShare,
             });
             if (dmRoomIdRef.current) {
               await startDirectVoiceRtcOnAudioSurface();
             }
             break;
           }
-          const signal = JSON.parse(p.payload) as DirectVoiceRtcSignal;
+          const signal = decoded as DirectVoiceRtcSignal;
           const validGeneration =
             typeof signal?.generation === 'string' &&
             /^[A-Za-z0-9_-]{8,64}$/.test(signal.generation) &&
@@ -2462,6 +3002,9 @@ export function useVoiceCall(
           'log',
           'call:accepted — starting Reticulum media session'
         );
+        screenShareTerminalGenerationsRef.current.clear();
+        screenShareSupportedRef.current = false;
+        setScreenShareSupported(false);
         updateCallState('connected');
         setCallMediaReady(false);
         startDurationTimer();
@@ -2772,6 +3315,9 @@ export function useVoiceCall(
 
     activeCallChatIdRef.current = acceptedChatId;
     setActiveCallChatId(acceptedChatId);
+    screenShareTerminalGenerationsRef.current.clear();
+    screenShareSupportedRef.current = false;
+    setScreenShareSupported(false);
 
     if (isDirectVoiceCallChatId(acceptedChatId)) {
       try {
@@ -3114,6 +3660,12 @@ export function useVoiceCall(
     callDuration,
     incomingCall,
     activeCallChatId,
+    screenShareState,
+    screenShareSupported,
+    screenShareSources,
+    screenShareStream,
+    screenShareViewerOpen,
+    screenShareIsLocal,
     initiateCall,
     acceptCall,
     rejectCall,
@@ -3121,5 +3673,10 @@ export function useVoiceCall(
     toggleMute,
     setHearCall,
     toggleHearCall,
+    openScreenSharePicker,
+    cancelScreenSharePicker,
+    startScreenShare,
+    stopScreenShare,
+    setScreenShareViewerOpen,
   };
 }

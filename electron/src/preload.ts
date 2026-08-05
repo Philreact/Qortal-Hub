@@ -428,6 +428,17 @@ try {
       return () => ipcRenderer.removeListener('system:lock-requested', handler);
     },
     getPlatform: () => ipcRenderer.invoke('window:getPlatform'),
+    listScreenShareSources: () =>
+      ipcRenderer.invoke('screenShare:listSources') as Promise<{
+        success: boolean;
+        error?: string;
+        sources: Array<{
+          id: string;
+          name: string;
+          thumbnail: string;
+          appIcon: string;
+        }>;
+      }>,
     getSystemCallReadiness: () =>
       ipcRenderer.invoke('systemCallReadiness:getSnapshot') as Promise<{
         status: 'good' | 'warning' | 'blocked' | 'unknown';

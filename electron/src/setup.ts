@@ -9,6 +9,7 @@ import type { MenuItemConstructorOptions, WebContents } from 'electron';
 import {
   app,
   BrowserWindow,
+  desktopCapturer,
   Menu,
   MenuItem,
   nativeImage,
@@ -6297,6 +6298,43 @@ ipcMain.handle('chat:getAttachment', async (_event, eventId: string) => {
 // ── Call IPC Handlers ─────────────────────────────────────────────────────────
 
 const callSubscribers = new Set<Electron.WebContents>();
+
+ipcMain.handle('screenShare:listSources', async (event) => {
+  if (!isMainShellSender(event.sender)) {
+    return { success: false, error: 'Main shell required', sources: [] };
+  }
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 240, height: 135 },
+      fetchWindowIcons: true,
+    });
+    return {
+      success: true,
+      sources: sources.slice(0, 60).map((source) => ({
+        id: source.id,
+        name: source.name.slice(0, 160),
+        thumbnail: source.thumbnail.isEmpty()
+          ? ''
+          : source.thumbnail.toDataURL(),
+        appIcon:
+          source.appIcon && !source.appIcon.isEmpty()
+            ? source.appIcon.resize({ width: 24, height: 24 }).toDataURL()
+            : '',
+      })),
+    };
+  } catch (error) {
+    loggerWarn('[ScreenShare] Failed to enumerate capture sources', {
+      platform: process.platform,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      success: false,
+      error: 'Unable to access screens and windows',
+      sources: [],
+    };
+  }
+});
 
 export function attachCallListeners(
   manager: ReturnType<typeof getCallManager>

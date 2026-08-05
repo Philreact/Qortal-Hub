@@ -267,7 +267,11 @@ describe('useVoiceCall', () => {
           resolveJoin = resolve;
         })
     );
-    const sendRtcSignal = vi.fn(async () => ({ success: true }));
+    const sendRtcSignal = vi.fn(
+      async (_input: { generation: string; payload: string }) => ({
+        success: true,
+      })
+    );
     const callApi = {
       onEvent: vi.fn(
         (cb: (event: string, payload: unknown) => void | Promise<void>) => {
@@ -341,6 +345,14 @@ describe('useVoiceCall', () => {
         })
       )
     );
+    const advertisedCapability = sendRtcSignal.mock.calls.find(
+      ([input]) => input.generation === 'native_audio_v1'
+    )?.[0];
+    expect(JSON.parse(advertisedCapability?.payload ?? '{}')).toMatchObject({
+      audio: 'native-track',
+      screen: 'video-track',
+      screenVersion: 1,
+    });
     expect(audioSurfaceSendCommand).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'start-direct-voice-rtc' })
     );
@@ -369,10 +381,14 @@ describe('useVoiceCall', () => {
         payload: JSON.stringify({
           kind: 'capability',
           audio: 'native-track',
+          screen: 'video-track',
+          screenVersion: 1,
           version: 1,
         }),
       });
     });
+
+    expect(result.current.screenShareSupported).toBe(true);
 
     await waitFor(() =>
       expect(audioSurfaceSendCommand).toHaveBeenCalledWith(
