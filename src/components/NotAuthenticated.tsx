@@ -120,7 +120,7 @@ const isAuthStartupAudioEnabled = () => {
 };
 
 export const manifestData = {
-  version: '2.0.1',
+  version: '3.0.0',
 };
 
 export const NotAuthenticated = ({

@@ -30,9 +30,9 @@ if _BRIDGE_RESOURCE_DIR not in sys.path:
     sys.path.insert(0, _BRIDGE_RESOURCE_DIR)
 from qortalland_games import QortalLandGameManager, _b58decode, _b58encode, derive_qortal_address
 
-APP_NAMESPACE = "qortal-hub-test2"
+APP_NAMESPACE = "qortal-hub-v2"
 PRESENCE_ASPECT = "presence"
-PRESENCE_VERSION = "v1-test2"
+PRESENCE_VERSION = "v2"
 IDENTITY_FILENAME = "presence-bridge.identity"
 disable_bootstrap = False
 
@@ -280,7 +280,7 @@ _overlay_transport_maintenance_thread: Optional[threading.Thread] = None
 _last_no_verified_peers_announce_at: float = 0.0
 
 _OVERLAY_GOOD_OUTBOUND_CACHE_FILENAME = "overlay-good-outbound-cache.json"
-_OVERLAY_GOOD_OUTBOUND_CACHE_VERSION = 1
+_OVERLAY_GOOD_OUTBOUND_CACHE_VERSION = 2
 _OVERLAY_GOOD_OUTBOUND_CACHE_MAX_PEERS = 32
 _OVERLAY_GOOD_OUTBOUND_CACHE_TTL_SECONDS = 2 * 60 * 60.0
 _OVERLAY_GOOD_OUTBOUND_CACHE_WRITE_MIN_SECONDS = 30.0
@@ -5197,6 +5197,12 @@ def _overlay_good_outbound_cache_path() -> str:
     return os.path.join(_reticulum_config_dir, _OVERLAY_GOOD_OUTBOUND_CACHE_FILENAME)
 
 
+def _overlay_good_outbound_cache_namespace_fingerprint() -> str:
+    """Bind persisted destination hashes to the app destination that created them."""
+    destination_scope = "\x00".join((APP_NAMESPACE, PRESENCE_ASPECT, PRESENCE_VERSION))
+    return hashlib.sha256(destination_scope.encode("utf-8")).hexdigest()
+
+
 def _overlay_good_cache_float(value: Any, fallback: float = 0.0) -> float:
     if not isinstance(value, (int, float)):
         return fallback
@@ -5263,6 +5269,7 @@ def _flush_overlay_good_outbound_cache(force: bool = False) -> None:
         _prune_overlay_good_outbound_cache(now)
         payload = {
             "version": _OVERLAY_GOOD_OUTBOUND_CACHE_VERSION,
+            "namespaceFingerprint": _overlay_good_outbound_cache_namespace_fingerprint(),
             "updatedAt": now,
             "peers": [
                 {
@@ -5314,6 +5321,23 @@ def _load_overlay_good_outbound_cache() -> None:
             parsed = json.load(fh)
     except Exception as exc:
         log(f"[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_read_failed err={exc}")
+        return
+    expected_fingerprint = _overlay_good_outbound_cache_namespace_fingerprint()
+    cache_version = parsed.get("version") if isinstance(parsed, dict) else None
+    cache_fingerprint = parsed.get("namespaceFingerprint") if isinstance(parsed, dict) else None
+    if (
+        cache_version != _OVERLAY_GOOD_OUTBOUND_CACHE_VERSION
+        or cache_fingerprint != expected_fingerprint
+    ):
+        reason = "schema_version" if cache_version != _OVERLAY_GOOD_OUTBOUND_CACHE_VERSION else "namespace"
+        with _overlay_good_outbound_cache_lock:
+            _overlay_good_outbound_cache.clear()
+            _overlay_good_outbound_cache_dirty = True
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_invalidated "
+            f"reason={reason}"
+        )
+        _flush_overlay_good_outbound_cache(force=True)
         return
     peers = parsed.get("peers") if isinstance(parsed, dict) else None
     if not isinstance(peers, list):
@@ -5368,6 +5392,7 @@ def _note_good_outbound_overlay_rx(peer_hash: str) -> None:
 
 
 def _seed_overlay_good_outbound_cache_candidates() -> None:
+    global _overlay_good_outbound_cache_dirty
     if disable_bootstrap:
         log("[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_seed_skipped disabled=true")
         return
@@ -5378,6 +5403,7 @@ def _seed_overlay_good_outbound_cache_candidates() -> None:
         return
     now = time.time()
     seeded = 0
+    rejected = 0
     for peer_hash, entry in sorted(
         cache_items,
         key=lambda item: (-_overlay_good_cache_float((item[1] or {}).get("last_rx_at")), item[0]),
@@ -5389,10 +5415,21 @@ def _seed_overlay_good_outbound_cache_candidates() -> None:
             continue
         if not _overlay_peer_available_for_new_outbound(peer_hash):
             continue
-        if peer_hash not in _known_peers:
-            ensure_known_peer_from_recall(peer_hash, "bootstrap_cache")
+        if peer_hash not in _known_peers and not ensure_known_peer_from_recall(peer_hash, "bootstrap_cache"):
+            with _overlay_good_outbound_cache_lock:
+                _overlay_good_outbound_cache.pop(peer_hash, None)
+                _overlay_good_outbound_cache_dirty = True
+            _candidate_peers.pop(peer_hash, None)
+            rejected += 1
+            continue
         _mark_candidate_peer(peer_hash, "bootstrap_cache")
         seeded += 1
+    if rejected:
+        log(
+            "[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_peers_rejected "
+            f"count={rejected}"
+        )
+        _flush_overlay_good_outbound_cache(force=True)
     if seeded:
         log(
             "[presence_bridge] target=presence-reticulum overlay_good_outbound_cache_seeded "

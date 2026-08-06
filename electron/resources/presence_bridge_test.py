@@ -4796,6 +4796,116 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         )
 
 
+class PresenceBridgeOverlayGoodOutboundCacheTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.bridge._reticulum_config_dir = self.temp_dir.name
+        self.bridge._overlay_good_outbound_cache.clear()
+        self.bridge._overlay_good_outbound_cache_loaded = False
+        self.bridge._overlay_good_outbound_cache_dirty = False
+        self.bridge._overlay_good_outbound_cache_last_write_at = 0.0
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+        self.bridge._shutdown.clear()
+
+    def _write_cache(self, payload):
+        path = self.bridge._overlay_good_outbound_cache_path()
+        with open(path, "w", encoding="utf-8") as cache_file:
+            json.dump(payload, cache_file)
+        return path
+
+    def test_namespace_fingerprint_covers_all_destination_name_components(self):
+        baseline = self.bridge._overlay_good_outbound_cache_namespace_fingerprint()
+        for field_name in ("APP_NAMESPACE", "PRESENCE_ASPECT", "PRESENCE_VERSION"):
+            with self.subTest(field=field_name), mock.patch.object(
+                self.bridge,
+                field_name,
+                f"{getattr(self.bridge, field_name)}-changed",
+            ):
+                self.assertNotEqual(
+                    self.bridge._overlay_good_outbound_cache_namespace_fingerprint(),
+                    baseline,
+                )
+
+    def test_old_cache_is_replaced_without_seeding_old_namespace_peers(self):
+        old_peer = "ab" * 16
+        path = self._write_cache(
+            {
+                "version": 1,
+                "updatedAt": time.time(),
+                "peers": [{"peerHash": old_peer, "lastRxAt": time.time()}],
+            }
+        )
+
+        self.bridge._load_overlay_good_outbound_cache()
+
+        self.assertEqual(self.bridge._overlay_good_outbound_cache, {})
+        with open(path, "r", encoding="utf-8") as cache_file:
+            replacement = json.load(cache_file)
+        self.assertEqual(
+            replacement["version"],
+            self.bridge._OVERLAY_GOOD_OUTBOUND_CACHE_VERSION,
+        )
+        self.assertEqual(
+            replacement["namespaceFingerprint"],
+            self.bridge._overlay_good_outbound_cache_namespace_fingerprint(),
+        )
+        self.assertEqual(replacement["peers"], [])
+
+    def test_current_version_cache_from_another_namespace_is_replaced(self):
+        path = self._write_cache(
+            {
+                "version": self.bridge._OVERLAY_GOOD_OUTBOUND_CACHE_VERSION,
+                "namespaceFingerprint": "wrong-namespace",
+                "updatedAt": time.time(),
+                "peers": [{"peerHash": "cd" * 16, "lastRxAt": time.time()}],
+            }
+        )
+
+        self.bridge._load_overlay_good_outbound_cache()
+
+        self.assertEqual(self.bridge._overlay_good_outbound_cache, {})
+        with open(path, "r", encoding="utf-8") as cache_file:
+            replacement = json.load(cache_file)
+        self.assertEqual(
+            replacement["namespaceFingerprint"],
+            self.bridge._overlay_good_outbound_cache_namespace_fingerprint(),
+        )
+
+    def test_failed_recall_removes_cached_peer_instead_of_marking_candidate(self):
+        peer_hash = "ef" * 16
+        self.bridge._overlay_good_outbound_cache_loaded = True
+        self.bridge._overlay_good_outbound_cache[peer_hash] = {
+            "first_rx_at": time.time(),
+            "last_rx_at": time.time(),
+            "rx_count": 1,
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "_overlay_peer_available_for_new_outbound",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "ensure_known_peer_from_recall",
+            return_value=False,
+        ), mock.patch.object(
+            self.bridge,
+            "_mark_candidate_peer",
+        ) as mark_candidate, mock.patch.object(
+            self.bridge,
+            "_flush_overlay_good_outbound_cache",
+        ) as flush_cache:
+            self.bridge._seed_overlay_good_outbound_cache_candidates()
+
+        mark_candidate.assert_not_called()
+        flush_cache.assert_called_once_with(force=True)
+        self.assertNotIn(peer_hash, self.bridge._overlay_good_outbound_cache)
+        self.assertNotIn(peer_hash, self.bridge._candidate_peers)
+
+
 class PresenceBridgeAccountEndpointLeaseTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()
