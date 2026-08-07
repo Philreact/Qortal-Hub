@@ -3334,14 +3334,35 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             ["history"],
         )
 
-    def test_dm_history_page_uses_bulk_lane(self):
+    def test_dm_history_page_uses_fast_lane(self):
         self.assertEqual(
             self.bridge._resource_session_lane(
                 self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
                 "reticulum_chat_dm_page",
             ),
-            "bulk",
+            "fast",
         )
+
+    def test_prepare_command_reports_fast_lane_for_dm_history(self):
+        payload = {
+            "peerPresenceHash": self.peer_hash,
+            "reticulumIdentityPublicKeyBase64": "identity",
+            "resourceType": self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+            "logicalResourceType": "reticulum_chat_dm_page",
+        }
+        with mock.patch.object(
+            self.bridge,
+            "_resource_session_poll_path",
+        ), mock.patch.object(
+            self.bridge,
+            "_parse_qchat_file_peer_identity",
+            return_value=object(),
+        ), mock.patch.object(self.bridge, "emit_resp") as emit_resp:
+            self.bridge.handle_prepare_reticulum_resource_session("dm", payload)
+
+        emit_resp.assert_called_once()
+        self.assertTrue(emit_resp.call_args.args[1])
+        self.assertEqual(emit_resp.call_args.kwargs["payload"]["lane"], "fast")
 
     def test_prepare_command_reuses_pending_session_and_reports_state(self):
         peer_identity = object()

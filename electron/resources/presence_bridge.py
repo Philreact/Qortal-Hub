@@ -30,9 +30,9 @@ if _BRIDGE_RESOURCE_DIR not in sys.path:
     sys.path.insert(0, _BRIDGE_RESOURCE_DIR)
 from qortalland_games import QortalLandGameManager, _b58decode, _b58encode, derive_qortal_address
 
-APP_NAMESPACE = "qortal-hub-v2"
+APP_NAMESPACE = "qortal-hub-test2"
 PRESENCE_ASPECT = "presence"
-PRESENCE_VERSION = "v2"
+PRESENCE_VERSION = "v1-test2"
 IDENTITY_FILENAME = "presence-bridge.identity"
 disable_bootstrap = False
 
@@ -19217,7 +19217,6 @@ def _resource_session_lane(resource_type: str, logical_resource_type: str = "") 
     logical_type = str(logical_resource_type or "").strip().lower()
     if logical_type in {
         "reticulum_chat_history_page",
-        "reticulum_chat_dm_page",
         "reticulum_chat_metadata_snapshot",
         "reticulum_chat_event_page",
         "reticulum_chat_calendar",

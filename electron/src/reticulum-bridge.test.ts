@@ -1894,6 +1894,54 @@ describe('ReticulumBridge chat forwarding support', () => {
     expect(internal.resourceSessionPreparations.size).toBe(0);
   });
 
+  it('uses the bridge-reported lane when resolving session preparation', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.start = vi.fn(async () => {});
+    let resolveCommand: ((value: Record<string, unknown>) => void) | undefined;
+    internal.sendCommand = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveCommand = resolve;
+        })
+    );
+
+    const preparation = bridge.ensureReticulumResourceSessionDetailed({
+      peerPresenceHash: 'd'.repeat(32),
+      reticulumIdentityPublicKeyBase64: 'identity',
+      resourceType: 'reticulum_chat_event',
+      logicalResourceType: 'reticulum_chat_dm_page',
+    });
+    await vi.waitFor(() => {
+      expect(internal.sendCommand).toHaveBeenCalledTimes(1);
+    });
+
+    internal.handleFrame({
+      type: 'event',
+      event: 'reticulum_resource_session',
+      payload: {
+        status: 'ready',
+        peerPresenceHash: 'd'.repeat(32),
+        lane: 'bulk',
+        linkId: 'bridge-selected-link',
+      },
+    });
+    resolveCommand?.({
+      type: 'resp',
+      id: 'prepare-bridge-selected-lane',
+      ok: true,
+      payload: {
+        status: 'pending',
+        linkId: 'bridge-selected-link',
+        lane: 'bulk',
+      },
+    });
+
+    await expect(preparation).resolves.toEqual({ ok: true });
+    expect(internal.resourceSessionPreparations.size).toBe(0);
+  });
+
   it('emits the Land forwarding revision with a fast-forwarded state', () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;

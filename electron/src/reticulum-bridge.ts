@@ -1803,6 +1803,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return new Promise<ReticulumSendResult>((resolve) => {
       let settled = false;
       let expectedLinkId = '';
+      let expectedLane: 'fast' | 'bulk' = payload.lane;
       const pendingSessionStates: Array<{
         status?: string;
         peerPresenceHash?: string;
@@ -1828,8 +1829,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       }) => {
         if (
           state.peerPresenceHash?.trim().toLowerCase() !==
-            payload.peerPresenceHash ||
-          state.lane !== payload.lane
+          payload.peerPresenceHash
         ) {
           return;
         }
@@ -1837,6 +1837,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           pendingSessionStates.push(state);
           return;
         }
+        if (state.lane !== expectedLane) return;
         if (state.linkId && state.linkId !== expectedLinkId) return;
         if (state.status === 'ready') {
           finish({ ok: true });
@@ -1895,6 +1896,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
             return;
           }
           expectedLinkId = String(resp.payload?.linkId ?? '');
+          if (resp.payload?.lane === 'fast' || resp.payload?.lane === 'bulk') {
+            expectedLane = resp.payload.lane;
+          }
           if (resp.payload?.status === 'ready') {
             finish({ ok: true });
             return;
