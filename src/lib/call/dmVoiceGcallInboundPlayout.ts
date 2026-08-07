@@ -4,10 +4,7 @@
  */
 
 import type { DecodedAudioPacket } from '../group-call/audioPacketCodec';
-import {
-  computeStaticPlayoutTargetMsForTuning,
-  postStaticPlayoutTargetForTuning,
-} from '../group-call/gcallInboundPlayoutTarget';
+import { computeStaticPlayoutTargetMsForTuning } from '../group-call/gcallInboundPlayoutTarget';
 import { JitterBuffer } from '../group-call/gcallJitterBuffer';
 import { createGcallJitterBufferForIngress } from '../group-call/gcallInboundJitterSetup';
 import { GcallOpusFecPlayoutPipeline } from '../group-call/gcallOpusFecPlayoutPipeline';
@@ -67,6 +64,14 @@ export interface DmVoiceGcallInboundOptions {
   metricsRef?: { current: GroupCallPerformanceTracker | null };
   /** Optional explicit quality profile instead of localStorage-backed default. */
   profile?: GroupCallAudioQualityProfile;
+  /**
+   * Optional lower bound for adaptive PCM consumption. Values below 1 alter
+   * pitch as well as duration, so proximity voice uses a conservative floor.
+   * Omit this to preserve the existing DM/group-call rate policy.
+   */
+  minimumPlayoutRate?: number;
+  /** Optional steady/adaptive playout target floor for bursty transports. */
+  minimumTargetPlayoutMs?: number;
   /** After each jitter drain tick (aligned with group `runJitterDrainTick` tail). */
   afterDrain?: (info: { missedFramesThisTick: number }) => void;
   /** Fired after a jitter pop advances the played sequence watermark. */
@@ -912,7 +917,18 @@ export class DmVoiceGcallInboundPlayout {
   setDynamicTargetPlayoutMs(targetPlayoutMs: number): void {
     const node = this.playbackNode;
     if (!node || !Number.isFinite(targetPlayoutMs)) return;
-    const rounded = Math.max(40, Math.round(targetPlayoutMs));
+    const minimumTargetPlayoutMs =
+      typeof this.callbacks?.minimumTargetPlayoutMs === 'number' &&
+      Number.isFinite(this.callbacks.minimumTargetPlayoutMs)
+        ? Math.min(
+            GCALL_GLOBAL_PLAYOUT_CAP_MS,
+            Math.max(40, this.callbacks.minimumTargetPlayoutMs)
+          )
+        : 40;
+    const rounded = Math.min(
+      GCALL_GLOBAL_PLAYOUT_CAP_MS,
+      Math.max(minimumTargetPlayoutMs, Math.round(targetPlayoutMs))
+    );
     if (this.lastPostedTargetPlayoutMs === rounded) return;
     this.lastPostedTargetPlayoutMs = rounded;
     node.port.postMessage({
@@ -1023,6 +1039,10 @@ export class DmVoiceGcallInboundPlayout {
       processorOptions: {
         sourceAddr: peerAddress,
         maxPlayoutTargetMs: GCALL_GLOBAL_PLAYOUT_CAP_MS,
+        ...(typeof options?.minimumPlayoutRate === 'number' &&
+        Number.isFinite(options.minimumPlayoutRate)
+          ? { minimumPlayoutRate: options.minimumPlayoutRate }
+          : {}),
         ...(pcmRing
           ? {
               sharedRing: pcmRing.getSharedBridgeConfig(),
@@ -1031,9 +1051,21 @@ export class DmVoiceGcallInboundPlayout {
       },
     } as AudioWorkletNodeOptions);
 
-    postStaticPlayoutTargetForTuning(playNode, tuning);
-    this.lastPostedTargetPlayoutMs =
-      computeStaticPlayoutTargetMsForTuning(tuning);
+    const staticTargetPlayoutMs = Math.min(
+      GCALL_GLOBAL_PLAYOUT_CAP_MS,
+      Math.max(
+        computeStaticPlayoutTargetMsForTuning(tuning),
+        typeof options?.minimumTargetPlayoutMs === 'number' &&
+        Number.isFinite(options.minimumTargetPlayoutMs)
+          ? options.minimumTargetPlayoutMs
+          : 40
+      )
+    );
+    playNode.port.postMessage({
+      type: 'target',
+      targetPlayoutMs: staticTargetPlayoutMs,
+    });
+    this.lastPostedTargetPlayoutMs = staticTargetPlayoutMs;
 
     playNode.port.onmessage = (e: MessageEvent) => {
       const d = e.data as DmVoiceGcallPlayoutWorkletMessage;

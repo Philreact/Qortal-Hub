@@ -3,8 +3,13 @@ import ReactDOM from 'react-dom';
 import Picker, { EmojiStyle, Theme } from 'emoji-picker-react';
 import '../styles/ReactionPicker.css';
 import { ButtonBase } from '@mui/material';
+import SentimentSatisfiedAltOutlinedIcon from '@mui/icons-material/SentimentSatisfiedAltOutlined';
 
-export const ReactionPicker = ({ onReaction }) => {
+export const ReactionPicker = ({
+  onReaction,
+  neutralIcon = false,
+  compactComposer = false,
+}) => {
   const [showPicker, setShowPicker] = useState(false);
   const [pickerPosition, setPickerPosition] = useState({ top: 0, left: 0 });
   const pickerRef = useRef(null);
@@ -81,11 +86,28 @@ export const ReactionPicker = ({ onReaction }) => {
     <div className="reaction-container">
       {/* Emoji CTA */}
       <ButtonBase
-        sx={{ fontSize: '22px' }}
+        sx={{
+          borderRadius: '6px',
+          color: neutralIcon ? 'text.secondary' : undefined,
+          fontSize: '22px',
+          height: compactComposer ? 32 : undefined,
+          minWidth: compactComposer ? 32 : undefined,
+          padding: neutralIcon ? (compactComposer ? '2px' : '4px') : undefined,
+          width: compactComposer ? 32 : undefined,
+          '&:hover': neutralIcon
+            ? { backgroundColor: 'action.hover', color: 'text.primary' }
+            : undefined,
+        }}
         ref={buttonRef}
         onClick={togglePicker}
       >
-        😃
+        {neutralIcon ? (
+          <SentimentSatisfiedAltOutlinedIcon
+            sx={{ fontSize: compactComposer ? '23px' : '18px' }}
+          />
+        ) : (
+          '😃'
+        )}
       </ButtonBase>
 
       {/* Emoji Picker rendered in a portal with calculated position */}

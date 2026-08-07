@@ -1,6 +1,7 @@
 // MessageDisplay.test.ts
+import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { extractComponents } from './MessageDisplay';
+import { extractComponents, MessageDisplay } from './MessageDisplay';
 
 describe('extractComponents', () => {
   // sanity checks
@@ -70,5 +71,74 @@ describe('extractComponents', () => {
       identifier: undefined,
       path: '',
     });
+  });
+});
+
+describe('Reticulum privileged mention rendering', () => {
+  const everyoneHtml =
+    '<p><span class="mention" data-type="mention" data-id="everyone" data-label="everyone">@everyone</span></p>';
+
+  it('renders an unauthorized broadcast token as ordinary text', () => {
+    const { container } = render(
+      <MessageDisplay
+        htmlContent={everyoneHtml}
+        privilegedMentionAuthorized={false}
+      />
+    );
+
+    expect(container.textContent).toContain('@everyone');
+    expect(container.querySelector('.mention')).toBeNull();
+  });
+
+  it('removes spoofed styling even when a modified sender omits the mention id', () => {
+    const { container } = render(
+      <MessageDisplay
+        htmlContent={
+          '<p><span class="mention" data-label="here">@here</span></p>'
+        }
+        privilegedMentionAuthorized={false}
+      />
+    );
+
+    expect(container.textContent).toContain('@here');
+    expect(container.querySelector('.mention')).toBeNull();
+  });
+
+  it('removes spoofed styling when a modified sender supplies a different id', () => {
+    const { container } = render(
+      <MessageDisplay
+        htmlContent={
+          '<p><span class="mention" data-type="mention" data-id="ordinary-user">@everyone</span></p>'
+        }
+        privilegedMentionAuthorized={false}
+      />
+    );
+
+    expect(container.textContent).toContain('@everyone');
+    expect(container.querySelector('.mention')).toBeNull();
+  });
+
+  it('preserves mention styling after local authorization', () => {
+    const { container } = render(
+      <MessageDisplay
+        htmlContent={everyoneHtml}
+        privilegedMentionAuthorized
+      />
+    );
+
+    expect(container.querySelector('.mention')?.textContent).toBe('everyone');
+  });
+
+  it('renders an authorized label-only mention without the trigger character', () => {
+    const { container } = render(
+      <MessageDisplay
+        htmlContent={
+          '<p><span class="mention" data-label="here">@here</span></p>'
+        }
+        privilegedMentionAuthorized
+      />
+    );
+
+    expect(container.querySelector('.mention')?.textContent).toBe('here');
   });
 });

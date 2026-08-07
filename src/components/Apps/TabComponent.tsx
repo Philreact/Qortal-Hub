@@ -16,10 +16,6 @@ import { useRef, useState, type MutableRefObject } from 'react';
 import { alpha } from '@mui/material/styles';
 import { CSS } from '@dnd-kit/utilities';
 import { useSortable } from '@dnd-kit/sortable';
-import {
-  APP_BLUE_SURFACE_TEXT,
-  getBlueTier1PillSurface,
-} from '../../styles/blueMaterial';
 import { AppsHorizontalTabButton, AppsHorizontalTabLabel } from './Apps-styles';
 import { getBaseApiReact } from '../../App';
 import LogoSelected from '../../assets/svgs/LogoSelected.svg';
@@ -95,8 +91,25 @@ const TabComponent = ({
       app?.metadata?.title ||
       app?.name ||
       '';
-  const selectedTabSurface = getBlueTier1PillSurface(theme);
-  const selectedTabTextColor = APP_BLUE_SURFACE_TEXT;
+  // Active tabs stay close to the normal hover surface so the workspace, not
+  // the tab strip, carries the visual focus.
+  const selectedTabBackground =
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.common.white, 0.09)
+      : alpha(theme.palette.common.black, 0.09);
+  const selectedTabHoverBackground =
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.common.white, 0.102)
+      : alpha(theme.palette.common.black, 0.102);
+  const selectedTabBorder =
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.common.white, 0.06)
+      : alpha(theme.palette.common.black, 0.06);
+  const selectedTabShadow =
+    theme.palette.mode === 'dark'
+      ? 'inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 2px 7px rgba(0, 0, 0, 0.12)'
+      : 'inset 0 1px 0 rgba(255, 255, 255, 0.34), 0 2px 7px rgba(0, 0, 0, 0.06)';
+  const selectedTabTextColor = theme.palette.text.primary;
   const dndStyle = {
     transform: CSS.Transform.toString(
       transform
@@ -160,19 +173,16 @@ const TabComponent = ({
       }}
       sx={{
         background: isVisuallySelected
-          ? selectedTabSurface.background
+          ? selectedTabBackground
           : theme.palette.mode === 'dark'
             ? alpha(theme.palette.common.white, 0.03)
             : alpha(theme.palette.common.black, 0.03),
         borderColor: isVisuallySelected
-          ? alpha(
-              theme.palette.common.white,
-              theme.palette.mode === 'dark' ? 0.045 : 0.035
-            )
+          ? selectedTabBorder
           : theme.palette.mode === 'dark'
             ? alpha(theme.palette.common.white, 0.03)
             : alpha(theme.palette.common.black, 0.04),
-        boxShadow: isVisuallySelected ? selectedTabSurface.boxShadow : 'none',
+        boxShadow: isVisuallySelected ? selectedTabShadow : 'none',
         color: isVisuallySelected
           ? selectedTabTextColor
           : theme.palette.text.secondary,
@@ -194,12 +204,12 @@ const TabComponent = ({
         }),
         '&:hover': {
           background: isVisuallySelected
-            ? selectedTabSurface.background
+            ? selectedTabHoverBackground
             : theme.palette.mode === 'dark'
               ? alpha(theme.palette.common.white, 0.06)
               : alpha(theme.palette.common.black, 0.06),
           boxShadow: isVisuallySelected
-            ? selectedTabSurface.boxShadow
+            ? selectedTabShadow
             : undefined,
           color: isVisuallySelected
             ? selectedTabTextColor

@@ -95,7 +95,25 @@ export const MessageQueueProvider = ({ children }) => {
       try {
         // Execute the function stored in the messageQueueRef
 
-        await currentMessage.func();
+        const result = await currentMessage.func();
+
+        if (result?.clearQueueOnSuccess) {
+          setQueueChats((prev) => {
+            const updatedChats = { ...prev };
+            const chats = updatedChats[groupDirectId];
+            if (!chats) return updatedChats;
+            updatedChats[groupDirectId] = chats.filter((chat) => {
+              return (
+                chat.identifier !== identifier &&
+                chat?.message?.specialId !== currentMessage.specialId
+              );
+            });
+            if (updatedChats[groupDirectId].length === 0) {
+              delete updatedChats[groupDirectId];
+            }
+            return updatedChats;
+          });
+        }
 
         // Remove the message from the queue after successful sending
         messageQueueRef.current.shift();
@@ -133,7 +151,7 @@ export const MessageQueueProvider = ({ children }) => {
   };
 
   // Method to process with new messages and groupDirectId
-  const processWithNewMessages = (newMessages, groupDirectId) => {
+  const processWithNewMessages = useCallback((newMessages, groupDirectId) => {
     let updatedNewMessages = newMessages;
     if (newMessages.length > 0) {
       // Remove corresponding entries in queueChats for the provided groupDirectId
@@ -194,7 +212,7 @@ export const MessageQueueProvider = ({ children }) => {
     }, 300);
 
     return updatedNewMessages;
-  };
+  }, []);
 
   return (
     <MessageQueueContext.Provider

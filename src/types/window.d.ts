@@ -6,7 +6,77 @@ import type {
 } from '../lib/group-call/audioSurfaceBridge';
 
 declare global {
+  interface ReticulumCalendarRecurrenceInput {
+    frequency: 'daily' | 'weekly' | 'monthly' | 'yearly';
+    untilLocalDate?: string;
+  }
+
+  interface ReticulumCalendarEventInput {
+    title: string;
+    description?: string;
+    startLocal: string;
+    endLocal: string;
+    allDay: boolean;
+    timezone: string;
+    location?: string;
+    link?: string;
+    coverImage?: {
+      namespace: 'reticulum-group-resource';
+      ownerId?: string;
+      fileName: string;
+      mimeType: 'image/webp';
+      sizeBytes: number;
+      fileHash: string;
+      encrypted: false;
+      createdAt: number;
+      metadata: {
+        feature: 'reticulum-calendar-cover';
+        groupId: number;
+        width: number;
+        height: number;
+      };
+    } | null;
+    recurrence?: ReticulumCalendarRecurrenceInput | null;
+  }
+
+  interface ReticulumCalendarOccurrence extends ReticulumCalendarEventInput {
+    creatorAddress: string;
+    createdAt?: number;
+    groupId: number;
+    eventId: string;
+    occurrenceId: string;
+    occurrenceStart: number;
+    occurrenceEnd: number;
+    sourceMutationId: string;
+    updatedAt: number;
+  }
+
+  interface ReticulumCalendarReminder {
+    ownerAddress: string;
+    groupId: number;
+    eventId: string;
+    offsetMs: number | null;
+    lastFiredOccurrenceId: string;
+    updatedAt: number;
+  }
+
   interface Window {
+    qortalLandRealtime?: {
+      getTransportBootstrap: () => Promise<{
+        url: string;
+        token: string;
+        instanceId: string;
+      } | null>;
+      onTransportRestarted: (callback: () => void) => () => void;
+    };
+    qortalLandGames?: {
+      getTransportBootstrap: () => Promise<{
+        url: string;
+        token: string;
+        instanceId: string;
+      } | null>;
+      onTransportRestarted: (callback: () => void) => () => void;
+    };
     sendMessage?: (
       action: string,
       data?: unknown,
@@ -50,14 +120,15 @@ declare global {
         baseUrl: string,
         apiKey?: string
       ) => Promise<{ success: boolean; error?: string }>;
-      windowMinimize?: () => void;
+      windowMinimize?: () => Promise<void>;
       windowMaximize?: () => Promise<void>;
-      windowClose?: () => void;
+      windowClose?: () => Promise<void>;
       focusWindow?: () => Promise<void>;
       getWindowState?: () => Promise<{ isMaximized: boolean }>;
       onWindowStateChange?: (
         callback: (state: { isMaximized: boolean }) => void
       ) => () => void;
+      onSystemLockRequested?: (callback: () => void) => () => void;
       getPlatform?: () => Promise<string>;
       getSystemCallReadiness?: () => Promise<{
         status: 'good' | 'warning' | 'blocked' | 'unknown';
@@ -75,30 +146,55 @@ declare global {
         eventLoopLagMs: number;
         measuredAt: number;
       }>;
-      showAppMenu?: (x?: number, y?: number) => void;
+      showAppMenu?: (x?: number, y?: number) => Promise<void>;
+      setDisableDevLogs?: (value: boolean) => Promise<boolean>;
       getAppSettings?: () => Promise<{
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;
+        autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
+        disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumEnabled?: boolean;
+        reticulumChatEnabled?: boolean;
+        reticulumResourceLimitBytes?: number;
       }>;
       setAppSettings?: (settings: {
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;
+        autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
+        disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumEnabled?: boolean;
+        reticulumChatEnabled?: boolean;
+        reticulumResourceLimitBytes?: number;
       }) => Promise<{
         closeAction?: 'ask' | 'minimizeToTray' | 'quit';
         disableStartupSound?: boolean;
+        autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
+        disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumEnabled?: boolean;
+        reticulumChatEnabled?: boolean;
+        reticulumResourceLimitBytes?: number;
       }>;
+      onAppSettingsChanged?: (
+        callback: (settings: {
+          autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
+          disableAutoLockOnIdle?: boolean;
+          reticulumEnabled?: boolean;
+          reticulumManagedConfigEnabled?: boolean;
+          reticulumChatEnabled?: boolean;
+        }) => void
+      ) => () => void;
       /** Reticulum (rnsd) child process status from main process. */
       reticulumGetStatus?: () => Promise<{
         running: boolean;
@@ -118,6 +214,8 @@ declare global {
         p2pOutboundOverlayPeers?: number;
         p2pInboundOverlayPeers?: number;
         p2pActiveOverlayPeers?: number;
+        p2pReceivingOverlayPeers?: number;
+        p2pReceivingOverlayPeersStableMs?: number;
         verifiedOverlayPeerCount?: number;
       }>;
       reticulumGetConfigEditorInfo?: () => Promise<{
@@ -180,6 +278,8 @@ declare global {
           p2pOutboundOverlayPeers?: number;
           p2pInboundOverlayPeers?: number;
           p2pActiveOverlayPeers?: number;
+          p2pReceivingOverlayPeers?: number;
+          p2pReceivingOverlayPeersStableMs?: number;
           verifiedOverlayPeerCount?: number;
         }) => void
       ) => () => void;
@@ -189,9 +289,21 @@ declare global {
           peerPresenceHash: string;
           incoming?: boolean;
           address?: string;
+          addresses?: string[];
           connectedAt: number;
         }>
       >;
+      reticulumGetDetails?: () => Promise<{
+        destinationHash: string | null;
+        overlayPeers: Array<{
+          linkId: string;
+          peerPresenceHash: string;
+          incoming?: boolean;
+          address?: string;
+          addresses?: string[];
+          connectedAt: number;
+        }>;
+      }>;
       reticulumGetMeshStatus?: () => Promise<{
         enabled: boolean;
         listenPort: number;
@@ -437,6 +549,10 @@ declare global {
       announce: (envelope: PresenceEnvelope) => Promise<{ success: boolean }>;
       /** Send a periodic heartbeat (every 25 s) to keep the session alive. */
       heartbeat: (envelope: PresenceEnvelope) => Promise<{ success: boolean }>;
+      /** Start the main-process heartbeat scheduler. */
+      startHeartbeatScheduler?: () => Promise<{ success: boolean }>;
+      /** Stop the main-process heartbeat scheduler. */
+      stopHeartbeatScheduler?: () => Promise<{ success: boolean }>;
       /** Announce that the local user is going offline. */
       offline: (envelope: PresenceEnvelope) => Promise<{ success: boolean }>;
       /** Check whether an address currently has an active session. */
@@ -470,6 +586,8 @@ declare global {
       onCleared: (cb: () => void) => () => void;
       /** Subscribe to the "presence transport ready" event (fired after transport start or wake recovery). */
       onStarted: (cb: () => void) => () => void;
+      /** Subscribe to heartbeat ticks emitted by the main process. */
+      onHeartbeatRequested?: (cb: () => void) => () => void;
     };
 
     /** Decentralized STUN bootstrap + ICE server list (Electron preload + main). */
@@ -494,7 +612,10 @@ declare global {
         signature: string,
         publicKey: string,
         callId: string,
-        timestamp: number
+        timestamp: number,
+        cancellationSignature?: string,
+        cancellationPublicKey?: string,
+        cancellationTimestamp?: number
       ) => Promise<{ success: boolean; callId?: string; error?: string }>;
       accept: (
         callId: string,
@@ -507,7 +628,8 @@ declare global {
         reason?: string,
         signature?: string,
         publicKey?: string,
-        timestamp?: number
+        timestamp?: number,
+        reasonSignature?: string
       ) => Promise<{ success: boolean }>;
       hangup: (
         callId: string,
@@ -520,6 +642,688 @@ declare global {
         source?: string
       ) => Promise<{ success: boolean }>;
       onEvent: (cb: (event: string, payload: unknown) => void) => () => void;
+    };
+
+    reticulumChat?: {
+      isEnabled: () => Promise<boolean>;
+      getReadinessStatus: () => Promise<{
+        state: 'idle' | 'starting' | 'ready' | 'failed';
+        revision: number;
+        error?: string;
+      }>;
+      onReadinessChanged: (
+        cb: (status: {
+          state: 'idle' | 'starting' | 'ready' | 'failed';
+          revision: number;
+          error?: string;
+        }) => void
+      ) => () => void;
+      setLocalGroupMemberships: (
+        groupIds: Array<
+          | number
+          | {
+              groupId: number;
+              isPrivate?: boolean;
+              isOpen?: boolean;
+              localAddress?: string;
+              address?: string;
+              isAdmin?: boolean;
+              adminStatusAuthoritative?: boolean;
+            }
+        >
+      ) => Promise<{ success: boolean; error?: string }>;
+      setPublicGroupDirectory: (
+        groupIds: number[]
+      ) => Promise<{ success: boolean; error?: string }>;
+      getPublicGroupActivity: () => Promise<
+        Array<{
+          groupId: number;
+          messages24h: number;
+          messages7d: number;
+          activeAuthors7d: number;
+          observedAt: number;
+          confidence: number;
+        }>
+      >;
+      getPublicGroupActivitySnapshot: () => Promise<{
+        availableGroupIds: number[];
+        observedAt: number;
+        summaries: Array<{
+          groupId: number;
+          messages24h: number;
+          messages7d: number;
+          activeAuthors7d: number;
+          observedAt: number;
+          confidence: number;
+        }>;
+      }>;
+      setLocalDmAddresses: (
+        addresses: string[]
+      ) => Promise<{ success: boolean; error?: string }>;
+      clearLocalAccountState: () => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
+      getSilence: (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) => Promise<{
+        ownerAddress: string;
+        targetAddress: string;
+        scopeType: 'group' | 'dm';
+        scopeId: string;
+        expiresAt: number | null;
+        ignoredThrough: number;
+        active: boolean;
+      } | null>;
+      listSilences: (
+        ownerAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) => Promise<
+        Array<{
+          ownerAddress: string;
+          targetAddress: string;
+          scopeType: 'group' | 'dm';
+          scopeId: string;
+          createdAt: number;
+          expiresAt: number | null;
+          ignoredThrough: number;
+          updatedAt: number;
+          active: boolean;
+        }>
+      >;
+      setSilence: (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        durationMs: number | null,
+        groupId?: number
+      ) => Promise<{ success: boolean; silence?: unknown; error?: string }>;
+      clearSilence: (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) => Promise<{ success: boolean; silence?: unknown; error?: string }>;
+      setActiveDirectChat: (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
+      ) => Promise<{ success: boolean; error?: string }>;
+      subscribeGroup: (
+        groupId: number
+      ) => Promise<{ success: boolean; error?: string }>;
+      subscribeChannel: (
+        groupId: number,
+        channelId: string
+      ) => Promise<{ success: boolean; error?: string }>;
+      unsubscribeChannel: (
+        groupId: number,
+        channelId: string
+      ) => Promise<{ success: boolean; error?: string }>;
+      unsubscribeGroup: (
+        groupId: number
+      ) => Promise<{ success: boolean; error?: string }>;
+      publishEvent: (
+        event: unknown
+      ) => Promise<{ success: boolean; error?: string }>;
+      reserveAuthorSequence: (
+        groupId: number,
+        authorAddress: string
+      ) => Promise<{ authorStreamId: string; authorSeq: number }>;
+      releaseAuthorSequence: (
+        groupId: number,
+        authorAddress: string,
+        authorStreamId: string,
+        authorSeq: number
+      ) => Promise<boolean>;
+      publishDirectEvent: (
+        event: unknown
+      ) => Promise<{ success: boolean; error?: string }>;
+      getDirectAuthorStreamId: (authorAddress: string) => Promise<string>;
+      getDirectExpiryPreference: (
+        ownerAddress: string,
+        peerAddress: string
+      ) => Promise<{
+        success: boolean;
+        preference?: {
+          ownerAddress: string;
+          peerAddress: string;
+          durationMs: number | null;
+          updatedAt: number;
+        };
+        error?: string;
+      }>;
+      setDirectExpiryPreference: (
+        ownerAddress: string,
+        peerAddress: string,
+        durationMs: number | null
+      ) => Promise<{
+        success: boolean;
+        preference?: {
+          ownerAddress: string;
+          peerAddress: string;
+          durationMs: number | null;
+          updatedAt: number;
+        };
+        error?: string;
+      }>;
+      getCalendarEvents: (
+        groupId: number,
+        rangeStart: number,
+        rangeEnd: number
+      ) => Promise<ReticulumCalendarOccurrence[]>;
+      getCalendarEvent: (
+        groupId: number,
+        eventId: string,
+        preferredOccurrenceStart?: number
+      ) => Promise<ReticulumCalendarOccurrence | null>;
+      createCalendarEvent: (
+        groupId: number,
+        input: ReticulumCalendarEventInput,
+        eventId?: string
+      ) => Promise<unknown>;
+      updateCalendarEvent: (
+        groupId: number,
+        eventId: string,
+        input: ReticulumCalendarEventInput
+      ) => Promise<unknown>;
+      deleteCalendarEvent: (
+        groupId: number,
+        eventId: string
+      ) => Promise<unknown>;
+      getCalendarReminder: (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string
+      ) => Promise<ReticulumCalendarReminder | null>;
+      setCalendarReminder: (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string,
+        offsetMs: number | null
+      ) => Promise<ReticulumCalendarReminder>;
+      sendDirectTyping: (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
+      ) => Promise<{ success: boolean; error?: string }>;
+      getDirectHistory: (
+        myAddress: string,
+        peerAddress: string,
+        limit?: number
+      ) => Promise<unknown[]>;
+      getDirectSummaries: (
+        myAddress: string,
+        peerAddress?: string
+      ) => Promise<unknown[]>;
+      getDirectCallHistory: (
+        ownerAddress: string,
+        peerAddress?: string,
+        limit?: number,
+        unreadOnly?: boolean
+      ) => Promise<unknown[]>;
+      markDirectRead: (
+        myAddress: string,
+        peerAddress: string,
+        upToTimestamp: number
+      ) => Promise<{ success: boolean; error?: string }>;
+      sendTyping: (
+        groupId: number,
+        channelId: string,
+        authorAddress: string,
+        active: boolean
+      ) => Promise<{ success: boolean; error?: string }>;
+      sendLandState: (
+        groupId: number,
+        authorAddress: string,
+        state: {
+          sessionId?: unknown;
+          sequence?: unknown;
+          x?: unknown;
+          y?: unknown;
+          roomId?: unknown;
+          direction?: unknown;
+          movement?: unknown;
+          afk?: unknown;
+          dnd?: unknown;
+          voiceEnabled?: unknown;
+          voiceMuted?: unknown;
+          skinId?: unknown;
+        }
+      ) => Promise<{ success: boolean; error?: string }>;
+      sendLandChat: (
+        message: unknown
+      ) => Promise<{ success: boolean; error?: string }>;
+      sendLandAction: (
+        groupId: number,
+        action: unknown
+      ) => Promise<{ success: boolean; error?: string }>;
+      sendLandCall: (
+        groupId: number,
+        call: unknown
+      ) => Promise<{ success: boolean; error?: string }>;
+      requestResource: (
+        groupId: number,
+        manifest: unknown,
+        eventId?: string
+      ) => Promise<{ success: boolean; error?: string }>;
+      requestDirectResource: (
+        myAddress: string,
+        peerAddress: string,
+        manifest: unknown,
+        eventId?: string
+      ) => Promise<{ success: boolean; error?: string }>;
+      cancelResource: (
+        fileHash: string
+      ) => Promise<{ success: boolean; canceled?: boolean; error?: string }>;
+      getHistory: (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: {
+          beforeTimestamp?: number;
+          beforeEventId?: string;
+          afterTimestamp?: number;
+          afterEventId?: string;
+          repairNetwork?: boolean;
+        }
+      ) => Promise<unknown[]>;
+      getMessageHistory: (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: {
+          beforeTimestamp?: number;
+          beforeEventId?: string;
+          afterTimestamp?: number;
+          afterEventId?: string;
+          repairNetwork?: boolean;
+        }
+      ) => Promise<unknown[]>;
+      getMessageHistoryPage: (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: {
+          beforeTimestamp?: number;
+          beforeEventId?: string;
+          afterTimestamp?: number;
+          afterEventId?: string;
+          repairNetwork?: boolean;
+        }
+      ) => Promise<{
+        events: unknown[];
+        oldestCursor: { timestamp: number; eventId: string } | null;
+        newestCursor: { timestamp: number; eventId: string } | null;
+        hasMore: boolean;
+      }>;
+      getDiscussionIndex: (
+        groupId: number,
+        channelId?: string
+      ) => Promise<{
+        replyCounts: Record<string, number>;
+        rootByEventId: Record<string, string>;
+      }>;
+      getDiscussionMessages: (
+        groupId: number,
+        channelId: string,
+        eventId: string
+      ) => Promise<unknown[]>;
+      getChannelMetadataHistory: (
+        groupId: number,
+        limit?: number
+      ) => Promise<unknown[]>;
+      getChannels: (
+        groupId: number,
+        includeArchived?: boolean
+      ) => Promise<unknown[]>;
+      getCategories: (groupId: number) => Promise<unknown[]>;
+      getChannelMetadataBundle: (
+        groupId: number,
+        includeArchived?: boolean
+      ) => Promise<{
+        channels: unknown[];
+        categories: unknown[];
+        ready: boolean;
+        snapshotVersion: number;
+      }>;
+      applyChannelMetadata: (
+        eventId: string,
+        payload: unknown
+      ) => Promise<{ success: boolean }>;
+      getSyncState: (groupId: number) => Promise<Record<string, number>>;
+      getSummaries: (myAddress?: string) => Promise<unknown[]>;
+      search: (
+        query: string,
+        options?: {
+          groupIds?: number[];
+          channelIds?: string[];
+          authorAddresses?: string[];
+          eventTypes?: Array<'message' | 'attachment_manifest'>;
+          beforeTimestamp?: number;
+          afterTimestamp?: number;
+          hasAttachment?: boolean;
+          hasLink?: boolean;
+          sort?: 'relevance' | 'newest' | 'oldest';
+          limit?: number;
+          offset?: number;
+          cursor?: {
+            createdAt: number;
+            eventId: string;
+          };
+        }
+      ) => Promise<unknown[]>;
+      getMessageWindowAroundEvent: (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
+      ) => Promise<unknown[]>;
+      getMessageWindowPageAroundEvent: (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
+      ) => Promise<{
+        events: unknown[];
+        oldestCursor: { timestamp: number; eventId: string } | null;
+        newestCursor: { timestamp: number; eventId: string } | null;
+        hasOlder: boolean;
+        hasNewer: boolean;
+      }>;
+      indexSearchText: (
+        eventId: string,
+        text: string
+      ) => Promise<{ success: boolean }>;
+      deleteSearchText: (eventId: string) => Promise<{ success: boolean }>;
+      replaceMentions: (
+        eventId: string,
+        mentionedAddresses: string[]
+      ) => Promise<{ success: boolean }>;
+      deleteMentions: (eventId: string) => Promise<{ success: boolean }>;
+      markRead: (
+        groupId: number,
+        channelId: string,
+        upToTimestamp: number,
+        myAddress?: string
+      ) => Promise<{ success: boolean }>;
+      markGroupsRead: (
+        groupIds: number[],
+        myAddress?: string
+      ) => Promise<{
+        success: boolean;
+        error?: string;
+        groupsMarked: number;
+        channelsMarked: number;
+      }>;
+      getSubscriptions: () => Promise<number[]>;
+      updateMentionBadge: (
+        mentionCount: number
+      ) => Promise<{ success: boolean }>;
+      onEvent: (cb: (payload: { event: unknown }) => void) => () => void;
+      onSummaryChanged: (
+        cb: (payload: {
+          groupId: number;
+          eventId?: string;
+          timestamp?: number;
+          metadataChanged?: boolean;
+        }) => void
+      ) => () => void;
+      onCalendarChanged: (
+        cb: (payload: { groupId: number; eventId?: string }) => void
+      ) => () => void;
+      onCalendarReminderDue: (cb: (payload: unknown) => void) => () => void;
+      onDirectEvent: (cb: (payload: { event: unknown }) => void) => () => void;
+      onDirectCallHistory: (
+        cb: (payload: { record: unknown }) => void
+      ) => () => void;
+      onDirectTyping: (
+        cb: (payload: {
+          conversationId: string;
+          authorAddress: string;
+          active: boolean;
+        }) => void
+      ) => () => void;
+      onDirectSummaryChanged: (
+        cb: (payload: {
+          conversationId?: string;
+          peerAddress?: string;
+          reason?: 'expiry' | 'call';
+        }) => void
+      ) => () => void;
+      onSilenceChanged: (
+        cb: (payload: {
+          ownerAddress: string;
+          targetAddress: string;
+          scopeType: 'group' | 'dm';
+          scopeId: string;
+          expiresAt: number | null;
+          active: boolean;
+        }) => void
+      ) => () => void;
+      onTyping: (
+        cb: (payload: {
+          groupId: number;
+          channelId: string;
+          authorAddress: string;
+          active: boolean;
+        }) => void
+      ) => () => void;
+      onLandState: (
+        cb: (payload: {
+          groupId: number;
+          authorAddress: string;
+          sessionId: string;
+          destinationHash?: string;
+          sequence: number;
+          x: number;
+          y: number;
+          roomId?: string;
+          direction?: string;
+          movement?: string;
+          afk?: boolean;
+          dnd?: boolean;
+          voiceEnabled?: boolean;
+          voiceMuted?: boolean;
+          skinId?: number;
+          timestamp?: number;
+        }) => void
+      ) => () => void;
+      onLandChat: (
+        cb: (payload: {
+          groupId: number;
+          messageId: string;
+          authorAddress: string;
+          sessionId: string;
+          sequence: number;
+          timestamp: number;
+          text: string;
+        }) => void
+      ) => () => void;
+      onLandAction: (
+        cb: (payload: {
+          groupId: number;
+          actionId: string;
+          actionType: string;
+          fromAddress: string;
+          sourceSessionId: string;
+          sequence: number;
+          toAddress: string;
+          targetSessionId: string;
+          amount: number;
+          roomId?: string;
+          timestamp?: number;
+        }) => void
+      ) => () => void;
+      onLandCall: (
+        cb: (payload: {
+          groupId: number;
+          callType: string;
+          callId: string;
+          fromAddress: string;
+          toAddress: string;
+          chatId?: string;
+          fromPublicKey?: string;
+          signature?: string;
+          reason?: string;
+          roomId?: string;
+          sourceSessionId?: string;
+          targetSessionId?: string;
+          sourceDestinationHash?: string;
+          targetDestinationHash?: string;
+          timestamp?: number;
+        }) => void
+      ) => () => void;
+      onResource: (
+        cb: (payload: {
+          groupId?: number;
+          eventId?: string;
+          fileHash?: string;
+          bytesTransferred?: number;
+          totalBytes?: number;
+          progress?: number;
+          complete?: boolean;
+          failed?: boolean;
+          canceled?: boolean;
+          failureReason?: 'verification_failed';
+        }) => void
+      ) => () => void;
+    };
+
+    reticulumResources?: {
+      getPathForFile: (file: File) => string;
+      convertGifToWebp: (payload: {
+        filePath?: string;
+        bytes?: Uint8Array;
+        fileName?: string;
+        targetBytes?: number;
+      }) => Promise<{
+        success: boolean;
+        filePath?: string;
+        fileName?: string;
+        mimeType?: string;
+        originalSizeBytes?: number;
+        sizeBytes?: number;
+        width?: number;
+        height?: number;
+        pages?: number;
+        targetAchieved?: boolean;
+        error?: string;
+      }>;
+      releaseConvertedMedia: (
+        filePath: string
+      ) => Promise<{ success: boolean; error?: string }>;
+      importBase64: (payload: {
+        base64?: string;
+        namespace?: string;
+        ownerId?: string;
+        fileName?: string;
+        mimeType?: string;
+        encrypted?: boolean;
+        metadata?: Record<string, unknown>;
+      }) => Promise<{ success: boolean; manifest?: unknown; error?: string }>;
+      importFilePath: (payload: {
+        filePath?: string;
+        namespace?: string;
+        ownerId?: string;
+        fileName?: string;
+        mimeType?: string;
+        encrypted?: boolean;
+        metadata?: Record<string, unknown>;
+      }) => Promise<{ success: boolean; manifest?: unknown; error?: string }>;
+      getUrl: (fileHash: string) => Promise<{
+        success: boolean;
+        url?: string;
+        manifest?: unknown;
+        error?: string;
+      }>;
+      getStatus: (fileHash: string) => Promise<{
+        success: boolean;
+        manifest?: unknown;
+        bytesTransferred?: number;
+        totalBytes?: number;
+        progress?: number;
+        complete?: boolean;
+        latestRangeUpdatedAt?: number | null;
+        checkedAt?: number;
+        runtime?: {
+          active?: boolean;
+          peerCount?: number;
+          candidatePeerCount?: number;
+          advertisedPeerCount?: number;
+          activeTransfers?: number;
+          pendingTransfers?: number;
+          requestedRangeCount?: number;
+          inFlightRangeCount?: number;
+          bytesTransferred?: number;
+          totalBytes?: number;
+          progress?: number;
+          nextRequestAt?: number | null;
+        } | null;
+        error?: string;
+      }>;
+      getStorageStatus: () => Promise<{
+        success: boolean;
+        status?: {
+          limitBytes: number;
+          lowWatermarkBytes: number;
+          totalResidentBytes: number;
+          authoredResidentBytes: number;
+          remoteResidentBytes: number;
+          partialResidentBytes: number;
+          reservedBytes: number;
+          protectedBytes: number;
+          evictableBytes: number;
+          blobCount: number;
+          residentBlobCount: number;
+          lastCleanupAt: number | null;
+          lastCleanupFreedBytes: number;
+          blockedAuthoredPublishes: number;
+        };
+        error?: string;
+      }>;
+      cleanupStorage: () => Promise<{
+        success: boolean;
+        result?: {
+          freedBytes: number;
+          evictedBlobs: number;
+        };
+        status?: {
+          limitBytes: number;
+          totalResidentBytes: number;
+          authoredResidentBytes: number;
+          remoteResidentBytes: number;
+          partialResidentBytes: number;
+          reservedBytes: number;
+        };
+        error?: string;
+      }>;
+      saveAs: (
+        fileHash: string,
+        suggestedFileName?: string
+      ) => Promise<{
+        success: boolean;
+        canceled?: boolean;
+        path?: string;
+        error?: string;
+      }>;
+      open: (
+        fileHash: string,
+        suggestedFileName?: string
+      ) => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
     };
 
     // ── Group Call ────────────────────────────────────────────────────────────
@@ -535,7 +1339,11 @@ declare global {
         joinGeneration?: number,
         topologyEpochFloor?: number,
         reticulumIdentityPublicKeyBase64?: string,
-        joinRkSignature?: string
+        joinRkSignature?: string,
+        dmVoiceAudioLinkRole?: 'opener' | 'waiter',
+        takeover?: boolean,
+        dmVoicePeerDestinationHash?: string,
+        dmVoiceCallId?: string
       ) => Promise<{
         success: boolean;
         error?: string;
@@ -547,14 +1355,16 @@ declare global {
         localAddress: string,
         signature: string,
         publicKey: string,
-        timestamp: number
+        timestamp: number,
+        joinGeneration?: number
       ) => Promise<{ success: boolean }>;
       leaveSync?: (
         roomId: string,
         localAddress: string,
         signature: string,
         publicKey: string,
-        timestamp: number
+        timestamp: number,
+        joinGeneration?: number
       ) => { success: boolean; error?: string };
       broadcastTopology: (
         roomId: string,
@@ -833,6 +1643,13 @@ declare global {
             token: string;
             version: 2;
             routeCount: number;
+            routes?: Array<{
+              address?: string;
+              transport?: 'link' | 'packet';
+              linkId?: string;
+              peerPresenceHash?: string;
+              peerDestinationHash?: string;
+            }>;
           }
         | { ok: false; reason?: string; error?: string }
       >;

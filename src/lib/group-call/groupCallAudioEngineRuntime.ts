@@ -609,8 +609,122 @@ type GcallAudioDataPlaneSession =
       token: string;
       version: 2;
       routeCount: number;
+      routes?: Array<{
+        address?: string;
+        transport?: 'link' | 'packet';
+        linkId?: string;
+        peerPresenceHash?: string;
+        peerDestinationHash?: string;
+      }>;
     }
   | { ok: false; reason?: string; error?: string };
+
+type GcallAudioDataPlaneInboundFrame = {
+  linkId: string;
+  roomId: string;
+  peerPresenceHash: string;
+  peerDestinationHash: string;
+  receivedAtWallMs: number;
+  data: ArrayBuffer;
+};
+
+const GCALL_AUDIO_DATA_PLANE_MAGIC = 'QAUD';
+const GCALL_AUDIO_DATA_PLANE_VERSION = 2;
+const GCALL_AUDIO_DATA_PLANE_HEADER_BYTES = 9;
+const GCALL_AUDIO_DATA_PLANE_MAX_FRAMES = 32;
+const GCALL_AUDIO_DATA_PLANE_MAX_BODY_BYTES = 65536;
+const GCALL_AUDIO_DATA_PLANE_MAX_PAYLOAD_BYTES = 8192;
+
+const gcallAudioDataPlaneTextDecoder = new TextDecoder();
+
+function readAudioDataPlaneU64(view: DataView, offset: number): number {
+  const hi = view.getUint32(offset, false);
+  const lo = view.getUint32(offset + 4, false);
+  return hi * 0x1_0000_0000 + lo;
+}
+
+function decodeAudioDataPlaneInboundBatch(
+  input: ArrayBuffer
+): GcallAudioDataPlaneInboundFrame[] {
+  const view = new DataView(input);
+  if (view.byteLength < GCALL_AUDIO_DATA_PLANE_HEADER_BYTES) {
+    throw new Error('audio-data-plane truncated header');
+  }
+  const magic =
+    String.fromCharCode(view.getUint8(0)) +
+    String.fromCharCode(view.getUint8(1)) +
+    String.fromCharCode(view.getUint8(2)) +
+    String.fromCharCode(view.getUint8(3));
+  if (magic !== GCALL_AUDIO_DATA_PLANE_MAGIC) {
+    throw new Error('audio-data-plane bad magic');
+  }
+  if (view.getUint8(4) !== GCALL_AUDIO_DATA_PLANE_VERSION) {
+    throw new Error('audio-data-plane bad version');
+  }
+  const bodyLen = view.getUint32(5, false);
+  if (
+    bodyLen < 2 ||
+    bodyLen > GCALL_AUDIO_DATA_PLANE_MAX_BODY_BYTES ||
+    bodyLen + GCALL_AUDIO_DATA_PLANE_HEADER_BYTES > view.byteLength
+  ) {
+    throw new Error('audio-data-plane bad body length');
+  }
+  const bodyOffset = GCALL_AUDIO_DATA_PLANE_HEADER_BYTES;
+  const bodyEnd = bodyOffset + bodyLen;
+  let offset = bodyOffset;
+  const frameCount = view.getUint16(offset, false);
+  offset += 2;
+  if (frameCount <= 0 || frameCount > GCALL_AUDIO_DATA_PLANE_MAX_FRAMES) {
+    throw new Error('audio-data-plane bad frame count');
+  }
+  const readString = (maxLen: number): string => {
+    if (offset >= bodyEnd) throw new Error('audio-data-plane truncated string');
+    const len = view.getUint8(offset);
+    offset += 1;
+    if (len > maxLen || offset + len > bodyEnd) {
+      throw new Error('audio-data-plane bad string');
+    }
+    const text = gcallAudioDataPlaneTextDecoder.decode(
+      new Uint8Array(input, offset, len)
+    );
+    offset += len;
+    return text;
+  };
+  const frames: GcallAudioDataPlaneInboundFrame[] = [];
+  for (let i = 0; i < frameCount; i++) {
+    const linkId = readString(36);
+    const roomId = readString(255);
+    const peerPresenceHash = readString(128);
+    const peerDestinationHash = readString(128);
+    if (offset + 10 > bodyEnd)
+      throw new Error('audio-data-plane truncated payload');
+    const payloadLen = view.getUint16(offset, false);
+    offset += 2;
+    const receivedAtWallMs = readAudioDataPlaneU64(view, offset);
+    offset += 8;
+    if (
+      payloadLen <= 0 ||
+      payloadLen > GCALL_AUDIO_DATA_PLANE_MAX_PAYLOAD_BYTES ||
+      offset + payloadLen > bodyEnd
+    ) {
+      throw new Error('audio-data-plane bad payload');
+    }
+    const payload = input.slice(offset, offset + payloadLen);
+    offset += payloadLen;
+    frames.push({
+      linkId,
+      roomId,
+      peerPresenceHash,
+      peerDestinationHash,
+      receivedAtWallMs,
+      data: payload,
+    });
+  }
+  if (offset !== bodyEnd) {
+    throw new Error('audio-data-plane trailing bytes');
+  }
+  return frames;
+}
 
 type OutboundMediaDiagnostics = {
   encodedFrameCallbacks: number;
@@ -905,6 +1019,8 @@ export class GroupCallAudioEngineRuntime {
   private directVoiceMediaReadyEmitted = false;
   private unsubscribeGroupCallEvents: (() => void) | null = null;
   private currentChatId = '';
+  /** Logical unsigned generation of this installation's active group-call slot. */
+  private localGroupJoinGeneration: number | null = null;
   private topology: GroupCallTopology | null = null;
   private roomKey: Uint8Array | null = null;
   private appliedRoomKeyCommitment = '';
@@ -1022,6 +1138,17 @@ export class GroupCallAudioEngineRuntime {
   private audioDataPlaneKeepAliveTimer: number | null = null;
   private audioDataPlaneLastPongAtMs = 0;
   private audioDataPlaneClosingReason = '';
+  private readonly audioDataPlaneAddressesByPeerHash = new Map<
+    string,
+    Set<string>
+  >();
+  private readonly audioDataPlaneAddressesByLinkId = new Map<
+    string,
+    Set<string>
+  >();
+  private audioDataPlaneInboundFrames = 0;
+  private audioDataPlaneInboundBytes = 0;
+  private audioDataPlaneInboundLastLogAtMs = 0;
   private readonly recentWindowTrends: RuntimeRecentWindowTrend[] = [];
   private readonly audioStageGapStats = new Map<
     AudioStageName,
@@ -1339,6 +1466,7 @@ export class GroupCallAudioEngineRuntime {
       hearCall: command.hearCall !== false,
       profile: command.profile ?? this.snapshot.audioQualityProfile,
     });
+    void this.ensureAudioDataPlaneSession(roomId, [peerAddress]);
     this.recordDiagEvent('direct-voice-receive-started', {
       roomId,
       peerAddress: truncateGcallDiagAddress(peerAddress),
@@ -1773,11 +1901,152 @@ export class GroupCallAudioEngineRuntime {
     this.audioDataPlaneSessionPromise = null;
     this.audioDataPlaneLastPongAtMs = 0;
     this.audioDataPlaneClosingReason = '';
+    this.audioDataPlaneAddressesByPeerHash.clear();
+    this.audioDataPlaneAddressesByLinkId.clear();
     if (reason) {
       this.recordThrottledDiagEvent('audio-data-plane-closed', reason, {
         reason,
       });
     }
+  }
+
+  private rememberAudioDataPlaneRoutes(
+    routes: NonNullable<
+      Extract<GcallAudioDataPlaneSession, { ok: true }>['routes']
+    >
+  ): void {
+    // The bridge response is a complete route snapshot for the current room.
+    // Replace, rather than append, so account switches and participant leaves
+    // cannot retain stale destination ownership in the audio surface.
+    this.audioDataPlaneAddressesByPeerHash.clear();
+    this.audioDataPlaneAddressesByLinkId.clear();
+    const addRoute = (
+      map: Map<string, Set<string>>,
+      key: string,
+      address: string
+    ) => {
+      const addresses = map.get(key) ?? new Set<string>();
+      addresses.add(address);
+      map.set(key, addresses);
+    };
+    for (const route of routes) {
+      const address = route.address?.trim() ?? '';
+      if (!address) continue;
+      const linkId = route.linkId?.trim() ?? '';
+      if (linkId) {
+        addRoute(this.audioDataPlaneAddressesByLinkId, linkId, address);
+      }
+      for (const hash of [
+        route.peerPresenceHash?.trim().toLowerCase() ?? '',
+        route.peerDestinationHash?.trim().toLowerCase() ?? '',
+      ]) {
+        if (hash) {
+          addRoute(this.audioDataPlaneAddressesByPeerHash, hash, address);
+        }
+      }
+    }
+  }
+
+  private resolveAudioDataPlaneFrameAddress(
+    frame: GcallAudioDataPlaneInboundFrame
+  ): string {
+    if (frame.linkId) {
+      const linkCandidates =
+        this.audioDataPlaneAddressesByLinkId.get(frame.linkId) ?? new Set();
+      if (linkCandidates.size === 1) return [...linkCandidates][0]!;
+      if (linkCandidates.size > 1) return '';
+    }
+    const candidates = new Set<string>();
+    for (const hash of [
+      frame.peerPresenceHash.trim().toLowerCase(),
+      frame.peerDestinationHash.trim().toLowerCase(),
+    ]) {
+      if (!hash) continue;
+      for (const address of this.audioDataPlaneAddressesByPeerHash.get(hash) ??
+        []) {
+        candidates.add(address);
+      }
+    }
+    // The same installation destination can be reused after an account
+    // switch. Never guess when a current route snapshot is ambiguous.
+    return candidates.size === 1 ? [...candidates][0]! : '';
+  }
+
+  private async handleAudioDataPlaneInboundBuffer(
+    buffer: ArrayBuffer
+  ): Promise<void> {
+    let frames: GcallAudioDataPlaneInboundFrame[];
+    try {
+      frames = decodeAudioDataPlaneInboundBatch(buffer);
+    } catch (error) {
+      this.recordThrottledDiagEvent(
+        'audio-data-plane-inbound-decode-failed',
+        error instanceof Error ? error.message : String(error)
+      );
+      return;
+    }
+    const now = Date.now();
+    for (const frame of frames) {
+      const fromAddress = this.resolveAudioDataPlaneFrameAddress(frame);
+      this.audioDataPlaneInboundFrames += 1;
+      this.audioDataPlaneInboundBytes += frame.data.byteLength;
+      const peerHash =
+        frame.peerPresenceHash || frame.peerDestinationHash || 'unknown';
+      await this.handleGroupCallRuntimeEvent('gcall:audio', {
+        roomId: frame.roomId,
+        data: frame.data,
+        transport: frame.linkId ? 'link' : 'packet',
+        routeKey: frame.linkId || `packet:${peerHash}`,
+        peerPresenceHash: frame.peerPresenceHash,
+        peerDestinationHash: frame.peerDestinationHash,
+        bridgeReceivedAtWallMs:
+          frame.receivedAtWallMs > 0 ? frame.receivedAtWallMs : null,
+        audioStageTimestamps: {
+          bridgeReceivedAtWallMs:
+            frame.receivedAtWallMs > 0 ? frame.receivedAtWallMs : null,
+          audioSurfaceHandlerAtWallMs: now,
+        },
+        resolvedFromAddress: fromAddress || null,
+        ...(fromAddress ? { fromAddress } : {}),
+      } as GroupCallAudioReceivePayload);
+    }
+    if (
+      this.audioDataPlaneInboundLastLogAtMs <= 0 ||
+      now - this.audioDataPlaneInboundLastLogAtMs >= 2_000
+    ) {
+      this.recordDiagEvent('audio-data-plane-inbound', {
+        frames: this.audioDataPlaneInboundFrames,
+        bytes: this.audioDataPlaneInboundBytes,
+      });
+      this.audioDataPlaneInboundFrames = 0;
+      this.audioDataPlaneInboundBytes = 0;
+      this.audioDataPlaneInboundLastLogAtMs = now;
+    }
+  }
+
+  private refreshAudioDataPlaneRoutesForCurrentRoom(reason: string): void {
+    const roomId = this.snapshot.roomId;
+    const topology = this.topology;
+    const myAddress = this.userInfo?.address?.trim() ?? '';
+    if (!roomId || !topology || !myAddress) return;
+    const targets = new Set<string>();
+    for (const address of getReticulumTransportTargets(myAddress, topology)) {
+      const normalized = address.trim();
+      if (normalized && normalized !== myAddress) targets.add(normalized);
+    }
+    for (const address of this.collectTopologyAddresses(topology)) {
+      const normalized = address.trim();
+      if (normalized && normalized !== myAddress) targets.add(normalized);
+    }
+    if (targets.size === 0) return;
+    void this.ensureAudioDataPlaneSession(roomId, [...targets]).then((ok) => {
+      if (!ok) return;
+      this.recordThrottledDiagEvent('audio-data-plane-route-refresh', reason, {
+        roomId,
+        reason,
+        targetCount: targets.size,
+      });
+    });
   }
 
   private stopAudioDataPlaneKeepAlive(): void {
@@ -1911,6 +2180,7 @@ export class GroupCallAudioEngineRuntime {
     ) {
       this.audioDataPlaneLastRouteRefreshAtMs = now;
       this.audioDataPlaneLastRouteKey = routeKey;
+      this.rememberAudioDataPlaneRoutes(session.routes ?? []);
       return true;
     }
     const endpointWithToken = `${session.endpoint}${
@@ -1923,8 +2193,10 @@ export class GroupCallAudioEngineRuntime {
     this.audioDataPlaneToken = session.token;
     this.audioDataPlaneLastRouteRefreshAtMs = now;
     this.audioDataPlaneLastRouteKey = routeKey;
+    this.rememberAudioDataPlaneRoutes(session.routes ?? []);
     try {
       const socket = new WebSocket(endpointWithToken);
+      socket.binaryType = 'arraybuffer';
       this.audioDataPlaneSocket = socket;
       await new Promise<void>((resolve, reject) => {
         const timeout = window.setTimeout(
@@ -1965,6 +2237,22 @@ export class GroupCallAudioEngineRuntime {
         this.audioDataPlaneFailureReason = 'socket-error';
       };
       socket.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          void this.handleAudioDataPlaneInboundBuffer(event.data);
+          return;
+        }
+        if (event.data instanceof Blob) {
+          void event.data
+            .arrayBuffer()
+            .then((buf) => this.handleAudioDataPlaneInboundBuffer(buf))
+            .catch((error) => {
+              this.recordThrottledDiagEvent(
+                'audio-data-plane-inbound-blob-failed',
+                error instanceof Error ? error.message : String(error)
+              );
+            });
+          return;
+        }
         if (typeof event.data !== 'string') return;
         try {
           const parsed = JSON.parse(event.data) as {
@@ -4512,6 +4800,7 @@ export class GroupCallAudioEngineRuntime {
       fromPublicKey: userInfo.publicKey,
       timestamp,
       joinGeneration,
+      takeover: true,
       reticulumDestinationHash,
       reticulumIdentityPublicKeyBase64,
     });
@@ -4553,7 +4842,9 @@ export class GroupCallAudioEngineRuntime {
       joinGeneration,
       0,
       reticulumIdentityPublicKeyBase64 ?? undefined,
-      signed.joinRkSig
+      signed.joinRkSig,
+      undefined,
+      true
     );
     const GCALL_JOIN_IPC_TIMEOUT_MS = 25_000;
     traceGcallAudioSurface(
@@ -4598,6 +4889,7 @@ export class GroupCallAudioEngineRuntime {
     traceGcallAudioSurface('engine.joinGroupCall: success', { roomId });
     const joinSuccessAtMs = Date.now();
     this.lastJoinSuccessAtMs = joinSuccessAtMs;
+    this.localGroupJoinGeneration = joinGeneration;
     this.recordDiagEvent('join-success', { roomId, joinSuccessAtMs });
     this.snapshot = buildConnectedSnapshot(this.snapshot, roomId);
     this.emitSnapshot();
@@ -4618,7 +4910,9 @@ export class GroupCallAudioEngineRuntime {
     return { ok: true, payload: result };
   }
 
-  private async leaveGroupCall(): Promise<AudioSurfaceResponse> {
+  private async leaveGroupCall(
+    broadcastLeave = true
+  ): Promise<AudioSurfaceResponse> {
     const userInfo = this.userInfo;
     const roomId = this.snapshot.roomId;
     if (!userInfo?.address || !roomId) {
@@ -4627,6 +4921,8 @@ export class GroupCallAudioEngineRuntime {
     const localAddress = userInfo.address;
     const publicKey = userInfo.publicKey ?? '';
     const timestamp = Date.now();
+    const joinGeneration = this.localGroupJoinGeneration ?? undefined;
+    this.localGroupJoinGeneration = null;
     const cleanupGeneration = ++this.leaveCleanupGeneration;
 
     this.roomKey = null;
@@ -4687,19 +4983,22 @@ export class GroupCallAudioEngineRuntime {
     }
     this.recordDiagEvent('local-leave-applied', { roomId });
 
-    const signature = await signGroupCallFields({
-      type: 'GC_LEAVE',
-      roomId,
-      fromAddress: localAddress,
-      fromPublicKey: publicKey,
-      timestamp,
-    }).catch(() => '');
+    const signature = broadcastLeave
+      ? await signGroupCallFields({
+          type: 'GC_LEAVE',
+          roomId,
+          fromAddress: localAddress,
+          fromPublicKey: publicKey,
+          timestamp,
+        }).catch(() => '')
+      : '';
     void this.notifyMainOfLeave(
       roomId,
       localAddress,
       publicKey,
       timestamp,
-      signature
+      signature,
+      joinGeneration
     );
     void this.cleanupMediaAfterLeave(cleanupGeneration, roomId);
 
@@ -4744,7 +5043,8 @@ export class GroupCallAudioEngineRuntime {
     localAddress: string,
     publicKey: string,
     timestamp: number,
-    signature: string
+    signature: string,
+    joinGeneration?: number
   ): Promise<void> {
     try {
       await Promise.race([
@@ -4753,7 +5053,8 @@ export class GroupCallAudioEngineRuntime {
           localAddress,
           signature,
           publicKey,
-          timestamp
+          timestamp,
+          joinGeneration
         ) ??
           Promise.resolve({ success: false, error: 'groupcall-api-missing' }),
         new Promise<never>((_, reject) => {
@@ -4770,7 +5071,8 @@ export class GroupCallAudioEngineRuntime {
         localAddress,
         signature,
         publicKey,
-        timestamp
+        timestamp,
+        joinGeneration
       );
       this.recordDiagEvent('main-leave-failed', {
         roomId,
@@ -4827,6 +5129,28 @@ export class GroupCallAudioEngineRuntime {
     event: string,
     payload: unknown
   ): Promise<void> {
+    if (event === 'gcall:local-session-taken-over') {
+      const takeover = payload as
+        | { roomId?: string; address?: string; joinGeneration?: number }
+        | null
+        | undefined;
+      const activeRoomId = this.snapshot.roomId;
+      const localAddress = this.userInfo?.address?.trim() ?? '';
+      if (
+        !activeRoomId ||
+        takeover?.roomId !== activeRoomId ||
+        takeover?.address?.trim() !== localAddress ||
+        takeover?.joinGeneration === this.localGroupJoinGeneration
+      ) {
+        return;
+      }
+      this.recordDiagEvent('local-session-taken-over', {
+        roomId: activeRoomId,
+        replacementJoinGeneration: takeover?.joinGeneration ?? null,
+      });
+      await this.leaveGroupCall(false);
+      return;
+    }
     if (event === 'gcall:topology') {
       const topology = payload as GroupCallTopology;
       if (topology?.roomId !== this.snapshot.roomId) return;
@@ -7721,6 +8045,7 @@ export class GroupCallAudioEngineRuntime {
       }
       await this.maybeReplayRetainedKeysAfterTopology(this.topology);
       await this.syncTopologyHeartbeat();
+      this.refreshAudioDataPlaneRoutesForCurrentRoom(`same-topology:${source}`);
       return false;
     }
 
@@ -7781,6 +8106,9 @@ export class GroupCallAudioEngineRuntime {
     await this.maybeReplayRetainedKeysAfterTopology(this.topology);
     await this.syncTopologyHeartbeat();
     await this.ensureRoomKeyAuthorityForTopology(previousRoot, this.topology);
+    this.refreshAudioDataPlaneRoutesForCurrentRoom(
+      `topology-applied:${source}`
+    );
     await this.syncSenderState();
     return true;
   }

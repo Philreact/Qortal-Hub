@@ -3,6 +3,46 @@ import { GroupCallAudioReceiveEngine } from './groupCallAudioReceiveEngine';
 import { DmVoiceGcallInboundPlayout } from '../call/dmVoiceGcallInboundPlayout';
 
 describe('GroupCallAudioReceiveEngine', () => {
+  it('forwards an opt-in pitch-safe playout policy to new sources', async () => {
+    vi.stubGlobal(
+      'AudioContext',
+      class {
+        sampleRate = 48_000;
+        state = 'running';
+        destination = {};
+        resume = vi.fn();
+        createGain() {
+          return {
+            gain: { value: 0 },
+            connect: vi.fn(),
+            disconnect: vi.fn(),
+          };
+        }
+      }
+    );
+    const start = vi
+      .spyOn(DmVoiceGcallInboundPlayout.prototype, 'start')
+      .mockResolvedValue();
+    const engine = new GroupCallAudioReceiveEngine(() => {});
+    await engine.configure({
+      minimumPlayoutRate: 0.985,
+      minimumTargetPlayoutMs: 160,
+    });
+
+    await (engine as any).getOrCreatePlayout('alice');
+
+    expect(start).toHaveBeenCalledWith(
+      expect.anything(),
+      'alice',
+      expect.anything(),
+      expect.objectContaining({
+        minimumPlayoutRate: 0.985,
+        minimumTargetPlayoutMs: 160,
+      })
+    );
+    start.mockRestore();
+  });
+
   it('uses an existing playout synchronously on the decoded-packet hot path', async () => {
     vi.stubGlobal(
       'AudioContext',

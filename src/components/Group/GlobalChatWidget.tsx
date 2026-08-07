@@ -18,6 +18,7 @@ import {
   useTheme,
 } from '@mui/material';
 import MarkChatUnreadIcon from '@mui/icons-material/MarkChatUnread';
+import AlternateEmailIcon from '@mui/icons-material/AlternateEmail';
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
@@ -34,7 +35,7 @@ import {
   groupChatTimestampsAtom,
   groupsOwnerNamesAtom,
   groupsPropertiesAtom,
-  memberGroupsAtom,
+  memberGroupsWithReticulumChatAtom,
   userInfoAtom,
 } from '../../atoms/global';
 import { sortArrayByTimestampAndGroupName } from '../../utils/time';
@@ -82,7 +83,7 @@ export function GlobalChatWidget({
 }: GlobalChatWidgetProps) {
   const theme = useTheme();
   const { t } = useTranslation(['core', 'group', 'auth']);
-  const memberGroups = useAtomValue(memberGroupsAtom) ?? [];
+  const memberGroups = useAtomValue(memberGroupsWithReticulumChatAtom) ?? [];
   const groupsProperties = useAtomValue(groupsPropertiesAtom) ?? {};
   const groupsOwnerNames = useAtomValue(groupsOwnerNamesAtom) ?? {};
   const groupChatTimestamps = useAtomValue(groupChatTimestampsAtom) ?? {};
@@ -1304,14 +1305,18 @@ export function GlobalChatWidget({
                         const groupEnterTimestamp =
                           timestampEnterData[group?.groupId];
                         const hasUnreadGroup =
-                          group?.data &&
-                          groupChatTimestamp &&
-                          group?.sender !== myAddress &&
-                          group?.timestamp &&
-                          ((groupEnterTimestamp == null &&
-                            Date.now() - group?.timestamp <
-                              timeDifferenceForNotificationChats) ||
-                            (groupEnterTimestamp ?? 0) < group?.timestamp);
+                          (group?.reticulumChatSummary?.unreadCount ?? 0) > 0 ||
+                          (group?.data &&
+                            groupChatTimestamp &&
+                            group?.sender !== myAddress &&
+                            group?.timestamp &&
+                            ((groupEnterTimestamp == null &&
+                              Date.now() - group?.timestamp <
+                                timeDifferenceForNotificationChats) ||
+                              (groupEnterTimestamp ?? 0) < group?.timestamp));
+                        const hasReticulumMention =
+                          group?.reticulumChatSummary?.hasUnreadMention === true ||
+                          (group?.reticulumChatSummary?.mentionCount ?? 0) > 0;
                         const groupProperty = groupsProperties[group?.groupId];
                         const isPrivateGroup = groupProperty?.isOpen === false;
                         return (
@@ -1442,6 +1447,16 @@ export function GlobalChatWidget({
                             >
                               {hasUnreadGroup && (
                                 <MarkChatUnreadIcon
+                                  sx={{
+                                    color:
+                                      theme.palette.other?.unread ??
+                                      theme.palette.primary.main,
+                                    fontSize: '18px',
+                                  }}
+                                />
+                              )}
+                              {hasReticulumMention && (
+                                <AlternateEmailIcon
                                   sx={{
                                     color:
                                       theme.palette.other?.unread ??

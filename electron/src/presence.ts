@@ -17,6 +17,7 @@ import {
 } from './logger';
 import { runEd25519VerifySync } from './ed25519-verify-common';
 import { VerifyWorkerPool } from './verify-worker-pool';
+import { getRouteBoundDestinationHash } from './reticulum-route-bound-id';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -40,6 +41,8 @@ export const RETICULUM_OVERLAY_MAX_NEIGHBORS =
   RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS;
 /** Keep a verified overlay peer around briefly after link loss while retrying fanout. */
 export const RETICULUM_VERIFIED_PEER_LINK_CLOSE_GRACE_MS = 2 * 60_000;
+const RETICULUM_LINK_CLOSE_BASE_COOLDOWN_MS = 60_000;
+const RETICULUM_LINK_CLOSE_REPEAT_COOLDOWN_MS = 5 * 60_000;
 const RETICULUM_CANDIDATE_PROOF_WINDOW_MS = 90_000;
 const RETICULUM_CANDIDATE_FAILURE_LIMIT = 2;
 
@@ -159,6 +162,10 @@ export interface PresenceSession {
   route: PresenceRoute;
   routeLastValidated: number;
   routeExpiresAt: number | null;
+  /** The signed session id commits to this Reticulum route. */
+  reticulumRouteBindingVerified: boolean;
+  /** Safe for endpoint-bound traffic (bound route, or direct legacy ingress). */
+  endpointRouteUsable: boolean;
   clientVersion?: string;
   status: UserStatus;
   signatureValid: true;
@@ -192,6 +199,7 @@ export interface PresenceTransportHandlers {
   onOverlayLinkClosed?: (payload: {
     peerHash: string;
     reason?: string;
+    lastActivityAgeMs?: number | null;
   }) => void;
 }
 
@@ -203,7 +211,9 @@ export interface PresenceTransport {
   getLocalDestinationHash?: () => string | undefined;
 }
 
-function describePresenceRoute(route: PresenceRoute | null | undefined): string {
+function describePresenceRoute(
+  route: PresenceRoute | null | undefined
+): string {
   if (!route) return 'none';
   if (route.kind === 'local') return 'local';
   if (route.kind === 'mesh-node') return `mesh-node:${route.id}`;
@@ -223,11 +233,14 @@ function describePresenceEnvelope(
       ? (envelope.payload as Partial<PresencePayload>)
       : null;
   const address =
-    typeof payload?.address === 'string' ? payload.address : envelope?.senderAddress;
+    typeof payload?.address === 'string'
+      ? payload.address
+      : envelope?.senderAddress;
   const sessionId =
-    typeof payload?.sessionId === 'string' ? payload.sessionId : 'unknown-session';
-  const status =
-    typeof payload?.status === 'string' ? payload.status : 'n/a';
+    typeof payload?.sessionId === 'string'
+      ? payload.sessionId
+      : 'unknown-session';
+  const status = typeof payload?.status === 'string' ? payload.status : 'n/a';
   return `id=${envelope?.id ?? 'unknown'} type=${envelope?.type ?? 'unknown'} address=${address ?? 'unknown'} sessionId=${sessionId} status=${status} timestamp=${typeof envelope?.timestamp === 'number' ? envelope.timestamp : 'unknown'}`;
 }
 
@@ -258,16 +271,35 @@ type ReticulumCandidatePeer = {
 
 type VerifiedReticulumPeer = {
   destinationHash: string;
-  address: string;
   lastSeen: number;
   verifiedAt: number;
   linkClosedAt: number | null;
+  linkCloseCount: number;
+  linkCooldownUntil: number | null;
 };
 
-export type ReticulumVerifiedPeerSnapshot = {
+export type ReticulumVerifiedTransportPeerSnapshot = {
+  destinationHash: string;
+  lastSeen: number;
+};
+
+export type ReticulumAccountEndpointVerification =
+  | 'direct-bound'
+  | 'direct-legacy'
+  | 'relayed-bound';
+
+/**
+ * A short-lived, wallet-authenticated association between a Qortal account
+ * and a Reticulum installation. Unlike the transport peer record, this lease
+ * is removed by signed offline state and naturally expires with presence.
+ */
+export type ReticulumAccountEndpointLeaseSnapshot = {
   destinationHash: string;
   address: string;
+  sessionId: string;
   lastSeen: number;
+  expiresAt: number;
+  verification: ReticulumAccountEndpointVerification;
 };
 
 // ── Utility: Base58 (ported from src/encryption/Base58.ts) ───────────────────
@@ -280,7 +312,7 @@ export function encodeBytesBase58(bytes: Uint8Array): string {
   return base58Encode(bytes);
 }
 
-function base58Encode(bytes: Uint8Array): string {
+export function base58Encode(bytes: Uint8Array): string {
   const digits = [0];
   for (let i = 0; i < bytes.length; i++) {
     let carry = bytes[i];
@@ -336,66 +368,179 @@ export function base58Decode(str: string): Uint8Array {
 // ── Utility: RIPEMD-160 (ported from src/encryption/ripemd160.ts) ─────────────
 
 const _ARRAY16 = new Array(16);
-const _zl = new Uint8Array([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,7,4,13,1,10,6,15,3,12,0,9,5,2,14,11,8,3,10,14,4,9,15,8,1,2,7,0,6,13,11,5,12,1,9,11,10,0,8,12,4,13,3,7,15,14,5,6,2,4,0,5,9,7,12,2,10,14,1,3,8,11,6,15,13]);
-const _zr = new Uint8Array([5,14,7,0,9,2,11,4,13,6,15,8,1,10,3,12,6,11,3,7,0,13,5,10,14,15,8,12,4,9,1,2,15,5,1,3,7,14,6,9,11,8,12,2,10,0,4,13,8,6,4,1,3,11,15,0,5,12,2,13,9,7,10,14,12,15,10,4,1,5,8,7,6,2,13,14,0,3,9,11]);
-const _sl = new Uint8Array([11,14,15,12,5,8,7,9,11,13,14,15,6,7,9,8,7,6,8,13,11,9,7,15,7,12,15,9,11,7,13,12,11,13,6,7,14,9,13,15,14,8,13,6,5,12,7,5,11,12,14,15,14,15,9,8,9,14,5,6,8,6,5,12,9,15,5,11,6,8,13,12,5,12,13,14,11,8,5,6]);
-const _sr = new Uint8Array([8,9,9,11,13,15,15,5,7,7,8,11,14,14,12,6,9,13,15,7,12,8,9,11,7,7,12,7,6,15,13,11,9,7,15,11,8,6,6,14,12,13,5,14,13,13,7,5,15,5,8,11,14,14,6,14,6,9,12,9,12,5,15,8,8,5,12,9,12,5,14,6,8,13,6,5,15,13,11,11]);
-const _hl = new Uint32Array([0x00000000,0x5a827999,0x6ed9eba1,0x8f1bbcdc,0xa953fd4e]);
-const _hr = new Uint32Array([0x50a28be6,0x5c4dd124,0x6d703ef3,0x7a6d76e9,0x00000000]);
+const _zl = new Uint8Array([
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 7, 4, 13, 1, 10, 6, 15,
+  3, 12, 0, 9, 5, 2, 14, 11, 8, 3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11,
+  5, 12, 1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2, 4, 0, 5, 9, 7,
+  12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13,
+]);
+const _zr = new Uint8Array([
+  5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12, 6, 11, 3, 7, 0, 13, 5,
+  10, 14, 15, 8, 12, 4, 9, 1, 2, 15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0,
+  4, 13, 8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14, 12, 15, 10, 4, 1,
+  5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11,
+]);
+const _sl = new Uint8Array([
+  11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8, 7, 6, 8, 13, 11, 9, 7,
+  15, 7, 12, 15, 9, 11, 7, 13, 12, 11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5,
+  12, 7, 5, 11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12, 9, 15, 5,
+  11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6,
+]);
+const _sr = new Uint8Array([
+  8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6, 9, 13, 15, 7, 12, 8,
+  9, 11, 7, 7, 12, 7, 6, 15, 13, 11, 9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14,
+  13, 13, 7, 5, 15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8, 8, 5,
+  12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11,
+]);
+const _hl = new Uint32Array([
+  0x00000000, 0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xa953fd4e,
+]);
+const _hr = new Uint32Array([
+  0x50a28be6, 0x5c4dd124, 0x6d703ef3, 0x7a6d76e9, 0x00000000,
+]);
 
-function _rotl(x: number, n: number): number { return (x << n) | (x >>> (32 - n)); }
-function _rmd_fn1(a:number,b:number,c:number,d:number,e:number,m:number,k:number,s:number){return(_rotl((a+(b^c^d)+m+k)|0,s)+e)|0;}
-function _rmd_fn2(a:number,b:number,c:number,d:number,e:number,m:number,k:number,s:number){return(_rotl((a+((b&c)|((~b)&d))+m+k)|0,s)+e)|0;}
-function _rmd_fn3(a:number,b:number,c:number,d:number,e:number,m:number,k:number,s:number){return(_rotl((a+((b|(~c))^d)+m+k)|0,s)+e)|0;}
-function _rmd_fn4(a:number,b:number,c:number,d:number,e:number,m:number,k:number,s:number){return(_rotl((a+((b&d)|(c&(~d)))+m+k)|0,s)+e)|0;}
-function _rmd_fn5(a:number,b:number,c:number,d:number,e:number,m:number,k:number,s:number){return(_rotl((a+(b^(c|(~d)))+m+k)|0,s)+e)|0;}
+function _rotl(x: number, n: number): number {
+  return (x << n) | (x >>> (32 - n));
+}
+function _rmd_fn1(
+  a: number,
+  b: number,
+  c: number,
+  d: number,
+  e: number,
+  m: number,
+  k: number,
+  s: number
+) {
+  return (_rotl((a + (b ^ c ^ d) + m + k) | 0, s) + e) | 0;
+}
+function _rmd_fn2(
+  a: number,
+  b: number,
+  c: number,
+  d: number,
+  e: number,
+  m: number,
+  k: number,
+  s: number
+) {
+  return (_rotl((a + ((b & c) | (~b & d)) + m + k) | 0, s) + e) | 0;
+}
+function _rmd_fn3(
+  a: number,
+  b: number,
+  c: number,
+  d: number,
+  e: number,
+  m: number,
+  k: number,
+  s: number
+) {
+  return (_rotl((a + ((b | ~c) ^ d) + m + k) | 0, s) + e) | 0;
+}
+function _rmd_fn4(
+  a: number,
+  b: number,
+  c: number,
+  d: number,
+  e: number,
+  m: number,
+  k: number,
+  s: number
+) {
+  return (_rotl((a + ((b & d) | (c & ~d)) + m + k) | 0, s) + e) | 0;
+}
+function _rmd_fn5(
+  a: number,
+  b: number,
+  c: number,
+  d: number,
+  e: number,
+  m: number,
+  k: number,
+  s: number
+) {
+  return (_rotl((a + (b ^ (c | ~d)) + m + k) | 0, s) + e) | 0;
+}
 
 function ripemd160(data: Uint8Array): Uint8Array {
-  let a=0x67452301,b=0xefcdab89,c=0x98badcfe,d=0x10325476,e=0xc3d2e1f0;
+  let a = 0x67452301,
+    b = 0xefcdab89,
+    c = 0x98badcfe,
+    d = 0x10325476,
+    e = 0xc3d2e1f0;
   // Padding
   const len = data.length;
   const bitLen = len * 8;
-  const padLen = ((len % 64) < 56 ? 56 : 120) - (len % 64);
+  const padLen = (len % 64 < 56 ? 56 : 120) - (len % 64);
   const padded = new Uint8Array(len + padLen + 8);
   padded.set(data);
   padded[len] = 0x80;
   // bit length as 64-bit LE
   let bl = bitLen;
-  for (let i = 0; i < 8; i++) { padded[len + padLen + i] = bl & 0xff; bl = bl / 256; }
+  for (let i = 0; i < 8; i++) {
+    padded[len + padLen + i] = bl & 0xff;
+    bl = bl / 256;
+  }
   // Process 64-byte blocks
   const view = new DataView(padded.buffer);
   for (let off = 0; off < padded.length; off += 64) {
     const words = _ARRAY16;
     for (let j = 0; j < 16; j++) words[j] = view.getInt32(off + j * 4, true);
-    let al=a,bl2=b,cl=c,dl=d,el=e,ar=a,br=b,cr=c,dr=d,er=e;
+    let al = a,
+      bl2 = b,
+      cl = c,
+      dl = d,
+      el = e,
+      ar = a,
+      br = b,
+      cr = c,
+      dr = d,
+      er = e;
     for (let i = 0; i < 80; i++) {
       let tl: number, tr: number;
       if (i < 16) {
-        tl = _rmd_fn1(al,bl2,cl,dl,el,words[_zl[i]],_hl[0],_sl[i]);
-        tr = _rmd_fn5(ar,br,cr,dr,er,words[_zr[i]],_hr[0],_sr[i]);
+        tl = _rmd_fn1(al, bl2, cl, dl, el, words[_zl[i]], _hl[0], _sl[i]);
+        tr = _rmd_fn5(ar, br, cr, dr, er, words[_zr[i]], _hr[0], _sr[i]);
       } else if (i < 32) {
-        tl = _rmd_fn2(al,bl2,cl,dl,el,words[_zl[i]],_hl[1],_sl[i]);
-        tr = _rmd_fn4(ar,br,cr,dr,er,words[_zr[i]],_hr[1],_sr[i]);
+        tl = _rmd_fn2(al, bl2, cl, dl, el, words[_zl[i]], _hl[1], _sl[i]);
+        tr = _rmd_fn4(ar, br, cr, dr, er, words[_zr[i]], _hr[1], _sr[i]);
       } else if (i < 48) {
-        tl = _rmd_fn3(al,bl2,cl,dl,el,words[_zl[i]],_hl[2],_sl[i]);
-        tr = _rmd_fn3(ar,br,cr,dr,er,words[_zr[i]],_hr[2],_sr[i]);
+        tl = _rmd_fn3(al, bl2, cl, dl, el, words[_zl[i]], _hl[2], _sl[i]);
+        tr = _rmd_fn3(ar, br, cr, dr, er, words[_zr[i]], _hr[2], _sr[i]);
       } else if (i < 64) {
-        tl = _rmd_fn4(al,bl2,cl,dl,el,words[_zl[i]],_hl[3],_sl[i]);
-        tr = _rmd_fn2(ar,br,cr,dr,er,words[_zr[i]],_hr[3],_sr[i]);
+        tl = _rmd_fn4(al, bl2, cl, dl, el, words[_zl[i]], _hl[3], _sl[i]);
+        tr = _rmd_fn2(ar, br, cr, dr, er, words[_zr[i]], _hr[3], _sr[i]);
       } else {
-        tl = _rmd_fn5(al,bl2,cl,dl,el,words[_zl[i]],_hl[4],_sl[i]);
-        tr = _rmd_fn1(ar,br,cr,dr,er,words[_zr[i]],_hr[4],_sr[i]);
+        tl = _rmd_fn5(al, bl2, cl, dl, el, words[_zl[i]], _hl[4], _sl[i]);
+        tr = _rmd_fn1(ar, br, cr, dr, er, words[_zr[i]], _hr[4], _sr[i]);
       }
-      al=el; el=dl; dl=_rotl(cl,10); cl=bl2; bl2=tl;
-      ar=er; er=dr; dr=_rotl(cr,10); cr=br; br=tr;
+      al = el;
+      el = dl;
+      dl = _rotl(cl, 10);
+      cl = bl2;
+      bl2 = tl;
+      ar = er;
+      er = dr;
+      dr = _rotl(cr, 10);
+      cr = br;
+      br = tr;
     }
-    const t=(b+cl+dr)|0; b=(c+dl+er)|0; c=(d+el+ar)|0; d=(e+al+br)|0; e=(a+bl2+cr)|0; a=t;
+    const t = (b + cl + dr) | 0;
+    b = (c + dl + er) | 0;
+    c = (d + el + ar) | 0;
+    d = (e + al + br) | 0;
+    e = (a + bl2 + cr) | 0;
+    a = t;
   }
   // Write result as LE 32-bit words
   const result = new Uint8Array(20);
   const rv = new DataView(result.buffer);
-  rv.setInt32(0,a,true); rv.setInt32(4,b,true); rv.setInt32(8,c,true);
-  rv.setInt32(12,d,true); rv.setInt32(16,e,true);
+  rv.setInt32(0, a, true);
+  rv.setInt32(4, b, true);
+  rv.setInt32(8, c, true);
+  rv.setInt32(12, d, true);
+  rv.setInt32(16, e, true);
   return result;
 }
 
@@ -409,7 +554,10 @@ export function deriveAddressFromPublicKey(publicKeyBase58: string): string {
   const publicKeyBytes = base58Decode(publicKeyBase58);
 
   // SHA-256 of public key
-  const sha256 = nodeCrypto.createHash('sha256').update(publicKeyBytes).digest();
+  const sha256 = nodeCrypto
+    .createHash('sha256')
+    .update(publicKeyBytes)
+    .digest();
 
   // RIPEMD-160 of SHA-256
   const hash = ripemd160(new Uint8Array(sha256));
@@ -437,7 +585,9 @@ export function deriveAddressFromPublicKey(publicKeyBase58: string): string {
  * Keys are sorted alphabetically before JSON serialization so both the
  * renderer and the Node process produce identical bytes.
  */
-export function canonicalizeForSigning(data: Record<string, unknown>): Uint8Array {
+export function canonicalizeForSigning(
+  data: Record<string, unknown>
+): Uint8Array {
   const sorted: Record<string, unknown> = {};
   for (const key of Object.keys(data).sort()) {
     sorted[key] = data[key];
@@ -465,7 +615,9 @@ function buildSignedData(envelope: PresenceEnvelope): Record<string, unknown> {
     timestamp: envelope.timestamp,
   };
   if (envelope.type === 'PRESENCE_ANNOUNCE') {
-    base['clientVersion'] = (p as unknown as PresenceAnnouncePayload).clientVersion;
+    base['clientVersion'] = (
+      p as unknown as PresenceAnnouncePayload
+    ).clientVersion;
     base['status'] = p['status'];
   }
   if (envelope.type === 'PRESENCE_HEARTBEAT') {
@@ -478,7 +630,8 @@ function buildSignedData(envelope: PresenceEnvelope): Record<string, unknown> {
 
 /** Synchronous verify (e.g. tests); hot path uses VerifyWorkerPool. */
 export function verifyPresenceSignature(envelope: PresenceEnvelope): boolean {
-  const publicKeyBase58 = (envelope.payload as PresenceAnnouncePayload).publicKey;
+  const publicKeyBase58 = (envelope.payload as PresenceAnnouncePayload)
+    .publicKey;
   return runEd25519VerifySync({
     kind: 'presence',
     signedFields: buildPresenceSignedFields(envelope),
@@ -504,9 +657,7 @@ function cachedDeriveAddress(publicKeyBase58: string): string {
   return derived;
 }
 
-type ValidationResult =
-  | { ok: true }
-  | { ok: false; reason: string };
+type ValidationResult = { ok: true } | { ok: false; reason: string };
 
 /** Validates everything except Ed25519 (signature verified off-thread). */
 function validateEnvelopeSansSignature(
@@ -515,12 +666,17 @@ function validateEnvelopeSansSignature(
 ): ValidationResult {
   // 1. Required fields
   if (
-    !envelope.id || typeof envelope.id !== 'string' ||
-    !envelope.type || typeof envelope.type !== 'string' ||
+    !envelope.id ||
+    typeof envelope.id !== 'string' ||
+    !envelope.type ||
+    typeof envelope.type !== 'string' ||
     typeof envelope.timestamp !== 'number' ||
-    !envelope.payload || typeof envelope.payload !== 'object' ||
-    !envelope.signature || typeof envelope.signature !== 'string' ||
-    !envelope.senderAddress || typeof envelope.senderAddress !== 'string'
+    !envelope.payload ||
+    typeof envelope.payload !== 'object' ||
+    !envelope.signature ||
+    typeof envelope.signature !== 'string' ||
+    !envelope.senderAddress ||
+    typeof envelope.senderAddress !== 'string'
   ) {
     return { ok: false, reason: 'missing or malformed required fields' };
   }
@@ -603,7 +759,8 @@ function isRouteFresh(session: PresenceSession, now: number): boolean {
 }
 
 function getSessionLivenessAt(session: PresenceSession): number {
-  return typeof session.receivedAt === 'number' && Number.isFinite(session.receivedAt)
+  return typeof session.receivedAt === 'number' &&
+    Number.isFinite(session.receivedAt)
     ? session.receivedAt
     : session.lastSeen;
 }
@@ -617,14 +774,60 @@ function shouldPreferAggregateRoute(
   current: PresenceSession | null,
   now: number
 ): boolean {
-  if (!isRouteFresh(candidate, now)) return false;
+  if (
+    !isRouteFresh(candidate, now) ||
+    candidate.endpointRouteUsable === false
+  ) {
+    return false;
+  }
   if (!current) return true;
   const candidateIsReticulum = candidate.route.kind === 'reticulum';
   const currentIsReticulum = current.route.kind === 'reticulum';
   if (candidateIsReticulum !== currentIsReticulum) {
     return candidateIsReticulum;
   }
+  if (
+    candidateIsReticulum &&
+    currentIsReticulum &&
+    candidate.reticulumRouteBindingVerified !==
+      current.reticulumRouteBindingVerified
+  ) {
+    return candidate.reticulumRouteBindingVerified;
+  }
   return candidate.lastSeen > current.lastSeen;
+}
+
+function getAggregateStatusPriority(status: UserStatus): number {
+  switch (status) {
+    case 'busy':
+      return 3;
+    case 'online':
+      return 2;
+    case 'idle':
+      return 1;
+  }
+}
+
+function getPresenceRouteKey(route: PresenceRoute): string {
+  switch (route.kind) {
+    case 'local':
+      return 'local';
+    case 'mesh-node':
+      return `mesh-node:${route.id}`;
+    case 'reticulum':
+      return `reticulum:${route.destinationHash}`;
+  }
+}
+
+function getPresenceRoutePriority(route: PresenceRoute): number {
+  switch (route.kind) {
+    case 'reticulum':
+      return 3;
+    case 'mesh-node':
+      return 2;
+    case 'local':
+      return 1;
+  }
 }
 
 // ── Presence Manager ──────────────────────────────────────────────────────────
@@ -646,6 +849,13 @@ export class PresenceManager extends EventEmitter {
    */
   private latestTimestamp = new Map<string, number>();
 
+  /**
+   * Latest accepted offline timestamp per session. This tombstone prevents an
+   * older announce/heartbeat that arrives out of order from reviving a session
+   * after its newer offline envelope was already applied.
+   */
+  private latestOfflineTimestamp = new Map<string, number>();
+
   /** Recently accepted envelope ids, used to skip exact duplicates before verification. */
   private acceptedEnvelopeIds = new Map<string, number>();
 
@@ -666,10 +876,11 @@ export class PresenceManager extends EventEmitter {
   /** Verified overlay peers admitted into the outbound fanout set. */
   private activeReticulumNeighborHashes: string[] = [];
   /**
-   * Reticulum publish/forward fanout: verified neighbors first, then candidate
-   * backfill up to {@link RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS} for bootstrap.
+   * Reticulum publish/forward fanout: retained verified peers first, then open
+   * slots alternate between verified retries and unverified announcement trials.
    */
   private activeReticulumPublishHashes: string[] = [];
+  private reticulumBackfillNextSource: 'verified' | 'candidate' = 'verified';
 
   /** Local Reticulum destination hash (lowercase hex); set when Reticulum transport is ready. */
   private localReticulumDestinationHash: string | null = null;
@@ -711,6 +922,22 @@ export class PresenceManager extends EventEmitter {
   }
 
   /**
+   * Forget only this installation's authenticated presence. The signed
+   * offline envelope is sent first by the renderer; this local cleanup is the
+   * fail-safe that prevents an older online heartbeat from being replayed if
+   * transport publication failed during logout.
+   */
+  clearLocalAccountState(): void {
+    this.lastLocalEnvelope = null;
+    const localSessions = [...this.sessions.values()].filter(
+      (session) => session.route.kind === 'local'
+    );
+    for (const session of localSessions) {
+      this.removeSession(session.address, session.sessionId);
+    }
+  }
+
+  /**
    * Called when the Reticulum bridge exposes the local destination hash (or clears on degrade).
    * Removes self from overlay fanout so we never treat our own hash as a peer.
    */
@@ -721,7 +948,7 @@ export class PresenceManager extends EventEmitter {
     this.pruneSelfFromReticulumOverlayState();
     const changed = this.recomputeReticulumActiveNeighbors(Date.now());
     if (changed) {
-      this.emitReticulumOverlayChanged();
+      this.emitReticulumOverlayChanged(true);
     }
   }
 
@@ -752,10 +979,7 @@ export class PresenceManager extends EventEmitter {
    * `route` identifies the transport path that delivered the message.
    * Use `{ kind: 'local' }` when called for a locally-originated envelope.
    */
-  async handleEnvelope(
-    raw: unknown,
-    route: PresenceRoute
-  ): Promise<boolean> {
+  async handleEnvelope(raw: unknown, route: PresenceRoute): Promise<boolean> {
     const envelope = raw as PresenceEnvelope;
     const now = Date.now();
     logPresenceHotPath(
@@ -772,7 +996,11 @@ export class PresenceManager extends EventEmitter {
     const result = validateEnvelopeSansSignature(envelope, now);
     if (result.ok === false) {
       if (route.kind === 'reticulum') {
-        this.noteReticulumCandidateFailure(route.destinationHash, result.reason, now);
+        this.noteReticulumCandidateFailure(
+          route.destinationHash,
+          result.reason,
+          now
+        );
       }
       if (result.reason === 'message too old') {
         const id = envelope?.id;
@@ -791,7 +1019,10 @@ export class PresenceManager extends EventEmitter {
             if (oldest !== undefined) this.presenceTooOldLogAt.delete(oldest);
           }
         } else {
-          if (tnow - this.presenceTooOldGlobalLogAt < PRESENCE_TOO_OLD_LOG_MIN_MS) {
+          if (
+            tnow - this.presenceTooOldGlobalLogAt <
+            PRESENCE_TOO_OLD_LOG_MIN_MS
+          ) {
             logPresenceHotPath(
               `[Presence] Dropped stale envelope without repeat log ${describePresenceEnvelope(envelope)} route=${describePresenceRoute(route)}`
             );
@@ -834,15 +1065,30 @@ export class PresenceManager extends EventEmitter {
       );
       return false;
     }
+    const signedReticulumDestination = getRouteBoundDestinationHash(
+      'presence',
+      p.sessionId
+    );
+    if (
+      route.kind === 'reticulum' &&
+      signedReticulumDestination &&
+      signedReticulumDestination !== route.destinationHash.trim().toLowerCase()
+    ) {
+      this.noteReticulumCandidateFailure(
+        route.viaDestinationHash ?? route.destinationHash,
+        'signed presence route mismatch',
+        now
+      );
+      loggerLog(
+        `[Presence] Rejected route-bound envelope with mismatched Reticulum origin ${describePresenceEnvelope(envelope)} route=${describePresenceRoute(route)}`
+      );
+      return false;
+    }
     logPresenceHotPath(
       `[Presence] Signature verified ${describePresenceEnvelope(envelope)} route=${describePresenceRoute(route)}`
     );
 
-    return this.applyVerifiedPresenceEnvelope(
-      envelope,
-      route,
-      now
-    );
+    return this.applyVerifiedPresenceEnvelope(envelope, route, now);
   }
 
   /** After signature verify: monotonic timestamp + session mutation. */
@@ -854,9 +1100,31 @@ export class PresenceManager extends EventEmitter {
     const p = envelope.payload as PresenceAnnouncePayload;
     const { address, publicKey, sessionId } = p;
     const legacyPeerIds = routeToLegacyPeerIds(route);
+    const signedReticulumDestination = getRouteBoundDestinationHash(
+      'presence',
+      sessionId
+    );
+    const reticulumRouteBindingVerified =
+      route.kind === 'reticulum' &&
+      signedReticulumDestination === route.destinationHash.trim().toLowerCase();
+    const endpointRouteUsable =
+      route.kind !== 'reticulum' ||
+      reticulumRouteBindingVerified ||
+      !route.viaDestinationHash;
     const routeExpiresAt = getRouteExpiry(route, now);
     const key = `${address}:${sessionId}`;
     const existing = this.sessions.get(key);
+    const latestOfflineTimestamp = this.latestOfflineTimestamp.get(key) ?? 0;
+
+    if (
+      envelope.type !== 'PRESENCE_OFFLINE' &&
+      envelope.timestamp <= latestOfflineTimestamp
+    ) {
+      loggerLog(
+        `[Presence] Dropped envelope older than offline tombstone ${describePresenceEnvelope(envelope)} route=${describePresenceRoute(route)} offline_ts=${latestOfflineTimestamp}`
+      );
+      return false;
+    }
 
     const tsKey = `${address}:${sessionId}:${envelope.type}`;
     const prevTs = this.latestTimestamp.get(tsKey) ?? 0;
@@ -886,15 +1154,36 @@ export class PresenceManager extends EventEmitter {
     this.rememberAcceptedEnvelope(envelope, now);
 
     if (route.kind === 'reticulum') {
-      this.markReticulumOverlayPeerVerified(
-        route.destinationHash,
-        'presence',
-        address,
-        now
-      );
+      if (route.viaDestinationHash) {
+        // The relay is the transport peer that directly authenticated on this
+        // link. The signed origin is useful as a dial candidate and endpoint
+        // lease, but must not be promoted to a verified transport peer until
+        // it authenticates directly.
+        this.markReticulumOverlayPeerVerified(
+          route.viaDestinationHash,
+          'presence-relay-transport',
+          now
+        );
+        if (reticulumRouteBindingVerified) {
+          this.noteReticulumCandidateDiscovered(
+            route.destinationHash,
+            'presence-relayed-bound',
+            now
+          );
+        }
+      } else {
+        this.markReticulumOverlayPeerVerified(
+          route.destinationHash,
+          reticulumRouteBindingVerified
+            ? 'presence-direct-bound'
+            : 'presence-direct-legacy',
+          now
+        );
+      }
     }
 
     if (envelope.type === 'PRESENCE_OFFLINE') {
+      this.latestOfflineTimestamp.set(key, envelope.timestamp);
       loggerLog(
         `[Presence] Applying offline envelope ${describePresenceEnvelope(envelope)} route=${describePresenceRoute(route)}`
       );
@@ -918,14 +1207,28 @@ export class PresenceManager extends EventEmitter {
         route,
         routeLastValidated: now,
         routeExpiresAt,
+        reticulumRouteBindingVerified,
+        endpointRouteUsable,
         clientVersion:
           envelope.type === 'PRESENCE_ANNOUNCE'
             ? (p as PresenceAnnouncePayload).clientVersion
             : existing?.clientVersion,
-        status: (p as PresenceAnnouncePayload).status as UserStatus ?? 'online',
+        status:
+          ((p as PresenceAnnouncePayload).status as UserStatus) ?? 'online',
         signatureValid: true,
       });
       this.addSessionKey(address, key);
+      if (
+        route.kind === 'reticulum' &&
+        (!existing ||
+          existing.route.kind !== 'reticulum' ||
+          existing.route.destinationHash !== route.destinationHash ||
+          existing.route.viaDestinationHash !== route.viaDestinationHash ||
+          existing.reticulumRouteBindingVerified !==
+            reticulumRouteBindingVerified)
+      ) {
+        this.emitReticulumAccountEndpointsChanged();
+      }
       if (route.kind === 'local') {
         this.lastLocalEnvelope = envelope as PresenceEnvelope;
       }
@@ -981,7 +1284,8 @@ export class PresenceManager extends EventEmitter {
     const now = Date.now();
     const result: PresenceSession[] = [];
     for (const [address, keys] of this.sessionKeysByAddress.entries()) {
-      if (this.getAddressAggregate(address, now).liveSessionCount === 0) continue;
+      if (this.getAddressAggregate(address, now).liveSessionCount === 0)
+        continue;
       for (const key of keys) {
         const session = this.sessions.get(key);
         if (session && isSessionLive(session, now)) {
@@ -1017,6 +1321,64 @@ export class PresenceManager extends EventEmitter {
     return this.getAddressAggregate(address).route;
   }
 
+  /**
+   * Returns every distinct, fresh route advertised by the address's live
+   * sessions. Reticulum routes are preferred, followed by mesh and local
+   * routes; routes of the same kind are ordered by their freshest session.
+   *
+   * Callers that support multi-device delivery should use this method. Legacy
+   * single-destination callers can continue using getRouteForAddress().
+   */
+  getRoutesForAddress(address: string): PresenceRoute[] {
+    const now = Date.now();
+    const keys = this.sessionKeysByAddress.get(address);
+    if (!keys) return [];
+
+    const freshestSessionByRoute = new Map<string, PresenceSession>();
+    for (const key of keys) {
+      const session = this.sessions.get(key);
+      if (
+        !session ||
+        !isSessionLive(session, now) ||
+        !isRouteFresh(session, now) ||
+        session.endpointRouteUsable === false
+      ) {
+        continue;
+      }
+      const routeKey = getPresenceRouteKey(session.route);
+      const current = freshestSessionByRoute.get(routeKey);
+      if (
+        !current ||
+        session.lastSeen > current.lastSeen ||
+        (session.lastSeen === current.lastSeen &&
+          session.sessionId.localeCompare(current.sessionId) < 0)
+      ) {
+        freshestSessionByRoute.set(routeKey, session);
+      }
+    }
+
+    return [...freshestSessionByRoute.values()]
+      .sort((left, right) => {
+        if (
+          left.reticulumRouteBindingVerified !==
+          right.reticulumRouteBindingVerified
+        ) {
+          return left.reticulumRouteBindingVerified ? -1 : 1;
+        }
+        const priorityDifference =
+          getPresenceRoutePriority(right.route) -
+          getPresenceRoutePriority(left.route);
+        if (priorityDifference !== 0) return priorityDifference;
+        if (left.lastSeen !== right.lastSeen) {
+          return right.lastSeen - left.lastSeen;
+        }
+        return getPresenceRouteKey(left.route).localeCompare(
+          getPresenceRouteKey(right.route)
+        );
+      })
+      .map((session) => session.route);
+  }
+
   private hasRecentlyAcceptedEnvelope(
     envelope: Partial<PresenceEnvelope> | null | undefined,
     now: number
@@ -1030,7 +1392,10 @@ export class PresenceManager extends EventEmitter {
     );
   }
 
-  private rememberAcceptedEnvelope(envelope: PresenceEnvelope, now: number): void {
+  private rememberAcceptedEnvelope(
+    envelope: PresenceEnvelope,
+    now: number
+  ): void {
     if (typeof envelope.id !== 'string' || envelope.id.length === 0) return;
     this.acceptedEnvelopeIds.set(envelope.id, now);
     if (
@@ -1074,6 +1439,7 @@ export class PresenceManager extends EventEmitter {
     for (const session of this.sessions.values()) {
       if (session.route.kind !== 'reticulum') continue;
       if (!isSessionLive(session, now)) continue;
+      if (session.endpointRouteUsable === false) continue;
       const h = session.route.destinationHash;
       if (typeof h !== 'string' || h.length === 0 || seen.has(h)) continue;
       if (this.isSelfReticulumHash(h)) continue;
@@ -1083,7 +1449,8 @@ export class PresenceManager extends EventEmitter {
     return out;
   }
 
-  getReticulumVerifiedPeers(): ReticulumVerifiedPeerSnapshot[] {
+  /** Transport topology only. A device may serve different Qortal accounts. */
+  getReticulumVerifiedTransportPeers(): ReticulumVerifiedTransportPeerSnapshot[] {
     const now = Date.now();
     this.pruneReticulumOverlayState(now);
     return [...this.verifiedReticulumPeers.values()]
@@ -1091,9 +1458,84 @@ export class PresenceManager extends EventEmitter {
       .sort((a, b) => a.verifiedAt - b.verifiedAt || b.lastSeen - a.lastSeen)
       .map((peer) => ({
         destinationHash: peer.destinationHash,
-        address: peer.address,
         lastSeen: peer.lastSeen,
       }));
+  }
+
+  /**
+   * Returns current account-to-device leases derived from accepted presence
+   * sessions. No independent cache is maintained, so offline, expiry and route
+   * invalidation cannot leave a stale account owner attached to a device.
+   */
+  getReticulumAccountEndpointLeases(): ReticulumAccountEndpointLeaseSnapshot[] {
+    const now = Date.now();
+    const bestByAccountAndDestination = new Map<
+      string,
+      ReticulumAccountEndpointLeaseSnapshot
+    >();
+    const verificationPriority: Record<
+      ReticulumAccountEndpointVerification,
+      number
+    > = {
+      'direct-bound': 3,
+      'direct-legacy': 2,
+      'relayed-bound': 1,
+    };
+
+    for (const session of this.sessions.values()) {
+      if (
+        session.route.kind !== 'reticulum' ||
+        !isSessionLive(session, now) ||
+        !isRouteFresh(session, now) ||
+        session.endpointRouteUsable === false ||
+        this.isSelfReticulumHash(session.route.destinationHash)
+      ) {
+        continue;
+      }
+      const verification: ReticulumAccountEndpointVerification =
+        session.route.viaDestinationHash &&
+        session.reticulumRouteBindingVerified
+          ? 'relayed-bound'
+          : session.reticulumRouteBindingVerified
+            ? 'direct-bound'
+            : 'direct-legacy';
+      const livenessExpiresAt =
+        getSessionLivenessAt(session) + PRESENCE_SESSION_TIMEOUT_MS;
+      const expiresAt =
+        session.routeExpiresAt === null
+          ? livenessExpiresAt
+          : Math.min(livenessExpiresAt, session.routeExpiresAt);
+      if (expiresAt <= now) continue;
+      const lease: ReticulumAccountEndpointLeaseSnapshot = {
+        destinationHash: session.route.destinationHash.trim().toLowerCase(),
+        address: session.address,
+        sessionId: session.sessionId,
+        lastSeen: session.lastSeen,
+        expiresAt,
+        verification,
+      };
+      const key = `${lease.address}:${lease.destinationHash}`;
+      const current = bestByAccountAndDestination.get(key);
+      if (
+        !current ||
+        verificationPriority[lease.verification] >
+          verificationPriority[current.verification] ||
+        (verificationPriority[lease.verification] ===
+          verificationPriority[current.verification] &&
+          lease.lastSeen > current.lastSeen)
+      ) {
+        bestByAccountAndDestination.set(key, lease);
+      }
+    }
+
+    return [...bestByAccountAndDestination.values()].sort(
+      (a, b) =>
+        a.address.localeCompare(b.address) ||
+        verificationPriority[b.verification] -
+          verificationPriority[a.verification] ||
+        b.lastSeen - a.lastSeen ||
+        a.destinationHash.localeCompare(b.destinationHash)
+    );
   }
 
   /**
@@ -1124,39 +1566,56 @@ export class PresenceManager extends EventEmitter {
   getReticulumVerifiedNeighborHashes(): string[] {
     const now = Date.now();
     this.pruneReticulumOverlayState(now);
-    return this.activeReticulumNeighborHashes.filter((h) => !this.isSelfReticulumHash(h));
+    return this.activeReticulumNeighborHashes.filter(
+      (h) => !this.isSelfReticulumHash(h)
+    );
   }
 
   noteReticulumOverlayLinkClosed(
     destinationHash: string,
     reason?: string,
-    now: number = Date.now()
+    now: number = Date.now(),
+    _details: { lastActivityAgeMs?: number | null } = {}
   ): void {
     const hash = destinationHash.trim().toLowerCase();
     if (!hash) return;
     const existingVerified = this.verifiedReticulumPeers.get(hash);
     const wasVerified = Boolean(existingVerified);
-    const wasActive = this.activeReticulumNeighborHashes.includes(hash);
+    const wasActive =
+      this.activeReticulumNeighborHashes.includes(hash) ||
+      this.activeReticulumPublishHashes.includes(hash);
     if (!wasVerified && !wasActive) return;
-    this.activeReticulumNeighborHashes = this.activeReticulumNeighborHashes.filter(
-      (activeHash) => activeHash !== hash
-    );
-    this.activeReticulumPublishHashes = this.activeReticulumPublishHashes.filter(
-      (activeHash) => activeHash !== hash
-    );
+    this.activeReticulumNeighborHashes =
+      this.activeReticulumNeighborHashes.filter(
+        (activeHash) => activeHash !== hash
+      );
+    this.activeReticulumPublishHashes =
+      this.activeReticulumPublishHashes.filter(
+        (activeHash) => activeHash !== hash
+      );
+    if (!existingVerified) {
+      this.reticulumCandidates.delete(hash);
+    }
     if (existingVerified) {
+      const nextCloseCount = existingVerified.linkCloseCount + 1;
+      const cooldownMs =
+        nextCloseCount <= 1
+          ? RETICULUM_LINK_CLOSE_BASE_COOLDOWN_MS
+          : RETICULUM_LINK_CLOSE_REPEAT_COOLDOWN_MS;
       this.verifiedReticulumPeers.set(hash, {
         ...existingVerified,
         lastSeen: existingVerified.lastSeen,
         linkClosedAt: now,
+        linkCloseCount: nextCloseCount,
+        linkCooldownUntil: now + cooldownMs,
       });
     }
     loggerLog(
-      `[Presence] Reticulum overlay fanout peer removed sender_hash=${hash}${reason ? ` reason=${reason}` : ''}${wasVerified ? ' verified_retained=yes' : ''}`
+      `[Presence] Reticulum overlay fanout peer removed sender_hash=${hash}${reason ? ` reason=${reason}` : ''}${wasVerified ? ' verified_retained=yes' : ''}${existingVerified ? ` close_count=${existingVerified.linkCloseCount + 1}` : ''}`
     );
     const neighborsChanged = this.recomputeReticulumActiveNeighbors(now);
     if (wasVerified || wasActive || neighborsChanged) {
-      this.emitReticulumOverlayChanged();
+      this.emitReticulumOverlayChanged(true);
     }
   }
 
@@ -1184,8 +1643,8 @@ export class PresenceManager extends EventEmitter {
     loggerLog(
       `[Presence] Reticulum candidate discovered sender_hash=${hash} source=${source} proof_deadline=${peer.proofDeadlineAt}`
     );
-    this.recomputeReticulumActiveNeighbors(now);
-    this.emitReticulumOverlayChanged();
+    const topologyChanged = this.recomputeReticulumActiveNeighbors(now);
+    this.emitReticulumOverlayChanged(topologyChanged);
   }
 
   noteReticulumCandidateFailure(
@@ -1197,22 +1656,11 @@ export class PresenceManager extends EventEmitter {
     if (!hash) return;
     const existing = this.reticulumCandidates.get(hash);
     if (!existing) {
-      this.reticulumCandidates.set(hash, {
-        destinationHash: hash,
-        firstSeenAt: now,
-        lastSeenAt: now,
-        proofDeadlineAt: now + RETICULUM_CANDIDATE_PROOF_WINDOW_MS,
-        failureCount: 1,
-        source: 'failure',
-        lastFailureReason: reason,
-      });
       this.emit('reticulum-candidate-failed', {
         destinationHash: hash,
         reason,
         failureCount: 1,
       });
-      this.recomputeReticulumActiveNeighbors(now);
-      this.emitReticulumOverlayChanged();
       return;
     }
     existing.lastSeenAt = now;
@@ -1231,8 +1679,8 @@ export class PresenceManager extends EventEmitter {
       reason,
       failureCount: existing.failureCount,
     });
-    this.recomputeReticulumActiveNeighbors(now);
-    this.emitReticulumOverlayChanged();
+    const topologyChanged = this.recomputeReticulumActiveNeighbors(now);
+    this.emitReticulumOverlayChanged(topologyChanged);
   }
 
   /**
@@ -1243,13 +1691,12 @@ export class PresenceManager extends EventEmitter {
   markReticulumOverlayPeerVerified(
     destinationHash: string,
     source: string = 'qortal-overlay',
-    address?: string,
     now: number = Date.now()
   ): void {
     const hash = destinationHash.trim().toLowerCase();
     if (!hash) return;
     if (this.isSelfReticulumHash(hash)) return;
-    this.promoteVerifiedReticulumPeer(hash, address ?? '', now, source);
+    this.promoteVerifiedReticulumPeer(hash, now, source);
   }
 
   /** Returns the most-recently-seen active status for an address, or null. */
@@ -1263,12 +1710,16 @@ export class PresenceManager extends EventEmitter {
     const now = Date.now();
     const changedAddresses = new Set<string>();
     let expiredSessions = 0;
+    let expiredReticulumEndpoints = false;
 
     for (const [key, session] of this.sessions.entries()) {
       const livenessAt = getSessionLivenessAt(session);
       if (now - livenessAt > PRESENCE_SESSION_TIMEOUT_MS) {
         this.sessions.delete(key);
         this.removeSessionKey(session.address, key);
+        if (session.route.kind === 'reticulum') {
+          expiredReticulumEndpoints = true;
+        }
         changedAddresses.add(session.address);
         expiredSessions++;
         loggerLog(
@@ -1288,9 +1739,17 @@ export class PresenceManager extends EventEmitter {
         this.latestTimestamp.delete(key);
       }
     }
+    for (const [key, ts] of this.latestOfflineTimestamp.entries()) {
+      if (now - ts > (MAX_PRESENCE_AGE_MS + PRESENCE_SKEW_ALLOWANCE_MS) * 5) {
+        this.latestOfflineTimestamp.delete(key);
+      }
+    }
 
     for (const address of changedAddresses) {
       this.emitPresenceUpdate(address, now);
+    }
+    if (expiredReticulumEndpoints) {
+      this.emitReticulumAccountEndpointsChanged();
     }
     this.pruneReticulumOverlayState(now);
     if (expiredSessions > 0) {
@@ -1362,6 +1821,9 @@ export class PresenceManager extends EventEmitter {
     }
     this.pruneReticulumOverlayState();
     if (removedSessions > 0) {
+      if (routeKind === 'reticulum') {
+        this.emitReticulumAccountEndpointsChanged();
+      }
       loggerLog(
         `[Presence] Invalidated ${removedSessions} session(s) after transport degradation routeKind=${routeKind}`
       );
@@ -1370,10 +1832,16 @@ export class PresenceManager extends EventEmitter {
 
   private removeSession(address: string, sessionId: string): void {
     const key = `${address}:${sessionId}`;
-    loggerLog(`[Presence] Removing session address=${address} sessionId=${sessionId}`);
+    loggerLog(
+      `[Presence] Removing session address=${address} sessionId=${sessionId}`
+    );
+    const removed = this.sessions.get(key);
     this.sessions.delete(key);
     this.removeSessionKey(address, key);
     this.emitPresenceUpdate(address);
+    if (removed?.route.kind === 'reticulum') {
+      this.emitReticulumAccountEndpointsChanged();
+    }
     this.pruneReticulumOverlayState();
   }
 
@@ -1402,17 +1870,14 @@ export class PresenceManager extends EventEmitter {
     now: number = Date.now()
   ): PresenceAddressAggregate {
     const cached = this.addressAggregates.get(address);
-    if (
-      cached &&
-      (cached.nextExpiryAt === null || now < cached.nextExpiryAt)
-    ) {
+    if (cached && (cached.nextExpiryAt === null || now < cached.nextExpiryAt)) {
       return cached;
     }
 
     const keys = this.sessionKeysByAddress.get(address);
     let liveSessionCount = 0;
     let lastSeen: number | null = null;
-    let latestLiveSession: PresenceSession | null = null;
+    let aggregateStatus: UserStatus | null = null;
     let aggregateRouteSession: PresenceSession | null = null;
     let nextExpiryAt: number | null = null;
 
@@ -1423,7 +1888,8 @@ export class PresenceManager extends EventEmitter {
         if (lastSeen === null || session.lastSeen > lastSeen) {
           lastSeen = session.lastSeen;
         }
-        const expiryAt = getSessionLivenessAt(session) + PRESENCE_SESSION_TIMEOUT_MS;
+        const expiryAt =
+          getSessionLivenessAt(session) + PRESENCE_SESSION_TIMEOUT_MS;
         if (!isSessionLive(session, now)) continue;
 
         liveSessionCount++;
@@ -1432,15 +1898,17 @@ export class PresenceManager extends EventEmitter {
         }
         if (
           session.routeExpiresAt !== null &&
+          session.routeExpiresAt > now &&
           (nextExpiryAt === null || session.routeExpiresAt < nextExpiryAt)
         ) {
           nextExpiryAt = session.routeExpiresAt;
         }
         if (
-          !latestLiveSession ||
-          session.lastSeen > latestLiveSession.lastSeen
+          aggregateStatus === null ||
+          getAggregateStatusPriority(session.status) >
+            getAggregateStatusPriority(aggregateStatus)
         ) {
-          latestLiveSession = session;
+          aggregateStatus = session.status;
         }
         if (shouldPreferAggregateRoute(session, aggregateRouteSession, now)) {
           aggregateRouteSession = session;
@@ -1448,13 +1916,12 @@ export class PresenceManager extends EventEmitter {
       }
     }
 
-    const freshestRoute =
-      aggregateRouteSession?.route ?? null;
+    const freshestRoute = aggregateRouteSession?.route ?? null;
 
     const aggregate: PresenceAddressAggregate = {
       liveSessionCount,
       lastSeen,
-      status: latestLiveSession?.status ?? null,
+      status: aggregateStatus,
       originNodeId:
         freshestRoute?.kind === 'mesh-node' ? freshestRoute.id : null,
       route: freshestRoute,
@@ -1495,7 +1962,6 @@ export class PresenceManager extends EventEmitter {
    */
   private promoteVerifiedReticulumPeer(
     destinationHash: string,
-    address: string,
     now: number,
     source: string = 'presence'
   ): void {
@@ -1506,34 +1972,44 @@ export class PresenceManager extends EventEmitter {
     const existing = this.verifiedReticulumPeers.get(hash);
     if (existing) {
       const wasClosed = existing.linkClosedAt !== null;
+      const canClearClosedState =
+        !wasClosed ||
+        source !== 'presence-relayed' ||
+        (existing.linkCooldownUntil !== null &&
+          now >= existing.linkCooldownUntil);
       this.verifiedReticulumPeers.set(hash, {
         destinationHash: hash,
-        address: existing.address || address,
         lastSeen: now,
         verifiedAt: existing.verifiedAt,
-        linkClosedAt: null,
+        linkClosedAt: canClearClosedState ? null : existing.linkClosedAt,
+        linkCloseCount: canClearClosedState ? 0 : existing.linkCloseCount,
+        linkCooldownUntil: canClearClosedState
+          ? null
+          : existing.linkCooldownUntil,
       });
-      if (wasClosed) {
+      if (wasClosed && canClearClosedState) {
         this.recomputeReticulumActiveNeighbors(now);
-        this.emitReticulumOverlayChanged();
+      }
+      if (wasClosed && canClearClosedState) {
+        this.emitReticulumOverlayChanged(true);
       }
       return;
     }
     this.verifiedReticulumPeers.set(hash, {
       destinationHash: hash,
-      address,
       lastSeen: now,
       verifiedAt: now,
       linkClosedAt: null,
+      linkCloseCount: 0,
+      linkCooldownUntil: null,
     });
     this.recomputeReticulumActiveNeighbors(now);
     this.emit('reticulum-peer-verified', {
       destinationHash: hash,
-      address,
       lastSeen: now,
       source,
     });
-    this.emitReticulumOverlayChanged();
+    this.emitReticulumOverlayChanged(true);
   }
 
   private pruneReticulumOverlayState(now: number = Date.now()): void {
@@ -1555,34 +2031,109 @@ export class PresenceManager extends EventEmitter {
     }
     const neighborsChanged = this.recomputeReticulumActiveNeighbors(now);
     if (changed || neighborsChanged) {
-      this.emitReticulumOverlayChanged();
+      this.emitReticulumOverlayChanged(true);
     }
   }
 
+  private isReticulumPeerFanoutEligible(
+    peer: VerifiedReticulumPeer,
+    now: number
+  ): boolean {
+    if (peer.linkClosedAt !== null) return false;
+    return peer.linkCooldownUntil === null || now >= peer.linkCooldownUntil;
+  }
+
   private recomputeReticulumActiveNeighbors(now: number): boolean {
-    const nextVerified = this.activeReticulumNeighborHashes.filter(
-      (hash) =>
-        !this.isSelfReticulumHash(hash) && this.verifiedReticulumPeers.has(hash)
-    );
-    if (nextVerified.length < RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) {
-      const seen = new Set(nextVerified.map((hash) => hash.toLowerCase()));
-      const waitingVerified = [...this.verifiedReticulumPeers.values()]
+    const candidateByHash = new Map(
+      [...this.reticulumCandidates.values()]
         .filter(
-          (peer) =>
-            !seen.has(peer.destinationHash.toLowerCase())
+          (c) =>
+            !this.isSelfReticulumHash(c.destinationHash) &&
+            now <= c.proofDeadlineAt
         )
-        .sort((a, b) => {
-          return (
-            b.lastSeen - a.lastSeen ||
-            b.verifiedAt - a.verifiedAt
-          );
-        });
-      for (const peer of waitingVerified) {
-        if (nextVerified.length >= RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) break;
-        if (this.isSelfReticulumHash(peer.destinationHash)) continue;
-        nextVerified.push(peer.destinationHash);
-        seen.add(peer.destinationHash.toLowerCase());
+        .map((c) => [c.destinationHash.toLowerCase(), c])
+    );
+    const eligibleVerified = [...this.verifiedReticulumPeers.values()]
+      .filter(
+        (peer) =>
+          this.isReticulumPeerFanoutEligible(peer, now) &&
+          !this.isSelfReticulumHash(peer.destinationHash)
+      )
+      .sort((a, b) => {
+        return b.lastSeen - a.lastSeen || b.verifiedAt - a.verifiedAt;
+      });
+    const eligibleVerifiedByHash = new Map(
+      eligibleVerified.map((peer) => [peer.destinationHash.toLowerCase(), peer])
+    );
+    const nextVerified = this.activeReticulumNeighborHashes.filter((hash) => {
+      if (this.isSelfReticulumHash(hash)) return false;
+      return eligibleVerifiedByHash.has(hash.toLowerCase());
+    });
+
+    const seen = new Set(nextVerified.map((h) => h.toLowerCase()));
+    const publish: string[] = [...nextVerified];
+
+    for (const hash of this.activeReticulumPublishHashes) {
+      if (publish.length >= RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) break;
+      const key = hash.toLowerCase();
+      if (seen.has(key) || this.isSelfReticulumHash(hash)) continue;
+      const verified = eligibleVerifiedByHash.get(key);
+      if (verified) {
+        publish.push(verified.destinationHash);
+        nextVerified.push(verified.destinationHash);
+        seen.add(key);
+        continue;
       }
+      const candidate = candidateByHash.get(key);
+      if (candidate) {
+        publish.push(candidate.destinationHash);
+        seen.add(key);
+      }
+    }
+
+    const takeVerified = () => {
+      const peer = eligibleVerified.find(
+        (p) => !seen.has(p.destinationHash.toLowerCase())
+      );
+      if (!peer) return false;
+      const hadCandidate = [...candidateByHash.values()].some(
+        (c) => !seen.has(c.destinationHash.toLowerCase())
+      );
+      nextVerified.push(peer.destinationHash);
+      publish.push(peer.destinationHash);
+      seen.add(peer.destinationHash.toLowerCase());
+      if (hadCandidate) {
+        this.reticulumBackfillNextSource = 'candidate';
+      }
+      return true;
+    };
+    const takeCandidate = () => {
+      const candidate = [...candidateByHash.values()]
+        .filter((c) => !seen.has(c.destinationHash.toLowerCase()))
+        .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
+      if (!candidate) return false;
+      const hadVerified = eligibleVerified.some(
+        (p) => !seen.has(p.destinationHash.toLowerCase())
+      );
+      publish.push(candidate.destinationHash);
+      seen.add(candidate.destinationHash.toLowerCase());
+      if (hadVerified) {
+        this.reticulumBackfillNextSource = 'verified';
+      }
+      return true;
+    };
+    while (publish.length < RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) {
+      const preferred =
+        this.reticulumBackfillNextSource === 'verified'
+          ? takeVerified
+          : takeCandidate;
+      const fallback =
+        this.reticulumBackfillNextSource === 'verified'
+          ? takeCandidate
+          : takeVerified;
+      if (preferred()) continue;
+      if (fallback()) continue;
+      break;
     }
 
     const verifiedChanged =
@@ -1593,27 +2144,11 @@ export class PresenceManager extends EventEmitter {
     if (verifiedChanged) {
       this.activeReticulumNeighborHashes = nextVerified;
     }
-
-    const seen = new Set(nextVerified.map((h) => h.toLowerCase()));
-    const publish: string[] = [...nextVerified];
-    if (publish.length < RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) {
-      const cand = [...this.reticulumCandidates.values()]
-        .filter(
-          (c) =>
-            !this.isSelfReticulumHash(c.destinationHash) &&
-            now <= c.proofDeadlineAt &&
-            !seen.has(c.destinationHash.toLowerCase())
-        )
-        .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
-      for (const c of cand) {
-        if (publish.length >= RETICULUM_OVERLAY_MAX_OUTBOUND_NEIGHBORS) break;
-        publish.push(c.destinationHash);
-        seen.add(c.destinationHash.toLowerCase());
-      }
-    }
     const publishChanged =
       publish.length !== this.activeReticulumPublishHashes.length ||
-      publish.some((hash, idx) => hash !== this.activeReticulumPublishHashes[idx]);
+      publish.some(
+        (hash, idx) => hash !== this.activeReticulumPublishHashes[idx]
+      );
     if (publishChanged) {
       this.activeReticulumPublishHashes = publish;
     }
@@ -1621,12 +2156,19 @@ export class PresenceManager extends EventEmitter {
     return verifiedChanged || publishChanged;
   }
 
-  private emitReticulumOverlayChanged(): void {
+  private emitReticulumOverlayChanged(topologyChanged = false): void {
     this.emit('reticulum-overlay-changed', {
       candidates: this.reticulumCandidates.size,
       verified: this.verifiedReticulumPeers.size,
       activeNeighbors: this.activeReticulumNeighborHashes.length,
       publishFanout: this.activeReticulumPublishHashes.length,
+      topologyChanged,
+    });
+  }
+
+  private emitReticulumAccountEndpointsChanged(): void {
+    this.emit('reticulum-account-endpoints-changed', {
+      leases: this.getReticulumAccountEndpointLeases().length,
     });
   }
 }
@@ -1638,15 +2180,21 @@ export class PresenceManager extends EventEmitter {
  * The renderer calls this (or its own equivalent) to produce the bytes
  * it will sign with `nacl.sign.detached`.
  */
-export function buildAnnounceSignedBytes(fields: SignedPresenceAnnounce): Uint8Array {
+export function buildAnnounceSignedBytes(
+  fields: SignedPresenceAnnounce
+): Uint8Array {
   return canonicalizeForSigning(fields as unknown as Record<string, unknown>);
 }
 
-export function buildHeartbeatSignedBytes(fields: SignedPresenceHeartbeat): Uint8Array {
+export function buildHeartbeatSignedBytes(
+  fields: SignedPresenceHeartbeat
+): Uint8Array {
   return canonicalizeForSigning(fields as unknown as Record<string, unknown>);
 }
 
-export function buildOfflineSignedBytes(fields: SignedPresenceOffline): Uint8Array {
+export function buildOfflineSignedBytes(
+  fields: SignedPresenceOffline
+): Uint8Array {
   return canonicalizeForSigning(fields as unknown as Record<string, unknown>);
 }
 
@@ -1662,7 +2210,10 @@ export function buildEnvelope(
   signature: string
 ): PresenceEnvelope {
   return {
-    id: nodeCrypto.randomUUID(),
+    // The id is only a short-lived deduplication token, not signed identity.
+    // 96 random bits are ample and keep the complete Reticulum presence frame
+    // below the encrypted MDU even with maximum Base58 field lengths.
+    id: nodeCrypto.randomBytes(12).toString('base64url'),
     type,
     senderAddress: payload.address,
     timestamp,
@@ -1700,13 +2251,21 @@ function subscribePresenceTransport(
       void presenceManager?.handleEnvelope(envelope, route);
     },
     onCandidatePeerDiscovered: ({ peerHash, source }) => {
-      manager.noteReticulumCandidateDiscovered(peerHash, source ?? transport.kind);
+      manager.noteReticulumCandidateDiscovered(
+        peerHash,
+        source ?? transport.kind
+      );
     },
-    onOverlayLinkClosed: ({ peerHash, reason }) => {
-      manager.noteReticulumOverlayLinkClosed(peerHash, reason);
+    onOverlayLinkClosed: ({ peerHash, reason, lastActivityAgeMs }) => {
+      manager.noteReticulumOverlayLinkClosed(peerHash, reason, Date.now(), {
+        lastActivityAgeMs,
+      });
     },
     onReady: () => {
-      if (transport.kind === 'reticulum' && typeof transport.getLocalDestinationHash === 'function') {
+      if (
+        transport.kind === 'reticulum' &&
+        typeof transport.getLocalDestinationHash === 'function'
+      ) {
         manager.setLocalReticulumDestinationHash(
           transport.getLocalDestinationHash() ?? null
         );
@@ -1752,7 +2311,10 @@ async function republishCachedPresenceToTransport(
   try {
     await Promise.resolve(transport.publish(cached));
   } catch (err) {
-    loggerError('[Presence] Failed to publish cached envelope to attached transport:', err);
+    loggerError(
+      '[Presence] Failed to publish cached envelope to attached transport:',
+      err
+    );
   }
 }
 
@@ -1807,7 +2369,9 @@ export async function publishPresenceEnvelope(
     return false;
   }
 
-  loggerLog(`[Presence] Publishing local envelope ${describePresenceEnvelope(envelope)}`);
+  loggerLog(
+    `[Presence] Publishing local envelope ${describePresenceEnvelope(envelope)}`
+  );
 
   const accepted = await pm.handleEnvelope(envelope, { kind: 'local' });
   if (!accepted) {
@@ -1833,7 +2397,8 @@ export async function publishPresenceEnvelope(
       );
       if (transport.kind === 'reticulum') {
         const paddr =
-          typeof (envelope.payload as { address?: string })?.address === 'string'
+          typeof (envelope.payload as { address?: string })?.address ===
+          'string'
             ? (envelope.payload as { address: string }).address
             : 'unknown';
         loggerLog(

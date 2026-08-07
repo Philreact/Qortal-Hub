@@ -10,6 +10,9 @@ import {
   Box,
   Button,
   ButtonBase,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   Popover,
   Typography,
   useTheme,
@@ -31,6 +34,9 @@ export const GroupAvatar = ({
   setOpenSnack,
   setInfoSnack,
   groupId,
+  dialogOpen = false,
+  externalOnly = false,
+  onDialogClose,
 }) => {
   const [hasAvatar, setHasAvatar] = useState(false);
   const [avatarFile, setAvatarFile] = useState(null);
@@ -57,10 +63,11 @@ export const GroupAvatar = ({
   // Handle closing the Popover
   const handleClose = () => {
     setAnchorEl(null);
+    onDialogClose?.();
   };
 
   // Determine if the popover is open
-  const open = Boolean(anchorEl);
+  const open = Boolean(anchorEl) || dialogOpen;
   const id = open ? 'avatar-img' : undefined;
 
   const checkIfAvatarExists = useCallback(async (name, groupId) => {
@@ -177,6 +184,26 @@ export const GroupAvatar = ({
     }
   };
 
+  if (externalOnly) {
+    return (
+      <>
+        <PopoverComp
+          myName={myName}
+          avatarFile={avatarFile}
+          setAvatarFile={setAvatarFile}
+          id={id}
+          open={open}
+          anchorEl={anchorEl}
+          handleClose={handleClose}
+          publishAvatar={publishAvatar}
+          isLoading={isLoading}
+          dialogOpen={dialogOpen}
+        />
+        {avatarPreviewModal}
+      </>
+    );
+  }
+
   if (tempAvatar) {
     return (
       <>
@@ -220,6 +247,7 @@ export const GroupAvatar = ({
           handleClose={handleClose}
           publishAvatar={publishAvatar}
           isLoading={isLoading}
+          dialogOpen={false}
         />
         {avatarPreviewModal}
       </>
@@ -269,6 +297,7 @@ export const GroupAvatar = ({
           handleClose={handleClose}
           publishAvatar={publishAvatar}
           isLoading={isLoading}
+          dialogOpen={false}
         />
         {avatarPreviewModal}
       </>
@@ -299,6 +328,7 @@ export const GroupAvatar = ({
         handleClose={handleClose}
         publishAvatar={publishAvatar}
         isLoading={isLoading}
+        dialogOpen={false}
       />
       {avatarPreviewModal}
     </>
@@ -316,6 +346,7 @@ const PopoverComp = ({
   publishAvatar,
   isLoading,
   myName,
+  dialogOpen,
 }) => {
   const theme = useTheme();
   const { t } = useTranslation([
@@ -326,22 +357,8 @@ const PopoverComp = ({
     'tutorial',
   ]);
 
-  return (
-    <Popover
-      id={id}
-      open={open}
-      anchorEl={anchorEl}
-      onClose={handleClose} // Close popover on click outside
-      anchorOrigin={{
-        vertical: 'bottom',
-        horizontal: 'center',
-      }}
-      transformOrigin={{
-        vertical: 'top',
-        horizontal: 'center',
-      }}
-    >
-      <Box sx={{ p: 2, display: 'flex', flexDirection: 'column', gap: 1 }}>
+  const content = (
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, p: 2 }}>
         <Typography
           sx={{
             fontSize: '12px',
@@ -423,6 +440,46 @@ const PopoverComp = ({
           })}
         </LoadingButton>
       </Box>
+  );
+
+  if (dialogOpen) {
+    return (
+      <Dialog
+        open={open}
+        onClose={handleClose}
+        PaperProps={{
+          sx: {
+            border: `1px solid ${theme.palette.divider}`,
+            borderRadius: '8px',
+            maxWidth: 420,
+            width: 'calc(100vw - 32px)',
+          },
+        }}
+      >
+        <DialogTitle sx={{ fontSize: 19, fontWeight: 800, pb: 0.5 }}>
+          Change Group Avatar
+        </DialogTitle>
+        <DialogContent sx={{ p: 0 }}>{content}</DialogContent>
+      </Dialog>
+    );
+  }
+
+  return (
+    <Popover
+      id={id}
+      open={open}
+      anchorEl={anchorEl}
+      onClose={handleClose}
+      anchorOrigin={{
+        vertical: 'bottom',
+        horizontal: 'center',
+      }}
+      transformOrigin={{
+        vertical: 'top',
+        horizontal: 'center',
+      }}
+    >
+      {content}
     </Popover>
   );
 };

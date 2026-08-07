@@ -22,6 +22,13 @@ export type SelectableStatus = 'online' | 'busy' | 'offline';
 export const isIdleAtom = atom<boolean>(false);
 
 /**
+ * Keeps an authenticated idle session locked until the wallet password is
+ * verified. This is deliberately separate from `isIdleAtom`: activity may
+ * update the idle timer while locked, but it must never unlock the app.
+ */
+export const appLockedAtom = atom<boolean>(false);
+
+/**
  * Set of Qortal addresses that are currently online according to the
  * presence network. Updated in real-time by the usePresence hook.
  */
@@ -38,7 +45,9 @@ export const myStatusAtom = atom<SelectableStatus>('online');
  * Values include 'online', 'busy', and 'idle'.
  * Entries are removed when a peer goes offline.
  */
-export const statusMapAtom = atom<Map<string, UserStatus>>(new Map<string, UserStatus>());
+export const statusMapAtom = atom<Map<string, UserStatus>>(
+  new Map<string, UserStatus>()
+);
 
 /**
  * Derived atom family that returns a stable boolean for a single address.
@@ -64,4 +73,18 @@ export const isOnlineAtomFamily = atomFamily((address: string) =>
  */
 export const statusAtomFamily = atomFamily((address: string) =>
   atom((get) => get(statusMapAtom).get(address) ?? null)
+);
+
+/**
+ * Canonical badge status for a single address. The online-address set is the
+ * authoritative liveness source used by the homepage count; the status map
+ * only refines a live peer to busy/idle. Returning one primitive value keeps
+ * per-row consumers on one subscription and prevents split online/status
+ * snapshots from rendering contradictory badges.
+ */
+export const effectivePresenceStatusAtomFamily = atomFamily((address: string) =>
+  atom((get): UserStatus | null => {
+    if (!get(onlineAddressesAtom).has(address)) return null;
+    return get(statusMapAtom).get(address) ?? 'online';
+  })
 );

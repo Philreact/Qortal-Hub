@@ -10,6 +10,7 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import {
   nodeInfosAtom,
   p2pHealthAtom,
+  reticulumEnabledAtom,
   selectedNodeInfoAtom,
 } from '../atoms/global';
 import { nodeDisplay } from '../utils/helpers';
@@ -26,6 +27,8 @@ type ReticulumStatusSnapshot = {
   p2pOutboundOverlayPeers?: number;
   p2pInboundOverlayPeers?: number;
   p2pActiveOverlayPeers?: number;
+  p2pReceivingOverlayPeers?: number;
+  p2pReceivingOverlayPeersStableMs?: number;
 };
 
 export const CoreSyncStatus = ({
@@ -37,6 +40,7 @@ export const CoreSyncStatus = ({
 }) => {
   const nodeInfos = useAtomValue(nodeInfosAtom);
   const selectedNode = useAtomValue(selectedNodeInfoAtom);
+  const reticulumEnabled = useAtomValue(reticulumEnabledAtom);
   const setSharedP2pHealth = useSetAtom(p2pHealthAtom);
   const [coreInfos, setCoreInfos] = useState({});
   const [p2pOutboundOverlayPeers, setP2pOutboundOverlayPeers] = useState<
@@ -63,6 +67,14 @@ export const CoreSyncStatus = ({
 
   const applyReticulumStatus = useCallback(
     (status: ReticulumStatusSnapshot | null | undefined) => {
+      if (!reticulumEnabled) {
+        setP2pOutboundOverlayPeers(null);
+        setP2pInboundOverlayPeers(null);
+        setConnectedRemoteInterfaces(null);
+        setP2pHealth(null);
+        setSharedP2pHealth('unknown');
+        return;
+      }
       setP2pOutboundOverlayPeers(
         typeof status?.p2pOutboundOverlayPeers === 'number'
           ? status.p2pOutboundOverlayPeers
@@ -86,6 +98,9 @@ export const CoreSyncStatus = ({
       const hubs = status.onlineRemoteHubInterfaces ?? 0;
       const nextP2pHealth = computeP2pHealth({
         onlineRemoteHubInterfaces: hubs,
+        p2pReceivingOverlayPeers: status.p2pReceivingOverlayPeers,
+        p2pReceivingOverlayPeersStableMs:
+          status.p2pReceivingOverlayPeersStableMs,
         p2pActiveOverlayPeers: status.p2pActiveOverlayPeers ?? 0,
         p2pOutboundOverlayPeers: status.p2pOutboundOverlayPeers,
         p2pInboundOverlayPeers: status.p2pInboundOverlayPeers,
@@ -93,7 +108,7 @@ export const CoreSyncStatus = ({
       setP2pHealth(nextP2pHealth);
       setSharedP2pHealth(nextP2pHealth);
     },
-    [setSharedP2pHealth]
+    [reticulumEnabled, setSharedP2pHealth]
   );
 
   useEffect(() => {
@@ -133,6 +148,10 @@ export const CoreSyncStatus = ({
   useEffect(() => {
     let canceled = false;
     const api = window.electronAPI as any;
+    if (!reticulumEnabled) {
+      applyReticulumStatus(null);
+      return;
+    }
     if (typeof api?.reticulumGetStatus !== 'function') {
       applyReticulumStatus(null);
       return;
@@ -170,7 +189,7 @@ export const CoreSyncStatus = ({
       unsubscribe?.();
       window.clearInterval(reconciliationInterval);
     };
-  }, [applyReticulumStatus]);
+  }, [applyReticulumStatus, reticulumEnabled]);
 
   const renderSyncStatusIcon = () => {
     const {
@@ -273,7 +292,8 @@ export const CoreSyncStatus = ({
           </h4>
         )}
 
-        {(p2pOutboundOverlayPeers !== null || p2pInboundOverlayPeers !== null) && (
+        {(p2pOutboundOverlayPeers !== null ||
+          p2pInboundOverlayPeers !== null) && (
           <h4 className="lineHeight">
             {t('core:core.p2p_active_overlay_peers', {
               postProcess: 'capitalizeFirstChar',

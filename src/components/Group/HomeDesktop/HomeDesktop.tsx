@@ -76,6 +76,7 @@ import {
   measureHomeLayoutDebugMetric,
   parseHomeCustomizableCardsLayout,
 } from './utils';
+import { returnToQChat } from './homeNavigation';
 
 const readStoredDashboardModuleVisible = (key: string): boolean => {
   if (typeof window === 'undefined') return true;
@@ -91,10 +92,10 @@ const readStoredDashboardModuleVisible = (key: string): boolean => {
 export const HomeDesktop = ({
   myAddress,
   setGroupSection,
-  setSelectedGroup,
   setDesktopViewMode,
   desktopViewMode,
   onOpenSettings,
+  onOpenQortalLand,
 }) => {
   const groupActivityPanelRef = useDashboardPanelMouseLight<HTMLDivElement>();
   const groupActivityCardHeightRef = useRef<HTMLDivElement | null>(null);
@@ -504,10 +505,8 @@ export const HomeDesktop = ({
     executeEvent('open-apps-mode', {});
   }, []);
   const handleOpenQChatPanel = useCallback(() => {
-    setSelectedGroup(null);
-    setGroupSection('chat');
-    openQChatTab();
-  }, [setGroupSection, setSelectedGroup]);
+    returnToQChat(setGroupSection, openQChatTab);
+  }, [setGroupSection]);
   const handleOpenGroupsWidget = useCallback(() => {
     handleOpenQChatPanel();
   }, [handleOpenQChatPanel]);
@@ -749,6 +748,7 @@ export const HomeDesktop = ({
                               fillHeight={false}
                               onOpenApps={handleOpenAppsPanel}
                               onOpenChat={handleOpenQChatPanel}
+                              onOpenQortalLand={onOpenQortalLand}
                               onOpenSettings={onOpenSettings}
                             />
                           </Box>
@@ -876,6 +876,7 @@ export const HomeDesktop = ({
                               fillHeight={false}
                               onOpenApps={handleOpenAppsPanel}
                               onOpenChat={handleOpenQChatPanel}
+                              onOpenQortalLand={onOpenQortalLand}
                               onOpenSettings={onOpenSettings}
                             />
                           </Box>

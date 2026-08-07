@@ -2,12 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Avatar,
   Box,
+  IconButton,
   ListItem,
   ListItemAvatar,
   ListItemButton,
   ListItemText,
   Popover,
+  Tooltip,
 } from '@mui/material';
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import {
   AutoSizer,
   CellMeasurer,
@@ -51,7 +54,13 @@ const cache = new CellMeasurerCache({
   defaultHeight: 50,
 });
 
-export const ListOfBans = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
+export const ListOfBans = ({
+  groupId,
+  setInfoSnack,
+  setOpenSnack,
+  show,
+  compact = false,
+}) => {
   const [bans, setBans] = useState([]);
   const [popoverAnchor, setPopoverAnchor] = useState(null); // Track which list item the popover is anchored to
   const [openPopoverIndex, setOpenPopoverIndex] = useState(null); // Track which list item has the popover open
@@ -114,6 +123,9 @@ export const ListOfBans = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
             if (!response?.error) {
               res(response);
               setIsLoadingUnban(false);
+              setBans((current) =>
+                current.filter((ban) => ban?.offender !== address)
+              );
               setInfoSnack({
                 type: 'success',
                 message: t('group:message.success.unbanned_user', {
@@ -169,6 +181,7 @@ export const ListOfBans = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
         {({ measure }) => (
           <div style={style} onLoad={measure}>
             <ListItem disablePadding>
+              {!compact && (
               <Popover
                 open={openPopoverIndex === index}
                 anchorEl={popoverAnchor}
@@ -206,11 +219,29 @@ export const ListOfBans = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
                   </LoadingButton>
                 </Box>
               </Popover>
+              )}
 
               <ListItemButton
-                onClick={(event) => handlePopoverOpen(event, index)}
+                onClick={
+                  compact ? undefined : (event) => handlePopoverOpen(event, index)
+                }
+                sx={{
+                  borderRadius: compact ? '6px' : undefined,
+                  minHeight: compact ? 48 : undefined,
+                  px: compact ? 1 : undefined,
+                  py: compact ? 0.5 : undefined,
+                  '& .compact-row-action': {
+                    opacity: 0,
+                    pointerEvents: 'none',
+                    transition: 'opacity 120ms ease',
+                  },
+                  '&:hover .compact-row-action': {
+                    opacity: 1,
+                    pointerEvents: 'auto',
+                  },
+                }}
               >
-                <ListItemAvatar>
+                <ListItemAvatar sx={{ minWidth: compact ? 40 : undefined }}>
                   <Avatar
                     alt={member?.name}
                     src={
@@ -218,12 +249,22 @@ export const ListOfBans = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
                         ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${member?.name}/qortal_avatar?async=true`
                         : ''
                     }
+                    sx={{
+                      height: compact ? 32 : undefined,
+                      width: compact ? 32 : undefined,
+                    }}
                   />
                 </ListItemAvatar>
                 <ListItemText
                   primary={memberLabel}
                   primaryTypographyProps={{
                     sx: {
+                      fontSize: compact ? 13 : undefined,
+                      fontWeight: compact ? 700 : undefined,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      textTransform: compact ? 'capitalize' : undefined,
+                      whiteSpace: 'nowrap',
                       ...(hasUnsafeMemberName
                         ? {
                             textDecorationLine: 'line-through',
@@ -234,6 +275,30 @@ export const ListOfBans = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
                     },
                   }}
                 />
+                {compact && (
+                  <Tooltip title="Cancel Ban">
+                    <IconButton
+                      className="compact-row-action"
+                      disabled={isLoadingUnban}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleCancelBan(member?.offender);
+                      }}
+                      size="small"
+                      sx={{
+                        color: 'error.main',
+                        flexShrink: 0,
+                        height: 28,
+                        width: 28,
+                        '&:hover': {
+                          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                        },
+                      }}
+                    >
+                      <CloseRoundedIcon sx={{ fontSize: 18 }} />
+                    </IconButton>
+                  </Tooltip>
+                )}
               </ListItemButton>
             </ListItem>
           </div>
@@ -243,14 +308,24 @@ export const ListOfBans = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
   };
 
   return (
-    <div>
-      <p>{t('core:list.bans', { postProcess: 'capitalizeFirstChar' })}</p>
+    <div
+      style={{
+        display: 'flex',
+        flex: 1,
+        flexDirection: 'column',
+        minHeight: 0,
+      }}
+    >
+      {!compact && (
+        <p>{t('core:list.bans', { postProcess: 'capitalizeFirstChar' })}</p>
+      )}
       <div
         style={{
           display: 'flex',
           flexDirection: 'column',
           flexShrink: 1,
-          height: '500px',
+          height: compact ? '100%' : '500px',
+          minHeight: 0,
           position: 'relative',
           width: '100%',
         }}
@@ -262,9 +337,9 @@ export const ListOfBans = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
               width={width}
               height={height}
               rowCount={bans.length}
-              rowHeight={cache.rowHeight}
+              rowHeight={compact ? 48 : cache.rowHeight}
               rowRenderer={rowRenderer}
-              deferredMeasurementCache={cache}
+              deferredMeasurementCache={compact ? undefined : cache}
             />
           )}
         </AutoSizer>

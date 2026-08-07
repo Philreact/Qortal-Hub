@@ -4,13 +4,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Avatar,
-  Box,
-  Button,
-  Dialog,
-  Typography,
-} from '@mui/material';
+import { Avatar, Box, Button, Dialog, Typography } from '@mui/material';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
 import CallRoundedIcon from '@mui/icons-material/CallRounded';
 import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
@@ -25,15 +19,26 @@ import {
 } from '../Group/qortalGroupCallParticipantUi';
 import { getPrimaryNameForAvatar } from '../Group/groupApi';
 
-export function DirectVoiceCallGlobalOverlay() {
+type DirectVoiceCallGlobalOverlayProps = {
+  isAppLocked?: boolean;
+};
+
+export function DirectVoiceCallGlobalOverlay({
+  isAppLocked = false,
+}: DirectVoiceCallGlobalOverlayProps) {
   const { callState, incomingCall, acceptCall, rejectCall } =
     useVoiceCallContext();
   const { confirmCallSwitch } = useCallSwitchGuard();
 
-  const open =
+  const isRinging =
     callState === 'ringing' &&
     Boolean(incomingCall) &&
     isDirectVoiceCallChatId(incomingCall?.chatId);
+  // A MUI Dialog opened after the authenticated lock screen becomes the
+  // newest focus trap even though the lock screen has the higher visual
+  // z-index. Keep the call alive and ringing, but do not mount its modal until
+  // the user has unlocked the app.
+  const open = isRinging && !isAppLocked;
 
   const fromAddress = incomingCall?.fromAddress ?? '';
   const [callerPrimaryName, setCallerPrimaryName] = useState('');
@@ -59,9 +64,7 @@ export function DirectVoiceCallGlobalOverlay() {
 
   const displayLabel =
     callerPrimaryName || (fromAddress ? shortAddr(fromAddress) : '');
-  const avatarSrc = qortalAvatarThumbnailSrc(
-    callerPrimaryName || undefined
-  );
+  const avatarSrc = qortalAvatarThumbnailSrc(callerPrimaryName || undefined);
   const initials = initialsFromDisplayLabel(displayLabel, fromAddress);
 
   useEffect(() => {
@@ -91,7 +94,7 @@ export function DirectVoiceCallGlobalOverlay() {
   }, [acceptCall, confirmCallSwitch, incomingCall?.chatId, stopRing]);
 
   useEffect(() => {
-    if (!open) {
+    if (!isRinging) {
       stopRing();
       return;
     }
@@ -100,7 +103,7 @@ export function DirectVoiceCallGlobalOverlay() {
       stopRingRef.current?.();
       stopRingRef.current = null;
     };
-  }, [open, stopRing]);
+  }, [isRinging, stopRing]);
 
   return (
     <Dialog
@@ -136,14 +139,15 @@ export function DirectVoiceCallGlobalOverlay() {
           gap: 2,
         }}
       >
-        <Typography variant="overline" sx={{ letterSpacing: 1.2, opacity: 0.75 }}>
+        <Typography
+          variant="overline"
+          sx={{ letterSpacing: 1.2, opacity: 0.75 }}
+        >
           Incoming voice call
         </Typography>
         <Avatar
           alt={displayLabel}
-          src={
-            avatarSrc && !avatarLoadFailed ? avatarSrc : undefined
-          }
+          src={avatarSrc && !avatarLoadFailed ? avatarSrc : undefined}
           slotProps={{
             img: {
               onError: () => setAvatarLoadFailed(true),

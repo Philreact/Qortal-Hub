@@ -1,6 +1,6 @@
 import { log as loggerLog, error as loggerError } from './logger';
 loggerLog('User Preload!');
-import { contextBridge, shell, ipcRenderer } from 'electron';
+import { contextBridge, shell, ipcRenderer, webUtils } from 'electron';
 import { buildBootstrapIceServers } from './stun-bootstrap';
 import { isDisabledLegacy } from './feature-flags';
 import { AUDIO_SURFACE_WINDOW_ROLE } from './audio-window-policy';
@@ -10,6 +10,10 @@ import type {
   AudioSurfaceCommandResultEnvelope,
   AudioSurfaceEvent,
 } from './audio-surface-ipc';
+import {
+  invokeGroupCallJoin,
+  type GroupCallJoinIpcArguments,
+} from './group-call-ipc-contract';
 
 // Sandbox-safe minimal Capacitor bridge. The repo's electron-plugins module is
 // currently empty, so we only need to preserve the platform marker here.
@@ -17,6 +21,25 @@ contextBridge.exposeInMainWorld('CapacitorCustomPlatform', {
   name: 'electron',
   plugins: {},
 });
+
+const qortalLandRealtimeBridge = {
+  getTransportBootstrap: () =>
+    ipcRenderer.invoke('qortalLandRealtime:getTransportBootstrap') as Promise<{
+      url: string;
+      token: string;
+      instanceId: string;
+    } | null>,
+  onTransportRestarted: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('qortalLandGames:transportRestarted', handler);
+    return () =>
+      ipcRenderer.removeListener('qortalLandGames:transportRestarted', handler);
+  },
+};
+
+contextBridge.exposeInMainWorld('qortalLandRealtime', qortalLandRealtimeBridge);
+// Compatibility for older renderer bundles while the shared transport name rolls out.
+contextBridge.exposeInMainWorld('qortalLandGames', qortalLandRealtimeBridge);
 
 function parseHubBootstrapSeedsFromArgv(): string[] {
   const prefix = '--hub-p2p-seeds=';
@@ -60,6 +83,25 @@ const isAudioSurfaceWindow = windowRole === AUDIO_SURFACE_WINDOW_ROLE;
 let gcallFullStreamOnEventRefCount = 0;
 /** Same idea as gcall: avoid dropping main fanout if `call.onEvent` is registered more than once. */
 let callOnEventRefCount = 0;
+/** DM voice, group calls, and Qortal Land share the same hidden audio-surface stream. */
+let audioSurfaceOnEventRefCount = 0;
+/** Group and DM chat can both observe local hide-state changes in the same renderer. */
+let reticulumChatSilenceChangedRefCount = 0;
+
+function subscribeReticulumChatSilenceChanged(): void {
+  reticulumChatSilenceChangedRefCount += 1;
+  if (reticulumChatSilenceChangedRefCount === 1) {
+    ipcRenderer.send('reticulumChat:silenceChanged:subscribe');
+  }
+}
+
+function unsubscribeReticulumChatSilenceChanged(): void {
+  reticulumChatSilenceChangedRefCount -= 1;
+  if (reticulumChatSilenceChangedRefCount <= 0) {
+    reticulumChatSilenceChangedRefCount = 0;
+    ipcRenderer.send('reticulumChat:silenceChanged:unsubscribe');
+  }
+}
 
 type PresenceUpdatePayload = {
   address: string;
@@ -287,6 +329,54 @@ function addChatScopedSubscriber<T>(
   };
 }
 
+type ReticulumChatReadinessPayload = {
+  state: 'idle' | 'starting' | 'ready' | 'failed';
+  revision: number;
+  error?: string;
+};
+
+const reticulumChatReadinessSubscribers = new Set<
+  (status: ReticulumChatReadinessPayload) => void
+>();
+let reticulumChatReadinessSubscribed = false;
+
+const handleReticulumChatReadinessChanged = (
+  _event: unknown,
+  status: unknown
+) => {
+  for (const subscriber of reticulumChatReadinessSubscribers) {
+    subscriber(status as ReticulumChatReadinessPayload);
+  }
+};
+
+const subscribeToReticulumChatReadiness = (
+  subscriber: (status: ReticulumChatReadinessPayload) => void
+): (() => void) => {
+  reticulumChatReadinessSubscribers.add(subscriber);
+  if (!reticulumChatReadinessSubscribed) {
+    reticulumChatReadinessSubscribed = true;
+    ipcRenderer.on(
+      'reticulumChat:readinessChanged',
+      handleReticulumChatReadinessChanged
+    );
+    ipcRenderer.send('reticulumChat:readinessChanged:subscribe');
+  }
+  return () => {
+    reticulumChatReadinessSubscribers.delete(subscriber);
+    if (
+      reticulumChatReadinessSubscribed &&
+      reticulumChatReadinessSubscribers.size === 0
+    ) {
+      reticulumChatReadinessSubscribed = false;
+      ipcRenderer.removeListener(
+        'reticulumChat:readinessChanged',
+        handleReticulumChatReadinessChanged
+      );
+      ipcRenderer.send('reticulumChat:readinessChanged:unsubscribe');
+    }
+  };
+};
+
 try {
   // Expose Electron API
   contextBridge.exposeInMainWorld('electronAPI', {
@@ -332,6 +422,11 @@ try {
         ipcRenderer.removeListener('window:state-changed', handler);
       };
     },
+    onSystemLockRequested: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('system:lock-requested', handler);
+      return () => ipcRenderer.removeListener('system:lock-requested', handler);
+    },
     getPlatform: () => ipcRenderer.invoke('window:getPlatform'),
     getSystemCallReadiness: () =>
       ipcRenderer.invoke('systemCallReadiness:getSnapshot') as Promise<{
@@ -354,14 +449,35 @@ try {
     showAppMenu: (x?: number, y?: number) =>
       ipcRenderer.invoke('window:showAppMenu', { x, y }),
     getAppSettings: () => ipcRenderer.invoke('appSettings:get'),
+    setDisableDevLogs: (value: boolean) =>
+      ipcRenderer.invoke('logger:setDisableDevLogs', value),
     setAppSettings: (settings: {
       closeAction?: 'ask' | 'minimizeToTray' | 'quit';
       disableStartupSound?: boolean;
+      autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
+      disableAutoLockOnIdle?: boolean;
       p2pEnabled?: boolean;
       legacyPublicStunFallback?: boolean;
       reticulumMeshUpnpEnabled?: boolean;
       reticulumManagedConfigEnabled?: boolean;
+      reticulumEnabled?: boolean;
+      reticulumChatEnabled?: boolean;
+      reticulumResourceLimitBytes?: number;
     }) => ipcRenderer.invoke('appSettings:set', settings),
+    onAppSettingsChanged: (
+      callback: (settings: {
+        autoLockTimeoutMinutes?: 0 | 10 | 30 | 60 | 180;
+        disableAutoLockOnIdle?: boolean;
+        reticulumEnabled?: boolean;
+        reticulumManagedConfigEnabled?: boolean;
+        reticulumChatEnabled?: boolean;
+      }) => void
+    ) => {
+      const listener = (_event: Electron.IpcRendererEvent, settings: any) =>
+        callback(settings);
+      ipcRenderer.on('appSettings:changed', listener);
+      return () => ipcRenderer.removeListener('appSettings:changed', listener);
+    },
     reticulumGetStatus: () =>
       ipcRenderer.invoke('reticulum:getStatus') as Promise<{
         running: boolean;
@@ -381,6 +497,8 @@ try {
         p2pOutboundOverlayPeers?: number;
         p2pInboundOverlayPeers?: number;
         p2pActiveOverlayPeers?: number;
+        p2pReceivingOverlayPeers?: number;
+        p2pReceivingOverlayPeersStableMs?: number;
         verifiedOverlayPeerCount?: number;
       }>,
     reticulumGetConfigEditorInfo: () =>
@@ -446,6 +564,8 @@ try {
         p2pOutboundOverlayPeers?: number;
         p2pInboundOverlayPeers?: number;
         p2pActiveOverlayPeers?: number;
+        p2pReceivingOverlayPeers?: number;
+        p2pReceivingOverlayPeersStableMs?: number;
         verifiedOverlayPeerCount?: number;
       }) => void
     ) => {
@@ -466,9 +586,22 @@ try {
           peerPresenceHash: string;
           incoming?: boolean;
           address?: string;
+          addresses?: string[];
           connectedAt: number;
         }>
       >,
+    reticulumGetDetails: () =>
+      ipcRenderer.invoke('reticulum:getDetails') as Promise<{
+        destinationHash: string | null;
+        overlayPeers: Array<{
+          linkId: string;
+          peerPresenceHash: string;
+          incoming?: boolean;
+          address?: string;
+          addresses?: string[];
+          connectedAt: number;
+        }>;
+      }>,
     reticulumGetMeshStatus: () =>
       ipcRenderer.invoke('reticulum:getMeshStatus') as Promise<{
         enabled: boolean;
@@ -610,10 +743,20 @@ try {
         cb(payload as AudioSurfaceEvent);
       };
       ipcRenderer.on(channel, handler);
-      ipcRenderer.send('audio-surface:subscribe');
+      audioSurfaceOnEventRefCount += 1;
+      if (audioSurfaceOnEventRefCount === 1) {
+        ipcRenderer.send('audio-surface:subscribe');
+      }
+      let active = true;
       return () => {
-        ipcRenderer.send('audio-surface:unsubscribe');
+        if (!active) return;
+        active = false;
         ipcRenderer.removeListener(channel, handler);
+        audioSurfaceOnEventRefCount -= 1;
+        if (audioSurfaceOnEventRefCount <= 0) {
+          audioSurfaceOnEventRefCount = 0;
+          ipcRenderer.send('audio-surface:unsubscribe');
+        }
       };
     },
     getWindowRole: async () => windowRole,
@@ -855,6 +998,126 @@ try {
     },
   });
 
+  contextBridge.exposeInMainWorld('reticulumResources', {
+    getPathForFile: (file: File) => {
+      try {
+        return webUtils.getPathForFile(file);
+      } catch {
+        return '';
+      }
+    },
+    convertGifToWebp: async (payload: {
+      filePath?: string;
+      bytes?: Uint8Array;
+      fileName?: string;
+      targetBytes?: number;
+    }) =>
+      ipcRenderer.invoke(
+        'reticulumResource:convertGifToWebp',
+        payload
+      ) as Promise<{
+        success: boolean;
+        filePath?: string;
+        fileName?: string;
+        mimeType?: string;
+        originalSizeBytes?: number;
+        sizeBytes?: number;
+        width?: number;
+        height?: number;
+        pages?: number;
+        targetAchieved?: boolean;
+        error?: string;
+      }>,
+    releaseConvertedMedia: async (filePath: string) =>
+      ipcRenderer.invoke(
+        'reticulumResource:releaseConvertedMedia',
+        filePath
+      ) as Promise<{
+        success: boolean;
+        error?: string;
+      }>,
+    importBase64: async (payload: unknown) =>
+      ipcRenderer.invoke('reticulumResource:importBase64', payload) as Promise<{
+        success: boolean;
+        manifest?: unknown;
+        error?: string;
+      }>,
+    importFilePath: async (payload: unknown) =>
+      ipcRenderer.invoke(
+        'reticulumResource:importFilePath',
+        payload
+      ) as Promise<{
+        success: boolean;
+        manifest?: unknown;
+        error?: string;
+      }>,
+    getUrl: async (fileHash: string) =>
+      ipcRenderer.invoke('reticulumResource:getUrl', fileHash) as Promise<{
+        success: boolean;
+        url?: string;
+        manifest?: unknown;
+        error?: string;
+      }>,
+    getStatus: async (fileHash: string) =>
+      ipcRenderer.invoke('reticulumResource:getStatus', fileHash) as Promise<{
+        success: boolean;
+        manifest?: unknown;
+        bytesTransferred?: number;
+        totalBytes?: number;
+        progress?: number;
+        complete?: boolean;
+        latestRangeUpdatedAt?: number | null;
+        checkedAt?: number;
+        runtime?: {
+          active?: boolean;
+          peerCount?: number;
+          candidatePeerCount?: number;
+          advertisedPeerCount?: number;
+          activeTransfers?: number;
+          pendingTransfers?: number;
+          requestedRangeCount?: number;
+          inFlightRangeCount?: number;
+          currentBytesPerSecond?: number;
+          averageBytesPerSecond?: number;
+          nextRequestAt?: number | null;
+        } | null;
+        error?: string;
+      }>,
+    getStorageStatus: async () =>
+      ipcRenderer.invoke('reticulumResource:getStorageStatus') as Promise<{
+        success: boolean;
+        status?: unknown;
+        error?: string;
+      }>,
+    cleanupStorage: async () =>
+      ipcRenderer.invoke('reticulumResource:cleanupStorage') as Promise<{
+        success: boolean;
+        result?: unknown;
+        status?: unknown;
+        error?: string;
+      }>,
+    saveAs: async (fileHash: string, suggestedFileName?: string) =>
+      ipcRenderer.invoke(
+        'reticulumResource:saveAs',
+        fileHash,
+        suggestedFileName
+      ) as Promise<{
+        success: boolean;
+        canceled?: boolean;
+        path?: string;
+        error?: string;
+      }>,
+    open: async (fileHash: string, suggestedFileName?: string) =>
+      ipcRenderer.invoke(
+        'reticulumResource:open',
+        fileHash,
+        suggestedFileName
+      ) as Promise<{
+        success: boolean;
+        error?: string;
+      }>,
+  });
+
   if (!isDisabledLegacy) {
     // P2P Network API
     contextBridge.exposeInMainWorld('p2pNetwork', {
@@ -937,6 +1200,14 @@ try {
     heartbeat: async (envelope: unknown) =>
       ipcRenderer.invoke('presence:heartbeat', envelope),
 
+    /** Start the main-process heartbeat scheduler. */
+    startHeartbeatScheduler: async () =>
+      ipcRenderer.invoke('presence:heartbeatSchedulerStart'),
+
+    /** Stop the main-process heartbeat scheduler. */
+    stopHeartbeatScheduler: async () =>
+      ipcRenderer.invoke('presence:heartbeatSchedulerStop'),
+
     /** Announce that the local user is going offline. */
     offline: async (envelope: unknown) =>
       ipcRenderer.invoke('presence:offline', envelope),
@@ -1013,6 +1284,14 @@ try {
       const handler = () => cb();
       ipcRenderer.on('presence:started', handler);
       return () => ipcRenderer.removeListener('presence:started', handler);
+    },
+
+    /** Subscribe to main-process heartbeat ticks. */
+    onHeartbeatRequested: (cb: () => void) => {
+      const handler = () => cb();
+      ipcRenderer.on('presence:heartbeat-request', handler);
+      return () =>
+        ipcRenderer.removeListener('presence:heartbeat-request', handler);
     },
   });
 
@@ -1150,6 +1429,7 @@ try {
       onTyping: (
         cb: (payload: {
           chatId: string;
+          channelId: string;
           authorAddress: string;
           active: boolean;
         }) => void
@@ -1169,6 +1449,7 @@ try {
         chatId: string,
         cb: (payload: {
           chatId: string;
+          channelId: string;
           authorAddress: string;
           active: boolean;
         }) => void
@@ -1261,6 +1542,1050 @@ try {
       },
     });
 
+    contextBridge.exposeInMainWorld('reticulumChat', {
+      isEnabled: async () =>
+        ipcRenderer.invoke('reticulumChat:isEnabled') as Promise<boolean>,
+      getReadinessStatus: async () =>
+        ipcRenderer.invoke('reticulumChat:getReadinessStatus') as Promise<{
+          state: 'idle' | 'starting' | 'ready' | 'failed';
+          revision: number;
+          error?: string;
+        }>,
+      onReadinessChanged: (
+        cb: (status: {
+          state: 'idle' | 'starting' | 'ready' | 'failed';
+          revision: number;
+          error?: string;
+        }) => void
+      ) => subscribeToReticulumChatReadiness(cb),
+      setLocalGroupMemberships: async (
+        groupIds: Array<
+          | number
+          | {
+              groupId: number;
+              isPrivate?: boolean;
+              isOpen?: boolean;
+              localAddress?: string;
+              address?: string;
+              isAdmin?: boolean;
+              adminStatusAuthoritative?: boolean;
+            }
+        >
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setLocalGroupMemberships',
+          groupIds
+        ) as Promise<{ success: boolean; error?: string }>,
+      setPublicGroupDirectory: async (groupIds: number[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setPublicGroupDirectory',
+          groupIds
+        ) as Promise<{ success: boolean; error?: string }>,
+      getPublicGroupActivity: async () =>
+        ipcRenderer.invoke('reticulumChat:getPublicGroupActivity') as Promise<
+          Array<{
+            groupId: number;
+            messages24h: number;
+            messages7d: number;
+            activeAuthors7d: number;
+            observedAt: number;
+            confidence: number;
+          }>
+        >,
+      getPublicGroupActivitySnapshot: async () =>
+        ipcRenderer.invoke(
+          'reticulumChat:getPublicGroupActivitySnapshot'
+        ) as Promise<{
+          availableGroupIds: number[];
+          observedAt: number;
+          summaries: Array<{
+            groupId: number;
+            messages24h: number;
+            messages7d: number;
+            activeAuthors7d: number;
+            observedAt: number;
+            confidence: number;
+          }>;
+        }>,
+      setLocalDmAddresses: async (addresses: string[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setLocalDmAddresses',
+          addresses
+        ) as Promise<{ success: boolean; error?: string }>,
+      clearLocalAccountState: async () =>
+        ipcRenderer.invoke(
+          'reticulumChat:clearLocalAccountState'
+        ) as Promise<{ success: boolean; error?: string }>,
+      getSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          groupId
+        ) as Promise<unknown | null>,
+      listSilences: async (
+        ownerAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:listSilences',
+          ownerAddress,
+          scopeType,
+          groupId
+        ) as Promise<unknown[]>,
+      setSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        durationMs: number | null,
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          durationMs,
+          groupId
+        ) as Promise<{ success: boolean; silence?: unknown; error?: string }>,
+      clearSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:clearSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          groupId
+        ) as Promise<{ success: boolean; silence?: unknown; error?: string }>,
+      setActiveDirectChat: async (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setActiveDirectChat',
+          localAddress,
+          peerAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
+      subscribeGroup: async (groupId: number) =>
+        ipcRenderer.invoke('reticulumChat:subscribeGroup', groupId) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      subscribeChannel: async (groupId: number, channelId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:subscribeChannel',
+          groupId,
+          channelId
+        ) as Promise<{ success: boolean; error?: string }>,
+      unsubscribeChannel: async (groupId: number, channelId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:unsubscribeChannel',
+          groupId,
+          channelId
+        ) as Promise<{ success: boolean; error?: string }>,
+      unsubscribeGroup: async (groupId: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:unsubscribeGroup',
+          groupId
+        ) as Promise<{ success: boolean; error?: string }>,
+      publishEvent: async (event: unknown) =>
+        ipcRenderer.invoke('reticulumChat:publishEvent', event) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      reserveAuthorSequence: async (groupId: number, authorAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:reserveAuthorSequence',
+          groupId,
+          authorAddress
+        ) as Promise<{ authorStreamId: string; authorSeq: number }>,
+      releaseAuthorSequence: async (
+        groupId: number,
+        authorAddress: string,
+        authorStreamId: string,
+        authorSeq: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:releaseAuthorSequence',
+          groupId,
+          authorAddress,
+          authorStreamId,
+          authorSeq
+        ) as Promise<boolean>,
+      publishDirectEvent: async (event: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:publishDirectEvent',
+          event
+        ) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      getDirectAuthorStreamId: async (authorAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectAuthorStreamId',
+          authorAddress
+        ) as Promise<string>,
+      getDirectExpiryPreference: async (
+        ownerAddress: string,
+        peerAddress: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectExpiryPreference',
+          ownerAddress,
+          peerAddress
+        ) as Promise<{
+          success: boolean;
+          preference?: {
+            ownerAddress: string;
+            peerAddress: string;
+            durationMs: number | null;
+            updatedAt: number;
+          };
+          error?: string;
+        }>,
+      setDirectExpiryPreference: async (
+        ownerAddress: string,
+        peerAddress: string,
+        durationMs: number | null
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setDirectExpiryPreference',
+          ownerAddress,
+          peerAddress,
+          durationMs
+        ) as Promise<{
+          success: boolean;
+          preference?: {
+            ownerAddress: string;
+            peerAddress: string;
+            durationMs: number | null;
+            updatedAt: number;
+          };
+          error?: string;
+        }>,
+      getCalendarEvents: async (
+        groupId: number,
+        rangeStart: number,
+        rangeEnd: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCalendarEvents',
+          groupId,
+          rangeStart,
+          rangeEnd
+        ) as Promise<unknown[]>,
+      getCalendarEvent: async (
+        groupId: number,
+        eventId: string,
+        preferredOccurrenceStart?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCalendarEvent',
+          groupId,
+          eventId,
+          preferredOccurrenceStart
+        ) as Promise<unknown | null>,
+      createCalendarEvent: async (
+        groupId: number,
+        input: unknown,
+        eventId?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:createCalendarEvent',
+          groupId,
+          input,
+          eventId
+        ) as Promise<unknown>,
+      updateCalendarEvent: async (
+        groupId: number,
+        eventId: string,
+        input: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:updateCalendarEvent',
+          groupId,
+          eventId,
+          input
+        ) as Promise<unknown>,
+      deleteCalendarEvent: async (groupId: number, eventId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:deleteCalendarEvent',
+          groupId,
+          eventId
+        ) as Promise<unknown>,
+      getCalendarReminder: async (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCalendarReminder',
+          ownerAddress,
+          groupId,
+          eventId
+        ) as Promise<unknown>,
+      setCalendarReminder: async (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string,
+        offsetMs: number | null
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setCalendarReminder',
+          ownerAddress,
+          groupId,
+          eventId,
+          offsetMs
+        ) as Promise<unknown>,
+      sendDirectTyping: async (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendDirectTyping',
+          localAddress,
+          peerAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
+      getDirectHistory: async (
+        myAddress: string,
+        peerAddress: string,
+        limit?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectHistory',
+          myAddress,
+          peerAddress,
+          limit
+        ) as Promise<unknown[]>,
+      getDirectSummaries: async (myAddress: string, peerAddress?: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectSummaries',
+          myAddress,
+          peerAddress
+        ) as Promise<unknown[]>,
+      getDirectCallHistory: async (
+        ownerAddress: string,
+        peerAddress?: string,
+        limit?: number,
+        unreadOnly?: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectCallHistory',
+          ownerAddress,
+          peerAddress,
+          limit,
+          unreadOnly
+        ) as Promise<unknown[]>,
+      markDirectRead: async (
+        myAddress: string,
+        peerAddress: string,
+        upToTimestamp: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markDirectRead',
+          myAddress,
+          peerAddress,
+          upToTimestamp
+        ) as Promise<{ success: boolean; error?: string }>,
+      sendTyping: async (
+        groupId: number,
+        channelId: string,
+        authorAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendTyping',
+          groupId,
+          channelId,
+          authorAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
+      sendLandState: async (
+        groupId: number,
+        authorAddress: string,
+        state: {
+          sessionId?: unknown;
+          sequence?: unknown;
+          x?: unknown;
+          y?: unknown;
+          roomId?: unknown;
+          direction?: unknown;
+          movement?: unknown;
+          afk?: unknown;
+          dnd?: unknown;
+          voiceEnabled?: unknown;
+          voiceMuted?: unknown;
+          skinId?: unknown;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandState',
+          groupId,
+          authorAddress,
+          state
+        ) as Promise<{ success: boolean; error?: string }>,
+      sendLandChat: async (message: unknown) =>
+        ipcRenderer.invoke('reticulumChat:sendLandChat', message) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      sendLandAction: async (groupId: number, action: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandAction',
+          groupId,
+          action
+        ) as Promise<{ success: boolean; error?: string }>,
+      sendLandCall: async (groupId: number, call: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandCall',
+          groupId,
+          call
+        ) as Promise<{ success: boolean; error?: string }>,
+      requestResource: async (
+        groupId: number,
+        manifest: unknown,
+        eventId?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:requestResource',
+          groupId,
+          manifest,
+          eventId
+        ) as Promise<{ success: boolean; error?: string }>,
+      requestDirectResource: async (
+        myAddress: string,
+        peerAddress: string,
+        manifest: unknown,
+        eventId?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:requestDirectResource',
+          myAddress,
+          peerAddress,
+          manifest,
+          eventId
+        ) as Promise<{ success: boolean; error?: string }>,
+      cancelResource: async (fileHash: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:cancelResource',
+          fileHash
+        ) as Promise<{ success: boolean; canceled?: boolean; error?: string }>,
+      getHistory: async (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getHistory',
+          groupId,
+          channelId,
+          limit,
+          options
+        ) as Promise<unknown[]>,
+      getMessageHistory: async (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageHistory',
+          groupId,
+          channelId,
+          limit,
+          options
+        ) as Promise<unknown[]>,
+      getMessageHistoryPage: async (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageHistoryPage',
+          groupId,
+          channelId,
+          limit,
+          options
+        ) as Promise<unknown>,
+      getDiscussionIndex: async (groupId: number, channelId?: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDiscussionIndex',
+          groupId,
+          channelId
+        ) as Promise<{
+          replyCounts: Record<string, number>;
+          rootByEventId: Record<string, string>;
+        }>,
+      getDiscussionMessages: async (
+        groupId: number,
+        channelId: string,
+        eventId: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDiscussionMessages',
+          groupId,
+          channelId,
+          eventId
+        ) as Promise<unknown[]>,
+      getChannelMetadataHistory: async (groupId: number, limit?: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannelMetadataHistory',
+          groupId,
+          limit
+        ) as Promise<unknown[]>,
+      getChannels: async (groupId: number, includeArchived?: boolean) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannels',
+          groupId,
+          includeArchived
+        ) as Promise<unknown[]>,
+      getCategories: async (groupId: number) =>
+        ipcRenderer.invoke('reticulumChat:getCategories', groupId) as Promise<
+          unknown[]
+        >,
+      getChannelMetadataBundle: async (
+        groupId: number,
+        includeArchived?: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannelMetadataBundle',
+          groupId,
+          includeArchived
+        ) as Promise<{
+          channels: unknown[];
+          categories: unknown[];
+          ready: boolean;
+          snapshotVersion: number;
+        }>,
+      applyChannelMetadata: async (eventId: string, payload: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:applyChannelMetadata',
+          eventId,
+          payload
+        ) as Promise<{ success: boolean }>,
+      getSyncState: async (groupId: number) =>
+        ipcRenderer.invoke('reticulumChat:getSyncState', groupId) as Promise<
+          Record<string, number>
+        >,
+      getSummaries: async (myAddress?: string) =>
+        ipcRenderer.invoke('reticulumChat:getSummaries', myAddress) as Promise<
+          unknown[]
+        >,
+      search: async (
+        query: string,
+        options?: {
+          groupIds?: number[];
+          channelIds?: string[];
+          authorAddresses?: string[];
+          eventTypes?: Array<'message' | 'attachment_manifest'>;
+          beforeTimestamp?: number;
+          afterTimestamp?: number;
+          hasAttachment?: boolean;
+          hasLink?: boolean;
+          sort?: 'relevance' | 'newest' | 'oldest';
+          limit?: number;
+          offset?: number;
+          cursor?: {
+            createdAt: number;
+            eventId: string;
+          };
+        }
+      ) =>
+        ipcRenderer.invoke('reticulumChat:search', query, options) as Promise<
+          unknown[]
+        >,
+      getMessageWindowAroundEvent: async (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageWindowAroundEvent',
+          groupId,
+          channelId,
+          eventId,
+          options
+        ) as Promise<unknown[]>,
+      getMessageWindowPageAroundEvent: async (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageWindowPageAroundEvent',
+          groupId,
+          channelId,
+          eventId,
+          options
+        ) as Promise<unknown>,
+      indexSearchText: async (eventId: string, text: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:indexSearchText',
+          eventId,
+          text
+        ) as Promise<{ success: boolean }>,
+      deleteSearchText: async (eventId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:deleteSearchText',
+          eventId
+        ) as Promise<{ success: boolean }>,
+      replaceMentions: async (eventId: string, mentionedAddresses: string[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:replaceMentions',
+          eventId,
+          mentionedAddresses
+        ) as Promise<{ success: boolean }>,
+      deleteMentions: async (eventId: string) =>
+        ipcRenderer.invoke('reticulumChat:deleteMentions', eventId) as Promise<{
+          success: boolean;
+        }>,
+      markRead: async (
+        groupId: number,
+        channelId: string,
+        upToTimestamp: number,
+        myAddress?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markRead',
+          groupId,
+          channelId,
+          upToTimestamp,
+          myAddress
+        ) as Promise<{ success: boolean }>,
+      markGroupsRead: async (groupIds: number[], myAddress?: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markGroupsRead',
+          groupIds,
+          myAddress
+        ) as Promise<{
+          success: boolean;
+          error?: string;
+          groupsMarked: number;
+          channelsMarked: number;
+        }>,
+      getSubscriptions: async () =>
+        ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<
+          number[]
+        >,
+      updateMentionBadge: async (mentionCount: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:updateMentionBadge',
+          mentionCount
+        ) as Promise<{ success: boolean }>,
+      onEvent: (cb: (payload: { event: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { event: unknown });
+        };
+        ipcRenderer.on('reticulumChat:event', handler);
+        ipcRenderer.send('reticulumChat:event:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:event', handler);
+          ipcRenderer.send('reticulumChat:event:unsubscribe');
+        };
+      },
+      onSummaryChanged: (
+        cb: (payload: {
+          groupId: number;
+          eventId?: string;
+          timestamp?: number;
+          metadataChanged?: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              eventId?: string;
+              timestamp?: number;
+              metadataChanged?: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:summaryChanged', handler);
+        ipcRenderer.send('reticulumChat:summaryChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:summaryChanged', handler);
+          ipcRenderer.send('reticulumChat:summaryChanged:unsubscribe');
+        };
+      },
+      onCalendarChanged: (
+        cb: (payload: { groupId: number; eventId?: string }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) =>
+          cb(payload as { groupId: number; eventId?: string });
+        ipcRenderer.on('reticulumChat:calendarChanged', handler);
+        ipcRenderer.send('reticulumChat:calendarChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:calendarChanged', handler);
+          ipcRenderer.send('reticulumChat:calendarChanged:unsubscribe');
+        };
+      },
+      onCalendarReminderDue: (cb: (payload: unknown) => void) => {
+        const handler = (_event: unknown, payload: unknown) => cb(payload);
+        ipcRenderer.on('reticulumChat:calendarReminderDue', handler);
+        ipcRenderer.send('reticulumChat:calendarReminderDue:subscribe');
+        return () => {
+          ipcRenderer.removeListener(
+            'reticulumChat:calendarReminderDue',
+            handler
+          );
+          ipcRenderer.send('reticulumChat:calendarReminderDue:unsubscribe');
+        };
+      },
+      onDirectEvent: (cb: (payload: { event: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { event: unknown });
+        };
+        ipcRenderer.on('reticulumChat:directEvent', handler);
+        ipcRenderer.send('reticulumChat:directEvent:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:directEvent', handler);
+          ipcRenderer.send('reticulumChat:directEvent:unsubscribe');
+        };
+      },
+      onDirectCallHistory: (cb: (payload: { record: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { record: unknown });
+        };
+        ipcRenderer.on('reticulumChat:directCallHistory', handler);
+        ipcRenderer.send('reticulumChat:directCallHistory:subscribe');
+        return () => {
+          ipcRenderer.removeListener(
+            'reticulumChat:directCallHistory',
+            handler
+          );
+          ipcRenderer.send('reticulumChat:directCallHistory:unsubscribe');
+        };
+      },
+      onDirectTyping: (
+        cb: (payload: {
+          conversationId: string;
+          authorAddress: string;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              conversationId: string;
+              authorAddress: string;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:directTyping', handler);
+        ipcRenderer.send('reticulumChat:directTyping:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:directTyping', handler);
+          ipcRenderer.send('reticulumChat:directTyping:unsubscribe');
+        };
+      },
+      onDirectSummaryChanged: (
+        cb: (payload: {
+          conversationId?: string;
+          peerAddress?: string;
+          reason?: 'expiry' | 'call';
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              conversationId?: string;
+              peerAddress?: string;
+              reason?: 'expiry' | 'call';
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:directSummaryChanged', handler);
+        ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener(
+            'reticulumChat:directSummaryChanged',
+            handler
+          );
+          ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
+        };
+      },
+      onSilenceChanged: (
+        cb: (payload: {
+          ownerAddress: string;
+          targetAddress: string;
+          scopeType: 'group' | 'dm';
+          scopeId: string;
+          expiresAt: number | null;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              ownerAddress: string;
+              targetAddress: string;
+              scopeType: 'group' | 'dm';
+              scopeId: string;
+              expiresAt: number | null;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:silenceChanged', handler);
+        subscribeReticulumChatSilenceChanged();
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:silenceChanged', handler);
+          unsubscribeReticulumChatSilenceChanged();
+        };
+      },
+      onResource: (
+        cb: (payload: {
+          groupId?: number;
+          eventId?: string;
+          fileHash?: string;
+          bytesTransferred?: number;
+          totalBytes?: number;
+          progress?: number;
+          complete?: boolean;
+          failed?: boolean;
+          failureReason?: 'verification_failed';
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId?: number;
+              eventId?: string;
+              fileHash?: string;
+              bytesTransferred?: number;
+              totalBytes?: number;
+              progress?: number;
+              complete?: boolean;
+              failed?: boolean;
+              failureReason?: 'verification_failed';
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:resource', handler);
+        ipcRenderer.send('reticulumChat:resource:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:resource', handler);
+          ipcRenderer.send('reticulumChat:resource:unsubscribe');
+        };
+      },
+      onTyping: (
+        cb: (payload: {
+          groupId: number;
+          channelId: string;
+          authorAddress: string;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              channelId: string;
+              authorAddress: string;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:typing', handler);
+        ipcRenderer.send('reticulumChat:typing:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:typing', handler);
+          ipcRenderer.send('reticulumChat:typing:unsubscribe');
+        };
+      },
+      onLandState: (
+        cb: (payload: {
+          groupId: number;
+          authorAddress: string;
+          sessionId: string;
+          destinationHash?: string;
+          sequence: number;
+          x: number;
+          y: number;
+          direction?: string;
+          movement?: string;
+          afk?: boolean;
+          dnd?: boolean;
+          voiceEnabled?: boolean;
+          voiceMuted?: boolean;
+          skinId?: number;
+          timestamp?: number;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              authorAddress: string;
+              sessionId: string;
+              destinationHash?: string;
+              sequence: number;
+              x: number;
+              y: number;
+              direction?: string;
+              movement?: string;
+              afk?: boolean;
+              dnd?: boolean;
+              voiceEnabled?: boolean;
+              voiceMuted?: boolean;
+              skinId?: number;
+              timestamp?: number;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landState', handler);
+        ipcRenderer.send('reticulumChat:landState:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landState', handler);
+          ipcRenderer.send('reticulumChat:landState:unsubscribe');
+        };
+      },
+      onLandChat: (
+        cb: (payload: {
+          groupId: number;
+          messageId: string;
+          authorAddress: string;
+          sessionId: string;
+          sequence: number;
+          timestamp: number;
+          text: string;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              messageId: string;
+              authorAddress: string;
+              sessionId: string;
+              sequence: number;
+              timestamp: number;
+              text: string;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landChat', handler);
+        ipcRenderer.send('reticulumChat:landChat:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landChat', handler);
+          ipcRenderer.send('reticulumChat:landChat:unsubscribe');
+        };
+      },
+      onLandAction: (
+        cb: (payload: {
+          groupId: number;
+          actionId: string;
+          actionType: string;
+          fromAddress: string;
+          sourceSessionId: string;
+          sequence: number;
+          toAddress: string;
+          targetSessionId: string;
+          amount: number;
+          roomId?: string;
+          timestamp?: number;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              actionId: string;
+              actionType: string;
+              fromAddress: string;
+              sourceSessionId: string;
+              sequence: number;
+              toAddress: string;
+              targetSessionId: string;
+              amount: number;
+              roomId?: string;
+              timestamp?: number;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landAction', handler);
+        ipcRenderer.send('reticulumChat:landAction:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landAction', handler);
+          ipcRenderer.send('reticulumChat:landAction:unsubscribe');
+        };
+      },
+      onLandCall: (
+        cb: (payload: {
+          groupId: number;
+          callType: string;
+          callId: string;
+          fromAddress: string;
+          toAddress: string;
+          chatId?: string;
+          fromPublicKey?: string;
+          signature?: string;
+          reason?: string;
+          roomId?: string;
+          sourceSessionId?: string;
+          targetSessionId?: string;
+          sourceDestinationHash?: string;
+          targetDestinationHash?: string;
+          timestamp?: number;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              callType: string;
+              callId: string;
+              fromAddress: string;
+              toAddress: string;
+              chatId?: string;
+              fromPublicKey?: string;
+              signature?: string;
+              reason?: string;
+              roomId?: string;
+              sourceSessionId?: string;
+              targetSessionId?: string;
+              sourceDestinationHash?: string;
+              targetDestinationHash?: string;
+              timestamp?: number;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landCall', handler);
+        ipcRenderer.send('reticulumChat:landCall:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landCall', handler);
+          ipcRenderer.send('reticulumChat:landCall:unsubscribe');
+        };
+      },
+    });
+
     contextBridge.exposeInMainWorld('hub', {
       getBootstrapIceServers: () => hubP2pBootstrapIceServers,
       getIceServers: () =>
@@ -1269,6 +2594,1052 @@ try {
         ipcRenderer.invoke('hub:reportStunCallOutcome', stunUrls, success),
       reportObservedStunSources: (stunUrls: string[]) =>
         ipcRenderer.invoke('hub:reportObservedStunSources', stunUrls),
+    });
+  }
+
+  if (isDisabledLegacy) {
+    contextBridge.exposeInMainWorld('reticulumChat', {
+      isEnabled: async () =>
+        ipcRenderer.invoke('reticulumChat:isEnabled') as Promise<boolean>,
+      getMessageHistoryPage: async (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageHistoryPage',
+          groupId,
+          channelId,
+          limit,
+          options
+        ) as Promise<unknown>,
+      getMessageWindowPageAroundEvent: async (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageWindowPageAroundEvent',
+          groupId,
+          channelId,
+          eventId,
+          options
+        ) as Promise<unknown>,
+      getReadinessStatus: async () =>
+        ipcRenderer.invoke('reticulumChat:getReadinessStatus') as Promise<{
+          state: 'idle' | 'starting' | 'ready' | 'failed';
+          revision: number;
+          error?: string;
+        }>,
+      onReadinessChanged: (
+        cb: (status: {
+          state: 'idle' | 'starting' | 'ready' | 'failed';
+          revision: number;
+          error?: string;
+        }) => void
+      ) => subscribeToReticulumChatReadiness(cb),
+      setLocalGroupMemberships: async (
+        groupIds: Array<
+          | number
+          | {
+              groupId: number;
+              isPrivate?: boolean;
+              isOpen?: boolean;
+              localAddress?: string;
+              address?: string;
+              isAdmin?: boolean;
+              adminStatusAuthoritative?: boolean;
+            }
+        >
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setLocalGroupMemberships',
+          groupIds
+        ) as Promise<{ success: boolean; error?: string }>,
+      setPublicGroupDirectory: async (groupIds: number[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setPublicGroupDirectory',
+          groupIds
+        ) as Promise<{ success: boolean; error?: string }>,
+      getPublicGroupActivity: async () =>
+        ipcRenderer.invoke('reticulumChat:getPublicGroupActivity') as Promise<
+          Array<{
+            groupId: number;
+            messages24h: number;
+            messages7d: number;
+            activeAuthors7d: number;
+            observedAt: number;
+            confidence: number;
+          }>
+        >,
+      getPublicGroupActivitySnapshot: async () =>
+        ipcRenderer.invoke(
+          'reticulumChat:getPublicGroupActivitySnapshot'
+        ) as Promise<{
+          availableGroupIds: number[];
+          observedAt: number;
+          summaries: Array<{
+            groupId: number;
+            messages24h: number;
+            messages7d: number;
+            activeAuthors7d: number;
+            observedAt: number;
+            confidence: number;
+          }>;
+        }>,
+      setLocalDmAddresses: async (addresses: string[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setLocalDmAddresses',
+          addresses
+        ) as Promise<{ success: boolean; error?: string }>,
+      clearLocalAccountState: async () =>
+        ipcRenderer.invoke(
+          'reticulumChat:clearLocalAccountState'
+        ) as Promise<{ success: boolean; error?: string }>,
+      getSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          groupId
+        ) as Promise<unknown | null>,
+      listSilences: async (
+        ownerAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:listSilences',
+          ownerAddress,
+          scopeType,
+          groupId
+        ) as Promise<unknown[]>,
+      setSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        durationMs: number | null,
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          durationMs,
+          groupId
+        ) as Promise<{ success: boolean; silence?: unknown; error?: string }>,
+      clearSilence: async (
+        ownerAddress: string,
+        targetAddress: string,
+        scopeType: 'group' | 'dm',
+        groupId?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:clearSilence',
+          ownerAddress,
+          targetAddress,
+          scopeType,
+          groupId
+        ) as Promise<{ success: boolean; silence?: unknown; error?: string }>,
+      setActiveDirectChat: async (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setActiveDirectChat',
+          localAddress,
+          peerAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
+      subscribeGroup: async (groupId: number) =>
+        ipcRenderer.invoke('reticulumChat:subscribeGroup', groupId) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      subscribeChannel: async (groupId: number, channelId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:subscribeChannel',
+          groupId,
+          channelId
+        ) as Promise<{ success: boolean; error?: string }>,
+      unsubscribeChannel: async (groupId: number, channelId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:unsubscribeChannel',
+          groupId,
+          channelId
+        ) as Promise<{ success: boolean; error?: string }>,
+      unsubscribeGroup: async (groupId: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:unsubscribeGroup',
+          groupId
+        ) as Promise<{ success: boolean; error?: string }>,
+      publishEvent: async (event: unknown) =>
+        ipcRenderer.invoke('reticulumChat:publishEvent', event) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      reserveAuthorSequence: async (groupId: number, authorAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:reserveAuthorSequence',
+          groupId,
+          authorAddress
+        ) as Promise<{ authorStreamId: string; authorSeq: number }>,
+      releaseAuthorSequence: async (
+        groupId: number,
+        authorAddress: string,
+        authorStreamId: string,
+        authorSeq: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:releaseAuthorSequence',
+          groupId,
+          authorAddress,
+          authorStreamId,
+          authorSeq
+        ) as Promise<boolean>,
+      publishDirectEvent: async (event: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:publishDirectEvent',
+          event
+        ) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      getDirectAuthorStreamId: async (authorAddress: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectAuthorStreamId',
+          authorAddress
+        ) as Promise<string>,
+      getDirectExpiryPreference: async (
+        ownerAddress: string,
+        peerAddress: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectExpiryPreference',
+          ownerAddress,
+          peerAddress
+        ) as Promise<{
+          success: boolean;
+          preference?: {
+            ownerAddress: string;
+            peerAddress: string;
+            durationMs: number | null;
+            updatedAt: number;
+          };
+          error?: string;
+        }>,
+      setDirectExpiryPreference: async (
+        ownerAddress: string,
+        peerAddress: string,
+        durationMs: number | null
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setDirectExpiryPreference',
+          ownerAddress,
+          peerAddress,
+          durationMs
+        ) as Promise<{
+          success: boolean;
+          preference?: {
+            ownerAddress: string;
+            peerAddress: string;
+            durationMs: number | null;
+            updatedAt: number;
+          };
+          error?: string;
+        }>,
+      getCalendarEvents: async (
+        groupId: number,
+        rangeStart: number,
+        rangeEnd: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCalendarEvents',
+          groupId,
+          rangeStart,
+          rangeEnd
+        ) as Promise<unknown[]>,
+      getCalendarEvent: async (
+        groupId: number,
+        eventId: string,
+        preferredOccurrenceStart?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCalendarEvent',
+          groupId,
+          eventId,
+          preferredOccurrenceStart
+        ) as Promise<unknown | null>,
+      createCalendarEvent: async (
+        groupId: number,
+        input: unknown,
+        eventId?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:createCalendarEvent',
+          groupId,
+          input,
+          eventId
+        ) as Promise<unknown>,
+      updateCalendarEvent: async (
+        groupId: number,
+        eventId: string,
+        input: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:updateCalendarEvent',
+          groupId,
+          eventId,
+          input
+        ) as Promise<unknown>,
+      deleteCalendarEvent: async (groupId: number, eventId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:deleteCalendarEvent',
+          groupId,
+          eventId
+        ) as Promise<unknown>,
+      getCalendarReminder: async (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getCalendarReminder',
+          ownerAddress,
+          groupId,
+          eventId
+        ) as Promise<unknown>,
+      setCalendarReminder: async (
+        ownerAddress: string,
+        groupId: number,
+        eventId: string,
+        offsetMs: number | null
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:setCalendarReminder',
+          ownerAddress,
+          groupId,
+          eventId,
+          offsetMs
+        ) as Promise<unknown>,
+      sendDirectTyping: async (
+        localAddress: string,
+        peerAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendDirectTyping',
+          localAddress,
+          peerAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
+      getDirectHistory: async (
+        myAddress: string,
+        peerAddress: string,
+        limit?: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectHistory',
+          myAddress,
+          peerAddress,
+          limit
+        ) as Promise<unknown[]>,
+      getDirectSummaries: async (myAddress: string, peerAddress?: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectSummaries',
+          myAddress,
+          peerAddress
+        ) as Promise<unknown[]>,
+      getDirectCallHistory: async (
+        ownerAddress: string,
+        peerAddress?: string,
+        limit?: number,
+        unreadOnly?: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDirectCallHistory',
+          ownerAddress,
+          peerAddress,
+          limit,
+          unreadOnly
+        ) as Promise<unknown[]>,
+      markDirectRead: async (
+        myAddress: string,
+        peerAddress: string,
+        upToTimestamp: number
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markDirectRead',
+          myAddress,
+          peerAddress,
+          upToTimestamp
+        ) as Promise<{ success: boolean; error?: string }>,
+      sendTyping: async (
+        groupId: number,
+        channelId: string,
+        authorAddress: string,
+        active: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendTyping',
+          groupId,
+          channelId,
+          authorAddress,
+          active
+        ) as Promise<{ success: boolean; error?: string }>,
+      sendLandState: async (
+        groupId: number,
+        authorAddress: string,
+        state: {
+          sessionId?: unknown;
+          sequence?: unknown;
+          x?: unknown;
+          y?: unknown;
+          roomId?: unknown;
+          direction?: unknown;
+          movement?: unknown;
+          afk?: unknown;
+          dnd?: unknown;
+          voiceEnabled?: unknown;
+          voiceMuted?: unknown;
+          skinId?: unknown;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandState',
+          groupId,
+          authorAddress,
+          state
+        ) as Promise<{ success: boolean; error?: string }>,
+      sendLandChat: async (message: unknown) =>
+        ipcRenderer.invoke('reticulumChat:sendLandChat', message) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+      sendLandAction: async (groupId: number, action: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandAction',
+          groupId,
+          action
+        ) as Promise<{ success: boolean; error?: string }>,
+      sendLandCall: async (groupId: number, call: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:sendLandCall',
+          groupId,
+          call
+        ) as Promise<{ success: boolean; error?: string }>,
+      requestResource: async (
+        groupId: number,
+        manifest: unknown,
+        eventId?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:requestResource',
+          groupId,
+          manifest,
+          eventId
+        ) as Promise<{ success: boolean; error?: string }>,
+      requestDirectResource: async (
+        myAddress: string,
+        peerAddress: string,
+        manifest: unknown,
+        eventId?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:requestDirectResource',
+          myAddress,
+          peerAddress,
+          manifest,
+          eventId
+        ) as Promise<{ success: boolean; error?: string }>,
+      cancelResource: async (fileHash: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:cancelResource',
+          fileHash
+        ) as Promise<{ success: boolean; canceled?: boolean; error?: string }>,
+      getHistory: async (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getHistory',
+          groupId,
+          channelId,
+          limit,
+          options
+        ) as Promise<unknown[]>,
+      getMessageHistory: async (
+        groupId: number,
+        channelId?: string,
+        limit?: number,
+        options?: unknown
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageHistory',
+          groupId,
+          channelId,
+          limit,
+          options
+        ) as Promise<unknown[]>,
+      getDiscussionIndex: async (groupId: number, channelId?: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDiscussionIndex',
+          groupId,
+          channelId
+        ) as Promise<{
+          replyCounts: Record<string, number>;
+          rootByEventId: Record<string, string>;
+        }>,
+      getDiscussionMessages: async (
+        groupId: number,
+        channelId: string,
+        eventId: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getDiscussionMessages',
+          groupId,
+          channelId,
+          eventId
+        ) as Promise<unknown[]>,
+      getChannelMetadataHistory: async (groupId: number, limit?: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannelMetadataHistory',
+          groupId,
+          limit
+        ) as Promise<unknown[]>,
+      getChannels: async (groupId: number, includeArchived?: boolean) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannels',
+          groupId,
+          includeArchived
+        ) as Promise<unknown[]>,
+      getCategories: async (groupId: number) =>
+        ipcRenderer.invoke('reticulumChat:getCategories', groupId) as Promise<
+          unknown[]
+        >,
+      getChannelMetadataBundle: async (
+        groupId: number,
+        includeArchived?: boolean
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getChannelMetadataBundle',
+          groupId,
+          includeArchived
+        ) as Promise<{
+          channels: unknown[];
+          categories: unknown[];
+          ready: boolean;
+          snapshotVersion: number;
+        }>,
+      applyChannelMetadata: async (eventId: string, payload: unknown) =>
+        ipcRenderer.invoke(
+          'reticulumChat:applyChannelMetadata',
+          eventId,
+          payload
+        ) as Promise<{ success: boolean }>,
+      getSyncState: async (groupId: number) =>
+        ipcRenderer.invoke('reticulumChat:getSyncState', groupId) as Promise<
+          Record<string, number>
+        >,
+      getSummaries: async (myAddress?: string) =>
+        ipcRenderer.invoke('reticulumChat:getSummaries', myAddress) as Promise<
+          unknown[]
+        >,
+      search: async (
+        query: string,
+        options?: {
+          groupIds?: number[];
+          channelIds?: string[];
+          authorAddresses?: string[];
+          eventTypes?: Array<'message' | 'attachment_manifest'>;
+          beforeTimestamp?: number;
+          afterTimestamp?: number;
+          hasAttachment?: boolean;
+          hasLink?: boolean;
+          sort?: 'relevance' | 'newest' | 'oldest';
+          limit?: number;
+          offset?: number;
+          cursor?: {
+            createdAt: number;
+            eventId: string;
+          };
+        }
+      ) =>
+        ipcRenderer.invoke('reticulumChat:search', query, options) as Promise<
+          unknown[]
+        >,
+      getMessageWindowAroundEvent: async (
+        groupId: number,
+        channelId: string,
+        eventId: string,
+        options?: {
+          beforeLimit?: number;
+          afterLimit?: number;
+        }
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:getMessageWindowAroundEvent',
+          groupId,
+          channelId,
+          eventId,
+          options
+        ) as Promise<unknown[]>,
+      indexSearchText: async (eventId: string, text: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:indexSearchText',
+          eventId,
+          text
+        ) as Promise<{ success: boolean }>,
+      deleteSearchText: async (eventId: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:deleteSearchText',
+          eventId
+        ) as Promise<{ success: boolean }>,
+      replaceMentions: async (eventId: string, mentionedAddresses: string[]) =>
+        ipcRenderer.invoke(
+          'reticulumChat:replaceMentions',
+          eventId,
+          mentionedAddresses
+        ) as Promise<{ success: boolean }>,
+      deleteMentions: async (eventId: string) =>
+        ipcRenderer.invoke('reticulumChat:deleteMentions', eventId) as Promise<{
+          success: boolean;
+        }>,
+      markRead: async (
+        groupId: number,
+        channelId: string,
+        upToTimestamp: number,
+        myAddress?: string
+      ) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markRead',
+          groupId,
+          channelId,
+          upToTimestamp,
+          myAddress
+        ) as Promise<{ success: boolean }>,
+      markGroupsRead: async (groupIds: number[], myAddress?: string) =>
+        ipcRenderer.invoke(
+          'reticulumChat:markGroupsRead',
+          groupIds,
+          myAddress
+        ) as Promise<{
+          success: boolean;
+          error?: string;
+          groupsMarked: number;
+          channelsMarked: number;
+        }>,
+      getSubscriptions: async () =>
+        ipcRenderer.invoke('reticulumChat:getSubscriptions') as Promise<
+          number[]
+        >,
+      updateMentionBadge: async (mentionCount: number) =>
+        ipcRenderer.invoke(
+          'reticulumChat:updateMentionBadge',
+          mentionCount
+        ) as Promise<{ success: boolean }>,
+      onEvent: (cb: (payload: { event: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { event: unknown });
+        };
+        ipcRenderer.on('reticulumChat:event', handler);
+        ipcRenderer.send('reticulumChat:event:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:event', handler);
+          ipcRenderer.send('reticulumChat:event:unsubscribe');
+        };
+      },
+      onSummaryChanged: (
+        cb: (payload: {
+          groupId: number;
+          eventId?: string;
+          timestamp?: number;
+          metadataChanged?: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              eventId?: string;
+              timestamp?: number;
+              metadataChanged?: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:summaryChanged', handler);
+        ipcRenderer.send('reticulumChat:summaryChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:summaryChanged', handler);
+          ipcRenderer.send('reticulumChat:summaryChanged:unsubscribe');
+        };
+      },
+      onCalendarChanged: (
+        cb: (payload: { groupId: number; eventId?: string }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) =>
+          cb(payload as { groupId: number; eventId?: string });
+        ipcRenderer.on('reticulumChat:calendarChanged', handler);
+        ipcRenderer.send('reticulumChat:calendarChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:calendarChanged', handler);
+          ipcRenderer.send('reticulumChat:calendarChanged:unsubscribe');
+        };
+      },
+      onCalendarReminderDue: (cb: (payload: unknown) => void) => {
+        const handler = (_event: unknown, payload: unknown) => cb(payload);
+        ipcRenderer.on('reticulumChat:calendarReminderDue', handler);
+        ipcRenderer.send('reticulumChat:calendarReminderDue:subscribe');
+        return () => {
+          ipcRenderer.removeListener(
+            'reticulumChat:calendarReminderDue',
+            handler
+          );
+          ipcRenderer.send('reticulumChat:calendarReminderDue:unsubscribe');
+        };
+      },
+      onDirectEvent: (cb: (payload: { event: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { event: unknown });
+        };
+        ipcRenderer.on('reticulumChat:directEvent', handler);
+        ipcRenderer.send('reticulumChat:directEvent:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:directEvent', handler);
+          ipcRenderer.send('reticulumChat:directEvent:unsubscribe');
+        };
+      },
+      onDirectCallHistory: (cb: (payload: { record: unknown }) => void) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(payload as { record: unknown });
+        };
+        ipcRenderer.on('reticulumChat:directCallHistory', handler);
+        ipcRenderer.send('reticulumChat:directCallHistory:subscribe');
+        return () => {
+          ipcRenderer.removeListener(
+            'reticulumChat:directCallHistory',
+            handler
+          );
+          ipcRenderer.send('reticulumChat:directCallHistory:unsubscribe');
+        };
+      },
+      onDirectTyping: (
+        cb: (payload: {
+          conversationId: string;
+          authorAddress: string;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              conversationId: string;
+              authorAddress: string;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:directTyping', handler);
+        ipcRenderer.send('reticulumChat:directTyping:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:directTyping', handler);
+          ipcRenderer.send('reticulumChat:directTyping:unsubscribe');
+        };
+      },
+      onDirectSummaryChanged: (
+        cb: (payload: {
+          conversationId?: string;
+          peerAddress?: string;
+          reason?: 'expiry' | 'call';
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              conversationId?: string;
+              peerAddress?: string;
+              reason?: 'expiry' | 'call';
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:directSummaryChanged', handler);
+        ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');
+        return () => {
+          ipcRenderer.removeListener(
+            'reticulumChat:directSummaryChanged',
+            handler
+          );
+          ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
+        };
+      },
+      onSilenceChanged: (
+        cb: (payload: {
+          ownerAddress: string;
+          targetAddress: string;
+          scopeType: 'group' | 'dm';
+          scopeId: string;
+          expiresAt: number | null;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              ownerAddress: string;
+              targetAddress: string;
+              scopeType: 'group' | 'dm';
+              scopeId: string;
+              expiresAt: number | null;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:silenceChanged', handler);
+        subscribeReticulumChatSilenceChanged();
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:silenceChanged', handler);
+          unsubscribeReticulumChatSilenceChanged();
+        };
+      },
+      onResource: (
+        cb: (payload: {
+          groupId?: number;
+          eventId?: string;
+          fileHash?: string;
+          bytesTransferred?: number;
+          totalBytes?: number;
+          progress?: number;
+          complete?: boolean;
+          failed?: boolean;
+          failureReason?: 'verification_failed';
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId?: number;
+              eventId?: string;
+              fileHash?: string;
+              bytesTransferred?: number;
+              totalBytes?: number;
+              progress?: number;
+              complete?: boolean;
+              failed?: boolean;
+              failureReason?: 'verification_failed';
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:resource', handler);
+        ipcRenderer.send('reticulumChat:resource:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:resource', handler);
+          ipcRenderer.send('reticulumChat:resource:unsubscribe');
+        };
+      },
+      onTyping: (
+        cb: (payload: {
+          groupId: number;
+          channelId: string;
+          authorAddress: string;
+          active: boolean;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              channelId: string;
+              authorAddress: string;
+              active: boolean;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:typing', handler);
+        ipcRenderer.send('reticulumChat:typing:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:typing', handler);
+          ipcRenderer.send('reticulumChat:typing:unsubscribe');
+        };
+      },
+      onLandState: (
+        cb: (payload: {
+          groupId: number;
+          authorAddress: string;
+          sessionId: string;
+          destinationHash?: string;
+          sequence: number;
+          x: number;
+          y: number;
+          direction?: string;
+          movement?: string;
+          afk?: boolean;
+          dnd?: boolean;
+          voiceEnabled?: boolean;
+          voiceMuted?: boolean;
+          skinId?: number;
+          timestamp?: number;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              authorAddress: string;
+              sessionId: string;
+              destinationHash?: string;
+              sequence: number;
+              x: number;
+              y: number;
+              direction?: string;
+              movement?: string;
+              afk?: boolean;
+              dnd?: boolean;
+              voiceEnabled?: boolean;
+              voiceMuted?: boolean;
+              skinId?: number;
+              timestamp?: number;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landState', handler);
+        ipcRenderer.send('reticulumChat:landState:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landState', handler);
+          ipcRenderer.send('reticulumChat:landState:unsubscribe');
+        };
+      },
+      onLandChat: (
+        cb: (payload: {
+          groupId: number;
+          messageId: string;
+          authorAddress: string;
+          sessionId: string;
+          sequence: number;
+          timestamp: number;
+          text: string;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              messageId: string;
+              authorAddress: string;
+              sessionId: string;
+              sequence: number;
+              timestamp: number;
+              text: string;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landChat', handler);
+        ipcRenderer.send('reticulumChat:landChat:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landChat', handler);
+          ipcRenderer.send('reticulumChat:landChat:unsubscribe');
+        };
+      },
+      onLandAction: (
+        cb: (payload: {
+          groupId: number;
+          actionId: string;
+          actionType: string;
+          fromAddress: string;
+          sourceSessionId: string;
+          sequence: number;
+          toAddress: string;
+          targetSessionId: string;
+          amount: number;
+          roomId?: string;
+          timestamp?: number;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              actionId: string;
+              actionType: string;
+              fromAddress: string;
+              sourceSessionId: string;
+              sequence: number;
+              toAddress: string;
+              targetSessionId: string;
+              amount: number;
+              roomId?: string;
+              timestamp?: number;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landAction', handler);
+        ipcRenderer.send('reticulumChat:landAction:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landAction', handler);
+          ipcRenderer.send('reticulumChat:landAction:unsubscribe');
+        };
+      },
+      onLandCall: (
+        cb: (payload: {
+          groupId: number;
+          callType: string;
+          callId: string;
+          fromAddress: string;
+          toAddress: string;
+          chatId?: string;
+          fromPublicKey?: string;
+          signature?: string;
+          reason?: string;
+          roomId?: string;
+          sourceSessionId?: string;
+          targetSessionId?: string;
+          sourceDestinationHash?: string;
+          targetDestinationHash?: string;
+          timestamp?: number;
+        }) => void
+      ) => {
+        const handler = (_event: unknown, payload: unknown) => {
+          cb(
+            payload as {
+              groupId: number;
+              callType: string;
+              callId: string;
+              fromAddress: string;
+              toAddress: string;
+              chatId?: string;
+              fromPublicKey?: string;
+              signature?: string;
+              reason?: string;
+              roomId?: string;
+              sourceSessionId?: string;
+              targetSessionId?: string;
+              sourceDestinationHash?: string;
+              targetDestinationHash?: string;
+              timestamp?: number;
+            }
+          );
+        };
+        ipcRenderer.on('reticulumChat:landCall', handler);
+        ipcRenderer.send('reticulumChat:landCall:subscribe');
+        return () => {
+          ipcRenderer.removeListener('reticulumChat:landCall', handler);
+          ipcRenderer.send('reticulumChat:landCall:unsubscribe');
+        };
+      },
     });
   }
 
@@ -1296,7 +3667,10 @@ try {
       signature: string,
       publicKey: string,
       callId: string,
-      timestamp: number
+      timestamp: number,
+      cancellationSignature?: string,
+      cancellationPublicKey?: string,
+      cancellationTimestamp?: number
     ) =>
       ipcRenderer.invoke(
         'call:initiate',
@@ -1306,7 +3680,10 @@ try {
         signature,
         publicKey,
         callId,
-        timestamp
+        timestamp,
+        cancellationSignature,
+        cancellationPublicKey,
+        cancellationTimestamp
       ),
 
     /** Accept an incoming call identified by callId. */
@@ -1330,7 +3707,8 @@ try {
       reason?: string,
       signature?: string,
       publicKey?: string,
-      timestamp?: number
+      timestamp?: number,
+      reasonSignature?: string
     ) =>
       ipcRenderer.invoke(
         'call:reject',
@@ -1338,7 +3716,8 @@ try {
         reason,
         signature,
         publicKey,
-        timestamp
+        timestamp,
+        reasonSignature
       ),
 
     /** Hang up an active or pending call. */
@@ -1404,32 +3783,10 @@ try {
      * Join a group call room.
      * The renderer must pre-sign the join envelope before calling this.
      */
-    join: async (
-      roomId: string,
-      chatId: string,
-      localAddress: string,
-      signature: string,
-      publicKey: string,
-      timestamp: number,
-      reticulumDestinationHash: string,
-      joinGeneration?: number,
-      topologyEpochFloor?: number,
-      reticulumIdentityPublicKeyBase64?: string,
-      joinRkSignature?: string
-    ) =>
-      ipcRenderer.invoke(
-        'gcall:join',
-        roomId,
-        chatId,
-        localAddress,
-        signature,
-        publicKey,
-        timestamp,
-        reticulumDestinationHash,
-        joinGeneration,
-        topologyEpochFloor,
-        reticulumIdentityPublicKeyBase64,
-        joinRkSignature
+    join: async (...args: GroupCallJoinIpcArguments) =>
+      invokeGroupCallJoin(
+        (channel, ...invokeArgs) => ipcRenderer.invoke(channel, ...invokeArgs),
+        ...args
       ) as Promise<{
         success: boolean;
         error?: string;
@@ -1443,7 +3800,8 @@ try {
       localAddress: string,
       signature: string,
       publicKey: string,
-      timestamp: number
+      timestamp: number,
+      joinGeneration?: number
     ) =>
       ipcRenderer.invoke(
         'gcall:leave',
@@ -1451,7 +3809,8 @@ try {
         localAddress,
         signature,
         publicKey,
-        timestamp
+        timestamp,
+        joinGeneration
       ),
 
     leaveSync: (
@@ -1459,7 +3818,8 @@ try {
       localAddress: string,
       signature: string,
       publicKey: string,
-      timestamp: number
+      timestamp: number,
+      joinGeneration?: number
     ) =>
       ipcRenderer.sendSync(
         'gcall:leaveSync',
@@ -1467,7 +3827,8 @@ try {
         localAddress,
         signature,
         publicKey,
-        timestamp
+        timestamp,
+        joinGeneration
       ) as { success: boolean; error?: string },
 
     reportTransportHealth: async (
@@ -1729,6 +4090,7 @@ try {
       const channels = [
         'gcall:participant-joined',
         'gcall:participant-left',
+        'gcall:local-session-taken-over',
         'gcall:topology',
         'gcall:cluster-heartbeat',
         'gcall:heartbeat',

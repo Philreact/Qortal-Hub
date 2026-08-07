@@ -3,6 +3,7 @@ import { app } from 'electron';
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
+import { randomBytes, randomUUID } from 'crypto';
 import type {
   PresenceEnvelope,
   PresenceRoute,
@@ -13,6 +14,8 @@ import { buildPresenceSignedFields, getPresenceManager } from './presence';
 import {
   getReticulumBridgeIdentityPath,
   getReticulumConfigDir,
+  getReticulumInstanceIndex,
+  getReticulumSourceEnvExtra,
   persistReticulumSharedTransportState,
   resolveReticulumPythonLaunch,
   type ReticulumBridgeState,
@@ -23,6 +26,7 @@ import {
   log as loggerLog,
   warn as loggerWarn,
 } from './logger';
+import { runMainPressureTask } from './main-pressure';
 import {
   decodeReticulumAudioMessage,
   encodeReticulumAudioBatch,
@@ -34,6 +38,7 @@ import {
   type ReticulumAudioFrame,
 } from './reticulum-audio-ipc';
 import { GC_RETICULUM_WIRE_BUILD_MARKER } from './group-call-wire-reticulum';
+import { isReticulumRuntimeEnabled } from './reticulum-runtime-state';
 
 const RETICULUM_AUDIO_QUEUED_AT_MS = Symbol.for(
   'qortal.reticulumAudioQueuedAtMs'
@@ -117,7 +122,12 @@ const OVERLAY_LINK_PER_PACKET_REASONS = new Set([
   'presence_publish',
   'presence_forward',
   'call_signal',
+  'reticulum_chat_fanout',
 ]);
+const BRIDGE_GRACEFUL_STOP_TIMEOUT_MS = 5_000;
+const BRIDGE_FORCE_STOP_TIMEOUT_MS = 3_000;
+const P2P_HEALTH_RECEIVE_WINDOW_MS = 30_000;
+const P2P_HEALTH_MIN_RECEIVING_PEERS = 1;
 
 function shouldLogOverlayLinkStateEvent(reason: string): boolean {
   if (OVERLAY_LINK_PER_PACKET_REASONS.has(reason)) return false;
@@ -146,23 +156,70 @@ function overlayAgeDetail(
   return parts.length ? ` ${parts.join(' ')}` : '';
 }
 
+function numericFrameField(frame: unknown, key: string): number | null {
+  if (!frame || typeof frame !== 'object') return null;
+  const value = (frame as Record<string, unknown>)[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function bridgeEventTimingDetail(frame: unknown, nowMs: number): string {
+  const queuedAtMs = numericFrameField(frame, '_queuedAtMs');
+  const writeAtMs = numericFrameField(frame, '_writeAtMs');
+  const queuedDepthBefore = numericFrameField(frame, '_eventQueueDepthBefore');
+  const queuedDepthAfter = numericFrameField(frame, '_eventQueueDepthAfter');
+  const parts: string[] = [];
+  if (queuedAtMs !== null) {
+    parts.push(`queued_age_ms=${Math.max(0, Math.round(nowMs - queuedAtMs))}`);
+  }
+  if (writeAtMs !== null) {
+    parts.push(`stdout_age_ms=${Math.max(0, Math.round(nowMs - writeAtMs))}`);
+  }
+  if (queuedAtMs !== null && writeAtMs !== null) {
+    parts.push(
+      `python_queue_ms=${Math.max(0, Math.round(writeAtMs - queuedAtMs))}`
+    );
+  }
+  if (queuedDepthBefore !== null) {
+    parts.push(`queue_depth_before=${Math.round(queuedDepthBefore)}`);
+  }
+  if (queuedDepthAfter !== null) {
+    parts.push(`queue_depth_after=${Math.round(queuedDepthAfter)}`);
+  }
+  return parts.join(' ');
+}
+
 type BridgeCmdFrame = {
   type: 'cmd';
   action:
     | 'start'
     | 'publish_presence'
+    | 'clear_presence_cache'
     | 'forward_presence'
     | 'overlay_sync_state'
+    | 'configure_reticulum_chat_pinned_peers'
     | 'overlay_note_candidate_failure'
     | 'stop'
     | 'send_call'
+    | 'prepare_reticulum_resource_session'
     | 'accept_qchat_file_resource'
     | 'send_qchat_file_resource'
     | 'authorize_qchat_file_resource'
     | 'reject_qchat_file_resource'
+    | 'accept_reticulum_chat_resource'
+    | 'send_reticulum_chat_resource'
+    | 'authorize_reticulum_chat_resource'
+    | 'reject_reticulum_chat_resource'
+    | 'accept_reticulum_resource'
+    | 'send_reticulum_resource'
+    | 'authorize_reticulum_resource'
+    | 'reject_reticulum_resource'
+    | 'cancel_reticulum_resource'
     | 'fanout_call'
     | 'send_group_call'
     | 'fanout_group_call'
+    | 'send_reticulum_chat'
+    | 'send_reticulum_chat_targets'
+    | 'fanout_reticulum_chat'
     | 'send_group_audio_link_heartbeat'
     | 'open_group_audio_link'
     | 'close_group_audio_link'
@@ -171,7 +228,10 @@ type BridgeCmdFrame = {
     | 'clear_group_audio_diagnostics'
     | 'get_group_audio_data_plane_session'
     | 'configure_group_audio_data_plane_routes'
+    | 'configure_group_audio_forwarding'
+    | 'configure_land_state_forwarding'
     | 'get_local_identity_public_key'
+    | 'ensure_peer_identity'
     | 'register_peer_identity';
   id: string;
   payload?: Record<string, unknown>;
@@ -407,6 +467,36 @@ export type ReticulumAudioDataPlaneRoute = {
   peerDestinationHash?: string;
 };
 
+export type ReticulumAudioForwardingRule = {
+  sourceAddress: string;
+  ingress: ReticulumAudioDataPlaneRoute;
+  targets: ReticulumAudioDataPlaneRoute[];
+};
+
+export type ReticulumAudioForwardingPlan = {
+  roomId: string;
+  topologyEpoch: number;
+  rules: ReticulumAudioForwardingRule[];
+};
+
+export type ReticulumLandStateForwardingTarget = {
+  peerPresenceHash: string;
+  expiresAt: number;
+};
+
+export type ReticulumLandStateForwardingPlan = {
+  groupId: number;
+  targets: ReticulumLandStateForwardingTarget[];
+};
+
+export type ReticulumLandStateAuthSession = {
+  groupId: number;
+  authorAddress: string;
+  sessionId: string;
+  ephemeralPublicKey: string;
+  expiresAt: number;
+};
+
 export type ReticulumAudioDataPlaneSessionResult =
   | {
       ok: true;
@@ -414,6 +504,7 @@ export type ReticulumAudioDataPlaneSessionResult =
       token: string;
       version: 2;
       routeCount: number;
+      routes: ReticulumAudioDataPlaneRoute[];
     }
   | {
       ok: false;
@@ -423,6 +514,24 @@ export type ReticulumAudioDataPlaneSessionResult =
 
 export type ReticulumSendResult =
   | { ok: true }
+  | {
+      ok: false;
+      reason: ReticulumSendFailureReason;
+      error?: string;
+    };
+
+export type ReticulumTargetedChatFailure = {
+  peerPresenceHash: string;
+  reason: ReticulumSendFailureReason;
+  error?: string;
+};
+
+export type ReticulumTargetedChatResult =
+  | {
+      ok: true;
+      deliveredPeerHashes: string[];
+      failures: ReticulumTargetedChatFailure[];
+    }
   | {
       ok: false;
       reason: ReticulumSendFailureReason;
@@ -466,22 +575,35 @@ export type ReticulumConnectivitySnapshot = {
   meshListenOnline?: boolean;
   /** Recently receiving RNS.Link sessions used for Reticulum presence/signaling overlay (not group audio). */
   overlayLinksConnected?: number;
-  /** Established outbound overlay peers this node can send fanout to. */
+  /** Recently receiving outbound overlay peers this node can send fanout to. */
   overlayLinksOutboundConnected?: number;
   /** Recently receiving inbound overlay peers feeding this node data. */
   overlayLinksInboundConnected?: number;
+  /** Distinct overlay peers we have received traffic from inside the health window. */
+  overlayLinksReceivingConnected?: number;
+  /** How long the receiving-peer count has continuously satisfied the health threshold. */
+  overlayLinksReceivingStableMs?: number;
 };
 
 export type ReticulumOverlayVerifiedPeer = {
   destinationHash: string;
-  address: string;
   lastSeen: number;
+};
+
+export type ReticulumOverlayAccountEndpointLease = {
+  destinationHash: string;
+  address: string;
+  sessionId: string;
+  lastSeen: number;
+  expiresAt: number;
+  verification: 'direct-bound' | 'direct-legacy' | 'relayed-bound';
 };
 
 export type ReticulumOverlayLinkSnapshot = {
   linkId: string;
   peerPresenceHash: string;
   incoming: boolean;
+  overlayTransportAdmitted: boolean;
   connectedAt: number;
   lastRxAt: number;
   lastActivityAt: number;
@@ -495,12 +617,18 @@ type BridgeEventFrame =
     }
   | {
       type: 'event';
+      event: 'qortalland_game_ws_ready';
+      payload?: { port?: number; instanceId?: string };
+    }
+  | {
+      type: 'event';
       event: 'presence_message';
       payload?: {
         envelope?: PresenceEnvelope;
         route?: {
           kind: 'reticulum';
           destinationHash: string;
+          viaDestinationHash?: string;
           linkId?: string;
           overlayHopsRemaining?: number;
         };
@@ -536,6 +664,18 @@ type BridgeEventFrame =
     }
   | {
       type: 'event';
+      event: 'reticulum_chat_message';
+      payload?: {
+        wire?: Record<string, unknown>;
+        senderDestinationHash?: string;
+        peerPresenceHash?: string;
+        linkId?: string;
+        landStateFastForwarded?: boolean;
+        landStateForwardingRevision?: number;
+      };
+    }
+  | {
+      type: 'event';
       event: 'group_audio_link_established';
       payload?: {
         linkId?: string;
@@ -566,6 +706,19 @@ type BridgeEventFrame =
         code?: string;
         error?: string;
         pathState?: string;
+      };
+    }
+  | {
+      type: 'event';
+      event: 'group_audio_fast_path_activity';
+      payload?: {
+        roomId?: string;
+        sourceAddress?: string;
+        linkId?: string;
+        peerPresenceHash?: string;
+        peerDestinationHash?: string;
+        forwardedTargets?: number;
+        receivedAtWallMs?: number;
       };
     }
   | {
@@ -656,6 +809,7 @@ type BridgeEventFrame =
         reason?: string;
         queuedPackets?: number;
         closedByReticulum?: boolean;
+        overlayTransportAdmitted?: boolean;
         lastRxAt?: number | null;
         createdAgeMs?: number | null;
         establishedAgeMs?: number | null;
@@ -671,8 +825,36 @@ type BridgeEventFrame =
     }
   | {
       type: 'event';
+      event: 'reticulum_chat_resource';
+      payload?: Record<string, unknown>;
+    }
+  | {
+      type: 'event';
+      event: 'reticulum_resource';
+      payload?: Record<string, unknown>;
+    }
+  | {
+      type: 'event';
+      event: 'reticulum_resource_session';
+      payload?: {
+        status?: 'ready' | 'failed';
+        peerPresenceHash?: string;
+        lane?: 'fast' | 'bulk';
+        linkId?: string;
+        reason?: string;
+      };
+    }
+  | {
+      type: 'event';
       event: 'error';
-      payload?: { code?: string; message?: string; detail?: string };
+      payload?: {
+        code?: string;
+        message?: string;
+        detail?: string;
+        lane?: string;
+        task?: string;
+        action?: string;
+      };
     }
   | {
       type: 'event';
@@ -738,6 +920,35 @@ const RETICULUM_AUDIO_TIMING_DELAY_LOG_THRESHOLD_MS = 80;
 const RETICULUM_AUDIO_TIMING_GAP_LOG_THRESHOLD_MS = 320;
 const RETICULUM_AUDIO_TIMING_LOG_THROTTLE_MS = 2_000;
 const RETICULUM_AUDIO_PATH_PRESSURE_LOG_INTERVAL_MS = 5_000;
+const RETICULUM_STDOUT_DRAIN_MAX_LINES = readPositiveIntEnv(
+  'QORTAL_RETICULUM_STDOUT_DRAIN_MAX_LINES',
+  32
+);
+const RETICULUM_STDOUT_DRAIN_MAX_MS = readPositiveIntEnv(
+  'QORTAL_RETICULUM_STDOUT_DRAIN_MAX_MS',
+  5
+);
+const RETICULUM_STDOUT_PAUSE_BYTES = readPositiveIntEnv(
+  'QORTAL_RETICULUM_STDOUT_PAUSE_BYTES',
+  256 * 1024
+);
+const RETICULUM_STDOUT_RESUME_BYTES = readPositiveIntEnv(
+  'QORTAL_RETICULUM_STDOUT_RESUME_BYTES',
+  64 * 1024
+);
+const RETICULUM_STDOUT_FRAME_SLOW_MS = readPositiveIntEnv(
+  'QORTAL_RETICULUM_STDOUT_FRAME_SLOW_MS',
+  50
+);
+const RETICULUM_STDOUT_EMIT_SLOW_MS = readPositiveIntEnv(
+  'QORTAL_RETICULUM_STDOUT_EMIT_SLOW_MS',
+  50
+);
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+}
 
 function bridgeExeName(): string {
   return process.platform === 'win32'
@@ -756,14 +967,7 @@ function getFrozenBridgePath(): string {
     if (archSpecific && fs.existsSync(archSpecific)) return archSpecific;
     return path.join(base, exeName);
   }
-  return path.join(
-    __dirname,
-    '..',
-    '..',
-    'resources',
-    'reticulum',
-    exeName
-  );
+  return path.join(__dirname, '..', '..', 'resources', 'reticulum', exeName);
 }
 
 function getBridgeScriptPath(): string {
@@ -806,11 +1010,14 @@ function resolveBridgeLaunch(configDir: string):
   ]);
 }
 
-function killBridgeProcessTree(pid: number): boolean {
+function signalBridgeProcessTree(
+  pid: number,
+  signal: NodeJS.Signals = 'SIGTERM'
+): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   if (process.platform !== 'win32') {
     try {
-      process.kill(-pid, 'SIGTERM');
+      process.kill(-pid, signal);
       return true;
     } catch (err) {
       const code =
@@ -825,7 +1032,7 @@ function killBridgeProcessTree(pid: number): boolean {
         return false;
       }
       try {
-        process.kill(pid, 'SIGTERM');
+        process.kill(pid, signal);
         return true;
       } catch (pidErr) {
         loggerWarn(
@@ -856,6 +1063,39 @@ function killBridgeProcessTree(pid: number): boolean {
     return false;
   }
   return true;
+}
+
+function waitForBridgeChildExit(
+  child: ChildProcess,
+  timeoutMs: number
+): Promise<boolean> {
+  const hasExited = () =>
+    typeof child.exitCode === 'number' || typeof child.signalCode === 'string';
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off('exit', onExit);
+      child.off('error', onError);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    // ChildProcess can emit `error` when kill() itself fails. That is not
+    // evidence the process exited, so keep waiting unless Node also reports an
+    // exit status.
+    const onError = () => {
+      if (hasExited()) finish(true);
+    };
+    const timer = setTimeout(() => finish(false), Math.max(0, timeoutMs));
+    timer.unref?.();
+    child.once('exit', onExit);
+    child.once('error', onError);
+    if (hasExited()) {
+      finish(true);
+    }
+  });
 }
 
 function toPresenceRoute(raw: unknown): PresenceRoute | null {
@@ -899,6 +1139,7 @@ function commandPriorityForAction(
     case 'publish_presence':
     case 'forward_presence':
     case 'overlay_sync_state':
+    case 'configure_reticulum_chat_pinned_peers':
     case 'overlay_note_candidate_failure':
       return 'low';
     default:
@@ -951,9 +1192,19 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   readonly kind = 'reticulum' as const;
 
   private child: ChildProcess | null = null;
+  private gameTransportToken: string | null = null;
+  private gameTransportInstanceId: string | null = null;
+  private gameTransportUrl: string | null = null;
   private desiredRunning = false;
   private state: BridgeState = 'stopped';
   private stdoutBuffer = '';
+  private stdoutChunkQueue: string[] = [];
+  private stdoutQueuedBytes = 0;
+  private stdoutDrainScheduled = false;
+  private stdoutPaused = false;
+  private stdoutPressureLogLastAt = 0;
+  private stdoutSlowFrameLogLastByKey = new Map<string, number>();
+  private stdoutSlowEmitLogLastByEvent = new Map<string, number>();
   private highPriorityWriteQueue: QueuedCommand[] = [];
   private normalPriorityWriteQueue: QueuedCommand[] = [];
   private lowPriorityWriteQueue: QueuedCommand[] = [];
@@ -993,6 +1244,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   private waitingForAudioBinaryDrain = false;
   private audioFlushScheduled = false;
   private audioTimingLogLastByKey = new Map<string, number>();
+  private bridgeEventTimingLogLastByEvent = new Map<string, number>();
   private audioLastBridgeEnqueueAtMsByRoute = new Map<string, number>();
   private audioLastFd3WriteAtMsByRoute = new Map<string, number>();
   private audioInBuffer = Buffer.alloc(0);
@@ -1107,9 +1359,16 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   /** First JSON `group_audio_send_failed` per `code` (RNS path). */
   private audioIpcSendFailedCodesLogged = new Set<string>();
   private pending = new Map<string, PendingRequest>();
+  private resourceSessionPreparations = new Map<
+    string,
+    Promise<ReticulumSendResult>
+  >();
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private overlayStalePruneTimer: ReturnType<typeof setInterval> | null = null;
   private statePromise: Promise<void> | null = null;
+  private lifecycleRestartPromise: Promise<void> | null = null;
+  private retired = false;
+  private unconfirmedStoppedChild: ChildProcess | null = null;
   private launchConfigDir: string | null = null;
   private lastHeartbeatSentAt = 0;
   private lastHeartbeatSemanticKey: string | null = null;
@@ -1133,6 +1392,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     string,
     ReticulumOverlayLinkSnapshot
   >();
+  private overlayReceivingHealthySince: number | null = null;
 
   private markOverlayPeerVerifiedFromQortalTraffic(
     peerPresenceHash: string,
@@ -1158,6 +1418,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     const onOverlayLinkClosed = (payload: {
       peerHash: string;
       reason?: string;
+      lastActivityAgeMs?: number | null;
     }) => handlers.onOverlayLinkClosed?.(payload);
 
     this.on('ready', onReady);
@@ -1180,6 +1441,31 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   }
 
   async start(): Promise<void> {
+    if (this.retired) {
+      throw new Error('Reticulum bridge instance is retired');
+    }
+    if (this.lifecycleRestartPromise) {
+      return this.lifecycleRestartPromise;
+    }
+    return this.startInternal();
+  }
+
+  private async startInternal(): Promise<void> {
+    if (this.retired) {
+      throw new Error('Reticulum bridge instance is retired');
+    }
+    if (this.unconfirmedStoppedChild) {
+      if (
+        typeof this.unconfirmedStoppedChild.exitCode === 'number' ||
+        typeof this.unconfirmedStoppedChild.signalCode === 'string'
+      ) {
+        this.unconfirmedStoppedChild = null;
+      } else {
+        throw new Error(
+          'Previous Reticulum bridge process has not confirmed exit'
+        );
+      }
+    }
     this.desiredRunning = true;
     const configDir = getReticulumConfigDir();
     if (
@@ -1191,7 +1477,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         `[ReticulumBridge] Config changed from ${this.launchConfigDir} to ${configDir}; restarting bridge for current app instance`
       );
       const previousStart = this.statePromise;
-      this.stop();
+      await this.stopAndWait();
       if (previousStart) {
         try {
           await previousStart;
@@ -1222,7 +1508,40 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return this.statePromise;
   }
 
-  stop(): void {
+  /**
+   * Restart only this wrapper's Python child. Consumers retain the wrapper, so
+   * their subscriptions cannot revive a stale bridge while a replacement is
+   * being created. Calls to start() during the restart join the same promise.
+   */
+  async restartAndWait(): Promise<void> {
+    if (this.retired) {
+      throw new Error('Reticulum bridge instance is retired');
+    }
+    if (this.lifecycleRestartPromise) {
+      return this.lifecycleRestartPromise;
+    }
+
+    const previousStart = this.statePromise;
+    const restart = (async () => {
+      await this.stopAndWait();
+      if (previousStart) {
+        await previousStart.catch(() => {});
+      }
+      if (this.retired) {
+        throw new Error('Reticulum bridge restart was superseded');
+      }
+      await this.startInternal();
+    })();
+    const trackedRestart = restart.finally(() => {
+      if (this.lifecycleRestartPromise === trackedRestart) {
+        this.lifecycleRestartPromise = null;
+      }
+    });
+    this.lifecycleRestartPromise = trackedRestart;
+    return trackedRestart;
+  }
+
+  private prepareStop(): ChildProcess | null {
     this.desiredRunning = false;
     loggerLog('[ReticulumBridge] Stopping bridge');
     this.state = 'stopped';
@@ -1258,18 +1577,89 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     this.audioIpcFd4FirstRawChunkLogged = false;
     this.audioIpcSendFailedCodesLogged.clear();
     this.overlayEstablishedLinkIds.clear();
-    this.stdoutBuffer = '';
+    this.resetStdoutState();
     const child = this.child;
     this.child = null;
-    if (child && child.exitCode === null && !child.killed) {
-      if (typeof child.pid === 'number') {
-        killBridgeProcessTree(child.pid);
-      } else {
-        child.kill();
-      }
-    }
     this.localPresenceDestinationHash = undefined;
     this.launchConfigDir = null;
+    this.emit('stopped');
+    return child && child.exitCode === null ? child : null;
+  }
+
+  stop(): void {
+    const child = this.prepareStop();
+    if (!child) return;
+    if (typeof child.pid === 'number') {
+      signalBridgeProcessTree(child.pid, 'SIGTERM');
+    } else {
+      child.kill();
+    }
+  }
+
+  /** Permanently prevent stale consumers from starting this wrapper again. */
+  retire(): void {
+    this.retired = true;
+    this.stop();
+  }
+
+  async retireAndWait(): Promise<void> {
+    this.retired = true;
+    const activeRestart = this.lifecycleRestartPromise;
+    // Stop immediately: waiting for an in-progress restart first could allow
+    // its newly spawned child to finish a long handshake during app shutdown.
+    await this.stopAndWait();
+    if (activeRestart) {
+      await activeRestart.catch(() => {});
+    }
+    // If the restart had already crossed into startInternal(), ensure the
+    // child it was starting is also gone before retirement completes.
+    await this.stopAndWait();
+  }
+
+  async stopAndWait(
+    gracefulTimeoutMs = BRIDGE_GRACEFUL_STOP_TIMEOUT_MS
+  ): Promise<void> {
+    const preparedChild = this.prepareStop();
+    const child = preparedChild ?? this.unconfirmedStoppedChild;
+    if (!child) return;
+
+    if (typeof child.pid === 'number') {
+      signalBridgeProcessTree(child.pid, 'SIGTERM');
+    } else {
+      child.kill();
+    }
+
+    if (await waitForBridgeChildExit(child, gracefulTimeoutMs)) {
+      if (this.unconfirmedStoppedChild === child) {
+        this.unconfirmedStoppedChild = null;
+      }
+      return;
+    }
+
+    const pid = child.pid;
+    loggerWarn(
+      `[ReticulumBridge] Bridge child pid=${pid ?? 'unknown'} survived graceful stop; forcing stop`
+    );
+    if (typeof pid === 'number') {
+      signalBridgeProcessTree(pid, 'SIGKILL');
+    } else {
+      child.kill('SIGKILL');
+    }
+    if (await waitForBridgeChildExit(child, BRIDGE_FORCE_STOP_TIMEOUT_MS)) {
+      if (this.unconfirmedStoppedChild === child) {
+        this.unconfirmedStoppedChild = null;
+      }
+      return;
+    }
+    this.unconfirmedStoppedChild = child;
+    child.once('exit', () => {
+      if (this.unconfirmedStoppedChild === child) {
+        this.unconfirmedStoppedChild = null;
+      }
+    });
+    const message = `Bridge child pid=${pid ?? 'unknown'} did not exit after force stop`;
+    loggerError(`[ReticulumBridge] ${message}`);
+    throw new Error(message);
   }
 
   /**
@@ -1334,6 +1724,288 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return this.sendDetailed('reject_qchat_file_resource', payload);
   }
 
+  async acceptReticulumChatResourceDetailed(payload: {
+    peerPresenceHash: string;
+    reticulumIdentityPublicKeyBase64: string;
+    authMessage: Record<string, unknown>;
+    transferId: string;
+    savePath: string;
+    fileName: string;
+    size: number;
+    sha256?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('accept_reticulum_chat_resource', payload);
+  }
+
+  async ensureReticulumResourceSessionDetailed(payload: {
+    peerPresenceHash: string;
+    reticulumIdentityPublicKeyBase64: string;
+    resourceType: string;
+    logicalResourceType?: string;
+  }): Promise<ReticulumSendResult> {
+    const peerPresenceHash = payload.peerPresenceHash.trim().toLowerCase();
+    const logicalResourceType = payload.logicalResourceType ?? '';
+    const lane =
+      logicalResourceType === 'reticulum_chat_dm_page' ||
+      (![
+        'reticulum_chat_history_page',
+        'reticulum_chat_metadata_snapshot',
+        'reticulum_chat_event_page',
+        'reticulum_chat_calendar',
+      ].includes(logicalResourceType) &&
+        payload.resourceType === 'reticulum_chat_event')
+        ? 'fast'
+        : 'bulk';
+    if (!peerPresenceHash) {
+      return {
+        ok: false,
+        reason: 'unknown-peer-presence-hash',
+        error: 'Missing peer presence hash',
+      };
+    }
+    const key = `${peerPresenceHash}:${lane}`;
+    const existing = this.resourceSessionPreparations.get(key);
+    if (existing) return existing;
+    const preparation = this.prepareReticulumResourceSession({
+      ...payload,
+      peerPresenceHash,
+      lane,
+    });
+    this.resourceSessionPreparations.set(key, preparation);
+    void preparation.finally(() => {
+      if (this.resourceSessionPreparations.get(key) === preparation) {
+        this.resourceSessionPreparations.delete(key);
+      }
+    });
+    return preparation;
+  }
+
+  private async prepareReticulumResourceSession(payload: {
+    peerPresenceHash: string;
+    reticulumIdentityPublicKeyBase64: string;
+    resourceType: string;
+    logicalResourceType?: string;
+    lane: 'fast' | 'bulk';
+  }): Promise<ReticulumSendResult> {
+    try {
+      await this.start();
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'bridge-exception',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    if (this.state !== 'ready') {
+      return { ok: false, reason: 'bridge-not-ready' };
+    }
+    return new Promise<ReticulumSendResult>((resolve) => {
+      let settled = false;
+      let expectedLinkId = '';
+      let expectedLane: 'fast' | 'bulk' = payload.lane;
+      const pendingSessionStates: Array<{
+        status?: string;
+        peerPresenceHash?: string;
+        lane?: string;
+        linkId?: string;
+        reason?: string;
+      }> = [];
+      const finish = (result: ReticulumSendResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.off('reticulum-resource-session', onSessionState);
+        this.off('degraded', onDegraded);
+        this.off('stopped', onStopped);
+        resolve(result);
+      };
+      const onSessionState = (state: {
+        status?: string;
+        peerPresenceHash?: string;
+        lane?: string;
+        linkId?: string;
+        reason?: string;
+      }) => {
+        if (
+          state.peerPresenceHash?.trim().toLowerCase() !==
+          payload.peerPresenceHash
+        ) {
+          return;
+        }
+        if (!expectedLinkId) {
+          pendingSessionStates.push(state);
+          return;
+        }
+        if (state.lane !== expectedLane) return;
+        if (state.linkId && state.linkId !== expectedLinkId) return;
+        if (state.status === 'ready') {
+          finish({ ok: true });
+        } else if (state.status === 'failed') {
+          finish({
+            ok: false,
+            reason:
+              state.reason === 'resource_session_backoff'
+                ? 'no-route'
+                : 'send-command-failed',
+            ...(state.reason ? { error: state.reason } : {}),
+          });
+        }
+      };
+      const onDegraded = (reason?: string) => {
+        finish({
+          ok: false,
+          reason: 'bridge-not-ready',
+          ...(reason ? { error: reason } : {}),
+        });
+      };
+      const onStopped = () => {
+        finish({
+          ok: false,
+          reason: 'bridge-not-ready',
+          error: 'Reticulum bridge stopped',
+        });
+      };
+      const timer = setTimeout(() => {
+        finish({
+          ok: false,
+          reason: 'bridge-timeout',
+          error: 'Reticulum resource session preparation timed out',
+        });
+      }, 32_000);
+      timer.unref?.();
+      this.on('reticulum-resource-session', onSessionState);
+      this.on('degraded', onDegraded);
+      this.on('stopped', onStopped);
+      void this.sendCommand('prepare_reticulum_resource_session', {
+        peerPresenceHash: payload.peerPresenceHash,
+        reticulumIdentityPublicKeyBase64:
+          payload.reticulumIdentityPublicKeyBase64,
+        resourceType: payload.resourceType,
+        ...(payload.logicalResourceType
+          ? { logicalResourceType: payload.logicalResourceType }
+          : {}),
+      })
+        .then((resp) => {
+          if (!resp.ok) {
+            finish({
+              ok: false,
+              reason: this.mapSendFailureReason(resp),
+              ...(resp.error ? { error: resp.error } : {}),
+            });
+            return;
+          }
+          expectedLinkId = String(resp.payload?.linkId ?? '');
+          if (resp.payload?.lane === 'fast' || resp.payload?.lane === 'bulk') {
+            expectedLane = resp.payload.lane;
+          }
+          if (resp.payload?.status === 'ready') {
+            finish({ ok: true });
+            return;
+          }
+          for (const state of pendingSessionStates) {
+            if (!state.linkId || state.linkId === expectedLinkId) {
+              onSessionState(state);
+              if (settled) break;
+            }
+          }
+          pendingSessionStates.length = 0;
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          finish({
+            ok: false,
+            reason: message.includes('timed out')
+              ? 'bridge-timeout'
+              : 'bridge-exception',
+            error: message,
+          });
+        });
+    });
+  }
+
+  async sendReticulumChatResourceDetailed(payload: {
+    allowedRecipientAddress: string;
+    transferId: string;
+    filePath: string;
+    fileName: string;
+    size: number;
+    sha256?: string;
+    expiresAt?: number;
+    metadata?: Record<string, unknown>;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('send_reticulum_chat_resource', payload);
+  }
+
+  async authorizeReticulumChatResourceDetailed(payload: {
+    linkId: string;
+    transferId: string;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('authorize_reticulum_chat_resource', payload);
+  }
+
+  async rejectReticulumChatResourceDetailed(payload: {
+    linkId: string;
+    transferId: string;
+    reason: string;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('reject_reticulum_chat_resource', payload);
+  }
+
+  async acceptReticulumResourceDetailed(payload: {
+    peerPresenceHash: string;
+    reticulumIdentityPublicKeyBase64: string;
+    authMessage: Record<string, unknown>;
+    transferId: string;
+    savePath: string;
+    fileName: string;
+    size: number;
+    sha256?: string;
+    resourceType?: string;
+    metadata?: Record<string, unknown>;
+    streamMode?: boolean;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('accept_reticulum_resource', payload);
+  }
+
+  async sendReticulumResourceDetailed(payload: {
+    allowedRecipientAddress: string;
+    transferId: string;
+    filePath: string;
+    fileName: string;
+    size: number;
+    sha256?: string;
+    expiresAt?: number;
+    resourceType?: string;
+    metadata?: Record<string, unknown>;
+    streamMode?: boolean;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('send_reticulum_resource', payload);
+  }
+
+  async authorizeReticulumResourceDetailed(payload: {
+    linkId: string;
+    transferId: string;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('authorize_reticulum_resource', payload);
+  }
+
+  async rejectReticulumResourceDetailed(payload: {
+    linkId: string;
+    transferId: string;
+    reason: string;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('reject_reticulum_resource', payload);
+  }
+
+  async cancelReticulumResourceDetailed(payload: {
+    transferId: string;
+    peerPresenceHash?: string;
+    reason?: string;
+  }): Promise<ReticulumSendResult> {
+    return this.sendDetailed('cancel_reticulum_resource', payload);
+  }
+
   async fanoutCallDetailed(
     messages: Record<string, unknown>[],
     excludePeerPresenceHashes: string[] = []
@@ -1386,6 +2058,124 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     });
   }
 
+  async sendReticulumChatDetailed(
+    peerPresenceHash: string,
+    message: Record<string, unknown>
+  ): Promise<ReticulumSendResult> {
+    return this.sendDetailed('send_reticulum_chat', {
+      peerPresenceHash,
+      message,
+    });
+  }
+
+  async sendReticulumChatTargetsDetailed(
+    peerPresenceHashes: string[],
+    message: Record<string, unknown>
+  ): Promise<ReticulumTargetedChatResult> {
+    const peers = [
+      ...new Set(
+        peerPresenceHashes
+          .map((peer) => peer.trim().toLowerCase())
+          .filter(Boolean)
+      ),
+    ];
+    if (peers.length === 0) {
+      return { ok: false, reason: 'unknown-peer-presence-hash' };
+    }
+    try {
+      await this.start();
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'bridge-exception',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    if (this.state !== 'ready') {
+      return { ok: false, reason: 'bridge-not-ready' };
+    }
+    try {
+      const resp = await this.sendCommand('send_reticulum_chat_targets', {
+        peerPresenceHashes: peers,
+        message,
+      });
+      if (!resp.ok) {
+        return {
+          ok: false,
+          reason: this.mapSendFailureReason(resp),
+          ...(resp.error ? { error: resp.error } : {}),
+        };
+      }
+      const deliveredPeerHashes = Array.isArray(
+        resp.payload?.deliveredPeerHashes
+      )
+        ? resp.payload.deliveredPeerHashes
+            .filter(
+              (peer): peer is string => typeof peer === 'string' && !!peer
+            )
+            .map((peer) => peer.trim().toLowerCase())
+        : [];
+      const failures = Array.isArray(resp.payload?.failures)
+        ? resp.payload.failures.flatMap((failure) => {
+            if (!failure || typeof failure !== 'object') return [];
+            const record = failure as Record<string, unknown>;
+            const peerPresenceHash =
+              typeof record.peerPresenceHash === 'string'
+                ? record.peerPresenceHash.trim().toLowerCase()
+                : '';
+            if (!peerPresenceHash) return [];
+            const code =
+              typeof record.code === 'string'
+                ? record.code
+                : 'packet_send_false';
+            const error =
+              typeof record.error === 'string' ? record.error : undefined;
+            const reason = this.mapSendFailureReason({
+              type: 'resp',
+              id: '',
+              ok: false,
+              payload: { code },
+              ...(error ? { error } : {}),
+            });
+            return [
+              {
+                peerPresenceHash,
+                reason,
+                ...(error ? { error } : {}),
+              },
+            ];
+          })
+        : [];
+      return { ok: true, deliveredPeerHashes, failures };
+    } catch (err) {
+      const messageText = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        reason: messageText.includes('timed out')
+          ? 'bridge-timeout'
+          : 'bridge-exception',
+        error: messageText,
+      };
+    }
+  }
+
+  async fanoutReticulumChatDetailed(
+    messages: Record<string, unknown>[],
+    excludePeerPresenceHashes: string[] = []
+  ): Promise<ReticulumSendResult> {
+    if (messages.length === 0) {
+      return {
+        ok: false,
+        reason: 'wire-too-large',
+        error: 'No Reticulum chat frames fit encrypted wire limit',
+      };
+    }
+    return this.sendDetailed('fanout_reticulum_chat', {
+      messages,
+      excludePeerPresenceHashes,
+    });
+  }
+
   async sendGroupAudioLinkHeartbeatDetailed(opts: {
     roomId: string;
     command: ReticulumAudioLinkHeartbeatCommand;
@@ -1423,7 +2213,8 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   }
 
   async openGroupAudioLink(
-    peerPresenceHash: string
+    peerPresenceHash: string,
+    opts?: { activeCall?: boolean }
   ): Promise<ReticulumOpenAudioLinkResult> {
     try {
       await this.start();
@@ -1441,6 +2232,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     try {
       const resp = await this.sendCommand('open_group_audio_link', {
         peerPresenceHash,
+        ...(opts?.activeCall === true ? { activeCall: true } : {}),
       });
       if (!resp.ok) {
         return {
@@ -1614,7 +2406,101 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       loggerLog(
         `[ReticulumBridge] target=gcall-audio-data-plane stage=session-ready routes=${routeCount}`
       );
-      return { ok: true, endpoint, token, version: 2, routeCount };
+      return { ok: true, endpoint, token, version: 2, routeCount, routes };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        reason: message.includes('timed out')
+          ? 'bridge-timeout'
+          : 'bridge-exception',
+        error: message,
+      };
+    }
+  }
+
+  async configureGroupAudioForwarding(
+    plans: ReticulumAudioForwardingPlan[],
+    opts?: { startIfNeeded?: boolean }
+  ): Promise<ReticulumSendResult> {
+    if (this.state !== 'ready') {
+      if (opts?.startIfNeeded === false) {
+        return { ok: false, reason: 'bridge-not-ready' };
+      }
+      try {
+        await this.start();
+      } catch (err) {
+        return {
+          ok: false,
+          reason: 'bridge-exception',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+    if (this.state !== 'ready') {
+      return { ok: false, reason: 'bridge-not-ready' };
+    }
+    try {
+      const resp = await this.sendCommand('configure_group_audio_forwarding', {
+        plans,
+      });
+      if (!resp.ok) {
+        return {
+          ok: false,
+          reason: this.mapSendFailureReason(resp),
+          ...(resp.error ? { error: resp.error } : {}),
+        };
+      }
+      return { ok: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        reason: message.includes('timed out')
+          ? 'bridge-timeout'
+          : 'bridge-exception',
+        error: message,
+      };
+    }
+  }
+
+  async configureLandStateForwarding(
+    plans: ReticulumLandStateForwardingPlan[],
+    sessions: ReticulumLandStateAuthSession[],
+    revision: number,
+    opts?: { startIfNeeded?: boolean }
+  ): Promise<ReticulumSendResult> {
+    if (this.state !== 'ready') {
+      if (opts?.startIfNeeded === false) {
+        return { ok: false, reason: 'bridge-not-ready' };
+      }
+      try {
+        await this.start();
+      } catch (err) {
+        return {
+          ok: false,
+          reason: 'bridge-exception',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+    if (this.state !== 'ready') {
+      return { ok: false, reason: 'bridge-not-ready' };
+    }
+    try {
+      const resp = await this.sendCommand('configure_land_state_forwarding', {
+        plans,
+        sessions,
+        revision,
+      });
+      if (!resp.ok) {
+        return {
+          ok: false,
+          reason: this.mapSendFailureReason(resp),
+          ...(resp.error ? { error: resp.error } : {}),
+        };
+      }
+      return { ok: true };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {
@@ -1683,15 +2569,17 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   enqueueGroupAudio(
     linkId: string,
     roomId: string,
-    data: Buffer
+    data: Buffer,
+    peerPresenceHash = '',
+    peerDestinationHash = ''
   ): ReticulumEnqueueGroupAudioResult {
     return this.enqueueAudioFrame({
       routeKey: linkId,
       transport: 'link',
       linkId,
       roomId,
-      peerPresenceHash: '',
-      peerDestinationHash: '',
+      peerPresenceHash: peerPresenceHash.trim().toLowerCase(),
+      peerDestinationHash: peerDestinationHash.trim().toLowerCase(),
       data,
     });
   }
@@ -2253,6 +3141,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return resp.ok;
   }
 
+  async clearPresenceCache(reason: string): Promise<boolean> {
+    await this.start();
+    if (this.state !== 'ready') return false;
+    const resp = await this.sendCommand('clear_presence_cache', { reason });
+    return resp.ok;
+  }
+
   async forwardPresence(
     envelope: PresenceEnvelope,
     overlayHopsRemaining: number,
@@ -2272,17 +3167,41 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 
   async syncOverlayState(
     verifiedPeers: ReticulumOverlayVerifiedPeer[],
-    activeNeighborHashes: string[]
+    activeNeighborHashes: string[],
+    accountEndpointLeases: ReticulumOverlayAccountEndpointLease[] = []
   ): Promise<boolean> {
     await this.start();
     if (this.state !== 'ready') return false;
     const resp = await this.sendCommand('overlay_sync_state', {
       verifiedPeers,
       activeNeighborHashes,
+      accountEndpointLeases,
     });
     if (!resp.ok && this.isBridgeCommandBacklogResponse(resp)) {
       throw new Error(
         resp.error ?? 'Reticulum bridge command backlog: overlay_sync_state'
+      );
+    }
+    return resp.ok;
+  }
+
+  async configureReticulumChatPinnedPeers(
+    peers: Array<{
+      accountAddress: string;
+      destinationHash: string;
+      expiresAt: number;
+    }>
+  ): Promise<boolean> {
+    await this.start();
+    if (this.state !== 'ready') return false;
+    const resp = await this.sendCommand(
+      'configure_reticulum_chat_pinned_peers',
+      { peers }
+    );
+    if (!resp.ok && this.isBridgeCommandBacklogResponse(resp)) {
+      throw new Error(
+        resp.error ??
+          'Reticulum bridge command backlog: configure_reticulum_chat_pinned_peers'
       );
     }
     return resp.ok;
@@ -2307,12 +3226,24 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 
   getConnectivitySnapshot(): ReticulumConnectivitySnapshot {
     const directionCounts = this.getOverlayLinkDirectionCounts();
+    const receivingPeerCount = this.getReceivingOverlayPeerCount();
+    const now = Date.now();
+    if (receivingPeerCount >= P2P_HEALTH_MIN_RECEIVING_PEERS) {
+      this.overlayReceivingHealthySince ??= now;
+    } else {
+      this.overlayReceivingHealthySince = null;
+    }
     return {
       ...this.connectivitySnapshot,
       bridgeState: this.state,
       overlayLinksConnected: this.getEstablishedOverlayPeerCount(),
       overlayLinksOutboundConnected: directionCounts.outbound,
       overlayLinksInboundConnected: directionCounts.inbound,
+      overlayLinksReceivingConnected: receivingPeerCount,
+      overlayLinksReceivingStableMs:
+        this.overlayReceivingHealthySince === null
+          ? 0
+          : Math.max(0, now - this.overlayReceivingHealthySince),
       ...(this.lastDegradedReason ? { reason: this.lastDegradedReason } : {}),
     };
   }
@@ -2349,6 +3280,24 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return snap.incoming ? this.isOverlaySnapshotRecentlyLive(snap, now) : true;
   }
 
+  private isOverlaySnapshotReceiving(
+    snap: ReticulumOverlayLinkSnapshot,
+    now = Date.now()
+  ): boolean {
+    return Boolean(
+      snap.lastRxAt && now - snap.lastRxAt <= P2P_HEALTH_RECEIVE_WINDOW_MS
+    );
+  }
+
+  private isOverlaySnapshotRxLive(
+    snap: ReticulumOverlayLinkSnapshot,
+    now = Date.now()
+  ): boolean {
+    return Boolean(
+      snap.lastRxAt && now - snap.lastRxAt <= OVERLAY_LINK_RX_IDLE_TIMEOUT_MS
+    );
+  }
+
   /** Unique live overlay peers (by presence hash); links without hash yet count separately. */
   private getEstablishedOverlayPeerCount(): number {
     this.pruneStaleOverlayLinkSnapshots();
@@ -2367,18 +3316,32 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   getOverlayLinkDirectionCounts(): { outbound: number; inbound: number } {
     this.pruneStaleOverlayLinkSnapshots();
     const now = Date.now();
+    const localHash = this.localPresenceDestinationHash?.trim().toLowerCase();
     const outbound = new Set<string>();
     const inbound = new Set<string>();
     for (const snap of this.overlayLinkSnapshots.values()) {
+      if (!this.isOverlaySnapshotRxLive(snap, now)) continue;
       const k = snap.peerPresenceHash.trim().toLowerCase();
       if (!k) continue;
-      if (snap.incoming) {
-        if (this.isOverlaySnapshotRecentlyLive(snap, now)) inbound.add(k);
-      } else {
-        outbound.add(k);
-      }
+      if (localHash && k === localHash) continue;
+      if (snap.incoming) inbound.add(k);
+      else outbound.add(k);
     }
     return { outbound: outbound.size, inbound: inbound.size };
+  }
+
+  private getReceivingOverlayPeerCount(now = Date.now()): number {
+    this.pruneStaleOverlayLinkSnapshots(now);
+    const localHash = this.localPresenceDestinationHash?.trim().toLowerCase();
+    const receiving = new Set<string>();
+    for (const snap of this.overlayLinkSnapshots.values()) {
+      if (!this.isOverlaySnapshotReceiving(snap, now)) continue;
+      const peerKey = snap.peerPresenceHash.trim().toLowerCase();
+      if (!peerKey) continue;
+      if (localHash && peerKey === localHash) continue;
+      receiving.add(peerKey);
+    }
+    return receiving.size;
   }
 
   getOverlayLinkSnapshots(): ReticulumOverlayLinkSnapshot[] {
@@ -2519,6 +3482,25 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     }
   }
 
+  async ensurePeerIdentityKnown(peerPresenceHash: string): Promise<boolean> {
+    const peer = peerPresenceHash.trim().toLowerCase();
+    if (!peer) return false;
+    try {
+      await this.start();
+    } catch {
+      return false;
+    }
+    if (this.state !== 'ready') return false;
+    try {
+      const resp = await this.sendCommand('ensure_peer_identity', {
+        peerPresenceHash: peer,
+      });
+      return resp.ok === true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Register a peer's RNS public key from a verified GC_JOIN (`rk`) so overlay send can use them.
    */
@@ -2544,6 +3526,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   }
 
   private async spawnAndHandshake(configDir: string): Promise<void> {
+    this.resetStdoutState();
     const launch = resolveBridgeLaunch(configDir);
     if ('error' in launch) {
       this.transitionToDegraded(launch.error);
@@ -2555,18 +3538,38 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     );
     const identityPath = getReticulumBridgeIdentityPath();
     fs.mkdirSync(path.dirname(identityPath), { recursive: true });
-    const env = {
+    this.gameTransportToken = randomBytes(32).toString('hex');
+    this.gameTransportInstanceId = randomUUID();
+    this.gameTransportUrl = null;
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ...getReticulumSourceEnvExtra(),
       ...(launch.envExtra ?? {}),
       PYTHONUNBUFFERED: '1',
-      QORTAL_RNS_LINK_TRACE: app.isPackaged
-        ? (process.env.QORTAL_RNS_LINK_TRACE ?? '0')
-        : '1',
+      QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
       QORTAL_RETICULUM_CONFIG_DIR: configDir,
+      // rnsd owns configDir/logfile. Each simultaneously supported app
+      // instance gets a separate bridge log so independent Python processes
+      // can never race while rotating the same file.
+      QORTAL_RNS_LOG_FILE: path.join(
+        configDir,
+        `logfile.bridge.${getReticulumInstanceIndex()}`
+      ),
+      // The bridge is detached on Unix so Electron can terminate its whole
+      // process group. Give it an explicit owner as well: if Electron is
+      // killed before its normal shutdown handler runs, the bridge must not
+      // survive as an orphan and keep loading the shared rnsd instance.
+      QORTAL_RETICULUM_OWNER_PID: String(process.pid),
       QORTAL_RETICULUM_IDENTITY_PATH: identityPath,
+      QORTAL_LAND_GAMES_TOKEN: this.gameTransportToken,
+      QORTAL_LAND_GAMES_INSTANCE_ID: this.gameTransportInstanceId,
+      QORTAL_LAND_GAMES_DEV: app.isPackaged ? '0' : '1',
+      QORTAL_LAND_REALTIME_TOKEN: this.gameTransportToken,
+      QORTAL_LAND_REALTIME_INSTANCE_ID: this.gameTransportInstanceId,
+      QORTAL_LAND_REALTIME_DEV: app.isPackaged ? '0' : '1',
     };
     loggerLog(
-      `[ReticulumBridge] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE}`
+      `[ReticulumBridge] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} PYTHONPATH=${env.PYTHONPATH ?? ''}`
     );
 
     const child = spawn(launch.cmd, launch.args, {
@@ -2579,9 +3582,10 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 
     this.child = child;
     loggerLog(
-      `[ReticulumBridge] Spawned child pid=${child.pid ?? 'unknown'} cmd=${launch.cmd}`
+      `[ReticulumBridge] Spawned child pid=${child.pid ?? 'unknown'} owner_pid=${process.pid} cmd=${launch.cmd}`
     );
     const audioOutParent = child.stdio[3];
+    this.attachChildWritablePipeErrorGuards(child);
     if (
       !audioOutParent ||
       typeof (audioOutParent as NodeJS.WritableStream).write !== 'function'
@@ -2598,7 +3602,11 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       if (this.child !== child) return;
-      this.handleStdout(chunk);
+      runMainPressureTask(
+        'reticulum.stdout.enqueue',
+        { bytes: Buffer.byteLength(chunk, 'utf8') },
+        () => this.enqueueStdoutChunk(chunk)
+      );
     });
     const audioIn = child.stdio[4];
     if (
@@ -2609,16 +3617,26 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         'data',
         (chunk: Buffer | string) => {
           if (this.child !== child) return;
-          const buf = Buffer.isBuffer(chunk)
-            ? chunk
-            : Buffer.from(chunk as string, 'binary');
-          if (!this.audioIpcFd4FirstRawChunkLogged && buf.length > 0) {
-            this.audioIpcFd4FirstRawChunkLogged = true;
-            loggerLog(
-              `[ReticulumBridge] ${RETICULUM_AUDIO_IPC_LOG} stage=fd4-first-raw-chunk-from-child len=${buf.length}`
-            );
-          }
-          this.appendAudioInData(buf);
+          runMainPressureTask(
+            'reticulum.fd4.audio',
+            {
+              bytes: Buffer.isBuffer(chunk)
+                ? chunk.length
+                : Buffer.byteLength(chunk as string, 'binary'),
+            },
+            () => {
+              const buf = Buffer.isBuffer(chunk)
+                ? chunk
+                : Buffer.from(chunk as string, 'binary');
+              if (!this.audioIpcFd4FirstRawChunkLogged && buf.length > 0) {
+                this.audioIpcFd4FirstRawChunkLogged = true;
+                loggerLog(
+                  `[ReticulumBridge] ${RETICULUM_AUDIO_IPC_LOG} stage=fd4-first-raw-chunk-from-child len=${buf.length}`
+                );
+              }
+              this.appendAudioInData(buf);
+            }
+          );
         }
       );
     } else {
@@ -2628,10 +3646,16 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     }
     child.stderr.on('data', (chunk: string) => {
       if (this.child !== child) return;
-      const text = chunk.trim();
-      if (!text) return;
-      const message = `[ReticulumBridge/stderr] ${text}`;
-      loggerLog(message);
+      runMainPressureTask(
+        'reticulum.stderr',
+        { bytes: Buffer.byteLength(chunk, 'utf8') },
+        () => {
+          const text = chunk.trim();
+          if (!text) return;
+          const message = `[ReticulumBridge/stderr] ${text}`;
+          loggerLog(message);
+        }
+      );
     });
     child.stdin.on('drain', () => {
       if (this.child !== child) return;
@@ -2670,6 +3694,64 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     loggerLog(
       `[ReticulumBridge] Start handshake completed reticulumWire=${GC_RETICULUM_WIRE_BUILD_MARKER}`
     );
+  }
+
+  private resetStdoutState(): void {
+    this.stdoutBuffer = '';
+    this.stdoutChunkQueue = [];
+    this.stdoutQueuedBytes = 0;
+    this.stdoutDrainScheduled = false;
+    this.stdoutPaused = false;
+    this.stdoutPressureLogLastAt = 0;
+    this.stdoutSlowFrameLogLastByKey.clear();
+    this.stdoutSlowEmitLogLastByEvent.clear();
+  }
+
+  /**
+   * Child stdio pipes emit their own asynchronous `error` events. In
+   * particular, Windows reports a write racing bridge shutdown as EPIPE on the
+   * pipe Socket rather than on ChildProcess. Leaving either writable pipe
+   * without an error listener turns that normal shutdown race into an
+   * uncaught main-process error dialog.
+   */
+  private attachChildWritablePipeErrorGuards(child: ChildProcess): void {
+    const attach = (
+      stream: NodeJS.WritableStream | NodeJS.ReadableStream | null | undefined,
+      pipe: 'control' | 'audio'
+    ) => {
+      if (!stream || typeof stream.on !== 'function') return;
+      stream.on('error', (error: Error) => {
+        this.handleChildWritablePipeError(child, pipe, error);
+      });
+    };
+    attach(child.stdin, 'control');
+    attach(child.stdio?.[3], 'audio');
+  }
+
+  private handleChildWritablePipeError(
+    child: ChildProcess,
+    pipe: 'control' | 'audio',
+    error: Error
+  ): void {
+    // prepareStop() detaches this child before terminating it. Any late EPIPE
+    // from that child is therefore expected and must not affect a replacement
+    // bridge (or escape as an unhandled stream error).
+    if (
+      this.child !== child ||
+      !this.desiredRunning ||
+      this.state === 'stopped'
+    ) {
+      return;
+    }
+    const code = (error as NodeJS.ErrnoException).code;
+    const reason = `bridge-${pipe}-pipe-error:${code || error.message || 'unknown'}`;
+    loggerWarn(`[ReticulumBridge] ${reason}`);
+    this.transitionToDegraded(reason);
+    if (typeof child.pid === 'number') {
+      signalBridgeProcessTree(child.pid, 'SIGTERM');
+    } else if (!child.killed) {
+      child.kill();
+    }
   }
 
   private sendCommand(
@@ -2718,7 +3800,18 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     for (;;) {
       const frame = this.dequeueNextCommand();
       if (!frame) return;
-      const ok = this.child.stdin.write(frame.wire);
+      const child = this.child;
+      let ok: boolean;
+      try {
+        ok = child.stdin.write(frame.wire);
+      } catch (error) {
+        this.handleChildWritablePipeError(
+          child,
+          'control',
+          error instanceof Error ? error : new Error(String(error))
+        );
+        return;
+      }
       if (!ok) {
         this.waitingForDrain = true;
         return;
@@ -2743,7 +3836,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 
   private isBridgeCommandBacklogResponse(frame: BridgeRespFrame): boolean {
     const code = frame.payload?.code;
-    return code === 'bridge_command_queue_full' || code === 'scheduler_queue_full';
+    return (
+      code === 'bridge_command_queue_full' || code === 'scheduler_queue_full'
+    );
   }
 
   private countPendingRequestsByPriority(priority: BridgeCmdPriority): number {
@@ -3019,10 +4114,21 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           }
         }
       };
-      const ok = stream.write(item.buf);
+      let ok: boolean;
+      try {
+        ok = stream.write(item.buf);
+      } catch (error) {
+        this.handleChildWritablePipeError(
+          c,
+          'audio',
+          error instanceof Error ? error : new Error(String(error))
+        );
+        return;
+      }
       if (!ok) {
         this.waitingForAudioBinaryDrain = true;
         stream.once('drain', () => {
+          if (this.child !== c) return;
           this.waitingForAudioBinaryDrain = false;
           noteWriteTiming();
           this.audioBinaryWriteQueue.shift();
@@ -3053,7 +4159,10 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     }
   }
 
-  private noteFd4AudioPathPressure(frame: ReticulumAudioFrame, routeKey: string): void {
+  private noteFd4AudioPathPressure(
+    frame: ReticulumAudioFrame,
+    routeKey: string
+  ): void {
     const nowMs = Date.now();
     const key = `${frame.roomId || 'n/a'}:${routeKey}`;
     let stats = this.audioPathPressureByRoute.get(key);
@@ -3172,14 +4281,122 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     }
   }
 
-  private handleStdout(chunk: string): void {
-    this.stdoutBuffer += chunk;
+  private enqueueStdoutChunk(chunk: string): void {
+    if (!chunk) return;
+    this.stdoutChunkQueue.push(chunk);
+    this.stdoutQueuedBytes += Buffer.byteLength(chunk, 'utf8');
+    this.maybePauseStdoutForPressure();
+    this.scheduleStdoutDrain();
+  }
+
+  private scheduleStdoutDrain(): void {
+    if (this.stdoutDrainScheduled) return;
+    this.stdoutDrainScheduled = true;
+    setImmediate(() => {
+      this.stdoutDrainScheduled = false;
+      if (!this.child) return;
+      runMainPressureTask(
+        'reticulum.stdout.drain',
+        {
+          queuedBytes: this.getStdoutBacklogBytes(),
+          queuedChunks: this.stdoutChunkQueue.length,
+        },
+        () => this.drainStdoutBudget()
+      );
+      this.maybeResumeStdoutAfterDrain();
+      if (this.hasStdoutWorkReady()) {
+        this.scheduleStdoutDrain();
+      }
+    });
+  }
+
+  private getStdoutBacklogBytes(): number {
+    return (
+      this.stdoutQueuedBytes + Buffer.byteLength(this.stdoutBuffer, 'utf8')
+    );
+  }
+
+  private hasStdoutWorkReady(): boolean {
+    return this.stdoutBuffer.includes('\n') || this.stdoutChunkQueue.length > 0;
+  }
+
+  private maybePauseStdoutForPressure(): void {
+    const child = this.child;
+    const stdout = child?.stdout;
+    if (
+      this.stdoutPaused ||
+      !stdout ||
+      this.getStdoutBacklogBytes() < RETICULUM_STDOUT_PAUSE_BYTES
+    ) {
+      return;
+    }
+    stdout.pause();
+    this.stdoutPaused = true;
+    this.logStdoutPressure('pause');
+  }
+
+  private maybeResumeStdoutAfterDrain(): void {
+    const child = this.child;
+    const stdout = child?.stdout;
+    if (
+      !this.stdoutPaused ||
+      !stdout ||
+      this.getStdoutBacklogBytes() > RETICULUM_STDOUT_RESUME_BYTES
+    ) {
+      return;
+    }
+    stdout.resume();
+    this.stdoutPaused = false;
+    this.logStdoutPressure('resume');
+  }
+
+  private logStdoutPressure(stage: 'pause' | 'resume'): void {
+    const now = Date.now();
+    if (stage === 'pause' && now - this.stdoutPressureLogLastAt < 2_000) {
+      return;
+    }
+    this.stdoutPressureLogLastAt = now;
+    loggerWarn(
+      `[ReticulumBridge] target=presence-reticulum stage=stdout-${stage} backlog_bytes=${this.getStdoutBacklogBytes()} queued_chunks=${this.stdoutChunkQueue.length} buffered_bytes=${Buffer.byteLength(
+        this.stdoutBuffer,
+        'utf8'
+      )}`
+    );
+  }
+
+  private pullStdoutChunksUntilLineOrEmpty(): void {
+    while (
+      !this.stdoutBuffer.includes('\n') &&
+      this.stdoutChunkQueue.length > 0
+    ) {
+      const next = this.stdoutChunkQueue.shift() ?? '';
+      this.stdoutQueuedBytes = Math.max(
+        0,
+        this.stdoutQueuedBytes - Buffer.byteLength(next, 'utf8')
+      );
+      this.stdoutBuffer += next;
+    }
+  }
+
+  private drainStdoutBudget(): void {
+    const startedAtMs = Date.now();
+    let processedLines = 0;
     for (;;) {
+      this.pullStdoutChunksUntilLineOrEmpty();
       const nlIndex = this.stdoutBuffer.indexOf('\n');
       if (nlIndex === -1) return;
       const line = this.stdoutBuffer.slice(0, nlIndex).trim();
       this.stdoutBuffer = this.stdoutBuffer.slice(nlIndex + 1);
-      if (!line) continue;
+      processedLines += 1;
+      if (!line) {
+        if (
+          processedLines >= RETICULUM_STDOUT_DRAIN_MAX_LINES ||
+          Date.now() - startedAtMs >= RETICULUM_STDOUT_DRAIN_MAX_MS
+        ) {
+          return;
+        }
+        continue;
+      }
 
       let frame: BridgeRespFrame | BridgeEventFrame;
       try {
@@ -3187,13 +4404,38 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       } catch (err) {
         loggerError('[ReticulumBridge] Invalid JSON frame:', err);
         loggerError(`[ReticulumBridge] Invalid line: ${line}`);
+        if (
+          processedLines >= RETICULUM_STDOUT_DRAIN_MAX_LINES ||
+          Date.now() - startedAtMs >= RETICULUM_STDOUT_DRAIN_MAX_MS
+        ) {
+          return;
+        }
         continue;
       }
       this.handleFrame(frame);
+      if (
+        processedLines >= RETICULUM_STDOUT_DRAIN_MAX_LINES ||
+        Date.now() - startedAtMs >= RETICULUM_STDOUT_DRAIN_MAX_MS
+      ) {
+        return;
+      }
     }
   }
 
   private handleFrame(frame: BridgeRespFrame | BridgeEventFrame): void {
+    const startedAtMs = Date.now();
+    const frameKey = this.describeStdoutFrame(frame);
+    try {
+      this.handleFrameInner(frame);
+    } finally {
+      const durationMs = Date.now() - startedAtMs;
+      if (durationMs >= RETICULUM_STDOUT_FRAME_SLOW_MS) {
+        this.logSlowStdoutFrame(frameKey, durationMs);
+      }
+    }
+  }
+
+  private handleFrameInner(frame: BridgeRespFrame | BridgeEventFrame): void {
     if (frame.type === 'resp') {
       const pending = this.pending.get(frame.id);
       if (!pending) return;
@@ -3214,6 +4456,8 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       return;
     }
 
+    this.logBridgeEventTimingIfSlow(frame);
+
     switch (frame.event) {
       case 'ready':
         this.state = 'ready';
@@ -3232,8 +4476,22 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         loggerLog(
           `[ReticulumBridge] Ready destination=${frame.payload?.destinationHash ?? 'unknown'}`
         );
-        this.emit('ready');
+        this.emitBridgeFrameEvent('ready');
         return;
+      case 'qortalland_game_ws_ready': {
+        const port = Number(frame.payload?.port);
+        const instanceId = String(frame.payload?.instanceId ?? '');
+        if (
+          Number.isInteger(port) &&
+          port > 0 &&
+          port <= 65535 &&
+          instanceId === this.gameTransportInstanceId
+        ) {
+          this.gameTransportUrl = `ws://127.0.0.1:${port}`;
+          this.emitBridgeFrameEvent('qortalland-game-transport-restarted');
+        }
+        return;
+      }
       case 'presence_message': {
         const envelope = frame.payload?.envelope;
         const route = toPresenceRoute(frame.payload?.route);
@@ -3250,13 +4508,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         loggerLog(
           `[ReticulumBridge] target=presence-reticulum rx=bridge_in type=${envelope.type} peer_addr=${peerAddr} sender_hash=${route.destinationHash} via_hash=${route.viaDestinationHash ?? route.destinationHash} envelope_id=${envelope.id ?? 'n/a'} env_ts=${typeof envelope.timestamp === 'number' ? envelope.timestamp : 'n/a'}`
         );
-        this.emit('presence-envelope', envelope, route);
+        this.emitBridgeFrameEvent('presence-envelope', envelope, route);
         return;
       }
       case 'candidate_peer_discovered': {
         const peerHash = frame.payload?.peerHash;
         if (typeof peerHash !== 'string' || !peerHash) return;
-        this.emit('candidate-peer-discovered', {
+        this.emitBridgeFrameEvent('candidate-peer-discovered', {
           peerHash,
           ...(typeof frame.payload?.source === 'string'
             ? { source: frame.payload.source }
@@ -3276,7 +4534,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
             : '',
           'call_signal'
         );
-        this.emit(
+        this.emitBridgeFrameEvent(
           'call-message',
           wire as Record<string, unknown>,
           typeof senderDestinationHash === 'string'
@@ -3298,7 +4556,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
             : '',
           'group_signal'
         );
-        this.emit(
+        this.emitBridgeFrameEvent(
           'group-call-message',
           wire as Record<string, unknown>,
           typeof senderDestinationHash === 'string'
@@ -3309,10 +4567,37 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         );
         return;
       }
+      case 'reticulum_chat_message': {
+        const wire = frame.payload?.wire;
+        const senderDestinationHash = frame.payload?.senderDestinationHash;
+        const peerPresenceHash = frame.payload?.peerPresenceHash;
+        if (!wire || typeof wire !== 'object') return;
+        this.markOverlayPeerVerifiedFromQortalTraffic(
+          typeof peerPresenceHash === 'string' ? peerPresenceHash : '',
+          typeof senderDestinationHash === 'string'
+            ? senderDestinationHash
+            : '',
+          'reticulum_chat'
+        );
+        this.emitBridgeFrameEvent(
+          'reticulum-chat-message',
+          wire as Record<string, unknown>,
+          typeof senderDestinationHash === 'string'
+            ? senderDestinationHash
+            : '',
+          typeof peerPresenceHash === 'string' ? peerPresenceHash : '',
+          typeof frame.payload?.linkId === 'string' ? frame.payload.linkId : '',
+          frame.payload?.landStateFastForwarded === true,
+          typeof frame.payload?.landStateForwardingRevision === 'number'
+            ? frame.payload.landStateForwardingRevision
+            : -1
+        );
+        return;
+      }
       case 'group_audio_link_established': {
         const linkId = frame.payload?.linkId;
         if (typeof linkId !== 'string' || !linkId) return;
-        this.emit('group-audio-link-established', {
+        this.emitBridgeFrameEvent('group-audio-link-established', {
           linkId,
           peerPresenceHash:
             typeof frame.payload?.peerPresenceHash === 'string'
@@ -3329,7 +4614,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       case 'group_audio_link_closed': {
         const linkId = frame.payload?.linkId;
         if (typeof linkId !== 'string' || !linkId) return;
-        this.emit('group-audio-link-closed', {
+        this.emitBridgeFrameEvent('group-audio-link-closed', {
           linkId,
           peerPresenceHash:
             typeof frame.payload?.peerPresenceHash === 'string'
@@ -3365,7 +4650,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
             `[ReticulumBridge] ${RETICULUM_AUDIO_IPC_LOG} stage=rns-send-failed-first-code code=${code} transport=${transport} target=${linkId ? linkId.slice(0, 8) : peerPresenceHash.slice(0, 16)} reason=${typeof frame.payload?.reason === 'string' ? frame.payload.reason : ''}${typeof frame.payload?.error === 'string' && frame.payload.error ? ` err=${frame.payload.error}` : ''}`
           );
         }
-        this.emit('group-audio-send-failed', {
+        this.emitBridgeFrameEvent('group-audio-send-failed', {
           linkId,
           peerPresenceHash,
           transport,
@@ -3380,6 +4665,40 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
             typeof frame.payload?.pathState === 'string'
               ? frame.payload.pathState
               : '',
+        });
+        return;
+      }
+      case 'group_audio_fast_path_activity': {
+        const roomId =
+          typeof frame.payload?.roomId === 'string' ? frame.payload.roomId : '';
+        const sourceAddress =
+          typeof frame.payload?.sourceAddress === 'string'
+            ? frame.payload.sourceAddress
+            : '';
+        if (!roomId || !sourceAddress) return;
+        this.emitBridgeFrameEvent('group-audio-fast-path-activity', {
+          roomId,
+          sourceAddress,
+          linkId:
+            typeof frame.payload?.linkId === 'string'
+              ? frame.payload.linkId
+              : '',
+          peerPresenceHash:
+            typeof frame.payload?.peerPresenceHash === 'string'
+              ? frame.payload.peerPresenceHash
+              : '',
+          peerDestinationHash:
+            typeof frame.payload?.peerDestinationHash === 'string'
+              ? frame.payload.peerDestinationHash
+              : '',
+          forwardedTargets:
+            typeof frame.payload?.forwardedTargets === 'number'
+              ? frame.payload.forwardedTargets
+              : 0,
+          receivedAtWallMs:
+            typeof frame.payload?.receivedAtWallMs === 'number'
+              ? frame.payload.receivedAtWallMs
+              : Date.now(),
         });
         return;
       }
@@ -3725,9 +5044,11 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           typeof frame.payload?.queuedPackets === 'number'
             ? frame.payload.queuedPackets
             : 0;
+        const overlayTransportAdmitted =
+          frame.payload?.overlayTransportAdmitted === true;
         if (shouldLogOverlayLinkStateEvent(reason)) {
           loggerLog(
-            `[ReticulumBridge] overlay-link link_id=${linkId} peer=${peerPresenceHash || 'unknown'} incoming=${frame.payload?.incoming === true ? 'yes' : 'no'} established=${frame.payload?.established === true ? 'yes' : 'no'} queued=${queuedPackets}${reason ? ` reason=${reason}` : ''}${overlayAgeDetail(frame.payload as Record<string, unknown> | undefined)}`
+            `[ReticulumBridge] overlay-link link_id=${linkId} peer=${peerPresenceHash || 'unknown'} incoming=${frame.payload?.incoming === true ? 'yes' : 'no'} established=${frame.payload?.established === true ? 'yes' : 'no'} admitted=${overlayTransportAdmitted ? 'yes' : 'no'} queued=${queuedPackets}${reason ? ` reason=${reason}` : ''}${overlayAgeDetail(frame.payload as Record<string, unknown> | undefined)}`
           );
         }
         const established = frame.payload?.established === true;
@@ -3753,6 +5074,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
             peerPresenceHash:
               peerPresenceHash || existing?.peerPresenceHash || '',
             incoming: frame.payload?.incoming === true,
+            overlayTransportAdmitted:
+              overlayTransportAdmitted ||
+              existing?.overlayTransportAdmitted === true,
             connectedAt: existing?.connectedAt ?? Date.now(),
             lastRxAt,
             lastActivityAt,
@@ -3774,12 +5098,17 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           peerPresenceHash &&
           !this.hasEstablishedOverlaySnapshotForPeer(peerPresenceHash)
         ) {
-          this.emit('overlay-link-closed', {
+          this.emitBridgeFrameEvent('overlay-link-closed', {
             peerHash: peerPresenceHash,
             reason,
+            lastActivityAgeMs:
+              typeof frame.payload?.lastActivityAgeMs === 'number' &&
+              Number.isFinite(frame.payload.lastActivityAgeMs)
+                ? frame.payload.lastActivityAgeMs
+                : null,
           });
         }
-        this.emit('overlay-link-state', {
+        this.emitBridgeFrameEvent('overlay-link-state', {
           linkId,
           peerPresenceHash,
           incoming: frame.payload?.incoming === true,
@@ -3791,15 +5120,60 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         return;
       }
       case 'qchat_file_transfer': {
-        this.emit('qchat-file-transfer', frame.payload ?? {});
+        const resourceType = String(frame.payload?.resourceType ?? '');
+        if (resourceType.startsWith('reticulum_resource')) {
+          this.emitBridgeFrameEvent('reticulum-resource', frame.payload ?? {});
+          return;
+        }
+        if (resourceType.startsWith('reticulum_chat')) {
+          this.emitBridgeFrameEvent(
+            'reticulum-chat-resource',
+            frame.payload ?? {}
+          );
+          return;
+        }
+        this.emitBridgeFrameEvent('qchat-file-transfer', frame.payload ?? {});
+        return;
+      }
+      case 'reticulum_chat_resource': {
+        this.emitBridgeFrameEvent(
+          'reticulum-chat-resource',
+          frame.payload ?? {}
+        );
+        return;
+      }
+      case 'reticulum_resource': {
+        this.emitBridgeFrameEvent('reticulum-resource', frame.payload ?? {});
+        return;
+      }
+      case 'reticulum_resource_session': {
+        this.emitBridgeFrameEvent(
+          'reticulum-resource-session',
+          frame.payload ?? {}
+        );
         return;
       }
       case 'error': {
+        const payload = frame.payload;
         const message =
-          frame.payload?.message ??
-          frame.payload?.detail ??
+          payload?.message ??
+          payload?.detail ??
           'Reticulum bridge reported an error';
-        loggerError('[ReticulumBridge] Python error event:', message);
+        const context = [
+          payload?.code ? `code=${payload.code}` : '',
+          payload?.lane ? `lane=${payload.lane}` : '',
+          payload?.task ? `task=${payload.task}` : '',
+          payload?.action ? `action=${payload.action}` : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        const detail =
+          payload?.detail && payload.detail !== message
+            ? `\n${payload.detail}`
+            : '';
+        loggerError(
+          `[ReticulumBridge] Python error event${context ? ` ${context}` : ''}: ${message}${detail}`
+        );
         return;
       }
       case 'transport_state': {
@@ -3859,10 +5233,119 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         loggerLog(
           `[ReticulumBridge] Transport state=${this.connectivitySnapshot.reachability} hubs=${this.connectivitySnapshot.onlineHubInterfaces ?? 0}/${this.connectivitySnapshot.configuredHubInterfaces ?? 0} remote_hubs=${this.connectivitySnapshot.onlineRemoteHubInterfaces ?? 0}/${this.connectivitySnapshot.configuredRemoteHubInterfaces ?? 0} transport=${this.connectivitySnapshot.transportEnabled === true ? 'on' : 'off'} meshListenOnline=${this.connectivitySnapshot.meshListenOnline === true ? 'on' : 'off'}`
         );
-        this.emit('transport-state', this.getConnectivitySnapshot());
+        this.emitBridgeFrameEvent(
+          'transport-state',
+          this.getConnectivitySnapshot()
+        );
         return;
       }
     }
+  }
+
+  getQortalLandGameTransportBootstrap(): {
+    url: string;
+    token: string;
+    instanceId: string;
+  } | null {
+    if (
+      !this.gameTransportUrl ||
+      !this.gameTransportToken ||
+      !this.gameTransportInstanceId ||
+      this.state !== 'ready'
+    ) {
+      return null;
+    }
+    return {
+      url: this.gameTransportUrl,
+      token: this.gameTransportToken,
+      instanceId: this.gameTransportInstanceId,
+    };
+  }
+
+  private describeStdoutFrame(
+    frame: BridgeRespFrame | BridgeEventFrame
+  ): string {
+    if (frame.type === 'resp') {
+      const pending = this.pending.get(frame.id);
+      return `resp:${pending?.action ?? 'unknown'}`;
+    }
+    const payload = frame.payload;
+    const wire =
+      payload && typeof payload === 'object'
+        ? (payload as { wire?: unknown }).wire
+        : undefined;
+    const wireKey =
+      wire && typeof wire === 'object' && !Array.isArray(wire)
+        ? String(
+            (wire as { k?: unknown; t?: unknown }).k ??
+              (wire as { t?: unknown }).t ??
+              ''
+          )
+        : '';
+    return wireKey ? `event:${frame.event}:${wireKey}` : `event:${frame.event}`;
+  }
+
+  private logSlowStdoutFrame(frameKey: string, durationMs: number): void {
+    const now = Date.now();
+    const last = this.stdoutSlowFrameLogLastByKey.get(frameKey) ?? 0;
+    if (now - last < 2_000) return;
+    this.stdoutSlowFrameLogLastByKey.set(frameKey, now);
+    loggerWarn(
+      `[ReticulumBridge] target=presence-reticulum stage=stdout-frame-slow frame=${frameKey} duration_ms=${Math.round(
+        durationMs
+      )} backlog_bytes=${this.getStdoutBacklogBytes()}`
+    );
+  }
+
+  private emitBridgeFrameEvent(eventName: string, ...args: unknown[]): boolean {
+    const startedAtMs = Date.now();
+    try {
+      return super.emit(eventName, ...args);
+    } finally {
+      const durationMs = Date.now() - startedAtMs;
+      if (durationMs >= RETICULUM_STDOUT_EMIT_SLOW_MS) {
+        this.logSlowStdoutEmit(eventName, durationMs);
+      }
+    }
+  }
+
+  private logSlowStdoutEmit(eventName: string, durationMs: number): void {
+    const now = Date.now();
+    const last = this.stdoutSlowEmitLogLastByEvent.get(eventName) ?? 0;
+    if (now - last < 2_000) return;
+    this.stdoutSlowEmitLogLastByEvent.set(eventName, now);
+    loggerWarn(
+      `[ReticulumBridge] target=presence-reticulum stage=stdout-emit-slow event=${eventName} duration_ms=${Math.round(
+        durationMs
+      )} listeners=${this.listenerCount(eventName)}`
+    );
+  }
+
+  private logBridgeEventTimingIfSlow(frame: BridgeEventFrame): void {
+    const now = Date.now();
+    const queuedAtMs = numericFrameField(frame, '_queuedAtMs');
+    const writeAtMs = numericFrameField(frame, '_writeAtMs');
+    const queuedAgeMs = queuedAtMs !== null ? now - queuedAtMs : 0;
+    const stdoutAgeMs = writeAtMs !== null ? now - writeAtMs : 0;
+    const pythonQueueMs =
+      queuedAtMs !== null && writeAtMs !== null ? writeAtMs - queuedAtMs : 0;
+    if (queuedAgeMs < 80 && stdoutAgeMs < 80 && pythonQueueMs < 80) {
+      return;
+    }
+    const last = this.bridgeEventTimingLogLastByEvent.get(frame.event) ?? 0;
+    if (now - last < 2_000) return;
+    this.bridgeEventTimingLogLastByEvent.set(frame.event, now);
+    if (this.bridgeEventTimingLogLastByEvent.size > 256) {
+      for (const key of Array.from(
+        this.bridgeEventTimingLogLastByEvent.keys()
+      ).slice(0, 64)) {
+        this.bridgeEventTimingLogLastByEvent.delete(key);
+      }
+    }
+    const detail = bridgeEventTimingDetail(frame, now);
+    loggerLog(
+      `[ReticulumBridge] target=presence-reticulum event_delivery event=${frame.event}${detail ? ` ${detail}` : ''}`
+    );
   }
 
   private transitionToDegraded(reason?: string): void {
@@ -3928,9 +5411,20 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       | 'send_qchat_file_resource'
       | 'authorize_qchat_file_resource'
       | 'reject_qchat_file_resource'
+      | 'accept_reticulum_chat_resource'
+      | 'send_reticulum_chat_resource'
+      | 'authorize_reticulum_chat_resource'
+      | 'reject_reticulum_chat_resource'
+      | 'accept_reticulum_resource'
+      | 'send_reticulum_resource'
+      | 'authorize_reticulum_resource'
+      | 'reject_reticulum_resource'
+      | 'cancel_reticulum_resource'
       | 'fanout_call'
       | 'send_group_call'
       | 'fanout_group_call'
+      | 'send_reticulum_chat'
+      | 'fanout_reticulum_chat'
       | 'send_group_audio_link_heartbeat'
       | 'close_group_audio_link'
       | 'reset_group_audio_peer_state'
@@ -3977,13 +5471,26 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     frame: BridgeRespFrame
   ): ReticulumSendFailureReason {
     const code = frame.payload?.code;
-    if (code === 'bridge_overloaded') return 'bridge-overloaded';
+    if (
+      code === 'bridge_overloaded' ||
+      code === 'bridge_command_queue_full' ||
+      code === 'scheduler_queue_full' ||
+      code === 'resource_open_queue_full' ||
+      code === 'resource_session_capacity' ||
+      code === 'resource_session_queue_full'
+    )
+      return 'bridge-overloaded';
     if (code === 'bridge_not_started') return 'bridge-not-started';
     if (code === 'unknown_peer_presence_hash')
       return 'unknown-peer-presence-hash';
     if (code === 'wire_too_large') return 'wire-too-large';
     if (code === 'packet_send_false') return 'packet-send-false';
-    if (code === 'no_route') return 'no-route';
+    if (
+      code === 'no_route' ||
+      code === 'no_established_route' ||
+      code === 'resource_session_backoff'
+    )
+      return 'no-route';
     if (code === 'unknown_link_id') return 'unknown-link-id';
     if (code === 'audio_link_not_ready') return 'audio-link-not-ready';
     if (code === 'audio_payload_too_large') return 'audio-payload-too-large';
@@ -3995,20 +5502,91 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 }
 
 let bridgeInstance: ReticulumBridge | null = null;
+let bridgeStopPromise: Promise<void> | null = null;
 
 export function getReticulumBridge(): ReticulumBridge | null {
   return bridgeInstance;
 }
 
 export async function startReticulumBridge(): Promise<ReticulumBridge> {
-  if (!bridgeInstance) {
-    bridgeInstance = new ReticulumBridge();
+  if (!isReticulumRuntimeEnabled()) {
+    throw new Error('Reticulum is disabled');
   }
-  await bridgeInstance.start();
-  return bridgeInstance;
+  if (bridgeStopPromise) {
+    await bridgeStopPromise;
+  }
+  if (!isReticulumRuntimeEnabled()) {
+    throw new Error('Reticulum is disabled');
+  }
+  const bridge = bridgeInstance ?? new ReticulumBridge();
+  bridgeInstance = bridge;
+  await bridge.start();
+  if (!isReticulumRuntimeEnabled() || bridgeInstance !== bridge) {
+    if (bridgeInstance === bridge) {
+      bridgeInstance = null;
+      await bridge.stopAndWait();
+    }
+    throw new Error('Reticulum bridge startup was superseded');
+  }
+  return bridge;
+}
+
+/**
+ * Restart the current per-Electron bridge process without replacing its
+ * EventEmitter wrapper. This keeps all manager references and listeners bound
+ * to the single authoritative bridge across sleep/wake recovery.
+ */
+export async function restartReticulumBridge(): Promise<ReticulumBridge> {
+  if (bridgeStopPromise) {
+    await bridgeStopPromise;
+  }
+  if (!isReticulumRuntimeEnabled()) {
+    throw new Error('Reticulum is disabled');
+  }
+  const bridge = bridgeInstance;
+  if (!bridge) {
+    return startReticulumBridge();
+  }
+  await bridge.restartAndWait();
+  if (!isReticulumRuntimeEnabled() || bridgeInstance !== bridge) {
+    throw new Error('Reticulum bridge restart was superseded');
+  }
+  return bridge;
+}
+
+function beginReticulumBridgeStop(): Promise<void> {
+  if (bridgeStopPromise) {
+    return bridgeStopPromise;
+  }
+  const bridge = bridgeInstance;
+  if (!bridge) {
+    return Promise.resolve();
+  }
+  const stopPromise = bridge.retireAndWait();
+  const trackedStopPromise = stopPromise
+    .then(() => {
+      if (bridgeInstance === bridge) {
+        bridgeInstance = null;
+      }
+    })
+    .finally(() => {
+      if (bridgeStopPromise === trackedStopPromise) {
+        bridgeStopPromise = null;
+      }
+    });
+  bridgeStopPromise = trackedStopPromise;
+  return trackedStopPromise;
 }
 
 export function stopReticulumBridge(): void {
-  bridgeInstance?.stop();
-  bridgeInstance = null;
+  // Preserve the retiring wrapper as authoritative until its child confirms
+  // exit. A caller that immediately starts again will join bridgeStopPromise
+  // instead of spawning alongside a process that is still shutting down.
+  void beginReticulumBridgeStop().catch((error) => {
+    loggerError('[ReticulumBridge] Asynchronous bridge stop failed:', error);
+  });
+}
+
+export async function stopReticulumBridgeAndWait(): Promise<void> {
+  await beginReticulumBridgeStop();
 }

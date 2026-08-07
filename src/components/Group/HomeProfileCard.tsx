@@ -51,16 +51,14 @@ import { useTranslation } from 'react-i18next';
 import {
   blockedAddressesAtom,
   blockedNamesAtom,
+  disableDevLogsAtom,
   enabledDevModeAtom,
   rawWalletAtom,
   userInfoAtom,
   openSnackGlobalAtom,
   infoSnackGlobalAtom,
 } from '../../atoms/global';
-import {
-  isIdleAtom,
-  type SelectableStatus,
-} from '../../atoms/presence';
+import { isIdleAtom, type SelectableStatus } from '../../atoms/presence';
 import { statusDotColor, useMyStatus } from '../../hooks/usePresence';
 import { QORTAL_APP_CONTEXT } from '../../App';
 import { getFee, walletVersion } from '../../background/background.ts';
@@ -97,6 +95,13 @@ import {
   HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY,
   HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY,
 } from './HomeDesktop/homeDesktopConstants';
+import {
+  AUTO_LOCK_TIMEOUT_OPTIONS,
+  DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES,
+  normalizeAutoLockTimeoutMinutes,
+  resolveAutoLockTimeoutMinutes,
+  type AutoLockTimeoutMinutes,
+} from '../../lib/autoLock';
 
 type HomeProfileCardProps = {
   onOpenReceive?: (anchorEl: HTMLElement) => void;
@@ -125,6 +130,24 @@ type ReticulumConfigEditorInfo = {
   sharedDaemon: boolean;
   maxBytes: number;
   updatedAt?: number;
+};
+type ReticulumResourceStorageStatus = {
+  limitBytes: number;
+  totalResidentBytes: number;
+  authoredResidentBytes: number;
+  remoteResidentBytes: number;
+  partialResidentBytes: number;
+  reservedBytes: number;
+};
+
+const RETICULUM_RESOURCE_GIB = 1024 * 1024 * 1024;
+const formatStorageBytes = (bytes: number) => {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value >= RETICULUM_RESOURCE_GIB) {
+    return `${(value / RETICULUM_RESOURCE_GIB).toFixed(value >= 10 * RETICULUM_RESOURCE_GIB ? 0 : 1)} GB`;
+  }
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(0)} MB`;
+  return `${Math.round(value / 1024)} KB`;
 };
 
 const ACCOUNT_SETTINGS_PRIVACY_STORAGE_KEY =
@@ -161,6 +184,37 @@ const readStoredBoolean = (key: string, fallback: boolean) => {
   }
 };
 
+type ReticulumDetailsPeer = {
+  linkId: string;
+  peerPresenceHash: string;
+  incoming?: boolean;
+  address?: string;
+  addresses?: string[];
+  connectedAt: number;
+};
+
+type ReticulumDetailsSnapshot = {
+  destinationHash: string | null;
+  overlayPeers: ReticulumDetailsPeer[];
+};
+
+const formatReticulumConnectedDuration = (
+  connectedAt: number,
+  now = Date.now()
+) => {
+  const elapsedMs = Math.max(0, now - connectedAt);
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+};
+
 export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const { t } = useTranslation(['tutorial', 'core', 'group']);
   const theme = useTheme();
@@ -173,6 +227,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const setOpenSnack = useSetAtom(openSnackGlobalAtom);
   const setInfoSnack = useSetAtom(infoSnackGlobalAtom);
   const [isEnabledDevMode, setIsEnabledDevMode] = useAtom(enabledDevModeAtom);
+  const [disableDevLogs, setDisableDevLogs] = useAtom(disableDevLogsAtom);
 
   const avatarAnchorRef = useRef<HTMLButtonElement | null>(null);
   const avatarPanelRef = useRef<HTMLDivElement | null>(null);
@@ -227,6 +282,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       return false;
     }
   });
+  const [autoLockTimeoutMinutes, setAutoLockTimeoutMinutes] =
+    useState<AutoLockTimeoutMinutes>(DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES);
   const [areUiAnimationsEnabled, setAreUiAnimationsEnabled] = useState(() =>
     readStoredBoolean(ACCOUNT_SETTINGS_UI_ANIMATIONS_STORAGE_KEY, true)
   );
@@ -234,23 +291,40 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     useState(() =>
       readStoredBoolean(HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY, true)
     );
-  const [isQuitterFeedModuleVisible, setIsQuitterFeedModuleVisible] =
-    useState(() =>
-      readStoredBoolean(HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY, true)
-    );
+  const [isQuitterFeedModuleVisible, setIsQuitterFeedModuleVisible] = useState(
+    () => readStoredBoolean(HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY, true)
+  );
   const [closeAction, setCloseAction] = useState<CloseAction>('ask');
   const [reticulumManagedConfigEnabled, setReticulumManagedConfigEnabled] =
     useState(true);
+  const [reticulumEnabled, setReticulumEnabled] = useState(true);
+  const [reticulumDisableConfirmOpen, setReticulumDisableConfirmOpen] =
+    useState(false);
+  const [reticulumTransitionBusy, setReticulumTransitionBusy] = useState(false);
+  const [reticulumChatEnabled, setReticulumChatEnabled] = useState(false);
+  const [reticulumResourceLimitBytes, setReticulumResourceLimitBytes] =
+    useState(10 * RETICULUM_RESOURCE_GIB);
+  const [reticulumResourceStorage, setReticulumResourceStorage] =
+    useState<ReticulumResourceStorageStatus | null>(null);
   const [reticulumConfigEditorInfo, setReticulumConfigEditorInfo] =
     useState<ReticulumConfigEditorInfo | null>(null);
   const [reticulumConfigDraft, setReticulumConfigDraft] = useState('');
   const [isReticulumConfigLoading, setIsReticulumConfigLoading] =
     useState(false);
-  const [isReticulumConfigSaving, setIsReticulumConfigSaving] =
-    useState(false);
+  const [isReticulumConfigSaving, setIsReticulumConfigSaving] = useState(false);
   const [reticulumConfigError, setReticulumConfigError] = useState<
     string | null
   >(null);
+  const appSettingsRevisionRef = useRef(0);
+  const [isReticulumDetailsOpen, setIsReticulumDetailsOpen] = useState(false);
+  const [isReticulumDetailsLoading, setIsReticulumDetailsLoading] =
+    useState(false);
+  const [reticulumDetails, setReticulumDetails] =
+    useState<ReticulumDetailsSnapshot | null>(null);
+  const [reticulumDetailsError, setReticulumDetailsError] = useState<
+    string | null
+  >(null);
+  const [reticulumDetailsNow, setReticulumDetailsNow] = useState(Date.now());
   const [platform, setPlatform] = useState('');
   const [securityPassword, setSecurityPassword] = useState('');
   const [isSecurityPasswordEditable, setIsSecurityPasswordEditable] =
@@ -434,11 +508,14 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     [td]
   );
 
-  const openAvatarPanel = useCallback((target: HTMLElement | null) => {
-    if (!target) return;
-    setAvatarPanelOriginRect(target.getBoundingClientRect());
-    setAvatarAnchorEl(target);
-  }, [td]);
+  const openAvatarPanel = useCallback(
+    (target: HTMLElement | null) => {
+      if (!target) return;
+      setAvatarPanelOriginRect(target.getBoundingClientRect());
+      setAvatarAnchorEl(target);
+    },
+    [td]
+  );
 
   const closeAvatarPanel = useCallback(() => {
     setAvatarAnchorEl(null);
@@ -636,11 +713,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         html[data-hub-ui-animations="off"] *,
         html[data-hub-ui-animations="off"] *::before,
         html[data-hub-ui-animations="off"] *::after {
-          animation-duration: 0.01ms !important;
-          animation-iteration-count: 1 !important;
+          animation: none !important;
           scroll-behavior: auto !important;
-          transition-delay: 0ms !important;
-          transition-duration: 0.01ms !important;
+          transition: none !important;
         }
       `;
   }, [areUiAnimationsEnabled]);
@@ -702,13 +777,33 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     }
 
     try {
+      const revision = appSettingsRevisionRef.current;
       const settings = await window.electronAPI.getAppSettings();
-      const shouldDisableStartupSound =
-        settings?.disableStartupSound === true;
+      if (revision !== appSettingsRevisionRef.current) return;
+      const shouldDisableStartupSound = settings?.disableStartupSound === true;
       setIsStartupSoundDisabled(shouldDisableStartupSound);
+      setAutoLockTimeoutMinutes(
+        resolveAutoLockTimeoutMinutes(
+          settings?.autoLockTimeoutMinutes,
+          settings?.disableAutoLockOnIdle === true
+        )
+      );
       setReticulumManagedConfigEnabled(
         settings?.reticulumManagedConfigEnabled === false ? false : true
       );
+      setReticulumEnabled(settings?.reticulumEnabled === false ? false : true);
+      setReticulumChatEnabled(
+        settings?.reticulumChatEnabled === false ? false : true
+      );
+      setReticulumResourceLimitBytes(
+        Number(settings?.reticulumResourceLimitBytes) ||
+          10 * RETICULUM_RESOURCE_GIB
+      );
+      const storageResponse =
+        await window.reticulumResources?.getStorageStatus?.();
+      if (storageResponse?.success && storageResponse.status) {
+        setReticulumResourceStorage(storageResponse.status);
+      }
       if (settings?.closeAction) setCloseAction(settings.closeAction);
       window.localStorage.setItem(
         ACCOUNT_SETTINGS_STARTUP_AUDIO_DISABLED_STORAGE_KEY,
@@ -721,6 +816,25 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     } catch (error) {
       console.error('Unable to load general app settings.', error);
     }
+  }, []);
+
+  useEffect(() => {
+    return window.electronAPI?.onAppSettingsChanged?.((settings) => {
+      appSettingsRevisionRef.current += 1;
+      setAutoLockTimeoutMinutes(
+        resolveAutoLockTimeoutMinutes(
+          settings?.autoLockTimeoutMinutes,
+          settings?.disableAutoLockOnIdle === true
+        )
+      );
+      const enabled = settings?.reticulumEnabled !== false;
+      setReticulumEnabled(enabled);
+      if (!enabled) setIsReticulumDetailsOpen(false);
+      setReticulumManagedConfigEnabled(
+        settings?.reticulumManagedConfigEnabled !== false
+      );
+      setReticulumChatEnabled(settings?.reticulumChatEnabled !== false);
+    });
   }, []);
 
   const loadReticulumConfigEditorInfo = useCallback(async () => {
@@ -752,9 +866,58 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     }
   }, [td]);
 
+  const loadReticulumDetails = useCallback(async () => {
+    if (
+      typeof window === 'undefined' ||
+      typeof window.electronAPI?.reticulumGetDetails !== 'function'
+    ) {
+      setReticulumDetailsError(
+        td(
+          'reticulum_details_unavailable',
+          'Reticulum details are unavailable in this environment.'
+        )
+      );
+      return;
+    }
+
+    setIsReticulumDetailsLoading(true);
+    setReticulumDetailsError(null);
+    try {
+      const details = await window.electronAPI.reticulumGetDetails();
+      setReticulumDetails({
+        destinationHash: details?.destinationHash ?? null,
+        overlayPeers: Array.isArray(details?.overlayPeers)
+          ? details.overlayPeers
+          : [],
+      });
+      setReticulumDetailsNow(Date.now());
+    } catch (error) {
+      setReticulumDetailsError(
+        error instanceof Error
+          ? error.message
+          : td(
+              'reticulum_details_load_error',
+              'Unable to load Reticulum details.'
+            )
+      );
+    } finally {
+      setIsReticulumDetailsLoading(false);
+    }
+  }, [td]);
+
+  const openReticulumDetails = useCallback(() => {
+    setIsReticulumDetailsOpen(true);
+    void loadReticulumDetails();
+  }, [loadReticulumDetails]);
+
+  const closeReticulumDetails = useCallback(() => {
+    setIsReticulumDetailsOpen(false);
+  }, []);
+
   const closeAccountSettingsModal = useCallback(() => {
     if (isChangeNameLoading) return;
     setIsAccountSettingsOpen(false);
+    setIsReticulumDetailsOpen(false);
     setChangeNameValue('');
     setChangeNameAvailability('null');
     setCurrentNameMetaError(null);
@@ -798,11 +961,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   useEffect(() => {
     if (!isAccountSettingsOpen || activeSettingsTab !== 'reticulum') return;
     void loadReticulumConfigEditorInfo();
-  }, [
-    activeSettingsTab,
-    isAccountSettingsOpen,
-    loadReticulumConfigEditorInfo,
-  ]);
+  }, [activeSettingsTab, isAccountSettingsOpen, loadReticulumConfigEditorInfo]);
 
   const handleOpenAccountStatusMenu = useCallback(
     (event: MouseEvent<HTMLElement>) => {
@@ -905,6 +1064,55 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     [setInfoSnack, setOpenSnack, td]
   );
 
+  const handleAutoLockTimeoutChange = useCallback(
+    async (value: AutoLockTimeoutMinutes) => {
+      const previous = autoLockTimeoutMinutes;
+      setAutoLockTimeoutMinutes(value);
+
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          autoLockTimeoutMinutes: value,
+          disableAutoLockOnIdle: value === 0,
+        });
+      } catch {
+        setAutoLockTimeoutMinutes(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'idle_auto_lock_update_error',
+            'We could not update auto-lock right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [autoLockTimeoutMinutes, setInfoSnack, setOpenSnack, td]
+  );
+
+  const handleToggleDevLogFiltering = useCallback(
+    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      const previous = disableDevLogs;
+      setDisableDevLogs(checked);
+
+      try {
+        if (typeof window.electronAPI?.setDisableDevLogs === 'function') {
+          await window.electronAPI.setDisableDevLogs(checked);
+        }
+      } catch (error) {
+        setDisableDevLogs(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'dev_log_filter_update_error',
+            'We could not update developer log filtering right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [disableDevLogs, setDisableDevLogs, setInfoSnack, setOpenSnack, td]
+  );
+
   const handleCloseActionChange = useCallback(
     async (value: CloseAction) => {
       const previousCloseAction = closeAction;
@@ -969,6 +1177,101 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     ]
   );
 
+  const updateReticulumEnabled = useCallback(
+    async (checked: boolean) => {
+      const previous = reticulumEnabled;
+      setReticulumEnabled(checked);
+      setReticulumTransitionBusy(true);
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          reticulumEnabled: checked,
+        });
+      } catch {
+        setReticulumEnabled(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'reticulum_enabled_update_error',
+            'We could not update Reticulum right now.'
+          ),
+        });
+        setOpenSnack(true);
+      } finally {
+        setReticulumTransitionBusy(false);
+      }
+    },
+    [reticulumEnabled, setInfoSnack, setOpenSnack, td]
+  );
+
+  const handleToggleReticulum = useCallback(
+    (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      if (!checked) {
+        setReticulumDisableConfirmOpen(true);
+        return;
+      }
+      void updateReticulumEnabled(true);
+    },
+    [updateReticulumEnabled]
+  );
+
+  const confirmDisableReticulum = useCallback(() => {
+    setReticulumDisableConfirmOpen(false);
+    void updateReticulumEnabled(false);
+  }, [updateReticulumEnabled]);
+
+  const handleToggleReticulumChat = useCallback(
+    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      const previous = reticulumChatEnabled;
+      setReticulumChatEnabled(checked);
+
+      try {
+        if (typeof window.electronAPI?.setAppSettings === 'function') {
+          await window.electronAPI.setAppSettings({
+            reticulumChatEnabled: checked,
+          });
+        }
+      } catch (error) {
+        setReticulumChatEnabled(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'reticulum_chat_update_error',
+            'We could not update Reticulum group chat right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [reticulumChatEnabled, setInfoSnack, setOpenSnack, td]
+  );
+
+  const handleReticulumResourceLimitChange = useCallback(
+    async (limitBytes: number) => {
+      const previous = reticulumResourceLimitBytes;
+      setReticulumResourceLimitBytes(limitBytes);
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          reticulumResourceLimitBytes: limitBytes,
+        });
+        const response = await window.reticulumResources?.getStorageStatus?.();
+        if (response?.success && response.status) {
+          setReticulumResourceStorage(response.status);
+        }
+      } catch {
+        setReticulumResourceLimitBytes(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'reticulum_storage_limit_error',
+            'We could not update attachment storage right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [reticulumResourceLimitBytes, setInfoSnack, setOpenSnack, td]
+  );
+
   const handleSaveReticulumConfig = useCallback(async () => {
     if (
       typeof window.electronAPI?.reticulumSaveConfigEditorContents !==
@@ -988,7 +1291,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       if (!info.ok) {
         setReticulumConfigError(
           info.error ||
-            td('reticulum_config_save_error', 'Unable to save Reticulum config.')
+            td(
+              'reticulum_config_save_error',
+              'Unable to save Reticulum config.'
+            )
         );
         return;
       }
@@ -1012,12 +1318,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     } finally {
       setIsReticulumConfigSaving(false);
     }
-  }, [
-    reticulumConfigDraft,
-    setInfoSnack,
-    setOpenSnack,
-    td,
-  ]);
+  }, [reticulumConfigDraft, setInfoSnack, setOpenSnack, td]);
 
   const handleResetReticulumConfigToDefault = useCallback(async () => {
     if (
@@ -1028,7 +1329,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     }
     setReticulumConfigError(null);
     try {
-      const result = await window.electronAPI.reticulumGetGeneratedDefaultConfig();
+      const result =
+        await window.electronAPI.reticulumGetGeneratedDefaultConfig();
       if (!result.ok) {
         setReticulumConfigError(
           result.error ||
@@ -1320,6 +1622,15 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     loadReticulumConfigEditorInfo,
     reticulumManagedConfigEnabled,
   ]);
+
+  useEffect(() => {
+    if (!isReticulumDetailsOpen) return;
+    setReticulumDetailsNow(Date.now());
+    const timer = window.setInterval(() => {
+      setReticulumDetailsNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isReticulumDetailsOpen]);
 
   const formattedChangeNameFee = useMemo(() => {
     const numericFee = Number(changeNameFee);
@@ -1963,11 +2274,15 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           onClick={handleOpenAccountStatusMenu}
           aria-haspopup="menu"
           aria-expanded={isAccountStatusMenuOpen ? 'true' : undefined}
-          aria-controls={isAccountStatusMenuOpen ? 'account-status-menu' : undefined}
+          aria-controls={
+            isAccountStatusMenuOpen ? 'account-status-menu' : undefined
+          }
           sx={{
             alignItems: 'center',
             backgroundColor: alpha(
-              isDarkMode ? theme.palette.common.white : theme.palette.text.primary,
+              isDarkMode
+                ? theme.palette.common.white
+                : theme.palette.text.primary,
               isDarkMode ? 0.06 : 0.05
             ),
             borderRadius: '999px',
@@ -1983,12 +2298,17 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               'background-color 160ms ease, color 160ms ease, transform 120ms ease',
             '&:hover': {
               backgroundColor: alpha(
-                isDarkMode ? theme.palette.common.white : theme.palette.text.primary,
+                isDarkMode
+                  ? theme.palette.common.white
+                  : theme.palette.text.primary,
                 isDarkMode ? 0.1 : 0.08
               ),
             },
             '&:focus-visible': {
-              backgroundColor: alpha(theme.palette.primary.main, isDarkMode ? 0.16 : 0.1),
+              backgroundColor: alpha(
+                theme.palette.primary.main,
+                isDarkMode ? 0.16 : 0.1
+              ),
             },
           }}
         >
@@ -2393,9 +2713,13 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
           paper: {
             sx: {
               backdropFilter: 'blur(14px)',
-              bgcolor: isDarkMode ? 'rgba(34, 37, 46, 0.94)' : 'rgba(251, 247, 240, 0.94)',
+              bgcolor: isDarkMode
+                ? 'rgba(34, 37, 46, 0.94)'
+                : 'rgba(251, 247, 240, 0.94)',
               border: `1px solid ${alpha(
-                isDarkMode ? theme.palette.common.white : theme.palette.text.primary,
+                isDarkMode
+                  ? theme.palette.common.white
+                  : theme.palette.text.primary,
                 0.07
               )}`,
               borderRadius: '16px',
@@ -3437,6 +3761,269 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       overflow: 'hidden',
                     }}
                   >
+                    {reticulumEnabled ? (
+                      <>
+                        <Box
+                          sx={{
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'reticulum_group_chat',
+                                'Reticulum group chat'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {td(
+                                'reticulum_group_chat_desc',
+                                'Use the experimental Reticulum transport for group chat messages when available.'
+                              )}
+                            </Typography>
+                          </Box>
+                          <Switch
+                            checked={reticulumChatEnabled}
+                            onChange={handleToggleReticulumChat}
+                            sx={settingsSwitchSx}
+                          />
+                        </Box>
+
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+
+                        <Box
+                          sx={{
+                            alignItems: { sm: 'center' },
+                            display: 'flex',
+                            flexDirection: { xs: 'column', sm: 'row' },
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'reticulum_attachment_storage',
+                                'Attachment storage'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {formatStorageBytes(
+                                reticulumResourceStorage?.totalResidentBytes ||
+                                  0
+                              )}{' '}
+                              /{' '}
+                              {formatStorageBytes(reticulumResourceLimitBytes)}
+                            </Typography>
+                          </Box>
+                          <Box
+                            sx={{
+                              alignItems: 'center',
+                              display: 'flex',
+                              flexShrink: 0,
+                              gap: 0.8,
+                            }}
+                          >
+                            <Select
+                              size="small"
+                              value={reticulumResourceLimitBytes}
+                              onChange={(event) =>
+                                void handleReticulumResourceLimitChange(
+                                  Number(event.target.value)
+                                )
+                              }
+                              sx={{ fontSize: '0.78rem', minWidth: 90 }}
+                            >
+                              {[2, 5, 10, 25, 50].map((gib) => (
+                                <MenuItem
+                                  key={gib}
+                                  value={gib * RETICULUM_RESOURCE_GIB}
+                                >
+                                  {gib} GB
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </Box>
+                        </Box>
+
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+                      </>
+                    ) : null}
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('filter_developer_logs', 'Filter Developer Logs')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'filter_developer_logs_desc',
+                            'Turn on to hide verbose main-process logs while keeping warnings and errors visible.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Switch
+                        checked={disableDevLogs}
+                        onChange={handleToggleDevLogFiltering}
+                        sx={settingsSwitchSx}
+                      />
+                    </Box>
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('idle_auto_lock', 'Auto-Lock When Idle')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'idle_auto_lock_desc',
+                            'Choose how long the Hub waits before locking while you are inactive.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Select
+                        size="small"
+                        value={autoLockTimeoutMinutes}
+                        onChange={(event) =>
+                          void handleAutoLockTimeoutChange(
+                            normalizeAutoLockTimeoutMinutes(event.target.value)
+                          )
+                        }
+                        sx={{
+                          borderRadius: '10px',
+                          flexShrink: 0,
+                          fontSize: '0.82rem',
+                          minWidth: 122,
+                          '& .MuiSelect-select': { py: 0.85 },
+                        }}
+                      >
+                        {AUTO_LOCK_TIMEOUT_OPTIONS.map((minutes) => (
+                          <MenuItem key={minutes} value={minutes}>
+                            {minutes === 0
+                              ? td('idle_auto_lock_disabled', 'Disabled')
+                              : minutes < 60
+                                ? td(
+                                    'idle_auto_lock_minutes',
+                                    '{{count}} min',
+                                    {
+                                      count: minutes,
+                                    }
+                                  )
+                                : td(
+                                    'idle_auto_lock_hours',
+                                    minutes === 60 ? '1 hour' : '3 hours',
+                                    { count: minutes / 60 }
+                                  )}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </Box>
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
                     <Box
                       sx={{
                         alignItems: 'center',
@@ -3482,173 +4069,173 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       />
                     </Box>
 
-                  <Box
-                    sx={{
-                      borderTop: `1px solid ${avatarSectionDivider}`,
-                      mx: 1.35,
-                    }}
-                  />
-
-                  <Box
-                    sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      gap: 1.2,
-                      justifyContent: 'space-between',
-                      px: 1.35,
-                      py: 1.2,
-                    }}
-                  >
-                    <Typography
+                    <Box
                       sx={{
-                        color: theme.palette.text.primary,
-                        fontSize: '0.82rem',
-                        fontWeight: 700,
-                        letterSpacing: '0.01em',
-                        minWidth: 0,
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
                       }}
                     >
-                      {t('core:close_window_behavior', {
-                        defaultValue: 'When closing the window',
-                      })}
-                    </Typography>
-                    <Select
-                      size="small"
-                      value={closeAction}
-                      onChange={(event) =>
-                        handleCloseActionChange(
-                          event.target.value as CloseAction
-                        )
-                      }
-                      sx={{
-                        borderRadius: '10px',
-                        flexShrink: 0,
-                        fontSize: '0.82rem',
-                        minWidth: 170,
-                        '& .MuiSelect-select': {
-                          py: 0.85,
-                        },
-                      }}
-                    >
-                      <MenuItem value="ask">
-                        {t('core:close_always_ask', {
-                          defaultValue: 'Always ask',
-                        })}
-                      </MenuItem>
-                      <MenuItem value="minimizeToTray">
-                        {platform === 'darwin'
-                          ? t('core:close_minimize_to_dock', {
-                              defaultValue: 'Minimize to dock',
-                            })
-                          : t('core:close_minimize_to_tray', {
-                              defaultValue: 'Minimize to tray',
-                            })}
-                      </MenuItem>
-                      <MenuItem value="quit">
-                        {t('core:close_quit_completely', {
-                          defaultValue: 'Quit completely',
-                        })}
-                      </MenuItem>
-                    </Select>
-                  </Box>
-
-                  <Box
-                    sx={{
-                      borderTop: `1px solid ${avatarSectionDivider}`,
-                      mx: 1.35,
-                    }}
-                  />
-
-                  <Box
-                    sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      gap: 1.2,
-                      justifyContent: 'space-between',
-                      px: 1.35,
-                      py: 1.2,
-                    }}
-                  >
-                    <Box sx={{ minWidth: 0 }}>
                       <Typography
                         sx={{
                           color: theme.palette.text.primary,
                           fontSize: '0.82rem',
                           fontWeight: 700,
                           letterSpacing: '0.01em',
+                          minWidth: 0,
                         }}
                       >
-                        {td('disable_startup_sound', 'Disable Startup Sound')}
+                        {t('core:close_window_behavior', {
+                          defaultValue: 'When closing the window',
+                        })}
                       </Typography>
-                      <Typography
+                      <Select
+                        size="small"
+                        value={closeAction}
+                        onChange={(event) =>
+                          handleCloseActionChange(
+                            event.target.value as CloseAction
+                          )
+                        }
                         sx={{
-                          color: theme.palette.text.secondary,
-                          fontSize: '0.75rem',
-                          lineHeight: 1.45,
-                          mt: 0.4,
-                        }}
-                      >
-                        {td(
-                          'disable_startup_sound_desc',
-                          'Turn on to mute the intro audio played when the Hub starts.'
-                        )}
-                      </Typography>
-                    </Box>
-                    <Switch
-                      checked={isStartupSoundDisabled}
-                      onChange={handleToggleStartupSound}
-                      sx={settingsSwitchSx}
-                    />
-                  </Box>
-
-                  <Box
-                    sx={{
-                      borderTop: `1px solid ${avatarSectionDivider}`,
-                      mx: 1.35,
-                    }}
-                  />
-
-                  <Box
-                    sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      gap: 1.2,
-                      justifyContent: 'space-between',
-                      px: 1.35,
-                      py: 1.2,
-                    }}
-                  >
-                    <Box sx={{ minWidth: 0 }}>
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.primary,
+                          borderRadius: '10px',
+                          flexShrink: 0,
                           fontSize: '0.82rem',
-                          fontWeight: 700,
-                          letterSpacing: '0.01em',
+                          minWidth: 170,
+                          '& .MuiSelect-select': {
+                            py: 0.85,
+                          },
                         }}
                       >
-                        {td('reduce_ui_animations', 'Reduce UI Animations')}
-                      </Typography>
-                      <Typography
-                        sx={{
-                          color: theme.palette.text.secondary,
-                          fontSize: '0.75rem',
-                          lineHeight: 1.45,
-                          mt: 0.4,
-                        }}
-                      >
-                        {td(
-                          'reduce_ui_animations_desc',
-                          'Turn on to minimize motion throughout the Hub. Leave off for the normal animated interface.'
-                        )}
-                      </Typography>
+                        <MenuItem value="ask">
+                          {t('core:close_always_ask', {
+                            defaultValue: 'Always ask',
+                          })}
+                        </MenuItem>
+                        <MenuItem value="minimizeToTray">
+                          {platform === 'darwin'
+                            ? t('core:close_minimize_to_dock', {
+                                defaultValue: 'Minimize to dock',
+                              })
+                            : t('core:close_minimize_to_tray', {
+                                defaultValue: 'Minimize to tray',
+                              })}
+                        </MenuItem>
+                        <MenuItem value="quit">
+                          {t('core:close_quit_completely', {
+                            defaultValue: 'Quit completely',
+                          })}
+                        </MenuItem>
+                      </Select>
                     </Box>
-                    <Switch
-                      checked={!areUiAnimationsEnabled}
-                      onChange={handleToggleUiAnimations}
-                      sx={settingsSwitchSx}
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
                     />
-                  </Box>
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('disable_startup_sound', 'Disable Startup Sound')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'disable_startup_sound_desc',
+                            'Turn on to mute the intro audio played when the Hub starts.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Switch
+                        checked={isStartupSoundDisabled}
+                        onChange={handleToggleStartupSound}
+                        sx={settingsSwitchSx}
+                      />
+                    </Box>
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('reduce_ui_animations', 'Reduce UI Animations')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'reduce_ui_animations_desc',
+                            'Turn on to minimize motion throughout the Hub. Leave off for the normal animated interface.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Switch
+                        checked={!areUiAnimationsEnabled}
+                        onChange={handleToggleUiAnimations}
+                        sx={settingsSwitchSx}
+                      />
+                    </Box>
 
                     <Box
                       sx={{
@@ -3724,7 +4311,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       </Tooltip>
                     </Box>
                   </Box>
-
                 </Box>
               ) : null}
 
@@ -3836,234 +4422,679 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                 <Box sx={{ display: 'grid', gap: 1.4 }}>
                   <Box
                     sx={{
+                      alignItems: 'center',
                       background: avatarModalSurfaceSoft,
                       border: `1px solid ${avatarFieldBorder}`,
                       borderRadius: '12px',
-                      overflow: 'hidden',
+                      display: 'flex',
+                      gap: 1.2,
+                      justifyContent: 'space-between',
+                      px: 1.35,
+                      py: 1.2,
                     }}
                   >
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        gap: 1.2,
-                        justifyContent: 'space-between',
-                        px: 1.35,
-                        py: 1.2,
-                      }}
-                    >
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.01em',
-                          }}
-                        >
-                          {td(
-                            'managed_reticulum_config',
-                            'Managed Reticulum config'
-                          )}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '0.75rem',
-                            lineHeight: 1.45,
-                            mt: 0.4,
-                          }}
-                        >
-                          {td(
-                            'managed_reticulum_config_desc',
-                            'Allow Qortal Hub to write its managed rnsd config on startup for all instances.'
-                          )}
-                        </Typography>
-                      </Box>
-                      <Switch
-                        checked={reticulumManagedConfigEnabled}
-                        onChange={handleToggleReticulumManagedConfig}
-                        sx={settingsSwitchSx}
-                      />
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.primary,
+                          fontSize: '0.82rem',
+                          fontWeight: 700,
+                          letterSpacing: '0.01em',
+                        }}
+                      >
+                        {td('enable_reticulum', 'Enable Reticulum')}
+                      </Typography>
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontSize: '0.75rem',
+                          lineHeight: 1.45,
+                          mt: 0.4,
+                        }}
+                      >
+                        {td(
+                          'enable_reticulum_desc',
+                          'Use Reticulum for chat, calls, Qortal Land, and connected features on this device.'
+                        )}
+                      </Typography>
                     </Box>
+                    <Switch
+                      checked={reticulumEnabled}
+                      disabled={reticulumTransitionBusy}
+                      onChange={handleToggleReticulum}
+                      sx={settingsSwitchSx}
+                    />
                   </Box>
 
-                  {!reticulumManagedConfigEnabled ? (
-                    <Box
-                      sx={{
-                        background: avatarModalSurfaceSoft,
-                        border: `1px solid ${avatarFieldBorder}`,
-                        borderRadius: '12px',
-                        overflow: 'hidden',
-                      }}
-                    >
-                      <Box sx={{ px: 1.35, py: 1.2 }}>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.01em',
-                          }}
-                        >
-                          {td('reticulum_config_editor', 'Config editor')}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '0.75rem',
-                            lineHeight: 1.45,
-                            mt: 0.45,
-                          }}
-                        >
-                          {reticulumConfigEditorInfo?.instanceLabel ??
-                            td(
-                              'reticulum_config_instance_fallback',
-                              'This instance'
-                            )}{' '}
-                          {td(
-                            'reticulum_config_shared_path_prefix',
-                            'uses the shared Reticulum daemon config at'
-                          )}{' '}
-                          <Box
-                            component="span"
-                            sx={{
-                              color: theme.palette.text.primary,
-                              fontFamily: 'monospace',
-                              overflowWrap: 'anywhere',
-                            }}
-                          >
-                            {reticulumConfigEditorInfo?.configPath ??
-                              td(
-                                'reticulum_config_path_fallback',
-                                'the Reticulum config path'
-                              )}
-                          </Box>
-                          .{' '}
-                          {td(
-                            'reticulum_config_shared_path_suffix',
-                            'Changes affect local Hub instances that use this shared daemon and take effect after Reticulum restarts.'
-                          )}
-                        </Typography>
-
-                        {reticulumConfigError ? (
-                          <Typography
-                            sx={{
-                              color: theme.palette.error.main,
-                              fontSize: '0.75rem',
-                              lineHeight: 1.45,
-                              mt: 1,
-                            }}
-                          >
-                            {reticulumConfigError}
-                          </Typography>
-                        ) : null}
-
-                        <TextField
-                          value={reticulumConfigDraft}
-                          onChange={(event) =>
-                            setReticulumConfigDraft(event.target.value)
-                          }
-                          disabled={isReticulumConfigLoading}
-                          fullWidth
-                          multiline
-                          minRows={12}
-                          maxRows={18}
-                          placeholder="[reticulum]"
-                          spellCheck={false}
-                          sx={{
-                            mt: 1.1,
-                            '& .MuiInputBase-input': {
-                              fontFamily:
-                                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                              fontSize: '0.78rem',
-                              lineHeight: 1.55,
-                            },
-                          }}
-                        />
-
+                  {reticulumEnabled ? (
+                    <>
+                      <Box
+                        sx={{
+                          background: avatarModalSurfaceSoft,
+                          border: `1px solid ${avatarFieldBorder}`,
+                          borderRadius: '12px',
+                          overflow: 'hidden',
+                        }}
+                      >
                         <Box
                           sx={{
                             alignItems: 'center',
                             display: 'flex',
-                            gap: 1,
+                            gap: 1.2,
                             justifyContent: 'space-between',
-                            mt: 1,
+                            px: 1.35,
+                            py: 1.2,
                           }}
                         >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'managed_reticulum_config',
+                                'Managed Reticulum config'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {td(
+                                'managed_reticulum_config_desc',
+                                'Allow Qortal Hub to write its managed rnsd config on startup for all instances.'
+                              )}
+                            </Typography>
+                          </Box>
+                          <Switch
+                            checked={reticulumManagedConfigEnabled}
+                            onChange={handleToggleReticulumManagedConfig}
+                            sx={settingsSwitchSx}
+                          />
+                        </Box>
+                      </Box>
+
+                      <Box
+                        sx={{
+                          alignItems: 'center',
+                          background: avatarModalSurfaceSoft,
+                          border: `1px solid ${avatarFieldBorder}`,
+                          borderRadius: '12px',
+                          display: 'flex',
+                          gap: 1.2,
+                          justifyContent: 'space-between',
+                          px: 1.35,
+                          py: 1.2,
+                        }}
+                      >
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography
+                            sx={{
+                              color: theme.palette.text.primary,
+                              fontSize: '0.82rem',
+                              fontWeight: 700,
+                              letterSpacing: '0.01em',
+                            }}
+                          >
+                            {td('reticulum_details', 'Reticulum details')}
+                          </Typography>
                           <Typography
                             sx={{
                               color: theme.palette.text.secondary,
-                              fontSize: '0.72rem',
-                              lineHeight: 1.4,
+                              fontSize: '0.75rem',
+                              lineHeight: 1.45,
+                              mt: 0.4,
                             }}
                           >
-                            {td('reticulum_config_chars_count', '{{count}} chars', {
-                              count: reticulumConfigDraft.length.toLocaleString(),
-                            })}
-                            {reticulumConfigEditorInfo?.maxBytes
-                              ? ` · ${td('reticulum_config_limit_bytes', 'limit {{count}} bytes', {
-                                  count:
-                                    reticulumConfigEditorInfo.maxBytes.toLocaleString(),
-                                })}`
-                              : ''}
+                            {td(
+                              'reticulum_details_desc',
+                              'View this node destination and established overlay links.'
+                            )}
                           </Typography>
-                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-                            <Button
-                              disabled={isReticulumConfigLoading}
-                              onClick={() =>
-                                void handleRevealReticulumConfigInFileExplorer()
-                              }
-                              size="small"
-                              startIcon={<FolderOpenRoundedIcon />}
-                              variant="outlined"
+                        </Box>
+                        <Button
+                          onClick={openReticulumDetails}
+                          size="small"
+                          startIcon={<InfoOutlinedIcon />}
+                          variant="outlined"
+                          sx={{ flexShrink: 0 }}
+                        >
+                          {td('reticulum_details_button', 'Reticulum details')}
+                        </Button>
+                      </Box>
+
+                      {!reticulumManagedConfigEnabled ? (
+                        <Box
+                          sx={{
+                            background: avatarModalSurfaceSoft,
+                            border: `1px solid ${avatarFieldBorder}`,
+                            borderRadius: '12px',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <Box sx={{ px: 1.35, py: 1.2 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
                             >
+                              {td('reticulum_config_editor', 'Config editor')}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.45,
+                              }}
+                            >
+                              {reticulumConfigEditorInfo?.instanceLabel ??
+                                td(
+                                  'reticulum_config_instance_fallback',
+                                  'This instance'
+                                )}{' '}
                               {td(
-                                'reveal_reticulum_config',
-                                'Reveal in file explorer'
-                              )}
-                            </Button>
-                            <Button
-                              disabled={isReticulumConfigLoading}
-                              onClick={() =>
-                                void handleResetReticulumConfigToDefault()
-                              }
-                              size="small"
-                              variant="outlined"
-                            >
+                                'reticulum_config_shared_path_prefix',
+                                'uses the shared Reticulum daemon config at'
+                              )}{' '}
+                              <Box
+                                component="span"
+                                sx={{
+                                  color: theme.palette.text.primary,
+                                  fontFamily: 'monospace',
+                                  overflowWrap: 'anywhere',
+                                }}
+                              >
+                                {reticulumConfigEditorInfo?.configPath ??
+                                  td(
+                                    'reticulum_config_path_fallback',
+                                    'the Reticulum config path'
+                                  )}
+                              </Box>
+                              .{' '}
                               {td(
-                                'reset_reticulum_default',
-                                'Reset to Hub default'
+                                'reticulum_config_shared_path_suffix',
+                                'Changes affect local Hub instances that use this shared daemon and take effect after Reticulum restarts.'
                               )}
-                            </Button>
-                            <LoadingButton
-                              loading={isReticulumConfigLoading}
-                              onClick={() => void loadReticulumConfigEditorInfo()}
-                              size="small"
-                              variant="outlined"
-                            >
-                              {td('reload', 'Reload')}
-                            </LoadingButton>
-                            <LoadingButton
-                              disabled={
-                                reticulumConfigEditorInfo?.contents ===
-                                reticulumConfigDraft
+                            </Typography>
+
+                            {reticulumConfigError ? (
+                              <Typography
+                                sx={{
+                                  color: theme.palette.error.main,
+                                  fontSize: '0.75rem',
+                                  lineHeight: 1.45,
+                                  mt: 1,
+                                }}
+                              >
+                                {reticulumConfigError}
+                              </Typography>
+                            ) : null}
+
+                            <TextField
+                              value={reticulumConfigDraft}
+                              onChange={(event) =>
+                                setReticulumConfigDraft(event.target.value)
                               }
-                              loading={isReticulumConfigSaving}
-                              onClick={() => void handleSaveReticulumConfig()}
-                              size="small"
-                              variant="contained"
+                              disabled={isReticulumConfigLoading}
+                              fullWidth
+                              multiline
+                              minRows={12}
+                              maxRows={18}
+                              placeholder="[reticulum]"
+                              spellCheck={false}
+                              sx={{
+                                mt: 1.1,
+                                '& .MuiInputBase-input': {
+                                  fontFamily:
+                                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                                  fontSize: '0.78rem',
+                                  lineHeight: 1.55,
+                                },
+                              }}
+                            />
+
+                            <Box
+                              sx={{
+                                alignItems: 'center',
+                                display: 'flex',
+                                gap: 1,
+                                justifyContent: 'space-between',
+                                mt: 1,
+                              }}
                             >
-                              {td('save', 'Save')}
-                            </LoadingButton>
+                              <Typography
+                                sx={{
+                                  color: theme.palette.text.secondary,
+                                  fontSize: '0.72rem',
+                                  lineHeight: 1.4,
+                                }}
+                              >
+                                {td(
+                                  'reticulum_config_chars_count',
+                                  '{{count}} chars',
+                                  {
+                                    count:
+                                      reticulumConfigDraft.length.toLocaleString(),
+                                  }
+                                )}
+                                {reticulumConfigEditorInfo?.maxBytes
+                                  ? ` · ${td(
+                                      'reticulum_config_limit_bytes',
+                                      'limit {{count}} bytes',
+                                      {
+                                        count:
+                                          reticulumConfigEditorInfo.maxBytes.toLocaleString(),
+                                      }
+                                    )}`
+                                  : ''}
+                              </Typography>
+                              <Box
+                                sx={{
+                                  display: 'flex',
+                                  flexWrap: 'wrap',
+                                  gap: 1,
+                                }}
+                              >
+                                <Button
+                                  disabled={isReticulumConfigLoading}
+                                  onClick={() =>
+                                    void handleRevealReticulumConfigInFileExplorer()
+                                  }
+                                  size="small"
+                                  startIcon={<FolderOpenRoundedIcon />}
+                                  variant="outlined"
+                                >
+                                  {td(
+                                    'reveal_reticulum_config',
+                                    'Reveal in file explorer'
+                                  )}
+                                </Button>
+                                <Button
+                                  disabled={isReticulumConfigLoading}
+                                  onClick={() =>
+                                    void handleResetReticulumConfigToDefault()
+                                  }
+                                  size="small"
+                                  variant="outlined"
+                                >
+                                  {td(
+                                    'reset_reticulum_default',
+                                    'Reset to Hub default'
+                                  )}
+                                </Button>
+                                <LoadingButton
+                                  loading={isReticulumConfigLoading}
+                                  onClick={() =>
+                                    void loadReticulumConfigEditorInfo()
+                                  }
+                                  size="small"
+                                  variant="outlined"
+                                >
+                                  {td('reload', 'Reload')}
+                                </LoadingButton>
+                                <LoadingButton
+                                  disabled={
+                                    reticulumConfigEditorInfo?.contents ===
+                                    reticulumConfigDraft
+                                  }
+                                  loading={isReticulumConfigSaving}
+                                  onClick={() =>
+                                    void handleSaveReticulumConfig()
+                                  }
+                                  size="small"
+                                  variant="contained"
+                                >
+                                  {td('save', 'Save')}
+                                </LoadingButton>
+                              </Box>
+                            </Box>
                           </Box>
                         </Box>
-                      </Box>
-                    </Box>
+                      ) : null}
+                    </>
                   ) : null}
                 </Box>
               ) : null}
             </Box>
+          </Box>
+        </Box>
+      </Dialog>
+
+      <Dialog
+        open={reticulumDisableConfirmOpen}
+        onClose={() => setReticulumDisableConfirmOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <Box sx={{ px: 2.5, pt: 2.4, pb: 1.2 }}>
+          <Typography sx={{ fontSize: '1.05rem', fontWeight: 700 }}>
+            {td('disable_reticulum_title', 'Disable Reticulum?')}
+          </Typography>
+          <Typography
+            sx={{ color: 'text.secondary', fontSize: '0.82rem', mt: 0.8 }}
+          >
+            {td(
+              'disable_reticulum_desc',
+              'Q-Chat will use legacy chat. Calls and Qortal Land will be unavailable until Reticulum is enabled again.'
+            )}
+          </Typography>
+        </Box>
+        <Box
+          sx={{
+            display: 'flex',
+            gap: 1,
+            justifyContent: 'flex-end',
+            px: 2.5,
+            pb: 2.2,
+          }}
+        >
+          <Button
+            onClick={() => setReticulumDisableConfirmOpen(false)}
+            variant="outlined"
+          >
+            {td('cancel', 'Cancel')}
+          </Button>
+          <Button
+            color="error"
+            onClick={confirmDisableReticulum}
+            variant="contained"
+          >
+            {td('disable_reticulum', 'Disable Reticulum')}
+          </Button>
+        </Box>
+      </Dialog>
+
+      <Dialog
+        open={isReticulumDetailsOpen}
+        onClose={closeReticulumDetails}
+        aria-labelledby="reticulum-details-dialog-title"
+        maxWidth={false}
+        fullWidth
+        slotProps={{
+          backdrop: {
+            sx: {
+              backdropFilter: isDarkMode
+                ? 'blur(10px) brightness(0.78)'
+                : 'blur(10px) brightness(0.92)',
+              WebkitBackdropFilter: isDarkMode
+                ? 'blur(10px) brightness(0.78)'
+                : 'blur(10px) brightness(0.92)',
+              backgroundColor: isDarkMode
+                ? 'rgba(6, 8, 12, 0.32)'
+                : 'rgba(22, 26, 34, 0.1)',
+            },
+          },
+          paper: {
+            sx: {
+              background: avatarModalSurface,
+              border: isDarkMode
+                ? '1px solid rgba(255,255,255,0.1)'
+                : '1px solid rgba(24,29,36,0.1)',
+              borderRadius: '14px',
+              boxShadow: isDarkMode
+                ? '0 30px 100px rgba(0,0,0,0.52)'
+                : '0 24px 80px rgba(18,28,45,0.18)',
+              overflow: 'hidden',
+              width: 'min(680px, calc(100vw - 40px))',
+            },
+          },
+        }}
+      >
+        <Box sx={{ p: 2.2 }}>
+          <Box
+            sx={{
+              alignItems: 'flex-start',
+              display: 'flex',
+              gap: 1.4,
+              justifyContent: 'space-between',
+            }}
+          >
+            <Box sx={{ minWidth: 0 }}>
+              <Typography
+                id="reticulum-details-dialog-title"
+                sx={{
+                  color: theme.palette.text.primary,
+                  fontSize: '1rem',
+                  fontWeight: 800,
+                  lineHeight: 1.2,
+                }}
+              >
+                {td('reticulum_details', 'Reticulum details')}
+              </Typography>
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: '0.78rem',
+                  lineHeight: 1.45,
+                  mt: 0.45,
+                }}
+              >
+                {td(
+                  'reticulum_details_runtime_desc',
+                  'Runtime destination and established overlay links.'
+                )}
+              </Typography>
+            </Box>
+            <ButtonBase
+              onClick={closeReticulumDetails}
+              aria-label="Close Reticulum details"
+              sx={{
+                alignItems: 'center',
+                borderRadius: '50%',
+                color: theme.palette.text.secondary,
+                display: 'inline-flex',
+                flexShrink: 0,
+                height: 34,
+                justifyContent: 'center',
+                width: 34,
+                '&:hover': {
+                  backgroundColor: alpha(theme.palette.common.white, 0.08),
+                  color: theme.palette.text.primary,
+                },
+              }}
+            >
+              <CloseIcon fontSize="small" />
+            </ButtonBase>
+          </Box>
+
+          <Box
+            sx={{
+              background: avatarModalSurfaceSoft,
+              border: `1px solid ${avatarFieldBorder}`,
+              borderRadius: '10px',
+              mt: 1.8,
+              p: 1.35,
+            }}
+          >
+            <Typography
+              sx={{
+                color: theme.palette.text.secondary,
+                fontSize: '0.72rem',
+                fontWeight: 700,
+                textTransform: 'uppercase',
+              }}
+            >
+              {td('reticulum_destination_hash', 'Destination hash')}
+            </Typography>
+            <Typography
+              sx={{
+                color: theme.palette.text.primary,
+                fontFamily:
+                  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                fontSize: '0.8rem',
+                lineHeight: 1.55,
+                mt: 0.55,
+                overflowWrap: 'anywhere',
+              }}
+            >
+              {reticulumDetails?.destinationHash ??
+                td('unavailable', 'Unavailable')}
+            </Typography>
+          </Box>
+
+          <Box
+            sx={{
+              alignItems: 'center',
+              display: 'flex',
+              gap: 1,
+              justifyContent: 'space-between',
+              mt: 1.6,
+            }}
+          >
+            <Typography
+              sx={{
+                color: theme.palette.text.primary,
+                fontSize: '0.84rem',
+                fontWeight: 800,
+              }}
+            >
+              {td('reticulum_overlay_peers', 'Established overlay peers')}
+            </Typography>
+            <LoadingButton
+              loading={isReticulumDetailsLoading}
+              onClick={() => void loadReticulumDetails()}
+              size="small"
+              variant="outlined"
+            >
+              {td('refresh', 'Refresh')}
+            </LoadingButton>
+          </Box>
+
+          {reticulumDetailsError ? (
+            <Typography
+              sx={{
+                color: theme.palette.error.main,
+                fontSize: '0.76rem',
+                lineHeight: 1.45,
+                mt: 1,
+              }}
+            >
+              {reticulumDetailsError}
+            </Typography>
+          ) : null}
+
+          <Box
+            sx={{
+              border: `1px solid ${avatarFieldBorder}`,
+              borderRadius: '10px',
+              maxHeight: 'min(360px, 48vh)',
+              mt: 1,
+              overflow: 'auto',
+            }}
+          >
+            {reticulumDetails?.overlayPeers?.length ? (
+              reticulumDetails.overlayPeers.map((peer) => (
+                <Box
+                  key={`${peer.peerPresenceHash}:${peer.linkId}`}
+                  sx={{
+                    borderBottom: `1px solid ${alpha(
+                      theme.palette.divider,
+                      0.65
+                    )}`,
+                    display: 'grid',
+                    gap: 0.75,
+                    p: 1.2,
+                    '&:last-of-type': {
+                      borderBottom: 'none',
+                    },
+                  }}
+                >
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      display: 'flex',
+                      gap: 1,
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      {peer.incoming
+                        ? td('reticulum_link_inbound', 'Inbound')
+                        : td('reticulum_link_outbound', 'Outbound')}
+                    </Typography>
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: '0.74rem',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {td(
+                        'reticulum_connected_for',
+                        'Connected for {{duration}}',
+                        {
+                          duration: formatReticulumConnectedDuration(
+                            peer.connectedAt,
+                            reticulumDetailsNow
+                          ),
+                        }
+                      )}
+                    </Typography>
+                  </Box>
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.primary,
+                      fontFamily:
+                        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                      fontSize: '0.78rem',
+                      lineHeight: 1.5,
+                      overflowWrap: 'anywhere',
+                    }}
+                  >
+                    {peer.peerPresenceHash}
+                  </Typography>
+                  {peer.addresses?.length || peer.address ? (
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: '0.74rem',
+                        lineHeight: 1.4,
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
+                      {peer.addresses?.length
+                        ? peer.addresses.join(', ')
+                        : peer.address}
+                    </Typography>
+                  ) : null}
+                </Box>
+              ))
+            ) : (
+              <Typography
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: '0.78rem',
+                  lineHeight: 1.5,
+                  p: 1.4,
+                }}
+              >
+                {isReticulumDetailsLoading
+                  ? td('loading', 'Loading...')
+                  : td(
+                      'reticulum_no_overlay_peers',
+                      'No established overlay peers.'
+                    )}
+              </Typography>
+            )}
           </Box>
         </Box>
       </Dialog>

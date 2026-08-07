@@ -37,6 +37,7 @@ export function useAppMessageHandler(
       } else if (message.action === 'NOTIFICATION_OPEN_GROUP') {
         executeEvent('openGroupMessage', {
           from: message.payload?.from,
+          channelId: message.payload?.channelId,
         });
       } else if (message.action === 'NOTIFICATION_OPEN_ANNOUNCEMENT_GROUP') {
         executeEvent('openGroupAnnouncement', {
@@ -48,7 +49,26 @@ export function useAppMessageHandler(
         });
       } else if (message.action === 'NOTIFICATION_OPEN_APP') {
         const payload = message.payload;
-        if (payload?.openWallets) {
+        if (payload?.reticulumDirectMessage) {
+          executeEvent('openDirectMessageInternal', {
+            address: payload.from,
+            name: payload.name,
+          });
+        } else if (payload?.qChatMention) {
+          executeEvent('openGroupMessage', {
+            channelId: payload.channelId,
+            eventId: payload.eventId,
+            from: payload.from,
+          });
+        } else if (payload?.openCalendar) {
+          executeEvent('openGroupMessage', {
+            from: payload.from,
+            eventId: payload.eventId,
+            occurrenceStart: payload.occurrenceStart,
+            timezone: payload.timezone,
+            openCalendar: true,
+          });
+        } else if (payload?.openWallets) {
           openQWalletsTab();
         } else if (payload?.link) {
           const data = extractComponents(payload.link);

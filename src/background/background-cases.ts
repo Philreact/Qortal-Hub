@@ -21,6 +21,7 @@ import {
   decryptSingleFunc,
   decryptWallet,
   findUsableApi,
+  getBaseApi,
   getApiKeyFromStorage,
   getBalanceInfo,
   getCustomNodesFromStorage,
@@ -73,7 +74,89 @@ import { encryptSingle } from '../qdn/encryption/group-encryption';
 import { _createPoll, _voteOnPoll } from '../qortal/get.ts';
 import { createTransaction } from '../transactions/transactions';
 import { getData, storeData } from '../utils/chromeStorage';
+import publicKeyToAddress from '../utils/generateWallet/publicKeyToAddress';
 import { getWalletErrorMessage } from '../utils/walletErrorMessages.ts';
+import {
+  assertAllowedPresenceSigningPayload,
+  assertAllowedReticulumSigningPayload,
+} from './reticulum-signing-policy';
+
+const QORTAL_PUBLIC_VALIDATION_NODE = 'https://ext-node.qortal.link';
+const QORTAL_GROUP_VALIDATION_TIMEOUT_MS = 4_000;
+
+function wipeTemporaryKeyPairSecrets(keyPair: unknown): void {
+  if (!keyPair || typeof keyPair !== 'object') return;
+  const record = keyPair as Record<string, unknown>;
+  for (const [key, value] of Object.entries(record)) {
+    if (!/(private|seed)/iu.test(key)) continue;
+    if (value instanceof Uint8Array) value.fill(0);
+    else if (typeof value === 'string') record[key] = '';
+    else record[key] = null;
+  }
+}
+
+function isPublicValidationNode(apiUrl: string): boolean {
+  return String(apiUrl || '')
+    .toLowerCase()
+    .includes('ext-node.qortal.link');
+}
+
+async function fetchGroupMemberValidationRows(
+  apiUrl: string,
+  groupId: number,
+  addresses: string[]
+): Promise<unknown> {
+  const normalizedApiUrl = String(apiUrl || '').replace(/\/+$/u, '');
+  if (!normalizedApiUrl) {
+    throw new Error('Group member validation failed: missing API URL');
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    QORTAL_GROUP_VALIDATION_TIMEOUT_MS
+  );
+  try {
+    const response = await fetch(
+      `${normalizedApiUrl}/groups/members/${groupId}/validate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(addresses),
+        signal: controller.signal,
+      }
+    );
+    if (!response.ok) {
+      throw new Error(`Group member validation failed: ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `Group member validation timed out after ${QORTAL_GROUP_VALIDATION_TIMEOUT_MS} ms`
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchGroupValidationRowsWithFallback(
+  groupId: number,
+  addresses: string[]
+): Promise<unknown> {
+  const validApi = await getBaseApi();
+  try {
+    return await fetchGroupMemberValidationRows(validApi, groupId, addresses);
+  } catch (error) {
+    if (isPublicValidationNode(validApi)) throw error;
+    return fetchGroupMemberValidationRows(
+      QORTAL_PUBLIC_VALIDATION_NODE,
+      groupId,
+      addresses
+    );
+  }
+}
 
 export function versionCase(request, event) {
   event.source.postMessage(
@@ -183,6 +266,90 @@ export async function validApiCase(request, event) {
       {
         requestId: request.requestId,
         action: 'validApi',
+        error: error?.message,
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  }
+}
+
+export async function validateGroupMembersCase(request, event) {
+  try {
+    const groupId = Number(request?.payload?.groupId);
+    const addresses = Array.isArray(request?.payload?.addresses)
+      ? request.payload.addresses
+          .map((address) => (typeof address === 'string' ? address.trim() : ''))
+          .filter(Boolean)
+      : [];
+    if (!Number.isInteger(groupId) || groupId <= 0 || addresses.length === 0) {
+      throw new Error('Invalid groupId or addresses');
+    }
+    const result = await fetchGroupValidationRowsWithFallback(
+      groupId,
+      addresses
+    );
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'validateGroupMembers',
+        payload: Array.isArray(result) ? result : [],
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  } catch (error) {
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'validateGroupMembers',
+        error: error?.message,
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  }
+}
+
+export async function validateGroupAdminsCase(request, event) {
+  try {
+    const groupId = Number(request?.payload?.groupId);
+    const addresses = Array.isArray(request?.payload?.addresses)
+      ? request.payload.addresses
+          .map((address) => (typeof address === 'string' ? address.trim() : ''))
+          .filter(Boolean)
+      : [];
+    if (!Number.isInteger(groupId) || groupId <= 0 || addresses.length === 0) {
+      throw new Error('Invalid groupId or addresses');
+    }
+    // Admin authority stays bound to the user's selected Core. Unlike ordinary
+    // membership lookup, do not delegate this security decision to a fallback
+    // node when the selected Core is unavailable.
+    const validApi = await getBaseApi();
+    const result = await fetchGroupMemberValidationRows(
+      validApi,
+      groupId,
+      addresses
+    );
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'validateGroupAdmins',
+        payload: Array.isArray(result)
+          ? result.map((item) => ({
+              address: typeof item?.address === 'string' ? item.address : '',
+              isAdmin: item?.isAdmin === true,
+            }))
+          : [],
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  } catch (error) {
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'validateGroupAdmins',
         error: error?.message,
         type: 'backgroundMessageResponse',
       },
@@ -326,8 +493,16 @@ export async function ltcBalanceCase(request, event) {
 
 export async function sendCoinCase(request, event) {
   try {
-    const { receiver, password, amount } = request.payload;
-    const { res } = await sendCoin({ receiver, password, amount });
+    const {
+      receiver,
+      password,
+      amount,
+      skipConfirmPassword = false,
+    } = request.payload;
+    const { res } = await sendCoin(
+      { receiver, password, amount },
+      skipConfirmPassword === true
+    );
     if (!res?.success) {
       event.source.postMessage(
         {
@@ -2219,9 +2394,13 @@ export async function getRewardSharePrivateKeyCase(request, event) {
  *   { type, address, publicKey, sessionId, timestamp, clientVersion? }
  */
 export async function signPresenceMessageCase(request, event) {
+  let resKeyPair;
+  let privateKeyBytes: Uint8Array | null = null;
+  let messageBytes: Uint8Array | null = null;
   try {
-    const resKeyPair = await getKeyPair();
-    const privateKeyBytes = Base58.decode(resKeyPair.privateKey);
+    assertAllowedPresenceSigningPayload(request.payload);
+    resKeyPair = await getKeyPair();
+    privateKeyBytes = Base58.decode(resKeyPair.privateKey);
 
     // Build canonical signed data — keys sorted alphabetically, then
     // JSON-stringify and UTF-8 encode. Must match canonicalizeForSigning()
@@ -2231,7 +2410,7 @@ export async function signPresenceMessageCase(request, event) {
     for (const key of Object.keys(fields).sort()) {
       sorted[key] = fields[key];
     }
-    const messageBytes = new TextEncoder().encode(JSON.stringify(sorted));
+    messageBytes = new TextEncoder().encode(JSON.stringify(sorted));
     const signature = nacl.sign.detached(messageBytes, privateKeyBytes);
     const signatureBase58 = Base58.encode(signature);
 
@@ -2254,6 +2433,62 @@ export async function signPresenceMessageCase(request, event) {
       },
       event.origin
     );
+  } finally {
+    messageBytes?.fill(0);
+    privateKeyBytes?.fill(0);
+    wipeTemporaryKeyPairSecrets(resKeyPair);
+  }
+}
+
+export async function signReticulumChatEventCase(request, event) {
+  let resKeyPair;
+  let privateKeyBytes: Uint8Array | null = null;
+  let messageBytes: Uint8Array | null = null;
+  try {
+    assertAllowedReticulumSigningPayload(request.payload);
+    resKeyPair = await getKeyPair();
+    privateKeyBytes = Base58.decode(resKeyPair.privateKey);
+    const publicKey = resKeyPair.publicKey;
+    const authorAddress = publicKeyToAddress(Base58.decode(publicKey));
+    const fields = {
+      ...(request.payload || {}),
+      authorAddress,
+      authorPublicKey: publicKey,
+    };
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(fields).sort()) {
+      sorted[key] = fields[key];
+    }
+    messageBytes = new TextEncoder().encode(JSON.stringify(sorted));
+    const signature = nacl.sign.detached(messageBytes, privateKeyBytes);
+
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'signReticulumChatEvent',
+        payload: {
+          authorAddress,
+          authorPublicKey: publicKey,
+          signature: Base58.encode(signature),
+        },
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  } catch (error) {
+    event.source.postMessage(
+      {
+        requestId: request.requestId,
+        action: 'signReticulumChatEvent',
+        error: error?.message,
+        type: 'backgroundMessageResponse',
+      },
+      event.origin
+    );
+  } finally {
+    messageBytes?.fill(0);
+    privateKeyBytes?.fill(0);
+    wipeTemporaryKeyPairSecrets(resKeyPair);
   }
 }
 
@@ -2269,12 +2504,31 @@ export async function signPresenceMessageCase(request, event) {
  *   [ephemeralPK (32 bytes)] + [nonce (24 bytes)] + [ciphertext]
  */
 export async function decryptBoxWithMyKeyCase(request, event) {
+  let resKeyPair;
+  let privateKeyBytes: Uint8Array | null = null;
+  let myCurve25519SK: Uint8Array | null = null;
+  let sharedKey: Uint8Array | null = null;
+  let plaintext: Uint8Array | null = null;
   try {
+    if (!request.payload || typeof request.payload !== 'object') {
+      throw new Error('Invalid encrypted key payload');
+    }
     const { ephemeralPublicKey, nonce, ciphertext } = request.payload;
-    const resKeyPair = await getKeyPair();
-    const privateKeyBytes = Base58.decode(resKeyPair.privateKey);
+    if (
+      typeof ephemeralPublicKey !== 'string' ||
+      typeof nonce !== 'string' ||
+      typeof ciphertext !== 'string' ||
+      ephemeralPublicKey.length > 128 ||
+      nonce.length > 128 ||
+      ciphertext.length > 64 * 1024
+    ) {
+      throw new Error('Invalid encrypted key payload');
+    }
+    resKeyPair = await getKeyPair();
+    privateKeyBytes = Base58.decode(resKeyPair.privateKey);
 
-    const myCurve25519SK = ed2curve.convertSecretKey(privateKeyBytes);
+    myCurve25519SK = ed2curve.convertSecretKey(privateKeyBytes);
+    if (!myCurve25519SK) throw new Error('Unable to derive decryption key');
     const ephemeralPK = Uint8Array.from(atob(ephemeralPublicKey), (c) =>
       c.charCodeAt(0)
     );
@@ -2282,9 +2536,12 @@ export async function decryptBoxWithMyKeyCase(request, event) {
     const cipherBytes = Uint8Array.from(atob(ciphertext), (c) =>
       c.charCodeAt(0)
     );
+    if (ephemeralPK.length !== 32 || nonceBytes.length !== 24) {
+      throw new Error('Invalid encrypted key payload');
+    }
 
-    const sharedKey = nacl.box.before(ephemeralPK, myCurve25519SK);
-    const plaintext = nacl.box.open.after(cipherBytes, nonceBytes, sharedKey);
+    sharedKey = nacl.box.before(ephemeralPK, myCurve25519SK);
+    plaintext = nacl.box.open.after(cipherBytes, nonceBytes, sharedKey);
     if (!plaintext) throw new Error('Decryption failed');
 
     const decryptedKey = btoa(String.fromCharCode(...plaintext));
@@ -2307,6 +2564,12 @@ export async function decryptBoxWithMyKeyCase(request, event) {
       },
       event.origin
     );
+  } finally {
+    plaintext?.fill(0);
+    sharedKey?.fill(0);
+    myCurve25519SK?.fill(0);
+    privateKeyBytes?.fill(0);
+    wipeTemporaryKeyPairSecrets(resKeyPair);
   }
 }
 

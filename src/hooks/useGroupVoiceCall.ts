@@ -48,6 +48,7 @@ import {
   getUserAudioStreamForCall,
 } from '../lib/call/audioDevices';
 import { subscribeToEvent, unsubscribeFromEvent } from '../utils/events';
+import { encodeGroupCallTakeoverGeneration } from '../lib/group-call/groupCallJoinSigning';
 import nacl from '../encryption/nacl-fast';
 import ed2curve from '../encryption/ed2curve';
 import AudioDecryptWorker from '../workers/audio-decrypt.worker?worker';
@@ -1299,6 +1300,7 @@ async function signReticulumJoinSplit(params: {
   fromPublicKey: string;
   timestamp: number;
   joinGeneration: number;
+  takeover?: boolean;
   reticulumDestinationHash: string;
   reticulumIdentityPublicKeyBase64: string | null;
 }): Promise<{ joinSig: string; joinRkSig?: string } | null> {
@@ -1309,9 +1311,13 @@ async function signReticulumJoinSplit(params: {
     fromPublicKey,
     timestamp,
     joinGeneration,
+    takeover,
     reticulumDestinationHash,
     reticulumIdentityPublicKeyBase64,
   } = params;
+  const signedJoinGeneration = takeover
+    ? encodeGroupCallTakeoverGeneration(joinGeneration)
+    : joinGeneration;
   const joinSig = await signGroupCallFields({
     type: 'GC_JOIN',
     roomId,
@@ -1319,7 +1325,7 @@ async function signReticulumJoinSplit(params: {
     fromAddress,
     fromPublicKey,
     timestamp,
-    joinGeneration,
+    joinGeneration: signedJoinGeneration,
     reticulumDestinationHash,
   }).catch(() => '');
   if (!joinSig) return null;
@@ -1336,7 +1342,7 @@ async function signReticulumJoinSplit(params: {
     fromAddress,
     fromPublicKey,
     timestamp,
-    joinGeneration,
+    joinGeneration: signedJoinGeneration,
     reticulumDestinationHash,
     reticulumIdentityPublicKeyBase64: rkForSign,
   }).catch(() => '');
@@ -1435,6 +1441,7 @@ export function useGroupVoiceCall(uiActive = false) {
     signature: string;
     publicKey: string;
     timestamp: number;
+    joinGeneration?: number;
   } | null>(null);
   const quitLeaveSentRef = useRef(false);
 
@@ -4530,6 +4537,7 @@ export function useGroupVoiceCall(uiActive = false) {
     const localAddress = userInfo.address;
     const publicKey = userInfo.publicKey;
     const timestamp = Date.now();
+    const joinGeneration = joinGenerationRef.current ?? undefined;
     void signGroupCallFields({
       type: 'GC_LEAVE',
       roomId,
@@ -4545,6 +4553,7 @@ export function useGroupVoiceCall(uiActive = false) {
           signature,
           publicKey,
           timestamp,
+          ...(joinGeneration !== undefined ? { joinGeneration } : {}),
         };
       })
       .catch(() => {
@@ -4567,7 +4576,8 @@ export function useGroupVoiceCall(uiActive = false) {
                 localAddress: string,
                 signature: string,
                 publicKey: string,
-                timestamp: number
+                timestamp: number,
+                joinGeneration?: number
               ) => { success: boolean; error?: string };
             }
           | undefined
@@ -4589,7 +4599,8 @@ export function useGroupVoiceCall(uiActive = false) {
           cachedLeave!.localAddress,
           cachedLeave!.signature,
           cachedLeave!.publicKey,
-          cachedLeave!.timestamp
+          cachedLeave!.timestamp,
+          cachedLeave!.joinGeneration
         );
       } catch {
         quitLeaveSentRef.current = false;
@@ -4865,7 +4876,8 @@ export function useGroupVoiceCall(uiActive = false) {
           executorCommandMsMax: diagnostics.bridge?.executorCommandMsMax,
           executorCommandWhileQueuedMsMax:
             diagnostics.bridge?.executorCommandWhileQueuedMsMax,
-          executorCommandSlowCount: diagnostics.bridge?.executorCommandSlowCount,
+          executorCommandSlowCount:
+            diagnostics.bridge?.executorCommandSlowCount,
           rnsCallbackSchedulerGapMsMax:
             diagnostics.bridge?.rnsCallbackSchedulerGapMsMax,
           rnsCallbackSchedulerGapOver100Count:
@@ -12963,6 +12975,9 @@ export function useGroupVoiceCall(uiActive = false) {
           const rs = await electronApi.reticulumGetStatus();
           const p2pHealth = computeP2pHealth({
             onlineRemoteHubInterfaces: rs.onlineRemoteHubInterfaces ?? 0,
+            p2pReceivingOverlayPeers: rs.p2pReceivingOverlayPeers,
+            p2pReceivingOverlayPeersStableMs:
+              rs.p2pReceivingOverlayPeersStableMs,
             p2pActiveOverlayPeers: rs.p2pActiveOverlayPeers ?? 0,
             p2pOutboundOverlayPeers: rs.p2pOutboundOverlayPeers,
             p2pInboundOverlayPeers: rs.p2pInboundOverlayPeers,
@@ -13106,6 +13121,7 @@ export function useGroupVoiceCall(uiActive = false) {
           fromPublicKey: userInfo.publicKey,
           timestamp: ts,
           joinGeneration,
+          takeover: true,
           reticulumDestinationHash,
           reticulumIdentityPublicKeyBase64:
             reticulumIdentityPublicKeyBase64 ?? null,
@@ -13155,10 +13171,12 @@ export function useGroupVoiceCall(uiActive = false) {
           userInfo.publicKey,
           ts,
           reticulumDestinationHash,
-          joinGeneration,
+          encodeGroupCallTakeoverGeneration(joinGeneration),
           lastObservedEpochRef.current,
           reticulumIdentityPublicKeyBase64 ?? undefined,
-          joinRkSig
+          joinRkSig,
+          undefined,
+          true
         );
         if (!joinRes.success) {
           debugWarn('[GCall] join IPC failed', joinRes.error);
@@ -13813,6 +13831,7 @@ export function useGroupVoiceCall(uiActive = false) {
 
     // Sign leave envelope
     const ts = Date.now();
+    const joinGeneration = joinGenerationRef.current ?? undefined;
     const sig = await signGroupCallFields({
       type: 'GC_LEAVE',
       roomId: roomIdRef.current,
@@ -13828,7 +13847,8 @@ export function useGroupVoiceCall(uiActive = false) {
       userInfo.address,
       sig,
       userInfo.publicKey ?? '',
-      ts
+      ts,
+      joinGeneration
     );
 
     await cleanup();
@@ -14499,6 +14519,29 @@ export function useGroupVoiceCall(uiActive = false) {
     };
 
     const unsub = window.groupCall.onEvent((event: string, payload: any) => {
+      if (event === 'gcall:local-session-taken-over') {
+        if (
+          payload?.roomId !== roomIdRef.current ||
+          payload?.address !== userInfo?.address ||
+          payload?.joinGeneration === joinGenerationRef.current
+        ) {
+          return;
+        }
+        debugWarn(
+          '[GCall] This account joined the group call from another device; ending this local session'
+        );
+        void window.groupCall
+          .leave(
+            roomIdRef.current,
+            userInfo.address,
+            '',
+            userInfo.publicKey ?? '',
+            Date.now(),
+            joinGenerationRef.current ?? undefined
+          )
+          .finally(() => cleanup());
+        return;
+      }
       if (event === 'gcall:participant-joined') {
         const { roomId, address, publicKey } = payload;
         const joinTs = Number(payload.timestamp);

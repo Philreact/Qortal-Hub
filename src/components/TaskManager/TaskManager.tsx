@@ -24,9 +24,17 @@ import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import { getBaseApiReact } from '../../App';
 import { executeEvent } from '../../utils/events';
 import { useAtom } from 'jotai';
-import { memberGroupsAtom, txListAtom } from '../../atoms/global';
+import {
+  memberGroupsAtom,
+  txListAtom,
+  userInfoAtom,
+} from '../../atoms/global';
 import { useTranslation } from 'react-i18next';
 import { TIME_MINUTES_1_IN_MILLISECONDS } from '../../constants/constants';
+import {
+  applyReticulumJoinUnreadBaseline,
+  resolveReticulumMembershipJoinedAt,
+} from '../Chat/reticulumJoinUnreadBaseline';
 
 export const TaskManager = ({
   getUserInfo,
@@ -41,10 +49,14 @@ export const TaskManager = ({
   tooltipSlotProps?: TooltipProps['slotProps'];
   tooltipTitle?: ReactNode;
 }) => {
-  const [memberGroups] = useAtom(memberGroupsAtom);
+  const [memberGroups, setMemberGroups] = useAtom(memberGroupsAtom);
   const [txList, setTxList] = useAtom(txListAtom);
+  const [userInfo] = useAtom(userInfoAtom);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const intervals = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+  const membershipIntervals = useRef<
+    Record<string, ReturnType<typeof setInterval>>
+  >({});
   const theme = useTheme();
   const { t } = useTranslation([
     'auth',
@@ -152,6 +164,111 @@ export const TaskManager = ({
       return previousData;
     });
   }, [memberGroups, getUserInfo]);
+
+  useEffect(() => {
+    const pendingJoins = txList.filter(
+      (tx) =>
+        tx?.type === 'joined-group' &&
+        tx?.done !== true &&
+        Number.isInteger(Number(tx?.groupId)) &&
+        Number(tx.groupId) > 0
+    );
+    for (const tx of pendingJoins) {
+      const groupId = Number(tx.groupId);
+      const address = String(
+        tx?.memberAddress || tx?.creatorAddress || userInfo?.address || ''
+      ).trim();
+      if (!address) continue;
+      const intervalKey = `${tx?.signature || groupId}:${address}`;
+      if (membershipIntervals.current[intervalKey]) continue;
+      let requestInFlight = false;
+      const reconcileMembership = async () => {
+        if (requestInFlight) return;
+        requestInFlight = true;
+        try {
+          const response = await fetch(
+            `${getBaseApiReact()}/groups/member/${encodeURIComponent(address)}`
+          );
+          if (!response.ok) return;
+          const value = await response.json();
+          const groups = Array.isArray(value)
+            ? value
+            : Array.isArray(value?.groups)
+              ? value.groups
+              : [];
+          const confirmedGroup = groups.find(
+            (group: any) => Number(group?.groupId) === groupId
+          );
+          if (!confirmedGroup) return;
+          const joinedAt = await resolveReticulumMembershipJoinedAt(
+            groupId,
+            address
+          ).catch(() => null);
+          const confirmedMembership = joinedAt
+            ? { ...confirmedGroup, reticulumJoinedAt: joinedAt }
+            : confirmedGroup;
+
+          setMemberGroups((current: any[]) => {
+            const existingIndex = current.findIndex(
+              (group: any) => Number(group?.groupId) === groupId
+            );
+            if (existingIndex === -1) return [confirmedMembership, ...current];
+            const next = [...current];
+            next[existingIndex] = {
+              ...next[existingIndex],
+              ...confirmedMembership,
+            };
+            return next;
+          });
+          setTxList((current) =>
+            current.map((candidate) =>
+              candidate === tx ||
+              (candidate?.type === 'joined-group' &&
+                Number(candidate?.groupId) === groupId &&
+                candidate?.done !== true)
+                ? { ...candidate, done: true }
+                : candidate
+            )
+          );
+          window.clearInterval(membershipIntervals.current[intervalKey]);
+          delete membershipIntervals.current[intervalKey];
+
+          if (joinedAt) {
+            for (const delay of [0, 1_500, 4_000, 10_000]) {
+              window.setTimeout(() => {
+                void applyReticulumJoinUnreadBaseline({
+                  address,
+                  groupId,
+                  joinedAt,
+                });
+              }, delay);
+            }
+          }
+        } catch {
+          // The transaction or node membership index may still be pending.
+        } finally {
+          requestInFlight = false;
+        }
+      };
+      membershipIntervals.current[intervalKey] = window.setInterval(
+        () => void reconcileMembership(),
+        3_000
+      );
+      void reconcileMembership();
+    }
+  }, [setMemberGroups, setTxList, txList, userInfo?.address]);
+
+  useEffect(
+    () => () => {
+      for (const timer of Object.values(intervals.current)) {
+        clearInterval(timer);
+      }
+      for (const timer of Object.values(membershipIntervals.current)) {
+        clearInterval(timer);
+      }
+    },
+    []
+  );
 
   const checkForName = useCallback(async (address) => {
     if (!address) return;

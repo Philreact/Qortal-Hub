@@ -5,7 +5,7 @@
  * 1. Frozen `resources/reticulum/rnsd` — no Python (use `npm run bundle:reticulum` in CI).
  * 2. Existing dev venv or system Python with RNS and LXMF (AutoInterface discovery).
  * 3. Otherwise: download PyPA `get-pip.py`, bootstrap pip into user site,
- *    and install the Qortal Reticulum fork + lxmf.
+ *    and install the Qortal Reticulum fork + lxmf + websockets 14.2.
  *
  * Requires: Python **3.9+** on PATH (standard on Ubuntu desktop) and network once for get-pip + PyPI.
  * Skip: QORTAL_RETICULUM_SKIP_ENSURE=1
@@ -55,7 +55,7 @@ const pipEnv = {
 };
 
 function canImportRNS(pythonPath) {
-  if (!pythonPath || !fs.existsSync(pythonPath)) return false;
+  if (!pythonPath) return false;
   return spawnPy(pythonPath, ['-c', 'import RNS']).status === 0;
 }
 
@@ -75,8 +75,13 @@ except Exception:
 }
 
 function canImportLXMF(pythonPath) {
-  if (!pythonPath || !fs.existsSync(pythonPath)) return false;
+  if (!pythonPath) return false;
   return spawnPy(pythonPath, ['-c', 'import LXMF']).status === 0;
+}
+
+function canImportGameWebSockets(pythonPath) {
+  if (!pythonPath) return false;
+  return spawnPy(pythonPath, ['-c', 'import websockets; assert websockets.__version__ == "14.2"']).status === 0;
 }
 
 function isPython39Plus(name) {
@@ -152,27 +157,27 @@ async function ensureUserPip(name) {
 function reticulumInstallArgs({ user }) {
   const base = ['-m', 'pip', 'install'];
   if (user) base.push('--user');
-  return [base, RETICULUM_PIP_PACKAGE, 'lxmf'];
+  return [base, RETICULUM_PIP_PACKAGE, 'lxmf', 'websockets==14.2'];
 }
 
 function tryPipInstallRnsAndLxmf(name, { user }) {
-  const [base, reticulumPackage, lxmfPackage] = reticulumInstallArgs({ user });
+  const [base, reticulumPackage, lxmfPackage, websocketsPackage] = reticulumInstallArgs({ user });
   const attempts =
     process.platform === 'win32'
       ? [
-          [...base, reticulumPackage, lxmfPackage],
-          [...base, '--break-system-packages', reticulumPackage, lxmfPackage],
+          [...base, reticulumPackage, lxmfPackage, websocketsPackage],
+          [...base, '--break-system-packages', reticulumPackage, lxmfPackage, websocketsPackage],
         ]
       : [
-          [...base, '--break-system-packages', reticulumPackage, lxmfPackage],
-          [...base, reticulumPackage, lxmfPackage],
+          [...base, '--break-system-packages', reticulumPackage, lxmfPackage, websocketsPackage],
+          [...base, reticulumPackage, lxmfPackage, websocketsPackage],
         ];
   for (const args of attempts) {
     const pip = spawnPy(name, args, {
       env: pipEnv,
     });
     if (pip.status !== 0) continue;
-    if (canImportRequiredRNS(name) && spawnPy(name, ['-c', 'import LXMF']).status === 0) {
+    if (canImportRequiredRNS(name) && canImportLXMF(name) && canImportGameWebSockets(name)) {
       return true;
     }
   }
@@ -202,7 +207,7 @@ async function main() {
 
   for (const p of venvPythonCandidates) {
     if (!fs.existsSync(p)) continue;
-    if (canImportRequiredRNS(p) && canImportLXMF(p)) return;
+    if (canImportRequiredRNS(p) && canImportLXMF(p) && canImportGameWebSockets(p)) return;
     if (canImportRNS(p)) {
       console.log(
         `[ensure-reticulum] Updating dev venv Reticulum to ${RETICULUM_PIP_PACKAGE}`
@@ -212,7 +217,7 @@ async function main() {
   }
 
   for (const name of systemNames) {
-    if (canImportRequiredRNS(name) && spawnPy(name, ['-c', 'import LXMF']).status === 0) {
+    if (canImportRequiredRNS(name) && canImportLXMF(name) && canImportGameWebSockets(name)) {
       return;
     }
   }
@@ -220,7 +225,7 @@ async function main() {
   progress('need_install');
   progress('get_pip_check');
   console.log(
-    `[ensure-reticulum] Ensuring pip + Reticulum fork + lxmf (user install, no sudo): ${RETICULUM_PIP_PACKAGE}`
+    `[ensure-reticulum] Ensuring pip + Reticulum fork + lxmf + websockets 14.2 (user install, no sudo): ${RETICULUM_PIP_PACKAGE}`
   );
 
   for (const name of systemNames) {
@@ -230,7 +235,7 @@ async function main() {
 
   progress('pip_install_rns');
   if (tryPipUserInstallRnsAndLxmf()) {
-    console.log('[ensure-reticulum] rns + lxmf are ready (user site-packages).');
+    console.log('[ensure-reticulum] rns + lxmf + websockets 14.2 are ready (user site-packages).');
     progress('done');
     return;
   }

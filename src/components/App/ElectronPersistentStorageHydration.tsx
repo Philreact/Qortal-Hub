@@ -3,11 +3,14 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import {
   DM_FRIENDS_LEGACY_BUCKET_KEY,
   dmFriendsByAccountAtom,
+  disableDevLogsAtom,
   parseDmFriendsPersisted,
   customWebsocketSubscriptionsByAddressAtom,
   filterSeenInAppRecordByAge,
   notificationSeenInAppKeysRecordAtom,
   parseSeenInAppStored,
+  reticulumHighlightOwnMessagesAtom,
+  reticulumLegacyThreadsEnabledAtom,
   seenAllNotificationsByAddressAtom,
   userInfoAtom,
 } from '../../atoms/global';
@@ -30,6 +33,13 @@ export function ElectronPersistentStorageHydration() {
     seenAllNotificationsByAddressAtom
   );
   const setDmFriendsByAccount = useSetAtom(dmFriendsByAccountAtom);
+  const setDisableDevLogs = useSetAtom(disableDevLogsAtom);
+  const setReticulumHighlightOwnMessages = useSetAtom(
+    reticulumHighlightOwnMessagesAtom
+  );
+  const setReticulumLegacyThreadsEnabled = useSetAtom(
+    reticulumLegacyThreadsEnabledAtom
+  );
   const userAddress = useAtomValue(userInfoAtom)?.address;
   const dmFriendsByAccount = useAtomValue(dmFriendsByAccountAtom);
   const hydratedRef = useRef(false);
@@ -62,7 +72,15 @@ export function ElectronPersistentStorageHydration() {
 
     (async () => {
       await hydrateElectronPersistentCache();
-      const [subsPayload, seen, seenAllPayload, dmFriendsPayload] =
+      const [
+        subsPayload,
+        seen,
+        seenAllPayload,
+        dmFriendsPayload,
+        disableDevLogsPayload,
+        reticulumHighlightOwnMessagesPayload,
+        reticulumLegacyThreadsEnabledPayload,
+      ] =
         await Promise.all([
           appStorage.get(
             ELECTRON_PERSISTENT_ATOM_KEYS.customWsSubscriptionsByAddress
@@ -72,6 +90,13 @@ export function ElectronPersistentStorageHydration() {
             ELECTRON_PERSISTENT_ATOM_KEYS.seenAllNotificationsByAddress
           ),
           appStorage.get(ELECTRON_PERSISTENT_ATOM_KEYS.dmFriends),
+          appStorage.get(ELECTRON_PERSISTENT_ATOM_KEYS.disableDevLogs),
+          appStorage.get(
+            ELECTRON_PERSISTENT_ATOM_KEYS.reticulumHighlightOwnMessages
+          ),
+          appStorage.get(
+            ELECTRON_PERSISTENT_ATOM_KEYS.reticulumLegacyThreadsEnabled
+          ),
         ]);
       if (subsPayload != null) {
         if (Array.isArray(subsPayload)) {
@@ -108,12 +133,26 @@ export function ElectronPersistentStorageHydration() {
       ) {
         setDmFriendsByAccount(parseDmFriendsPersisted(dmFriendsPayload));
       }
+      if (typeof disableDevLogsPayload === 'boolean') {
+        setDisableDevLogs(disableDevLogsPayload);
+      }
+      if (typeof reticulumHighlightOwnMessagesPayload === 'boolean') {
+        setReticulumHighlightOwnMessages(
+          reticulumHighlightOwnMessagesPayload
+        );
+      }
+      if (typeof reticulumLegacyThreadsEnabledPayload === 'boolean') {
+        setReticulumLegacyThreadsEnabled(reticulumLegacyThreadsEnabledPayload);
+      }
     })();
   }, [
     setCustomSubscriptionsByAddress,
     setSeenInAppRecord,
     setSeenAllNotificationsByAddress,
     setDmFriendsByAccount,
+    setDisableDevLogs,
+    setReticulumHighlightOwnMessages,
+    setReticulumLegacyThreadsEnabled,
   ]);
 
   useEffect(() => {

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import shutil
 import subprocess
@@ -23,6 +24,8 @@ RETICULUM_PIP_PACKAGE = os.environ.get(
     "QORTAL_RETICULUM_PIP_PACKAGE",
     "git+https://github.com/Philreact/Reticulum.git@master",
 )
+LXMF_PIP_PACKAGE = os.environ.get("QORTAL_LXMF_PIP_PACKAGE", "lxmf==0.9.4")
+WEBSOCKETS_PIP_PACKAGE = "websockets==14.2"
 PIP_ENV = {
     "PIP_DISABLE_PIP_VERSION_CHECK": "1",
     "PIP_BREAK_SYSTEM_PACKAGES": "1",
@@ -54,6 +57,21 @@ def has_module(pyexe: str, module_name: str) -> bool:
         env=os.environ,
     )
     return result.returncode == 0
+
+
+def verify_websockets_version(pyexe: str) -> None:
+    result = subprocess.run(
+        [
+            pyexe,
+            "-c",
+            "import websockets; raise SystemExit(0 if websockets.__version__ == '14.2' else 1)",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=os.environ,
+    )
+    if result.returncode != 0:
+        sys.exit("Frozen bridge build requires exactly websockets==14.2")
 
 
 def has_pip(pyexe: str) -> bool:
@@ -122,6 +140,56 @@ def pip_install(
         except subprocess.CalledProcessError:
             continue
     sys.exit(f"Failed to install {' '.join(packages)} with pip.")
+
+
+def reticulum_install_source(pyexe: str) -> str:
+    proc = subprocess.run(
+        [
+            pyexe,
+            "-c",
+            "\n".join(
+                [
+                    "import importlib.metadata as md, json, pathlib",
+                    "dist = md.distribution('rns')",
+                    "direct_url = pathlib.Path(dist._path) / 'direct_url.json'",
+                    "source = ''",
+                    "if direct_url.exists():",
+                    "    data = json.loads(direct_url.read_text())",
+                    "    source = data.get('url', '')",
+                    "    vcs = data.get('vcs_info') or {}",
+                    "    if vcs.get('commit_id'):",
+                    "        source += '@' + vcs.get('commit_id')",
+                    "print(json.dumps({'version': dist.version, 'source': source}))",
+                ]
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, **PIP_ENV},
+    )
+    if proc.returncode != 0:
+        sys.exit(f"Failed to inspect installed Reticulum package: {proc.stderr.strip()}")
+    try:
+        return proc.stdout.strip()
+    except Exception:
+        sys.exit(f"Failed to parse installed Reticulum package metadata: {proc.stdout!r}")
+
+
+def verify_reticulum_source(pyexe: str) -> str:
+    metadata_json = reticulum_install_source(pyexe)
+    try:
+        metadata = json.loads(metadata_json)
+    except json.JSONDecodeError:
+        sys.exit(f"Failed to parse installed Reticulum package metadata: {metadata_json!r}")
+    source = str(metadata.get("source") or "")
+    expected_source = "github.com/Philreact/Reticulum"
+    if expected_source not in source:
+        sys.exit(
+            "Bundled Reticulum is not Philreact's build. "
+            f"Expected source containing {expected_source!r}, got {metadata_json}"
+        )
+    print(f"Verified Reticulum package source: {metadata_json}")
+    return metadata_json
 
 
 def venv_python(venv_dir: Path) -> Path:
@@ -198,10 +266,16 @@ def freeze_target(
         "pyserial",
         "--collect-all",
         "LXMF",
+        "--collect-all",
+        "websockets",
         "--hidden-import",
         "RNS",
         "--hidden-import",
         "LXMF",
+        "--hidden-import",
+        "qortalland_games",
+        "--hidden-import",
+        "qortalland_proximity",
         "--hidden-import",
         "cryptography.hazmat.backends.openssl.backend",
         entry_script,
@@ -224,9 +298,17 @@ def freeze_target(
 
 def copy_runtime_sources(electron_root: Path, output_dir: Path) -> None:
     source_bridge = electron_root / "resources" / "presence_bridge.py"
+    source_games = electron_root / "resources" / "qortalland_games.py"
+    source_proximity = electron_root / "resources" / "qortalland_proximity.py"
     if not source_bridge.is_file():
         sys.exit(f"Missing tracked bridge source: {source_bridge}")
+    if not source_games.is_file():
+        sys.exit(f"Missing tracked game bridge source: {source_games}")
+    if not source_proximity.is_file():
+        sys.exit(f"Missing tracked proximity bridge source: {source_proximity}")
     shutil.copy2(source_bridge, output_dir / "presence_bridge.py")
+    shutil.copy2(source_games, output_dir / "qortalland_games.py")
+    shutil.copy2(source_proximity, output_dir / "qortalland_proximity.py")
     print(f"Wrote {output_dir / 'presence_bridge.py'}")
     mesh_net = electron_root / "resources" / "mesh-network.identity"
     if not mesh_net.is_file():
@@ -238,6 +320,17 @@ def copy_runtime_sources(electron_root: Path, output_dir: Path) -> None:
         sys.exit(f"Missing bundled mesh network passphrase: {mesh_passphrase}")
     shutil.copy2(mesh_passphrase, output_dir / "mesh-network.passphrase")
     print(f"Wrote {output_dir / 'mesh-network.passphrase'}")
+
+
+def remove_python_cache_artifacts(output_dir: Path) -> None:
+    for pycache_dir in output_dir.rglob("__pycache__"):
+        if pycache_dir.is_dir():
+            shutil.rmtree(pycache_dir)
+            print(f"Removed {pycache_dir}")
+    for pyc_file in output_dir.rglob("*.pyc"):
+        if pyc_file.is_file():
+            pyc_file.unlink()
+            print(f"Removed {pyc_file}")
 
 
 def main() -> None:
@@ -261,11 +354,21 @@ def main() -> None:
 
     pyexe, use_user_install = create_build_python(sys.executable, build_root)
     ensure_pip(pyexe, user=use_user_install)
-    pip_install(pyexe, [RETICULUM_PIP_PACKAGE], upgrade=True, user=use_user_install)
-    if not has_module(pyexe, "LXMF"):
-        pip_install(pyexe, ["lxmf"], user=use_user_install)
+    if not has_module(pyexe, "wheel"):
+        pip_install(pyexe, ["wheel"], user=use_user_install)
+    pip_install(pyexe, [LXMF_PIP_PACKAGE], user=use_user_install)
+    pip_install(pyexe, [WEBSOCKETS_PIP_PACKAGE], user=use_user_install)
+    verify_websockets_version(pyexe)
     if not has_module(pyexe, "PyInstaller"):
         pip_install(pyexe, ["pyinstaller"], user=use_user_install)
+    pip_install(
+        pyexe,
+        [RETICULUM_PIP_PACKAGE],
+        upgrade=True,
+        force_reinstall=True,
+        user=use_user_install,
+    )
+    reticulum_metadata = verify_reticulum_source(pyexe)
     for target in BUILD_TARGETS:
         entry_script = target["entry_resolver"](pyexe, electron_root)
         freeze_target(
@@ -277,10 +380,11 @@ def main() -> None:
             entry_script=entry_script,
         )
     copy_runtime_sources(electron_root, args.output_dir)
+    remove_python_cache_artifacts(args.output_dir)
 
     marker = args.output_dir / "BUNDLE_READY"
     marker.write_text(
-        f"frozen_at={datetime.datetime.now(datetime.timezone.utc).isoformat()}\npython={pyexe}\nreticulum={RETICULUM_PIP_PACKAGE}\n",
+        f"frozen_at={datetime.datetime.now(datetime.timezone.utc).isoformat()}\npython={pyexe}\nreticulum={RETICULUM_PIP_PACKAGE}\nlxmf={LXMF_PIP_PACKAGE}\nwebsockets={WEBSOCKETS_PIP_PACKAGE}\nreticulum_metadata={reticulum_metadata}\n",
         encoding="utf-8",
     )
     print(f"Wrote {marker}")

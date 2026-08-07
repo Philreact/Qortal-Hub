@@ -29,6 +29,7 @@ import {
   getReticulumSharedDaemonStatePath,
   getReticulumSharedRpcKeyPath,
   isReticulumSharedDaemonOwnedByAnotherLiveInstance,
+  processHasActiveReticulumAppAncestor,
   planReticulumAppQuit,
   recoverReticulumStateForAppLaunch,
   registerReticulumAppInstance,
@@ -101,6 +102,22 @@ describe('reticulum-daemon managed config', () => {
     } catch {
       /* ignore */
     }
+  });
+
+  it('distinguishes live-instance bridge descendants from true orphans', () => {
+    const parents = new Map<number, number | null>([
+      [501, 101],
+      [601, 501],
+      [701, 1],
+      [801, 901],
+      [901, 801],
+    ]);
+    const activeAppPids = new Set([101]);
+
+    expect(processHasActiveReticulumAppAncestor(501, parents, activeAppPids)).toBe(true);
+    expect(processHasActiveReticulumAppAncestor(601, parents, activeAppPids)).toBe(true);
+    expect(processHasActiveReticulumAppAncestor(701, parents, activeAppPids)).toBe(false);
+    expect(processHasActiveReticulumAppAncestor(801, parents, activeAppPids)).toBe(false);
   });
 
   it('uses the canonical qortal-hub Reticulum config directory', () => {

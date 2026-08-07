@@ -1,81 +1,175 @@
-import { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useState,
+} from 'react';
+import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
+import KeyboardReturnRoundedIcon from '@mui/icons-material/KeyboardReturnRounded';
+import PersonRoundedIcon from '@mui/icons-material/PersonRounded';
+import { useTheme } from '@mui/material';
+import type { MentionSuggestionItem } from './TipTap';
 
-export default forwardRef((props, ref) => {
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+type MentionListProps = {
+  command: (item: MentionSuggestionItem) => void;
+  items: MentionSuggestionItem[];
+};
 
-  const [selectedIndex, setSelectedIndex] = useState(0);
+type MentionListHandle = {
+  onKeyDown: ({
+    event,
+  }: {
+    event: KeyboardEvent;
+  }) => boolean;
+};
 
-  const selectItem = (index) => {
-    const item = props.items[index];
+const SECTION_LABELS: Record<MentionSuggestionItem['section'], string> = {
+  people: 'People',
+  special: 'Special Mentions',
+  channels: 'Channels',
+};
 
-    if (item) {
-      props.command(item);
-    }
-  };
+const SECTION_ORDER: MentionSuggestionItem['section'][] = [
+  'people',
+  'special',
+  'channels',
+];
 
-  const upHandler = () => {
-    setSelectedIndex(
-      (selectedIndex + props.items.length - 1) % props.items.length
+const MentionList = forwardRef<MentionListHandle, MentionListProps>(
+  ({ command, items }, ref) => {
+    const theme = useTheme();
+    const [selectedIndex, setSelectedIndex] = useState(0);
+
+    const groupedItems = useMemo(
+      () =>
+        SECTION_ORDER.map((section) => ({
+          section,
+          items: items
+            .map((item, index) => ({ item, index }))
+            .filter(({ item }) => item.section === section),
+        })).filter((group) => group.items.length > 0),
+      [items]
     );
-  };
 
-  const downHandler = () => {
-    setSelectedIndex((selectedIndex + 1) % props.items.length);
-  };
+    const selectItem = (index: number) => {
+      const item = items[index];
+      if (item) command(item);
+    };
 
-  const enterHandler = () => {
-    selectItem(selectedIndex);
-  };
+    useEffect(() => {
+      setSelectedIndex(0);
+    }, [items]);
 
-  useEffect(() => setSelectedIndex(0), [props.items]);
+    useImperativeHandle(ref, () => ({
+      onKeyDown: ({ event }) => {
+        if (event.key === 'ArrowUp') {
+          if (items.length > 0) {
+            setSelectedIndex(
+              (current) => (current + items.length - 1) % items.length
+            );
+          }
+          return true;
+        }
 
-  useImperativeHandle(ref, () => ({
-    onKeyDown: ({ event }) => {
-      if (event.key === 'ArrowUp') {
-        upHandler();
-        return true;
-      }
+        if (event.key === 'ArrowDown') {
+          if (items.length > 0) {
+            setSelectedIndex((current) => (current + 1) % items.length);
+          }
+          return true;
+        }
 
-      if (event.key === 'ArrowDown') {
-        downHandler();
-        return true;
-      }
+        if (event.key === 'Enter' || event.key === 'Tab') {
+          if (items.length > 0) selectItem(selectedIndex);
+          return items.length > 0;
+        }
 
-      if (event.key === 'Enter') {
-        enterHandler();
-        return true;
-      }
+        return false;
+      },
+    }));
 
-      return false;
-    },
-  }));
-
-  return (
-    <div className="dropdown-menu">
-      {props.items.length ? (
-        props.items.map((item, index) => (
-          <button
-            className={index === selectedIndex ? 'is-selected' : ''}
-            key={item.id || index}
-            onClick={() => selectItem(index)}
-          >
-            {item.label}
-          </button>
-        ))
-      ) : (
-        <div className="item">
-          {t('core:message.generic.no_results', {
-            postProcess: 'capitalizeFirstChar',
-          })}
+    return (
+      <div
+        aria-label="Mention suggestions"
+        className="qchat-mention-menu"
+        data-color-mode={theme.palette.mode}
+        role="listbox"
+      >
+        <div className="qchat-mention-menu__scroll">
+          {items.length > 0 ? (
+            groupedItems.map(({ section, items: sectionItems }) => (
+              <section
+                className="qchat-mention-menu__section"
+                key={section}
+              >
+                <div className="qchat-mention-menu__section-label">
+                  {SECTION_LABELS[section]}
+                </div>
+                {sectionItems.map(({ item, index }) => {
+                  const selected = index === selectedIndex;
+                  const visibleLabel =
+                    item.kind === 'channel' &&
+                    item.iconText &&
+                    item.label.trimStart().startsWith(item.iconText)
+                      ? item.label
+                          .trimStart()
+                          .slice(item.iconText.length)
+                          .trimStart()
+                      : item.label;
+                  return (
+                    <button
+                      aria-selected={selected}
+                      className={`qchat-mention-menu__row qchat-mention-menu__row--${item.kind}${
+                        selected ? ' is-selected' : ''
+                      }`}
+                      key={`${item.kind}:${item.id}`}
+                      onClick={() => selectItem(index)}
+                      onMouseEnter={() => setSelectedIndex(index)}
+                      role="option"
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`qchat-mention-menu__icon qchat-mention-menu__icon--${item.kind}`}
+                      >
+                        {item.kind === 'person' ? (
+                          <PersonRoundedIcon />
+                        ) : item.kind === 'here' ||
+                          item.kind === 'everyone' ||
+                          item.kind === 'group' ? (
+                          <GroupsRoundedIcon />
+                        ) : (
+                          <span>{item.iconText || '@'}</span>
+                        )}
+                      </span>
+                      <span className="qchat-mention-menu__copy">
+                        <span className="qchat-mention-menu__primary">
+                          {visibleLabel}
+                        </span>
+                        <span className="qchat-mention-menu__secondary">
+                          {item.description}
+                        </span>
+                      </span>
+                      <span
+                        aria-hidden="true"
+                        className="qchat-mention-menu__accept"
+                      >
+                        {selected ? <KeyboardReturnRoundedIcon /> : null}
+                      </span>
+                    </button>
+                  );
+                })}
+              </section>
+            ))
+          ) : (
+            <div className="qchat-mention-menu__empty">No matches found</div>
+          )}
         </div>
-      )}
-    </div>
-  );
-});
+      </div>
+    );
+  }
+);
+
+MentionList.displayName = 'MentionList';
+
+export default MentionList;

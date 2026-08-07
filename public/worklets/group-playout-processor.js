@@ -80,6 +80,14 @@ class GroupPlayoutProcessor extends AudioWorkletProcessor {
             )
           )
         : DEFAULT_MAX_PLAYOUT_TARGET_MS;
+    // Fractional PCM reads change both duration and pitch. Callers with a
+    // burstier transport can opt into a conservative floor while the default
+    // retains the established DM/group-call behavior.
+    this._minimumPlayoutRate =
+      typeof options.processorOptions?.minimumPlayoutRate === 'number' &&
+      Number.isFinite(options.processorOptions.minimumPlayoutRate)
+        ? Math.max(0.9, Math.min(1, options.processorOptions.minimumPlayoutRate))
+        : RATE_MIN;
 
     this._ring = new Float32Array(RING_CAPACITY);
     this._writePos = 0;
@@ -474,7 +482,9 @@ class GroupPlayoutProcessor extends AudioWorkletProcessor {
     );
     let targetRate = raw.targetRate;
     targetRate = Math.min(RATE_MAX, targetRate);
-    const floorR = raw.inPanic ? 0.9 : RATE_MIN;
+    const floorR = raw.inPanic
+      ? this._minimumPlayoutRate
+      : Math.max(RATE_MIN, this._minimumPlayoutRate);
     targetRate = Math.max(floorR, targetRate);
 
     const underStress =
@@ -484,7 +494,9 @@ class GroupPlayoutProcessor extends AudioWorkletProcessor {
     const alpha = underStress ? EMA_ALPHA_FAST : EMA_ALPHA_SLOW;
     this._smoothedRate += alpha * (targetRate - this._smoothedRate);
     this._smoothedRate = Math.max(
-      raw.inPanic ? 0.9 : RATE_MIN,
+      raw.inPanic
+        ? this._minimumPlayoutRate
+        : Math.max(RATE_MIN, this._minimumPlayoutRate),
       Math.min(RATE_MAX, this._smoothedRate)
     );
 
