@@ -249,6 +249,10 @@ export async function setPermission(key, value) {
         'qortalRequestPermissions',
         qortalRequestPermissions
       );
+      executeEvent('notification-permission-updated', {
+        key: normalizedKey,
+        value,
+      });
       return;
     }
     const rawPermissions = toPermissionRecord(
@@ -260,6 +264,10 @@ export async function setPermission(key, value) {
     );
     qortalRequestPermissions[normalizedKey] = value;
     await setLocalStorage('qortalRequestPermissions', qortalRequestPermissions);
+    executeEvent('notification-permission-updated', {
+      key: normalizedKey,
+      value,
+    });
   } catch (error) {
     console.error('Error setting permission:', error);
   }

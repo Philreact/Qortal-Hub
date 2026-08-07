@@ -1,4 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import {
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Editor, EditorProvider, useCurrentEditor } from '@tiptap/react';
 import { Fragment, Slice } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
@@ -19,17 +27,18 @@ import FormatQuoteIcon from '@mui/icons-material/FormatQuote';
 import HorizontalRuleIcon from '@mui/icons-material/HorizontalRule';
 import UndoIcon from '@mui/icons-material/Undo';
 import RedoIcon from '@mui/icons-material/Redo';
+import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import FormatHeadingIcon from '@mui/icons-material/FormatSize';
 import DeveloperModeIcon from '@mui/icons-material/DeveloperMode';
 import Compressor from 'compressorjs';
-import Mention from '@tiptap/extension-mention';
+import Mention, { MentionPluginKey } from '@tiptap/extension-mention';
 import ImageResize from 'tiptap-extension-resize-image'; // Import the ResizeImage extension
 import tippy from 'tippy.js';
 import 'tippy.js/dist/tippy.css';
 import { ReactRenderer } from '@tiptap/react';
-import MentionList from './MentionList.jsx';
+import MentionList from './MentionList';
 import { isDisabledEditorEnterAtom } from '../../atoms/global.js';
-import { Box, Checkbox, Typography, useTheme } from '@mui/material';
+import { Box, Checkbox, Tooltip, Typography, useTheme } from '@mui/material';
 import { useAtom } from 'jotai';
 import { fileToBase64 } from '../../utils/fileReading/index.js';
 import { useTranslation } from 'react-i18next';
@@ -42,6 +51,7 @@ const MenuBar = memo(
     isDisabledEditorEnter,
     setIsDisabledEditorEnter,
     toolbarStyle = 'default',
+    insertFiles,
   }) => {
     const { editor } = useCurrentEditor();
     const fileInputRef = useRef(null);
@@ -59,10 +69,6 @@ const MenuBar = memo(
         setEditorRef(editor);
       }
     }, [editor, setEditorRef]);
-
-    if (!editor) {
-      return null;
-    }
 
     const handleImageUpload = async (file) => {
       if (!file?.type?.includes('image')) return;
@@ -130,6 +136,10 @@ const MenuBar = memo(
         };
       }
     }, [editor, isChat]);
+
+    if (!editor) {
+      return null;
+    }
 
     return (
       <Box
@@ -444,9 +454,17 @@ const MenuBar = memo(
                 type="file"
                 ref={fileInputRef}
                 style={{ display: 'none' }}
-                onChange={(event) =>
-                  handleImageUpload(event.target.files?.[0])
-                }
+                onChange={(event) => {
+                  const files = Array.from(event.target.files || []);
+                  if (isChat && files.length > 0 && typeof insertFiles === 'function') {
+                    void insertFiles(files);
+                    if (fileInputRef.current) {
+                      fileInputRef.current.value = '';
+                    }
+                    return;
+                  }
+                  handleImageUpload(files[0]);
+                }}
                 accept="image/*"
               />
             </>
@@ -483,7 +501,10 @@ const content = ``;
 type TiptapProps = {
   setEditorRef: (editorInstance: Editor | null) => void;
   onEnter: () => void | Promise<void>;
+  onKeyDown?: (event: KeyboardEvent, editor: Editor) => boolean | void;
+  onContentUpdate?: (editor: Editor) => void;
   disableEnter?: boolean;
+  readOnly?: boolean;
   isChat?: boolean;
   /** Use chat-style composer (single bar, minimal border) without chat-only behavior (e.g. announcements keep image) */
   composerStyle?: boolean;
@@ -493,14 +514,37 @@ type TiptapProps = {
   setIsFocusedParent: React.Dispatch<React.SetStateAction<boolean>>;
   isFocusedParent: boolean;
   membersWithNames?: unknown[];
+  mentionSuggestions?: MentionSuggestionItem[];
   enableMentions?: boolean;
   insertImage?: (image: any) => void;
+  insertFiles?: (files: File[]) => void | Promise<void>;
+  compactChat?: boolean;
+  compactEditorMaxHeight?: number;
+  compactActions?: ReactNode;
+  placeholder?: string;
+  collapseFormattingTraySignal?: number;
+};
+
+export type MentionSuggestionItem = {
+  id: string;
+  label: string;
+  section: 'people' | 'special' | 'channels';
+  kind: 'person' | 'here' | 'everyone' | 'group' | 'channel';
+  description: string;
+  iconText?: string;
+};
+
+const renderMentionLabel = (node: { attrs: Record<string, unknown> }) => {
+  return String(node.attrs.label ?? node.attrs.id ?? '').replace(/^@/, '');
 };
 
 const Tiptap = ({
   setEditorRef,
   onEnter,
+  onKeyDown,
+  onContentUpdate,
   disableEnter = false,
+  readOnly = false,
   isChat = false,
   composerStyle = false,
   maxHeightOffset,
@@ -509,10 +553,24 @@ const Tiptap = ({
   overrideMobile,
   customEditorHeight,
   membersWithNames = [],
+  mentionSuggestions,
   enableMentions,
   insertImage,
+  insertFiles,
+  compactChat = false,
+  compactEditorMaxHeight,
+  compactActions,
+  placeholder,
+  collapseFormattingTraySignal,
 }: TiptapProps) => {
   const theme = useTheme();
+  const compactFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [showFormattingTray, setShowFormattingTray] = useState(false);
+
+  useEffect(() => {
+    if (collapseFormattingTraySignal === undefined) return;
+    setShowFormattingTray(false);
+  }, [collapseFormattingTraySignal]);
   const [isDisabledEditorEnter, setIsDisabledEditorEnter] = useAtom(
     isDisabledEditorEnterAtom
   );
@@ -553,8 +611,20 @@ const Tiptap = ({
   );
 
   const extensionsFiltered = isChat
-    ? extensions.filter((item) => item?.name !== 'image')
-    : extensions;
+    ? extensions.filter((item) => item?.name !== 'image' && item?.name !== 'placeholder')
+    : extensions.filter((item) => item?.name !== 'placeholder');
+  const placeholderExtension = useMemo(
+    () =>
+      Placeholder.configure({
+        placeholder:
+          placeholder ||
+          i18n.t('core:action.start_typing', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+        showOnlyWhenEditable: false,
+      }),
+    [placeholder]
+  );
   const editorRef = useRef(null);
   const setEditorRefFunc = useCallback(
     (editorInstance) => {
@@ -564,14 +634,29 @@ const Tiptap = ({
     [setEditorRef]
   );
 
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || editor.isDestroyed) return;
+    editor.setEditable(!readOnly);
+    if (readOnly) {
+      editor.commands.clearContent();
+      editor.commands.blur();
+    }
+  }, [readOnly]);
+
   const users = useMemo(() => {
+    if (mentionSuggestions) return mentionSuggestions;
     return (membersWithNames || [])?.map((item) => {
+      const label = String(item || '').trim();
       return {
-        id: item,
-        label: item,
+        id: label,
+        label,
+        section: 'people' as const,
+        kind: 'person' as const,
+        description: 'Member',
       };
-    });
-  }, [membersWithNames]);
+    }).filter((item) => item.label);
+  }, [membersWithNames, mentionSuggestions]);
 
   const usersRef = useRef([]);
   useEffect(() => {
@@ -592,12 +677,48 @@ const Tiptap = ({
         HTMLAttributes: {
           class: 'mention',
         },
-        suggestion: {
-          items: ({ query }) => {
-            if (!query) return usersRef?.current;
-            return usersRef?.current?.filter((user) =>
-              user.label.toLowerCase().includes(query.toLowerCase())
-            );
+        renderText: ({ node }) => renderMentionLabel(node),
+        renderHTML: ({ options, node }) => [
+          'span',
+          options.HTMLAttributes,
+          renderMentionLabel(node),
+        ],
+          suggestion: {
+            items: ({ query }) => {
+            const normalizedQuery = query.trim().toLowerCase();
+            if (!normalizedQuery) return usersRef.current;
+            const sectionOrder: Record<
+              MentionSuggestionItem['section'],
+              number
+            > = {
+              people: 0,
+              special: 1,
+              channels: 2,
+            };
+            const matchRank = (label: string) => {
+              const normalizedLabel = label.toLowerCase();
+              if (normalizedLabel === normalizedQuery) return 0;
+              if (normalizedLabel.startsWith(normalizedQuery)) return 1;
+              if (
+                normalizedLabel
+                  .split(/[\s_-]+/)
+                  .some((part) => part.startsWith(normalizedQuery))
+              ) {
+                return 2;
+              }
+              return normalizedLabel.includes(normalizedQuery) ? 3 : -1;
+            };
+            return usersRef.current
+              .map((item) => ({ item, rank: matchRank(item.label) }))
+              .filter(({ rank }) => rank >= 0)
+              .sort(
+                (left, right) =>
+                  sectionOrder[left.item.section] -
+                    sectionOrder[right.item.section] ||
+                  left.rank - right.rank ||
+                  left.item.label.localeCompare(right.item.label)
+              )
+              .map(({ item }) => item);
           },
           render: () => {
             let popup; // Reference to the Tippy.js instance
@@ -621,7 +742,10 @@ const Tiptap = ({
                   showOnCreate: true,
                   interactive: true,
                   trigger: 'manual',
-                  placement: 'bottom-start',
+                  placement: 'top-start',
+                  offset: [0, 16],
+                  maxWidth: 'none',
+                  theme: 'qchat-mention',
                 });
               },
 
@@ -668,6 +792,330 @@ const Tiptap = ({
   }, []);
 
   const useComposerLook = isChat || composerStyle;
+  const formattingTray = (
+    <MenuBar
+      setEditorRef={setEditorRefFunc}
+      isChat={isChat}
+      isDisabledEditorEnter={isDisabledEditorEnter}
+      setIsDisabledEditorEnter={handleSetIsDisabledEditorEnter}
+      toolbarStyle={useComposerLook ? 'chat' : 'default'}
+      insertFiles={insertFiles}
+    />
+  );
+  // This must render inside EditorProvider so useCurrentEditor can resolve it.
+  const slotBefore = compactChat ? (
+    showFormattingTray ? (
+      <Box
+        sx={{
+          backgroundColor: theme.palette.background.paper,
+          border: `1px solid ${theme.palette.divider}`,
+          borderRadius: '8px',
+          bottom: 'calc(100% + 8px)',
+          boxShadow: '0 10px 28px rgba(0, 0, 0, 0.28)',
+          left: 0,
+          p: 0.5,
+          position: 'absolute',
+          right: 0,
+          zIndex: 3,
+        }}
+      >
+        {formattingTray}
+      </Box>
+    ) : null
+  ) : (
+    formattingTray
+  );
+  const editorProvider = (
+    <EditorProvider
+      editable={!readOnly}
+      slotBefore={slotBefore}
+      extensions={[...extensionsFiltered, placeholderExtension, ...additionalExtensions]}
+      content={content}
+      onCreate={({ editor }) => {
+        setEditorRefFunc(editor);
+        editor.setEditable(!readOnly);
+        if (readOnly) {
+          editor.commands.clearContent();
+          editor.commands.blur();
+        }
+        editor.on('blur', handleBlur); // Listen for blur event
+      }}
+      onUpdate={({ editor }) => {
+        editor.on('blur', handleBlur); // Ensure blur is updated
+        onContentUpdate?.(editor);
+      }}
+      editorProps={{
+        attributes: {
+          class: 'tiptap-prosemirror',
+          style: compactChat
+            ? `overflow-y: auto; overflow-x: hidden; max-height: ${
+                compactEditorMaxHeight == null
+                  ? '50vh'
+                  : `${compactEditorMaxHeight}px`
+              }`
+            : `overflow-y: auto; overflow-x: hidden; max-height: 50vh`,
+        },
+        handleKeyDown(view, event) {
+          const mentionSuggestionActive =
+            mentionSuggestions !== undefined &&
+            Boolean(MentionPluginKey.getState(view.state)?.active);
+          if (
+            mentionSuggestionActive &&
+            ['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Tab'].includes(
+              event.key
+            )
+          ) {
+            // Let the mention suggestion plugin navigate, dismiss, or accept
+            // its highlighted row before chat-level shortcuts can send/edit.
+            return false;
+          }
+          if (typeof onKeyDown === 'function') {
+            const editor = editorRef.current;
+            if (editor) {
+              const handled = onKeyDown(event, editor);
+              if (handled) return true;
+            }
+          }
+          if (
+            !disableEnter &&
+            !isDisabledEditorEnter &&
+            event.key === 'Enter'
+          ) {
+            if (event.shiftKey) {
+              view.dispatch(
+                view.state.tr.replaceSelectionWith(
+                  view.state.schema.nodes.hardBreak.create()
+                )
+              );
+              return true;
+            } else {
+              if (typeof onEnter === 'function') {
+                onEnter();
+              }
+              return true;
+            }
+          }
+          return false;
+        },
+        handlePaste(view, event) {
+          if (!isChat) return false;
+          const items = event.clipboardData?.items;
+          if (!items) return false;
+
+          if (typeof insertFiles === 'function') {
+            const files = Array.from(event.clipboardData?.files || []);
+            if (files.length > 0) {
+              event.preventDefault();
+              void insertFiles(files);
+              return true;
+            }
+          }
+
+          if (typeof insertImage !== 'function') return false;
+
+          for (const item of items) {
+            if (item.type.startsWith('image/')) {
+              const file = item.getAsFile();
+              if (file) {
+                event.preventDefault(); // Block the default paste
+                handleImageUpload(file); // Custom handler
+                return true; // Let ProseMirror know we handled it
+              }
+            }
+          }
+
+          // Preserve paragraph spacing when pasting plain text (double newline = new paragraph)
+          const text = event.clipboardData?.getData('text/plain');
+          if (text != null && text !== '') {
+            event.preventDefault();
+            const schema = view.state.schema;
+            const paragraphs = text.split(/\n\n+/);
+            const paragraphNodes = paragraphs.map((block) => {
+              if (block === '') {
+                return schema.nodes.paragraph.create(null, Fragment.empty);
+              }
+              const parts = block.split('\n');
+              const content = parts.flatMap((t, i) => {
+                // ProseMirror does not allow empty text nodes; skip empty parts
+                if (t === '') {
+                  return i === 0 ? [] : [schema.nodes.hardBreak.create()];
+                }
+                return i === 0
+                  ? [schema.text(t)]
+                  : [
+                      schema.nodes.hardBreak.create(),
+                      schema.text(t),
+                    ];
+              });
+              return schema.nodes.paragraph.create(
+                null,
+                Fragment.from(content)
+              );
+            });
+            const fragment = Fragment.from(paragraphNodes);
+            const slice = new Slice(fragment, 0, 0);
+            view.dispatch(view.state.tr.replaceSelection(slice));
+            return true;
+          }
+
+          return false; // fallback to default behavior otherwise
+        },
+        handleDrop(_view, event) {
+          if (!isChat) return false;
+          const files = Array.from(event.dataTransfer?.files || []);
+          if (files.length > 0 && typeof insertFiles === 'function') {
+            event.preventDefault();
+            void insertFiles(files);
+            return true;
+          }
+          if (typeof insertImage !== 'function') return false;
+          const image = files.find((file) => file.type.startsWith('image/'));
+          if (!image) return false;
+          event.preventDefault();
+          handleImageUpload(image);
+          return true;
+        },
+      }}
+    />
+  );
+
+  if (compactChat) {
+    return (
+      <Box
+        className="tiptap-chat-composer tiptap-chat-composer--compact"
+        sx={{
+          display: 'flex',
+          flex: 1,
+          flexDirection: 'column',
+          minWidth: 0,
+          overflow: 'visible',
+          position: 'relative',
+          zIndex: 1,
+          '--text-primary': theme.palette.text.primary,
+          '--text-secondary': theme.palette.text.secondary,
+          '--background-default': theme.palette.background.default,
+          '--background-secondary': theme.palette.background.paper,
+          '--code-block-bg': theme.palette.background.paper,
+          '--code-block-accent': theme.palette.primary.main,
+          '--code-block-border': theme.palette.divider,
+          '--composer-bg': theme.palette.background.default,
+          '--composer-border': theme.palette.divider,
+        }}
+      >
+        <Box
+          sx={{
+            alignItems: 'flex-start',
+            display: 'flex',
+            gap: 0.5,
+            minHeight: 44,
+            width: '100%',
+          }}
+        >
+          <Tooltip title="Add attachment">
+            <span>
+              <IconButton
+                disabled={readOnly || disableEnter || typeof insertFiles !== 'function'}
+                onClick={() => compactFileInputRef.current?.click()}
+                size="small"
+                sx={{
+                  backgroundColor: 'transparent',
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: '8px',
+                  color: theme.palette.text.secondary,
+                  flexShrink: 0,
+                  height: 34,
+                  mt: '5px',
+                  width: 34,
+                }}
+              >
+                <AddRoundedIcon sx={{ fontSize: 20 }} />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <input
+            multiple
+            ref={compactFileInputRef}
+            style={{ display: 'none' }}
+            type="file"
+            onChange={(event) => {
+              const files = Array.from(event.target.files || []);
+              if (files.length > 0 && typeof insertFiles === 'function') {
+                void insertFiles(files);
+              }
+              event.currentTarget.value = '';
+            }}
+          />
+          <Tooltip title="Formatting">
+            <IconButton
+              disabled={readOnly}
+              onClick={() => setShowFormattingTray((show) => !show)}
+              size="small"
+              sx={{
+                backgroundColor: showFormattingTray
+                  ? theme.palette.action.selected
+                  : 'transparent',
+                border: `1px solid ${theme.palette.divider}`,
+                borderRadius: '8px',
+                color: showFormattingTray
+                  ? theme.palette.text.primary
+                  : theme.palette.text.secondary,
+                flexShrink: 0,
+                fontFamily: 'Inter',
+                fontSize: 14,
+                fontWeight: 700,
+                height: 34,
+                mt: '5px',
+                width: 34,
+              }}
+            >
+              Aa
+            </IconButton>
+          </Tooltip>
+          {compactActions}
+          <Box
+            aria-disabled={readOnly}
+            sx={{
+              cursor: readOnly ? 'not-allowed' : undefined,
+              flex: 1,
+              pointerEvents: readOnly ? 'none' : undefined,
+              minWidth: 0,
+              mt: '5px',
+              opacity: readOnly ? 0.68 : 1,
+              position: 'relative',
+              '& .tiptap p.is-editor-empty:first-child::before': {
+                display: readOnly ? 'none' : undefined,
+              },
+            }}
+          >
+            {readOnly && (
+              <Typography
+                aria-hidden="true"
+                sx={{
+                  color: theme.palette.text.secondary,
+                  fontSize: 15,
+                  left: 10,
+                  lineHeight: 1.4,
+                  overflow: 'hidden',
+                  pointerEvents: 'none',
+                  position: 'absolute',
+                  right: 10,
+                  textOverflow: 'ellipsis',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  whiteSpace: 'nowrap',
+                  zIndex: 2,
+                }}
+              >
+                Only group admins can write in this channel
+              </Typography>
+            )}
+            {editorProvider}
+          </Box>
+        </Box>
+      </Box>
+    );
+  }
+
   return (
     <Box
       className={useComposerLook ? 'tiptap-chat-composer' : undefined}
@@ -689,106 +1137,7 @@ const Tiptap = ({
         }),
       }}
     >
-      <EditorProvider
-        slotBefore={
-          <MenuBar
-            setEditorRef={setEditorRefFunc}
-            isChat={isChat}
-            isDisabledEditorEnter={isDisabledEditorEnter}
-            setIsDisabledEditorEnter={handleSetIsDisabledEditorEnter}
-            toolbarStyle={useComposerLook ? 'chat' : 'default'}
-          />
-        }
-        extensions={[...extensionsFiltered, ...additionalExtensions]}
-        content={content}
-        onCreate={({ editor }) => {
-          editor.on('blur', handleBlur); // Listen for blur event
-        }}
-        onUpdate={({ editor }) => {
-          editor.on('blur', handleBlur); // Ensure blur is updated
-        }}
-        editorProps={{
-          attributes: {
-            class: 'tiptap-prosemirror',
-            style: `overflow: auto; max-height: 250px`,
-          },
-          handleKeyDown(view, event) {
-            if (
-              !disableEnter &&
-              !isDisabledEditorEnter &&
-              event.key === 'Enter'
-            ) {
-              if (event.shiftKey) {
-                view.dispatch(
-                  view.state.tr.replaceSelectionWith(
-                    view.state.schema.nodes.hardBreak.create()
-                  )
-                );
-                return true;
-              } else {
-                if (typeof onEnter === 'function') {
-                  onEnter();
-                }
-                return true;
-              }
-            }
-            return false;
-          },
-          handlePaste(view, event) {
-            if (!isChat) return false;
-            if (typeof insertImage !== 'function') return false;
-            const items = event.clipboardData?.items;
-            if (!items) return false;
-
-            for (const item of items) {
-              if (item.type.startsWith('image/')) {
-                const file = item.getAsFile();
-                if (file) {
-                  event.preventDefault(); // Block the default paste
-                  handleImageUpload(file); // Custom handler
-                  return true; // Let ProseMirror know we handled it
-                }
-              }
-            }
-
-            // Preserve paragraph spacing when pasting plain text (double newline = new paragraph)
-            const text = event.clipboardData?.getData('text/plain');
-            if (text != null && text !== '') {
-              event.preventDefault();
-              const schema = view.state.schema;
-              const paragraphs = text.split(/\n\n+/);
-              const paragraphNodes = paragraphs.map((block) => {
-                if (block === '') {
-                  return schema.nodes.paragraph.create(null, Fragment.empty);
-                }
-                const parts = block.split('\n');
-                const content = parts.flatMap((t, i) => {
-                  // ProseMirror does not allow empty text nodes; skip empty parts
-                  if (t === '') {
-                    return i === 0 ? [] : [schema.nodes.hardBreak.create()];
-                  }
-                  return i === 0
-                    ? [schema.text(t)]
-                    : [
-                        schema.nodes.hardBreak.create(),
-                        schema.text(t),
-                      ];
-                });
-                return schema.nodes.paragraph.create(
-                  null,
-                  Fragment.from(content)
-                );
-              });
-              const fragment = Fragment.from(paragraphNodes);
-              const slice = new Slice(fragment, 0, 0);
-              view.dispatch(view.state.tr.replaceSelection(slice));
-              return true;
-            }
-
-            return false; // fallback to default behavior otherwise
-          },
-        }}
-      />
+      {editorProvider}
     </Box>
   );
 };

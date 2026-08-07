@@ -1,6 +1,19 @@
 import { useEffect, useRef } from 'react';
 import { executeEvent } from '../../utils/events';
 
+const getSnackbarDisplayMessage = (message: unknown) => {
+  if (typeof message !== 'string') return message;
+
+  if (
+    /transaction\s+invalid/i.test(message) &&
+    /account\s+is\s+not\s+a\s+group\s+member/i.test(message)
+  ) {
+    return 'Invalid transaction. Account is not a group member.';
+  }
+
+  return message;
+};
+
 export const CustomizedSnackbars = ({
   open,
   setOpen,
@@ -15,10 +28,11 @@ export const CustomizedSnackbars = ({
       return;
     }
 
+    const displayMessage = getSnackbarDisplayMessage(info.message);
     const signature = JSON.stringify({
       compact: info?.compact ?? false,
       duration: info?.duration ?? undefined,
-      message: info?.message,
+      message: displayMessage,
       type: info?.type ?? 'info',
     });
 
@@ -28,7 +42,7 @@ export const CustomizedSnackbars = ({
     executeEvent('openGlobalSnackBar', {
       compact: info?.compact,
       duration: info?.duration,
-      message: info?.message,
+      message: displayMessage,
       type: info?.type,
     });
 

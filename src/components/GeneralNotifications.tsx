@@ -1,7 +1,6 @@
 import AppsIcon from '@mui/icons-material/Apps';
 import CloseIcon from '@mui/icons-material/Close';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
-import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded';
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import SettingsIcon from '@mui/icons-material/Settings';
 import {
@@ -33,6 +32,7 @@ import {
   notificationSeenInAppKeyTimesAtom,
   notificationSeenInAppKeysAtom,
   paymentNotificationsAtom,
+  reticulumEnabledAtom,
 } from '../atoms/global';
 import LogoSelected from '../assets/svgs/LogoSelected.svg';
 import {
@@ -49,8 +49,25 @@ import {
   unsubscribeFromEvent,
 } from '../utils/events';
 import { formatDate } from '../utils/time';
+import {
+  getQChatMentionNotificationsEnabled,
+  QCHAT_MENTION_NOTIFICATION_APP_NAME,
+  QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT,
+  setQChatMentionNotificationsEnabled,
+} from '../utils/qChatMentionNotifications';
+import { ReticulumUnreadCountBadge } from './common/ReticulumUnreadCountBadge';
 
 const RESOURCE_EVENT = 'RESOURCE_PUBLISHED';
+
+const isQChatMentionNotification = (notification) =>
+  notification?.appName === QCHAT_MENTION_NOTIFICATION_APP_NAME &&
+  notification?.data?.qChatMention === true;
+
+const isReticulumDmMissedCallNotification = (notification) =>
+  notification?.data?.reticulumDmMissedCall === true;
+
+const isReticulumCalendarNotification = (notification) =>
+  notification?.data?.reticulumCalendarReminder === true;
 
 function toTimestampMs(value) {
   if (value == null || typeof value !== 'number') return null;
@@ -81,15 +98,22 @@ export const GeneralNotifications = ({
   compact = false,
   buttonSx = undefined,
   iconSx = undefined,
+  badgeOutlineColor = undefined,
 }) => {
   const [anchorEl, setAnchorEl] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<'hub' | 'q-apps'>(
+    'hub'
+  );
   const [settingsApps, setSettingsApps] = useState<string[]>([]);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [osPushDisabledMap, setOsPushDisabledMap] = useState<
     Record<string, boolean>
   >({});
+  const [qChatMentionsEnabled, setQChatMentionsEnabled] = useState(true);
+  const reticulumEnabled = useAtomValue(reticulumEnabledAtom);
   const notifications = useAtomValue(paymentNotificationsAtom);
+  const setNotifications = useSetAtom(paymentNotificationsAtom);
   const customSubscriptions = useAtomValue(customWebsocketSubscriptionsAtom);
   const setCustomSubscriptions = useSetAtom(customWebsocketSubscriptionsAtom);
   const lastSeenTimestamp = useAtomValue(lastPaymentSeenTimestampAtom);
@@ -99,6 +123,21 @@ export const GeneralNotifications = ({
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
   const { t, i18n } = useTranslation(['core']);
+
+  useEffect(() => {
+    const handler = (event: CustomEvent<{ enabled?: boolean }>) => {
+      setQChatMentionsEnabled(event.detail?.enabled === true);
+    };
+    subscribeToEvent(
+      QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT,
+      handler as EventListener
+    );
+    return () =>
+      unsubscribeFromEvent(
+        QCHAT_MENTION_NOTIFICATIONS_UPDATED_EVENT,
+        handler as EventListener
+      );
+  }, []);
 
   useEffect(() => {
     const handler = (event) => {
@@ -114,112 +153,131 @@ export const GeneralNotifications = ({
 
   const resourceNotifications = useMemo(
     () =>
-      (notifications ?? []).filter((item) => item?.event === RESOURCE_EVENT),
-    [notifications]
+      (notifications ?? []).filter(
+        (item) =>
+          item?.event === RESOURCE_EVENT ||
+          (reticulumEnabled &&
+            (isQChatMentionNotification(item) ||
+              isReticulumDmMissedCallNotification(item) ||
+              isReticulumCalendarNotification(item)))
+      ),
+    [notifications, reticulumEnabled]
   );
   const unseenCount = useMemo(() => {
-    return resourceNotifications.filter((notification) => {
+    return resourceNotifications.reduce((count, notification) => {
       const timestamp = getNotificationTimestamp(notification);
-      if (timestamp == null) return false;
+      if (timestamp == null) return count;
       if (isNotificationSeenInAppFromKeyTimes(notification, seenInAppKeyTimes))
-        return false;
-      return !lastSeenTimestamp || timestamp > lastSeenTimestamp;
-    }).length;
+        return count;
+      if (lastSeenTimestamp && timestamp <= lastSeenTimestamp) return count;
+      return (
+        count +
+        (isQChatMentionNotification(notification)
+          ? Math.max(1, Number(notification?.data?.mentionCount) || 1)
+          : 1)
+      );
+    }, 0);
   }, [resourceNotifications, seenInAppKeyTimes, lastSeenTimestamp]);
+  const hasAnyNotifications = resourceNotifications.length > 0;
 
   const hasNewNotifications = unseenCount > 0;
-  const NotificationIcon = hasNewNotifications
-    ? NotificationsActiveRoundedIcon
-    : NotificationsRoundedIcon;
+  const notificationsLabel = t('message.generic.notifications', {
+    defaultValue: 'Notifications',
+  });
+  const notificationsAriaLabel = hasNewNotifications
+    ? `${notificationsLabel}, ${unseenCount} unread`
+    : `${notificationsLabel}, no unread notifications`;
 
   const openSettings = () => {
+    setSettingsSection('hub');
     setSettingsOpen(true);
     setSettingsLoading(true);
     Promise.all([
       getAppsWithNotificationPermission(),
       getNotificationOsPushDisabledMap(),
+      getQChatMentionNotificationsEnabled(),
     ])
-      .then(([apps, disabledMap]) => {
-        setSettingsApps(apps);
+      .then(([apps, disabledMap, mentionsEnabled]) => {
+        setSettingsApps(
+          apps.filter(
+            (appName) => appName !== QCHAT_MENTION_NOTIFICATION_APP_NAME
+          )
+        );
         setOsPushDisabledMap(disabledMap || {});
+        setQChatMentionsEnabled(mentionsEnabled);
       })
       .finally(() => setSettingsLoading(false));
   };
 
   return (
     <>
-      <ButtonBase
-        aria-label="Notifications"
-        onClick={(event) => {
-          event.stopPropagation();
-          setAnchorEl(event.currentTarget);
-        }}
+      <Box
+        component="span"
         sx={{
+          display: 'inline-flex',
+          overflow: 'visible',
           position: 'relative',
-          ...(buttonSx || {}),
         }}
       >
-        <Tooltip
-          arrow
-          placement={tooltipPlacement}
-          title={
-            <span
-              style={{
-                color: theme.palette.text.primary,
-                fontSize: '14px',
-                fontWeight: 600,
-                textTransform: 'uppercase',
-              }}
-            >
-              {t('message.generic.notifications', {
-                defaultValue: 'Notifications',
-              })}
-            </span>
-          }
-          slotProps={{
-            arrow: { sx: { color: theme.palette.background.paper } },
-            tooltip: {
-              sx: {
-                backgroundColor: theme.palette.background.paper,
-                color: theme.palette.text.primary,
-              },
-            },
+        <ButtonBase
+          aria-label={notificationsAriaLabel}
+          onClick={(event) => {
+            event.stopPropagation();
+            setAnchorEl(event.currentTarget);
+          }}
+          sx={{
+            ...(buttonSx || {}),
           }}
         >
-          <NotificationIcon
-            sx={{
-              color: hasNewNotifications
-                ? theme.palette.other.unread
-                : theme.palette.text.secondary,
-              fontSize: compact ? 20 : undefined,
-              ...(iconSx || {}),
-            }}
-          />
-        </Tooltip>
-        {hasNewNotifications && (
-          <Box
-            component="span"
-            sx={{
-              bgcolor: theme.palette.other.unread,
-              borderRadius: '7px',
-              color: '#fff',
-              fontSize: '0.6rem',
-              fontWeight: 700,
-              height: 14,
-              lineHeight: '14px',
-              minWidth: 14,
-              pointerEvents: 'none',
-              position: 'absolute',
-              px: '3px',
-              right: compact ? 0 : -5,
-              textAlign: 'center',
-              top: compact ? 0 : -5,
+          <Tooltip
+            arrow
+            placement={tooltipPlacement}
+            title={
+              <span
+                style={{
+                  color: theme.palette.text.primary,
+                  fontSize: '14px',
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                }}
+              >
+                {notificationsLabel}
+              </span>
+            }
+            slotProps={{
+              arrow: { sx: { color: theme.palette.background.paper } },
+              tooltip: {
+                sx: {
+                  backgroundColor: theme.palette.background.paper,
+                  color: theme.palette.text.primary,
+                },
+              },
             }}
           >
-            {unseenCount > 99 ? '99+' : unseenCount}
-          </Box>
+            <NotificationsRoundedIcon
+              sx={{
+                color: theme.palette.text.secondary,
+                fontSize: compact ? 20 : undefined,
+                ...(iconSx || {}),
+              }}
+            />
+          </Tooltip>
+        </ButtonBase>
+        {hasNewNotifications && (
+          <ReticulumUnreadCountBadge
+            count={unseenCount}
+            fontSize={9}
+            outlineColor={badgeOutlineColor || theme.palette.background.surface}
+            size={15}
+            sx={{
+              position: 'absolute',
+              right: -5,
+              top: -4,
+              zIndex: 2,
+            }}
+          />
         )}
-      </ButtonBase>
+      </Box>
 
       <Popover
         anchorEl={anchorEl}
@@ -256,13 +314,13 @@ export const GeneralNotifications = ({
       >
         <Box
           sx={{
-            alignItems: resourceNotifications.length ? 'stretch' : 'center',
+            alignItems: hasAnyNotifications ? 'stretch' : 'center',
             display: 'flex',
             flexDirection: 'column',
-            gap: resourceNotifications.length ? 1 : 1.2,
+            gap: hasAnyNotifications ? 1 : 1.2,
             maxHeight: '60vh',
             overflow: 'auto',
-            ...(resourceNotifications.length
+            ...(hasAnyNotifications
               ? { pb: 1, pl: 1, pr: 1, pt: 5.5 }
               : { p: '18px 20px' }),
             position: 'relative',
@@ -289,9 +347,9 @@ export const GeneralNotifications = ({
             <SettingsIcon fontSize="small" />
           </IconButton>
 
-          {!resourceNotifications.length && (
+          {!hasAnyNotifications && (
             <>
-              <NotificationIcon
+              <NotificationsRoundedIcon
                 sx={{
                   color: alpha(theme.palette.text.secondary, 0.82),
                   fontSize: 22,
@@ -330,6 +388,11 @@ export const GeneralNotifications = ({
             const isQMail =
               notification?.notificationId === 'q-mail-notification' ||
               notification?.appName === 'Q-Mail';
+            const isQChatMention = isQChatMentionNotification(notification);
+            const isMissedDmCall =
+              isReticulumDmMissedCallNotification(notification);
+            const isCalendarReminder =
+              isReticulumCalendarNotification(notification);
             const timestamp = getNotificationTimestamp(notification);
             const unseen =
               timestamp != null &&
@@ -347,6 +410,57 @@ export const GeneralNotifications = ({
                   index
                 }
                 onClick={() => {
+                  if (isQChatMention) {
+                    setNotifications((current) =>
+                      current.filter(
+                        (item) =>
+                          !(
+                            isQChatMentionNotification(item) &&
+                            Number(item?.data?.groupId) ===
+                              Number(notification?.data?.groupId)
+                          )
+                      )
+                    );
+                    setAnchorEl(null);
+                    executeEvent('openGroupMessage', {
+                      channelId: notification?.data?.channelId,
+                      eventId: notification?.data?.eventId,
+                      from: notification?.data?.groupId,
+                    });
+                    return;
+                  }
+                  if (isMissedDmCall) {
+                    setNotifications((current) =>
+                      current.filter(
+                        (item) =>
+                          item?.data?.reticulumDmCallId !==
+                          notification?.data?.reticulumDmCallId
+                      )
+                    );
+                    setAnchorEl(null);
+                    executeEvent('openDirectMessageInternal', {
+                      address: notification?.data?.from,
+                      name: notification?.data?.name,
+                    });
+                    return;
+                  }
+                  if (isCalendarReminder) {
+                    setNotifications((current) =>
+                      current.filter(
+                        (item) =>
+                          item?.notificationId !== notification?.notificationId
+                      )
+                    );
+                    setAnchorEl(null);
+                    executeEvent('openGroupMessage', {
+                      from: notification?.data?.groupId,
+                      eventId: notification?.data?.eventId,
+                      occurrenceStart: notification?.data?.occurrenceStart,
+                      timezone: notification?.data?.timezone,
+                      openCalendar: true,
+                    });
+                    return;
+                  }
                   if (hasNewNotifications) setLastSeenTimestamp(Date.now());
                   setAnchorEl(null);
                   const link = notification?.link;
@@ -394,11 +508,19 @@ export const GeneralNotifications = ({
                   }}
                 >
                   <Avatar
-                    alt={notification?.appName || 'App'}
-                    src={`${getBaseApiReact()}${
-                      notification?.image ||
-                      `/arbitrary/THUMBNAIL/${notification?.appName || 'Q-Mail'}/qortal_avatar?async=true`
-                    }`}
+                    alt={
+                      isQChatMention
+                        ? notification?.data?.groupName
+                        : notification?.appName || 'App'
+                    }
+                    src={
+                      isQChatMention
+                        ? undefined
+                        : `${getBaseApiReact()}${
+                            notification?.image ||
+                            `/arbitrary/THUMBNAIL/${notification?.appName || 'Q-Mail'}/qortal_avatar?async=true`
+                          }`
+                    }
                     sx={{
                       bgcolor: isDarkMode
                         ? alpha('#FFFFFF', 0.06)
@@ -439,7 +561,9 @@ export const GeneralNotifications = ({
                           fontWeight: 650,
                         }}
                       >
-                        {notification?.appName || 'Q-App'}
+                        {isQChatMention
+                          ? notification?.data?.groupName
+                          : notification?.appName || 'Q-App'}
                       </Typography>
                       {timestamp && (
                         <Typography
@@ -555,35 +679,89 @@ export const GeneralNotifications = ({
               lineHeight: 1.52,
             }}
           >
-            {t('message.generic.notification_settings_desc', {
-              defaultValue:
-                'Choose which apps can send desktop alerts while keeping in-Hub activity visible.',
+            {settingsSection === 'hub'
+              ? t('message.generic.hub_notification_settings_desc', {
+                  defaultValue:
+                    'Choose which Hub features appear in your notification panel.',
+                })
+              : t('message.generic.notification_settings_desc', {
+                  defaultValue:
+                    'Choose which apps can send desktop alerts while keeping in-Hub activity visible.',
+                })}
+          </Box>
+          <Box
+            role="tablist"
+            sx={{
+              backgroundColor: isDarkMode
+                ? alpha('#05080D', 0.5)
+                : alpha(theme.palette.action.active, 0.055),
+              border: `1px solid ${
+                isDarkMode ? alpha('#A9BCD8', 0.12) : theme.palette.divider
+              }`,
+              borderRadius: '11px',
+              display: 'grid',
+              gap: 0.5,
+              gridTemplateColumns: '1fr 1fr',
+              p: 0.5,
+            }}
+          >
+            {(
+              [
+                ['hub', 'Hub'],
+                ['q-apps', 'Q-Apps'],
+              ] as const
+            ).map(([value, label]) => {
+              const selected = settingsSection === value;
+              return (
+                <ButtonBase
+                  aria-selected={selected}
+                  key={value}
+                  onClick={() => setSettingsSection(value)}
+                  role="tab"
+                  sx={{
+                    backgroundColor: selected
+                      ? isDarkMode
+                        ? alpha(theme.palette.primary.main, 0.2)
+                        : alpha(theme.palette.primary.main, 0.12)
+                      : 'transparent',
+                    border: `1px solid ${
+                      selected
+                        ? alpha(theme.palette.primary.main, 0.34)
+                        : 'transparent'
+                    }`,
+                    borderRadius: '8px',
+                    color: selected
+                      ? theme.palette.text.primary
+                      : theme.palette.text.secondary,
+                    fontSize: '0.84rem',
+                    fontWeight: selected ? 650 : 550,
+                    minHeight: 36,
+                    transition:
+                      'background-color 150ms ease, border-color 150ms ease, color 150ms ease',
+                    '&:hover': {
+                      backgroundColor: selected
+                        ? isDarkMode
+                          ? alpha(theme.palette.primary.main, 0.24)
+                          : alpha(theme.palette.primary.main, 0.15)
+                        : alpha(theme.palette.action.active, 0.06),
+                    },
+                  }}
+                >
+                  {label}
+                </ButtonBase>
+              );
             })}
           </Box>
-          {settingsLoading ? (
-            <Typography
-              sx={{ color: alpha(theme.palette.text.secondary, 0.82) }}
-            >
-              {t('message.generic.loading', { defaultValue: 'Loading...' })}
-            </Typography>
-          ) : settingsApps.length === 0 ? (
-            <Box
-              sx={{
-                color: alpha(theme.palette.text.secondary, 0.82),
-                fontSize: '0.92rem',
-                lineHeight: 1.55,
-                pt: 0.1,
-              }}
-            >
-              {t('message.generic.no_notification_apps', {
-                defaultValue: 'No apps have notification permission yet.',
-              })}
-            </Box>
-          ) : (
-            <List disablePadding sx={{ display: 'grid', gap: 1.2 }}>
-              {settingsApps.map((appName) => (
+          <List disablePadding sx={{ display: 'grid', gap: 1.2 }}>
+            {settingsLoading ? (
+              <Typography
+                sx={{ color: alpha(theme.palette.text.secondary, 0.82) }}
+              >
+                {t('message.generic.loading', { defaultValue: 'Loading...' })}
+              </Typography>
+            ) : settingsSection === 'hub' ? (
+              reticulumEnabled ? (
                 <Box
-                  key={appName}
                   sx={{
                     alignItems: 'center',
                     backgroundColor: isDarkMode
@@ -612,14 +790,19 @@ export const GeneralNotifications = ({
                         ),
                         border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
                         borderRadius: '10px',
-                        color: alpha(theme.palette.primary.light, 0.96),
                         display: 'inline-flex',
                         height: 34,
                         justifyContent: 'center',
+                        overflow: 'hidden',
                         width: 34,
                       }}
                     >
-                      <AppsIcon sx={{ fontSize: 18 }} />
+                      <Box
+                        alt="Q-Chat"
+                        component="img"
+                        src={LogoSelected}
+                        sx={{ height: 24, width: 24 }}
+                      />
                     </Box>
                     <Box sx={{ minWidth: 0 }}>
                       <Typography
@@ -629,7 +812,7 @@ export const GeneralNotifications = ({
                           fontWeight: 600,
                         }}
                       >
-                        {appName}
+                        Q-Chat
                       </Typography>
                       <Typography
                         sx={{
@@ -639,10 +822,8 @@ export const GeneralNotifications = ({
                           mt: 0.3,
                         }}
                       >
-                        {t('message.generic.disable_os_push_desc', {
-                          defaultValue:
-                            'Mute desktop alerts for this app while keeping in-Hub activity visible.',
-                        })}
+                        Show Reticulum mention alerts in the Hub and on your
+                        desktop.
                       </Typography>
                     </Box>
                   </Box>
@@ -654,82 +835,215 @@ export const GeneralNotifications = ({
                         fontWeight: 500,
                       }}
                     >
-                      {t('message.generic.disable_os_push', {
-                        defaultValue: 'Disable OS push',
-                      })}
+                      Mentions
                     </Typography>
                     <Switch
-                      checked={osPushDisabledMap[appName] === true}
-                      onChange={async (_, checked) => {
-                        await setNotificationOsPushDisabled(appName, checked);
-                        setOsPushDisabledMap((prev) => ({
-                          ...prev,
-                          [appName]: checked,
-                        }));
+                      checked={qChatMentionsEnabled}
+                      inputProps={{
+                        'aria-label': 'Q-Chat mention notifications',
+                      }}
+                      onChange={(_, checked) => {
+                        setQChatMentionsEnabled(checked);
+                        void setQChatMentionNotificationsEnabled(checked).catch(
+                          () => setQChatMentionsEnabled(!checked)
+                        );
                       }}
                       size="small"
                     />
-                    <ButtonBase
-                      onClick={async () => {
-                        const notificationIds = (customSubscriptions ?? [])
-                          .filter(
-                            (sub) =>
-                              sub?.event === RESOURCE_EVENT &&
-                              sub?.appName === appName
-                          )
-                          .map((sub) => sub?.notificationId)
-                          .filter(Boolean);
-                        await setPermission(
-                          getNotificationPermissionKey(appName),
-                          false
-                        );
-                        setCustomSubscriptions((prev) =>
-                          (prev ?? []).filter(
-                            (sub) =>
-                              !(
-                                sub?.event === RESOURCE_EVENT &&
-                                sub?.appName === appName
-                              )
-                          )
-                        );
-                        if (notificationIds.length) {
-                          executeEvent(
-                            'custom-ws-unsubscribe',
-                            notificationIds
-                          );
-                        }
-                        executeEvent(
-                          'notifications-websocket-reconnect',
-                          undefined
-                        );
-                        setSettingsApps((prev) =>
-                          prev.filter((name) => name !== appName)
-                        );
-                      }}
-                      sx={{
-                        borderRadius: '10px',
-                        color: theme.palette.error.light,
-                        fontSize: '0.8rem',
-                        fontWeight: 600,
-                        px: 1.1,
-                        py: 0.6,
-                        '&:hover': {
-                          backgroundColor: alpha(
-                            theme.palette.error.main,
-                            0.08
-                          ),
-                        },
-                      }}
-                    >
-                      {t('message.generic.revoke_permission', {
-                        defaultValue: 'Revoke',
-                      })}
-                    </ButtonBase>
                   </Box>
                 </Box>
-              ))}
-            </List>
-          )}
+              ) : (
+                <Typography
+                  sx={{ color: alpha(theme.palette.text.secondary, 0.82) }}
+                >
+                  No Hub notification settings are available.
+                </Typography>
+              )
+            ) : (
+              <>
+                {settingsApps.length === 0 ? (
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      border: `1px dashed ${
+                        isDarkMode
+                          ? alpha('#A9BCD8', 0.14)
+                          : theme.palette.divider
+                      }`,
+                      borderRadius: '14px',
+                      color: alpha(theme.palette.text.secondary, 0.8),
+                      display: 'flex',
+                      fontSize: '0.82rem',
+                      justifyContent: 'center',
+                      minHeight: 82,
+                      px: 2,
+                      textAlign: 'center',
+                    }}
+                  >
+                    {t('message.generic.no_notification_apps', {
+                      defaultValue:
+                        'No Q-Apps have notification permission yet.',
+                    })}
+                  </Box>
+                ) : (
+                  settingsApps.map((appName) => (
+                    <Box
+                      key={appName}
+                      sx={{
+                        alignItems: 'center',
+                        backgroundColor: isDarkMode
+                          ? alpha('#FFFFFF', 0.026)
+                          : theme.palette.action.hover,
+                        border: `1px solid ${
+                          isDarkMode
+                            ? alpha('#A9BCD8', 0.12)
+                            : theme.palette.divider
+                        }`,
+                        borderRadius: '14px',
+                        display: 'flex',
+                        gap: 2,
+                        justifyContent: 'space-between',
+                        px: 1.7,
+                        py: 1.55,
+                      }}
+                    >
+                      <Box
+                        sx={{ alignItems: 'center', display: 'flex', gap: 1.2 }}
+                      >
+                        <Box
+                          sx={{
+                            alignItems: 'center',
+                            backgroundColor: alpha(
+                              theme.palette.primary.main,
+                              0.12
+                            ),
+                            border: `1px solid ${alpha(theme.palette.primary.main, 0.22)}`,
+                            borderRadius: '10px',
+                            color: alpha(theme.palette.primary.light, 0.96),
+                            display: 'inline-flex',
+                            height: 34,
+                            justifyContent: 'center',
+                            width: 34,
+                          }}
+                        >
+                          <AppsIcon sx={{ fontSize: 18 }} />
+                        </Box>
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography
+                            sx={{
+                              color: theme.palette.text.primary,
+                              fontSize: '0.92rem',
+                              fontWeight: 600,
+                            }}
+                          >
+                            {appName}
+                          </Typography>
+                          <Typography
+                            sx={{
+                              color: alpha(theme.palette.text.secondary, 0.76),
+                              fontSize: '0.76rem',
+                              lineHeight: 1.45,
+                              mt: 0.3,
+                            }}
+                          >
+                            {t('message.generic.disable_os_push_desc', {
+                              defaultValue:
+                                'Mute desktop alerts for this app while keeping in-Hub activity visible.',
+                            })}
+                          </Typography>
+                        </Box>
+                      </Box>
+                      <Box
+                        sx={{ alignItems: 'center', display: 'flex', gap: 1.2 }}
+                      >
+                        <Typography
+                          sx={{
+                            color: alpha(theme.palette.text.secondary, 0.82),
+                            fontSize: '0.78rem',
+                            fontWeight: 500,
+                          }}
+                        >
+                          {t('message.generic.disable_os_push', {
+                            defaultValue: 'Disable OS push',
+                          })}
+                        </Typography>
+                        <Switch
+                          checked={osPushDisabledMap[appName] === true}
+                          onChange={async (_, checked) => {
+                            await setNotificationOsPushDisabled(
+                              appName,
+                              checked
+                            );
+                            setOsPushDisabledMap((prev) => ({
+                              ...prev,
+                              [appName]: checked,
+                            }));
+                          }}
+                          size="small"
+                        />
+                        <ButtonBase
+                          onClick={async () => {
+                            const notificationIds = (customSubscriptions ?? [])
+                              .filter(
+                                (sub) =>
+                                  sub?.event === RESOURCE_EVENT &&
+                                  sub?.appName === appName
+                              )
+                              .map((sub) => sub?.notificationId)
+                              .filter(Boolean);
+                            await setPermission(
+                              getNotificationPermissionKey(appName),
+                              false
+                            );
+                            setCustomSubscriptions((prev) =>
+                              (prev ?? []).filter(
+                                (sub) =>
+                                  !(
+                                    sub?.event === RESOURCE_EVENT &&
+                                    sub?.appName === appName
+                                  )
+                              )
+                            );
+                            if (notificationIds.length) {
+                              executeEvent(
+                                'custom-ws-unsubscribe',
+                                notificationIds
+                              );
+                            }
+                            executeEvent(
+                              'notifications-websocket-reconnect',
+                              undefined
+                            );
+                            setSettingsApps((prev) =>
+                              prev.filter((name) => name !== appName)
+                            );
+                          }}
+                          sx={{
+                            borderRadius: '10px',
+                            color: theme.palette.error.light,
+                            fontSize: '0.8rem',
+                            fontWeight: 600,
+                            px: 1.1,
+                            py: 0.6,
+                            '&:hover': {
+                              backgroundColor: alpha(
+                                theme.palette.error.main,
+                                0.08
+                              ),
+                            },
+                          }}
+                        >
+                          {t('message.generic.revoke_permission', {
+                            defaultValue: 'Revoke',
+                          })}
+                        </ButtonBase>
+                      </Box>
+                    </Box>
+                  ))
+                )}
+              </>
+            )}
+          </List>
         </DialogContent>
       </Dialog>
     </>

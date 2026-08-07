@@ -227,6 +227,9 @@ export async function joinDirectVoiceReticulumRoom(opts: {
   publicKey: string;
   reticulumDestinationHash: string;
   reticulumIdentityPublicKeyBase64?: string | null;
+  dmVoiceAudioLinkRole?: 'opener' | 'waiter';
+  peerDestinationHash?: string;
+  callId?: string;
 }): Promise<{
   success: boolean;
   callSessionId?: string;
@@ -251,7 +254,7 @@ export async function joinDirectVoiceReticulumRoom(opts: {
     return { success: false, error: 'join-sign-failed' };
   }
   await gc.setLocalAddresses?.([opts.address], 'dm').catch(() => {});
-  const res = await gc.join(
+  const baseArgs = [
     opts.roomId,
     opts.chatId,
     opts.address,
@@ -262,8 +265,18 @@ export async function joinDirectVoiceReticulumRoom(opts: {
     undefined,
     0,
     opts.reticulumIdentityPublicKeyBase64 ?? undefined,
-    signatures.joinRkSig
-  );
+    signatures.joinRkSig,
+    opts.dmVoiceAudioLinkRole,
+  ] as const;
+  const res =
+    opts.peerDestinationHash || opts.callId
+      ? await gc.join(
+          ...baseArgs,
+          undefined,
+          opts.peerDestinationHash,
+          opts.callId
+        )
+      : await gc.join(...baseArgs);
   return res;
 }
 

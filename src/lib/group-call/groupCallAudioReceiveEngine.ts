@@ -647,6 +647,10 @@ export interface GroupCallAudioReceiveEngineConfig {
   hearCall: boolean;
   profile: GroupCallAudioQualityProfile;
   postFailoverRootHoldUntilMs: number;
+  /** Optional pitch-safe lower rate bound for transports with bursty delivery. */
+  minimumPlayoutRate?: number;
+  /** Optional per-source playout target floor in milliseconds. */
+  minimumTargetPlayoutMs?: number;
 }
 
 export class GroupCallAudioReceiveEngine {
@@ -659,6 +663,8 @@ export class GroupCallAudioReceiveEngine {
     Promise<DmVoiceGcallInboundPlayout>
   >();
   private readonly outputNodeBySource = new Map<string, GainNode>();
+  private readonly pannerNodeBySource = new Map<string, StereoPannerNode>();
+  private readonly spatialControlsBySource = new Map<string, { gain: number; pan: number }>();
   private readonly onMetricsChanged: (
     snapshot: GroupCallMetricsSnapshot
   ) => void;
@@ -1363,9 +1369,12 @@ export class GroupCallAudioReceiveEngine {
     for (const output of this.outputNodeBySource.values()) {
       disconnectNodeSafe(output);
     }
+    for (const panner of this.pannerNodeBySource.values()) disconnectNodeSafe(panner);
     this.playouts.clear();
     this.pendingPlayouts.clear();
     this.outputNodeBySource.clear();
+    this.pannerNodeBySource.clear();
+    this.spatialControlsBySource.clear();
     this.loggedFirstDecodedPacket = false;
     this.loggedFirstPlayoutStartBySource.clear();
     this.peerRecoveryState = createDmPeerRecoveryState();
@@ -1393,15 +1402,19 @@ export class GroupCallAudioReceiveEngine {
     if (!normalized) return;
     const playout = this.playouts.get(normalized);
     const output = this.outputNodeBySource.get(normalized) ?? null;
+    const panner = this.pannerNodeBySource.get(normalized) ?? null;
     this.playouts.delete(normalized);
     this.pendingPlayouts.delete(normalized);
     this.outputNodeBySource.delete(normalized);
+    this.pannerNodeBySource.delete(normalized);
+    this.spatialControlsBySource.delete(normalized);
     this.loggedFirstPlayoutStartBySource.delete(normalized);
     this.liveMultiSourceStateBySource.delete(normalized);
     if (playout) {
       await playout.stop();
     }
     disconnectNodeSafe(output);
+    disconnectNodeSafe(panner);
     this.updateResourceCounts();
     this.syncAllPlayoutAdaptiveGeometry();
     this.syncLiveMultiSourceControls();
@@ -1411,6 +1424,31 @@ export class GroupCallAudioReceiveEngine {
   hasSource(sourceAddr: string): boolean {
     const normalized = sourceAddr.trim();
     return normalized ? this.playouts.has(normalized) : false;
+  }
+
+  setSourceSpatial(sourceAddr: string, gain: number, pan: number): void {
+    const normalized = sourceAddr.trim();
+    if (!normalized) return;
+    const controls = {
+      gain: Math.max(0, Math.min(2, Number.isFinite(gain) ? gain : 0)),
+      pan: Math.max(-0.65, Math.min(0.65, Number.isFinite(pan) ? pan : 0)),
+    };
+    this.spatialControlsBySource.set(normalized, controls);
+    const now = this.audioContext?.currentTime ?? 0;
+    const output = this.outputNodeBySource.get(normalized);
+    const panner = this.pannerNodeBySource.get(normalized);
+    output?.gain.cancelScheduledValues(now);
+    output?.gain.setTargetAtTime(controls.gain, now, 0.05);
+    panner?.pan.cancelScheduledValues(now);
+    panner?.pan.setTargetAtTime(controls.pan, now, 0.05);
+  }
+
+  setMasterVolume(volume: number): void {
+    const value = Math.max(0, Math.min(2, Number.isFinite(volume) ? volume : 1));
+    if (!this.masterGain || !this.audioContext) return;
+    const now = this.audioContext.currentTime;
+    this.masterGain.gain.cancelScheduledValues(now);
+    this.masterGain.gain.setTargetAtTime(this.config.hearCall ? value : 0, now, 0.05);
   }
 
   async dispose(): Promise<void> {
@@ -3222,12 +3260,28 @@ export class GroupCallAudioReceiveEngine {
     const existingAfterContext = this.playouts.get(sourceAddr);
     if (existingAfterContext) return existingAfterContext;
     const output = ctx.createGain();
-    output.gain.value = 1;
-    output.connect(this.masterGain!);
+    const controls = this.spatialControlsBySource.get(sourceAddr) ?? { gain: 1, pan: 0 };
+    output.gain.value = controls.gain;
+    // StereoPannerNode is available in Chromium, but keeping this optional
+    // preserves the existing receiver on older WebViews and test AudioContext
+    // shims. Proximity voice loses only spatial pan in that environment.
+    const panner =
+      typeof ctx.createStereoPanner === 'function'
+        ? ctx.createStereoPanner()
+        : null;
+    if (panner) {
+      panner.pan.value = controls.pan;
+      output.connect(panner);
+      panner.connect(this.masterGain!);
+    } else {
+      output.connect(this.masterGain!);
+    }
     const playout = new DmVoiceGcallInboundPlayout();
     await playout.start(ctx, sourceAddr, output, {
       metricsRef: this.metricsRef,
       profile: this.config.profile,
+      minimumPlayoutRate: this.config.minimumPlayoutRate,
+      minimumTargetPlayoutMs: this.config.minimumTargetPlayoutMs,
       getActiveSourceCount: () => this.playouts.size,
       afterDrain: ({ missedFramesThisTick }) => {
         if (missedFramesThisTick > 0) {
@@ -3344,6 +3398,7 @@ export class GroupCallAudioReceiveEngine {
     });
     this.playouts.set(sourceAddr, playout);
     this.outputNodeBySource.set(sourceAddr, output);
+    if (panner) this.pannerNodeBySource.set(sourceAddr, panner);
     this.getOrCreateLiveMultiSourceState(
       sourceAddr,
       computeStaticPlayoutTargetMsForTuning(

@@ -32,6 +32,13 @@ release-builds/
 scripts/i18n_report*
 *wallet-storage.json
 
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+
+# Generated screenshots, CPU profiles, and call-test outputs
+/.artifacts/
+/electron/main-pressure-profiles/*.cpuprofile
 # Local dev/preview console captures
 devserver*.err
 devserver*.out

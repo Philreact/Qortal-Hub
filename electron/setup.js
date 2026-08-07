@@ -1092,6 +1092,7 @@ const DEFAULT_APP_SETTINGS = {
     p2pEnabled: !feature_flags_1.isDisabledLegacy,
     reticulumMeshUpnpEnabled: true,
     reticulumManagedConfigEnabled: true,
+    reticulumChatEnabled: true,
 };
 async function readAppSettings() {
     try {
@@ -1118,6 +1119,7 @@ async function readAppSettings() {
                 : parsed.legacyPublicStunFallback === true,
             reticulumMeshUpnpEnabled: parsed.reticulumMeshUpnpEnabled === false ? false : true,
             reticulumManagedConfigEnabled: parsed.reticulumManagedConfigEnabled === false ? false : true,
+            reticulumChatEnabled: parsed.reticulumChatEnabled === false ? false : true,
         };
     }
     catch {

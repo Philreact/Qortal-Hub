@@ -1,28 +1,28 @@
 export type P2pHealthLevel = 'bad' | 'low' | 'good';
 
-/** Remote hubs online + overlay peer counts — used for core popover P2P health and group-call gate. */
+export const P2P_HEALTH_MIN_RECEIVING_PEERS = 1;
+export const P2P_HEALTH_RECEIVING_STABLE_MS = 30_000;
+
+/** Receiving overlay peers - used for core popover P2P health and call gates. */
 export function computeP2pHealth(metrics: {
   onlineRemoteHubInterfaces: number;
+  p2pReceivingOverlayPeers?: number;
+  p2pReceivingOverlayPeersStableMs?: number;
   p2pActiveOverlayPeers?: number;
   p2pOutboundOverlayPeers?: number;
   p2pInboundOverlayPeers?: number;
 }): P2pHealthLevel {
   const {
-    onlineRemoteHubInterfaces,
-    p2pActiveOverlayPeers = 0,
-    p2pOutboundOverlayPeers,
-    p2pInboundOverlayPeers,
+    p2pReceivingOverlayPeers = 0,
+    p2pReceivingOverlayPeersStableMs = 0,
   } = metrics;
-  const outboundPeers = p2pOutboundOverlayPeers ?? p2pActiveOverlayPeers;
-  const inboundPeers = p2pInboundOverlayPeers ?? p2pActiveOverlayPeers;
-  const sendablePeers =
-    p2pOutboundOverlayPeers !== undefined || p2pInboundOverlayPeers !== undefined
-      ? outboundPeers + inboundPeers
-      : p2pActiveOverlayPeers;
-  if (onlineRemoteHubInterfaces === 0 || sendablePeers === 0) {
+  if (p2pReceivingOverlayPeers === 0) {
     return 'bad';
   }
-  if (onlineRemoteHubInterfaces >= 2 && sendablePeers >= 2) {
+  if (
+    p2pReceivingOverlayPeers >= P2P_HEALTH_MIN_RECEIVING_PEERS &&
+    p2pReceivingOverlayPeersStableMs >= P2P_HEALTH_RECEIVING_STABLE_MS
+  ) {
     return 'good';
   }
   return 'low';

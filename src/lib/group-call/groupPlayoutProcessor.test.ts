@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 type GroupPlayoutProcessorCtor = new (options?: {
   processorOptions?: {
     sourceAddr?: string;
+    minimumPlayoutRate?: number;
     sharedRing?: {
       sampleBuffer: SharedArrayBuffer;
       stateBuffer: SharedArrayBuffer;
@@ -224,5 +225,30 @@ describe('group playout processor rate control', () => {
 
     expect((processor as any)._underTierRate(-50, 110)).toBe(0.992);
     expect((processor as any)._underTierRate(-50, 70)).toBe(0.98);
+  });
+
+  it('honors a pitch-safe minimum rate during panic without changing the default', async () => {
+    const Processor = await loadProcessorCtor();
+    const regular = new Processor({
+      processorOptions: { sourceAddr: 'regular' },
+    }) as any;
+    const pitchSafe = new Processor({
+      processorOptions: {
+        sourceAddr: 'proximity',
+        minimumPlayoutRate: 0.985,
+      },
+    }) as any;
+
+    for (const processor of [regular, pitchSafe]) {
+      processor._playoutStarted = true;
+      processor._targetPlayoutMs = 160;
+      for (let i = 0; i < 24; i++) {
+        processor._available = Math.round((40 / 1000) * 48_000);
+        nextBlock(processor);
+      }
+    }
+
+    expect(regular._smoothedRate).toBeLessThan(0.985);
+    expect(pitchSafe._smoothedRate).toBeGreaterThanOrEqual(0.985);
   });
 });

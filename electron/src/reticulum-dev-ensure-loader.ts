@@ -48,6 +48,22 @@ except Exception:
   return r.status === 0;
 }
 
+function hasRequiredGameWebSockets(py: string, shell: boolean): boolean {
+  const r = spawnSync(
+    py,
+    [
+      '-c',
+      'import websockets; raise SystemExit(0 if websockets.__version__ == "14.2" else 1)',
+    ],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+      shell,
+    }
+  );
+  return r.status === 0;
+}
+
 /** Same fast checks as ensure-reticulum-for-dev.mjs (keep in sync). */
 export function needsDevReticulumEnsure(): boolean {
   if (!electronIsDev) return false;
@@ -66,7 +82,12 @@ export function needsDevReticulumEnsure(): boolean {
   for (const py of venvCandidates) {
     if (!py || !fs.existsSync(py)) continue;
     if (!canImportRequiredReticulum(py, false)) return true;
-    if (canImportModule(py, 'LXMF', false)) return false;
+    if (
+      canImportModule(py, 'LXMF', false) &&
+      hasRequiredGameWebSockets(py, false)
+    ) {
+      return false;
+    }
     return true;
   }
 
@@ -75,7 +96,12 @@ export function needsDevReticulumEnsure(): boolean {
   const shell = process.platform === 'win32';
   for (const name of names) {
     if (!canImportRequiredReticulum(name, shell)) continue;
-    if (canImportModule(name, 'LXMF', shell)) return false;
+    if (
+      canImportModule(name, 'LXMF', shell) &&
+      hasRequiredGameWebSockets(name, shell)
+    ) {
+      return false;
+    }
     return true;
   }
 
@@ -113,7 +139,7 @@ const STATUS_MAP: Record<string, string> = {
   get_pip_check: 'Checking Python environment…',
   get_pip_download: 'Downloading Python tooling…',
   get_pip_run: 'Installing pip…',
-  pip_install_rns: 'Installing Qortal Reticulum runtime and LXMF…',
+  pip_install_rns: 'Installing Qortal Reticulum runtime, LXMF, and game transport…',
   done: 'Done.',
 };
 
@@ -209,7 +235,7 @@ export async function runDevReticulumEnsureIfNeeded(): Promise<boolean> {
         await dialog.showMessageBox({
           type: 'error',
           title: 'Reticulum setup failed',
-          message: 'Could not install Reticulum (rns) and LXMF automatically.',
+        message: 'Could not install Reticulum, LXMF, and the game transport automatically.',
           detail: `${stderrBuf.trim().slice(-1800) || `Process exited with code ${code}.`}
 
 You need Python 3.9+ on PATH and a working internet connection.

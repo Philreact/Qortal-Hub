@@ -29,6 +29,7 @@ import ErrorBoundary from './common/ErrorBoundary';
 import { AuthenticationForm } from './components/AuthenticationForm';
 import {
   BuyOrderRequestScreen,
+  AuthenticatedLockScreen,
   ConnectionRequestScreen,
   CountdownOverlay,
   CreateWalletView,
@@ -93,6 +94,7 @@ import {
   qortalGroupCallPrimaryNamesAtom,
   qortBalanceLoadingAtom,
   rawWalletAtom,
+  reticulumEnabledAtom,
   selectedNodeInfoAtom,
   userInfoAtom,
   walletToBeDecryptedErrorAtom,
@@ -137,6 +139,13 @@ import { GlobalQortalNavBar } from './components/Desktop/GlobalQortalNavBar.tsx'
 import type { AuthUnlockTransitionSnapshot } from './types/authTransition';
 import { openQWalletsTab } from './utils/openQWalletsTab';
 import { clearLastAuthenticatedWalletAddress } from './utils/lastAuthenticatedWallet';
+import { appLockedAtom, isIdleAtom } from './atoms/presence';
+import {
+  DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES,
+  isAutoLockDue,
+  resolveAutoLockTimeoutMinutes,
+  type AutoLockTimeoutMinutes,
+} from './lib/autoLock';
 
 const MINTING_LOCAL_DEBUG_STORAGE_KEY = 'hub.mintingLocalDebug';
 const LOCAL_CORE_READY_SYNC_PERCENT = 99.95;
@@ -264,6 +273,11 @@ function App() {
   } | null;
 
   const [extState, setExtstate] = useAtom(extStateAtom);
+  const [isAppLocked, setIsAppLocked] = useAtom(appLockedAtom);
+  const setIsIdle = useSetAtom(isIdleAtom);
+  const [autoLockTimeoutMinutes, setAutoLockTimeoutMinutes] =
+    useState<AutoLockTimeoutMinutes>(DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES);
+  const [reticulumEnabled, setReticulumEnabled] = useAtom(reticulumEnabledAtom);
   const [desktopViewMode, setDesktopViewMode] = useState('home');
   const [rawWallet, setRawWallet] = useAtom(rawWalletAtom);
   const [qortBalanceLoading, setQortBalanceLoading] = useAtom(
@@ -272,6 +286,37 @@ function App() {
   const [requestConnection, setRequestConnection] = useState<any>(null);
   const [requestBuyOrder, setRequestBuyOrder] = useState<any>(null);
   const [userInfo, setUserInfo] = useAtom(userInfoAtom);
+  useEffect(() => {
+    let cancelled = false;
+    let settingsChangeReceived = false;
+    const applySettings = (settings?: {
+      autoLockTimeoutMinutes?: number;
+      disableAutoLockOnIdle?: boolean;
+      reticulumEnabled?: boolean;
+    }) => {
+      if (cancelled) return;
+      setReticulumEnabled(settings?.reticulumEnabled !== false);
+      setAutoLockTimeoutMinutes(
+        resolveAutoLockTimeoutMinutes(
+          settings?.autoLockTimeoutMinutes,
+          settings?.disableAutoLockOnIdle === true
+        )
+      );
+    };
+    const unsubscribe = window.electronAPI?.onAppSettingsChanged?.(
+      (settings) => {
+        settingsChangeReceived = true;
+        applySettings(settings);
+      }
+    );
+    void window.electronAPI?.getAppSettings?.().then((settings) => {
+      if (!settingsChangeReceived) applySettings(settings);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [setReticulumEnabled]);
   useEffect(() => {
     const w = window as Window & { __qortalCurrentAddress?: string | null };
     w.__qortalCurrentAddress = userInfo?.address ?? null;
@@ -410,6 +455,85 @@ function App() {
   } = useAuth();
   useBlockedAddressesLoader(extState === 'authenticated');
   const { sendOfflineBeforeLogout } = usePresence();
+
+  const lockApp = useCallback(() => {
+    if (extState !== 'authenticated' || !isMainWindow) return;
+    setIsIdle(true);
+    setIsAppLocked(true);
+  }, [extState, setIsAppLocked, setIsIdle]);
+
+  const unlockApp = useCallback(
+    async (password: string) => {
+      if (!rawWallet) throw new Error('Wallet data is unavailable');
+      await decryptStoredWallet(password, structuredClone(rawWallet));
+      // Clear idle before releasing the latch so the idle watcher cannot lock
+      // the app again between these state updates.
+      setIsIdle(false);
+      setIsAppLocked(false);
+    },
+    [rawWallet, setIsAppLocked, setIsIdle]
+  );
+
+  useEffect(() => {
+    if (extState !== 'authenticated') {
+      setIsIdle(false);
+      setIsAppLocked(false);
+    }
+  }, [extState, setIsAppLocked, setIsIdle]);
+
+  useEffect(() => {
+    if (
+      extState !== 'authenticated' ||
+      !isMainWindow ||
+      isAppLocked ||
+      autoLockTimeoutMinutes === 0
+    ) {
+      return;
+    }
+
+    let lastActivityAt = Date.now();
+    const recordActivity = () => {
+      const now = Date.now();
+      if (isAutoLockDue(lastActivityAt, now, autoLockTimeoutMinutes)) {
+        lockApp();
+        return;
+      }
+      lastActivityAt = now;
+    };
+    const checkAutoLock = () => {
+      if (isAutoLockDue(lastActivityAt, Date.now(), autoLockTimeoutMinutes)) {
+        lockApp();
+      }
+    };
+    const activityEvents = [
+      'mousemove',
+      'keydown',
+      'click',
+      'touchstart',
+      'wheel',
+    ] as const;
+
+    activityEvents.forEach((eventName) =>
+      document.addEventListener(eventName, recordActivity, { passive: true })
+    );
+    window.addEventListener('focus', checkAutoLock);
+    document.addEventListener('visibilitychange', checkAutoLock);
+    const intervalId = window.setInterval(checkAutoLock, 15_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+      activityEvents.forEach((eventName) =>
+        document.removeEventListener(eventName, recordActivity)
+      );
+      window.removeEventListener('focus', checkAutoLock);
+      document.removeEventListener('visibilitychange', checkAutoLock);
+    };
+  }, [autoLockTimeoutMinutes, extState, isAppLocked, lockApp]);
+
+  useEffect(() => {
+    if (typeof window.electronAPI?.onSystemLockRequested !== 'function') return;
+    return window.electronAPI.onSystemLockRequested(lockApp);
+  }, [lockApp]);
 
   const useLocalNode = isLocalNodeUrl(selectedNode?.url);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -986,6 +1110,27 @@ function App() {
     }
   }, []);
 
+  const cleanupReticulumAccountBeforeLogout = useCallback(async () => {
+    if (typeof window.reticulumChat?.clearLocalAccountState !== 'function')
+      return;
+    let timeoutId: number | undefined;
+    try {
+      await Promise.race([
+        window.reticulumChat.clearLocalAccountState(),
+        new Promise<void>((resolve) => {
+          timeoutId = window.setTimeout(resolve, 2_000);
+        }),
+      ]);
+    } catch (error) {
+      // Logout must remain available if Reticulum is disabled or shutting
+      // down. The main-process cleanup invalidates account work before its
+      // first await, so it remains safe to continue after this bounded wait.
+      console.warn('[ReticulumChat] Logout cleanup failed:', error);
+    } finally {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    }
+  }, []);
+
   const logoutFunc = useCallback(async () => {
     try {
       if (extState === 'authenticated') {
@@ -995,34 +1140,35 @@ function App() {
           }),
         });
       }
-      clearLastAuthenticatedWalletAddress();
       // Send the offline presence notice while the key is still in secure
       // storage. The background clears keyPair as part of logout, so signing
       // must happen here — before sendMessage('logout') is called.
       await cleanupAudioSurfaceBeforeLogout();
       await sendOfflineBeforeLogout();
-      window
-        .sendMessage('logout', {})
-        .then((response) => {
-          if (response) {
-            stopSharedEarbumpPlayback();
-            executeEvent('logout-event', {});
-            resetAllStates();
-          }
-        })
-        .catch((error) => {
-          console.error(
-            'Failed to log out:',
-            error.message || 'An error occurred'
-          );
-        });
+      await cleanupReticulumAccountBeforeLogout();
+      const response = await window.sendMessage('logout', {});
+      if (response) {
+        clearLastAuthenticatedWalletAddress();
+        stopSharedEarbumpPlayback();
+        executeEvent('logout-event', {});
+        resetAllStates();
+        // Let authenticated children unmount, then sweep once more. This
+        // catches a registration IPC that was already queued when the first
+        // cleanup invalidated the account lifecycle.
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        await cleanupReticulumAccountBeforeLogout();
+      }
     } catch (error) {
-      console.log(error);
+      console.error(
+        'Failed to log out:',
+        error instanceof Error ? error.message : 'An error occurred'
+      );
     }
   }, [
     hasSettingsChanged,
     extState,
     cleanupAudioSurfaceBeforeLogout,
+    cleanupReticulumAccountBeforeLogout,
     sendOfflineBeforeLogout,
   ]);
 
@@ -1597,10 +1743,16 @@ function App() {
                         onBackupWallet={onBackupWallet}
                       />
                     </Box>
-                    <QortalGroupVoiceCallNavWidget />
-                    <DirectVoiceCallNavWidget />
-                    <QortalGroupVoiceCallStage />
-                    <DirectVoiceCallGlobalOverlay />
+                    {reticulumEnabled && (
+                      <>
+                        <QortalGroupVoiceCallNavWidget />
+                        <DirectVoiceCallNavWidget />
+                        <QortalGroupVoiceCallStage />
+                        <DirectVoiceCallGlobalOverlay
+                          isAppLocked={isAppLocked}
+                        />
+                      </>
+                    )}
                   </CallSwitchGuardProvider>
                 </VoiceCallProvider>
               </GroupCallProvider>
@@ -1890,6 +2042,7 @@ function App() {
           onOpenSettings,
           onOpenDrawerLookup,
           onOpenWalletsApp,
+          onLock: lockApp,
           onLogout: logoutFunc,
           getUserInfo,
           onOpenMinting,
@@ -2007,6 +2160,12 @@ function App() {
           mainContent
         )}
       </Box>
+      {isAuthenticated && isMainWindow && isAppLocked && (
+        <AuthenticatedLockScreen
+          accountLabel={userInfo?.name || address || null}
+          onUnlock={unlockApp}
+        />
+      )}
     </AppContainer>
   );
 }

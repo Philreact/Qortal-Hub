@@ -16,6 +16,14 @@
       "to": "reticulum/presence_bridge.py"
     },
     {
+      "from": "resources/qortalland_games.py",
+      "to": "reticulum/qortalland_games.py"
+    },
+    {
+      "from": "resources/qortalland_proximity.py",
+      "to": "reticulum/qortalland_proximity.py"
+    },
+    {
       "from": "resources/mesh-network.identity",
       "to": "reticulum/mesh-network.identity"
     },
@@ -32,8 +40,13 @@
         "!rnsd",
         "!presence_bridge",
         "!presence_bridge.py",
+        "!qortalland_games.py",
+        "!qortalland_proximity.py",
         "!mesh-network.identity",
         "!mesh-network.passphrase",
+        "!__pycache__/**",
+        "!**/__pycache__/**",
+        "!**/*.pyc",
         "!test-darwin-*"
       ]
     }
@@ -49,6 +62,17 @@
     "scripts/**/*"
   ],
 
+  "asarUnpack": [
+    "**/*.node",
+    "node_modules/@img/sharp-*/**/*",
+    "node_modules/bindings/**/*",
+    "node_modules/file-uri-to-path/**/*",
+    "build/src/ed25519-verify.worker.js",
+    "build/src/reticulum-chat.worker.js",
+    "build/src/reticulum-resource.worker.js",
+    "build/src/reticulum-media.worker.js"
+  ],
+
   "mac": {
     "icon": "assets/mac/appIcon.icns",
     "hardenedRuntime": true,
@@ -56,7 +80,6 @@
     "entitlements": "buildmac/entitlements.mac.plist",
     "entitlementsInherit": "buildmac/entitlements.mac.plist",
     "category": "public.app-category.utilities",
-    "asarUnpack": ["**/*.node", "build/src/ed25519-verify.worker.js"],
     "x64ArchFiles": "Contents/Resources/reticulum/**/*",
     "target": ["dmg", "pkg"]
   },

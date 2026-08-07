@@ -312,5 +312,9 @@ export const TIME_DAYS_1_IN_MILLISECONDS: number =
 export const TIME_WEEKS_1_IN_MILLISECONDS: number =
   7 * 24 * TIME_HOURS_1_IN_MILLISECONDS;
 
+// Reticulum expiry policies use a fixed 30-day month.
+export const TIME_MONTHS_1_IN_MILLISECONDS: number =
+  30 * TIME_DAYS_1_IN_MILLISECONDS;
+
 // Rating cache
 export const RATING_CACHE_TTL: number = TIME_MINUTES_30_IN_MILLISECONDS;

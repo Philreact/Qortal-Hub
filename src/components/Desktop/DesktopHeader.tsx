@@ -9,6 +9,7 @@ import {
 } from '@mui/material';
 import CallIcon from '@mui/icons-material/Call';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
+import SportsEsportsIcon from '@mui/icons-material/SportsEsports';
 import {
   groupChatHasUnreadAtom,
   groupsAnnHasUnreadAtom,
@@ -101,10 +102,12 @@ export const DesktopHeader = ({
   hasUnreadAnnouncements,
   isAnnouncement,
   isChat,
+  isQortalLand,
   isForum,
   setGroupSection,
   isPrivate,
   onGroupCallClick,
+  onQortalLandClick,
   groupCallInCall = false,
   groupCallJoining = false,
   groupCallDisabled = false,
@@ -263,6 +266,39 @@ export const DesktopHeader = ({
               </ButtonBase>
             </span>
           </Tooltip>
+        )}
+
+        {typeof onQortalLandClick === 'function' && (
+          <ButtonBase
+            onClick={onQortalLandClick}
+            sx={{
+              borderRadius: '12px',
+              '&:hover': {
+                backgroundColor: theme.palette.action.hover,
+              },
+            }}
+          >
+            <IconWrapper
+              color={
+                isQortalLand
+                  ? theme.palette.text.primary
+                  : theme.palette.text.secondary
+              }
+              label="QortalLand"
+              selected={isQortalLand}
+              selectColor={theme.palette.action.selected}
+              customHeight="55px"
+            >
+              <SportsEsportsIcon
+                sx={{
+                  fontSize: 25,
+                  color: isQortalLand
+                    ? theme.palette.text.primary
+                    : theme.palette.text.secondary,
+                }}
+              />
+            </IconWrapper>
+          </ButtonBase>
         )}
 
         <ButtonBase

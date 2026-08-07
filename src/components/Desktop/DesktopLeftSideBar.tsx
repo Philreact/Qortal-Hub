@@ -19,7 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { HomeIcon } from '../../assets/Icons/HomeIcon';
 import { AppsIcon } from '../../assets/Icons/AppsIcon';
 import { MessagingIconFilled } from '../../assets/Icons/MessagingIconFilled';
-import qortalLogoOfficial from '../../assets/sidebar/qortal-logo-official.png';
+import qortalLogoOfficial from '../../assets/sidebar/qortal-logo-official.webp';
 import {
   enabledDevModeAtom,
   hasUnreadGroupsAtom,
@@ -68,6 +68,51 @@ const ITEM_PADDING_Y = 1;
 const OVERLAY_TRANSITION = '200ms cubic-bezier(0.2, 0, 0, 1)';
 const SIDEBAR_OPEN_DELAY_MS = 0;
 const SIDEBAR_CLOSE_DELAY_MS = 140;
+const SIDEBAR_NUDGE_POSITION_KEY = 'qortal-hub-sidebar-nudge-top-v1';
+
+export const clampSidebarNudgeTop = (
+  value: number,
+  viewportHeight: number
+) =>
+  Math.max(
+    0,
+    Math.min(
+      Math.max(0, viewportHeight - TRIGGER_HEIGHT_PX),
+      Number.isFinite(value) ? value : 0
+    )
+  );
+
+const readSidebarNudgeTop = () => {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const savedValue = window.localStorage.getItem(
+      SIDEBAR_NUDGE_POSITION_KEY
+    );
+    if (savedValue !== null) {
+      const saved = Number(savedValue);
+      if (Number.isFinite(saved)) {
+        return clampSidebarNudgeTop(saved, window.innerHeight);
+      }
+    }
+  } catch {
+    // The nudge remains movable for this session when storage is unavailable.
+  }
+  return clampSidebarNudgeTop(
+    (window.innerHeight - TRIGGER_HEIGHT_PX) / 2,
+    window.innerHeight
+  );
+};
+
+const persistSidebarNudgeTop = (value: number) => {
+  try {
+    window.localStorage.setItem(
+      SIDEBAR_NUDGE_POSITION_KEY,
+      String(Math.round(value))
+    );
+  } catch {
+    // The current position remains active for this session.
+  }
+};
 
 const pulse = keyframes`
   0%, 100% {
@@ -248,8 +293,18 @@ export const DesktopSideBar = ({
   const [isVisible, setIsVisible] = useState(false);
   const [selectedAppsTab, setSelectedAppsTab] = useState<any>(null);
   const [isInfoActive, setIsInfoActive] = useState(false);
+  const [isDraggingNudge, setIsDraggingNudge] = useState(false);
+  const [nudgeTop, setNudgeTop] = useState(readSidebarNudgeTop);
+  const [viewportHeight, setViewportHeight] = useState(() =>
+    typeof window === 'undefined' ? 0 : window.innerHeight
+  );
   const openTimerRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
+  const nudgeTopRef = useRef(nudgeTop);
+  const nudgeDragRef = useRef<{
+    offsetY: number;
+    pointerId: number;
+  } | null>(null);
   const hasUnreadChat = hasUnreadDirects || hasUnreadGroups;
   const effectiveUnreadChat = hasUnreadChat;
   const isQChatActive =
@@ -332,6 +387,7 @@ export const DesktopSideBar = ({
   };
 
   const hideSidebar = () => {
+    if (nudgeDragRef.current) return;
     if (openTimerRef.current !== null) {
       window.clearTimeout(openTimerRef.current);
       openTimerRef.current = null;
@@ -356,6 +412,32 @@ export const DesktopSideBar = ({
   };
 
   useEffect(() => {
+    nudgeTopRef.current = nudgeTop;
+  }, [nudgeTop]);
+
+  useEffect(() => {
+    const onResize = () => {
+      const nextHeight = window.innerHeight;
+      setViewportHeight(nextHeight);
+      setNudgeTop((current) => {
+        const next = clampSidebarNudgeTop(current, nextHeight);
+        nudgeTopRef.current = next;
+        persistSidebarNudgeTop(next);
+        return next;
+      });
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const finishNudgeDrag = (pointerId: number) => {
+    if (nudgeDragRef.current?.pointerId !== pointerId) return;
+    nudgeDragRef.current = null;
+    setIsDraggingNudge(false);
+    persistSidebarNudgeTop(nudgeTopRef.current);
+  };
+
+  useEffect(() => {
     emitOverlayState(false);
     return () => {
       clearHoverTimers();
@@ -370,58 +452,15 @@ export const DesktopSideBar = ({
         sx={{
           position: 'fixed',
           left: 0,
-          top: '50%',
+          top: `${clampSidebarNudgeTop(
+            nudgeTop - (EDGE_SENSOR_HEIGHT_PX - TRIGGER_HEIGHT_PX) / 2,
+            viewportHeight - EDGE_SENSOR_HEIGHT_PX + TRIGGER_HEIGHT_PX
+          )}px`,
           height: `${EDGE_SENSOR_HEIGHT_PX}px`,
-          transform: 'translateY(-50%)',
           width: `${EDGE_SENSOR_WIDTH_PX}px`,
           opacity: 0,
           pointerEvents: isVisible ? 'none' : 'auto',
           zIndex: 9996,
-        }}
-      />
-
-      <Box
-        onMouseEnter={showSidebarImmediate}
-        sx={{
-          position: 'fixed',
-          left: 0,
-          top: '50%',
-          transform: isVisible
-            ? 'translateY(-50%) translateX(-4px)'
-            : 'translateY(-50%) translateX(0)',
-          width: `${TRIGGER_WIDTH_PX}px`,
-          height: `${TRIGGER_HEIGHT_PX}px`,
-          borderRadius: '0 10px 10px 0',
-          background:
-            theme.palette.mode === 'dark'
-              ? 'rgba(255, 255, 255, 0.14)'
-              : 'rgba(17, 24, 39, 0.12)',
-          boxShadow:
-            theme.palette.mode === 'dark'
-              ? '0 0 0 1px rgba(255,255,255,0.08)'
-              : '0 0 0 1px rgba(17,24,39,0.08)',
-          opacity: isVisible ? 0 : 1,
-          pointerEvents: isVisible ? 'none' : 'auto',
-          transition: isVisible
-            ? 'opacity 100ms ease, transform 100ms ease, background 200ms ease, box-shadow 200ms ease'
-            : 'opacity 120ms ease 110ms, transform 120ms ease 110ms, background 200ms ease, box-shadow 200ms ease',
-          zIndex: 9997,
-          '&::after':
-            effectiveUnreadChat && !isVisible
-              ? {
-                  content: '""',
-                  position: 'absolute',
-                  top: '50%',
-                  right: 2,
-                  transform: 'translateY(-50%)',
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  background: unreadAccent,
-                  boxShadow: `0 0 0 2px ${alpha(unreadAccent, 0.14)}`,
-                  animation: `${pulse} 1.2s ease-out 2`,
-                }
-              : undefined,
         }}
       />
 
@@ -630,6 +669,81 @@ export const DesktopSideBar = ({
           </Box>
         </Box>
       </Box>
+
+      <Box
+        aria-label="Move sidebar handle"
+        onMouseEnter={showSidebarImmediate}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          nudgeDragRef.current = {
+            offsetY: event.clientY - nudgeTopRef.current,
+            pointerId: event.pointerId,
+          };
+          setIsDraggingNudge(true);
+          event.currentTarget.setPointerCapture(event.pointerId);
+          showSidebarImmediate();
+        }}
+        onPointerMove={(event) => {
+          const drag = nudgeDragRef.current;
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          event.preventDefault();
+          const next = clampSidebarNudgeTop(
+            event.clientY - drag.offsetY,
+            viewportHeight
+          );
+          nudgeTopRef.current = next;
+          setNudgeTop(next);
+        }}
+        onPointerUp={(event) => finishNudgeDrag(event.pointerId)}
+        onPointerCancel={(event) => finishNudgeDrag(event.pointerId)}
+        onLostPointerCapture={(event) => finishNudgeDrag(event.pointerId)}
+        role="separator"
+        sx={{
+          background:
+            theme.palette.mode === 'dark'
+              ? isDraggingNudge
+                ? 'rgba(255, 255, 255, 0.24)'
+                : 'rgba(255, 255, 255, 0.14)'
+              : isDraggingNudge
+                ? 'rgba(17, 24, 39, 0.2)'
+                : 'rgba(17, 24, 39, 0.12)',
+          borderRadius: '0 10px 10px 0',
+          boxShadow:
+            theme.palette.mode === 'dark'
+              ? '0 0 0 1px rgba(255,255,255,0.08)'
+              : '0 0 0 1px rgba(17,24,39,0.08)',
+          cursor: isDraggingNudge ? 'grabbing' : 'grab',
+          height: `${TRIGGER_HEIGHT_PX}px`,
+          left: isVisible ? `${SIDEBAR_WIDTH_PX}px` : 0,
+          position: 'fixed',
+          touchAction: 'none',
+          top: `${nudgeTop}px`,
+          transition: isDraggingNudge
+            ? 'background 120ms ease'
+            : `left ${OVERLAY_TRANSITION}, background 200ms ease, box-shadow 200ms ease`,
+          userSelect: 'none',
+          width: `${TRIGGER_WIDTH_PX}px`,
+          zIndex: 9999,
+          '&::after':
+            effectiveUnreadChat && !isVisible
+              ? {
+                  animation: `${pulse} 1.2s ease-out 2`,
+                  background: unreadAccent,
+                  borderRadius: '50%',
+                  boxShadow: `0 0 0 2px ${alpha(unreadAccent, 0.14)}`,
+                  content: '""',
+                  height: 6,
+                  position: 'absolute',
+                  right: 2,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  width: 6,
+                }
+              : undefined,
+        }}
+      />
     </>
   );
 };

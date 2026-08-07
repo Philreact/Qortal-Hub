@@ -25,6 +25,7 @@ RETICULUM_PIP_PACKAGE = os.environ.get(
     "git+https://github.com/Philreact/Reticulum.git@master",
 )
 LXMF_PIP_PACKAGE = os.environ.get("QORTAL_LXMF_PIP_PACKAGE", "lxmf==0.9.4")
+WEBSOCKETS_PIP_PACKAGE = "websockets==14.2"
 PIP_ENV = {
     "PIP_DISABLE_PIP_VERSION_CHECK": "1",
     "PIP_BREAK_SYSTEM_PACKAGES": "1",
@@ -56,6 +57,21 @@ def has_module(pyexe: str, module_name: str) -> bool:
         env=os.environ,
     )
     return result.returncode == 0
+
+
+def verify_websockets_version(pyexe: str) -> None:
+    result = subprocess.run(
+        [
+            pyexe,
+            "-c",
+            "import websockets; raise SystemExit(0 if websockets.__version__ == '14.2' else 1)",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=os.environ,
+    )
+    if result.returncode != 0:
+        sys.exit("Frozen bridge build requires exactly websockets==14.2")
 
 
 def has_pip(pyexe: str) -> bool:
@@ -250,10 +266,16 @@ def freeze_target(
         "pyserial",
         "--collect-all",
         "LXMF",
+        "--collect-all",
+        "websockets",
         "--hidden-import",
         "RNS",
         "--hidden-import",
         "LXMF",
+        "--hidden-import",
+        "qortalland_games",
+        "--hidden-import",
+        "qortalland_proximity",
         "--hidden-import",
         "cryptography.hazmat.backends.openssl.backend",
         entry_script,
@@ -276,9 +298,17 @@ def freeze_target(
 
 def copy_runtime_sources(electron_root: Path, output_dir: Path) -> None:
     source_bridge = electron_root / "resources" / "presence_bridge.py"
+    source_games = electron_root / "resources" / "qortalland_games.py"
+    source_proximity = electron_root / "resources" / "qortalland_proximity.py"
     if not source_bridge.is_file():
         sys.exit(f"Missing tracked bridge source: {source_bridge}")
+    if not source_games.is_file():
+        sys.exit(f"Missing tracked game bridge source: {source_games}")
+    if not source_proximity.is_file():
+        sys.exit(f"Missing tracked proximity bridge source: {source_proximity}")
     shutil.copy2(source_bridge, output_dir / "presence_bridge.py")
+    shutil.copy2(source_games, output_dir / "qortalland_games.py")
+    shutil.copy2(source_proximity, output_dir / "qortalland_proximity.py")
     print(f"Wrote {output_dir / 'presence_bridge.py'}")
     mesh_net = electron_root / "resources" / "mesh-network.identity"
     if not mesh_net.is_file():
@@ -290,6 +320,17 @@ def copy_runtime_sources(electron_root: Path, output_dir: Path) -> None:
         sys.exit(f"Missing bundled mesh network passphrase: {mesh_passphrase}")
     shutil.copy2(mesh_passphrase, output_dir / "mesh-network.passphrase")
     print(f"Wrote {output_dir / 'mesh-network.passphrase'}")
+
+
+def remove_python_cache_artifacts(output_dir: Path) -> None:
+    for pycache_dir in output_dir.rglob("__pycache__"):
+        if pycache_dir.is_dir():
+            shutil.rmtree(pycache_dir)
+            print(f"Removed {pycache_dir}")
+    for pyc_file in output_dir.rglob("*.pyc"):
+        if pyc_file.is_file():
+            pyc_file.unlink()
+            print(f"Removed {pyc_file}")
 
 
 def main() -> None:
@@ -316,6 +357,8 @@ def main() -> None:
     if not has_module(pyexe, "wheel"):
         pip_install(pyexe, ["wheel"], user=use_user_install)
     pip_install(pyexe, [LXMF_PIP_PACKAGE], user=use_user_install)
+    pip_install(pyexe, [WEBSOCKETS_PIP_PACKAGE], user=use_user_install)
+    verify_websockets_version(pyexe)
     if not has_module(pyexe, "PyInstaller"):
         pip_install(pyexe, ["pyinstaller"], user=use_user_install)
     pip_install(
@@ -337,10 +380,11 @@ def main() -> None:
             entry_script=entry_script,
         )
     copy_runtime_sources(electron_root, args.output_dir)
+    remove_python_cache_artifacts(args.output_dir)
 
     marker = args.output_dir / "BUNDLE_READY"
     marker.write_text(
-        f"frozen_at={datetime.datetime.now(datetime.timezone.utc).isoformat()}\npython={pyexe}\nreticulum={RETICULUM_PIP_PACKAGE}\nlxmf={LXMF_PIP_PACKAGE}\nreticulum_metadata={reticulum_metadata}\n",
+        f"frozen_at={datetime.datetime.now(datetime.timezone.utc).isoformat()}\npython={pyexe}\nreticulum={RETICULUM_PIP_PACKAGE}\nlxmf={LXMF_PIP_PACKAGE}\nwebsockets={WEBSOCKETS_PIP_PACKAGE}\nreticulum_metadata={reticulum_metadata}\n",
         encoding="utf-8",
     )
     print(f"Wrote {marker}")

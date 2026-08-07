@@ -124,10 +124,14 @@ export function QortalGroupVoiceCallStage() {
 
   useEffect(() => {
     if (!visible) {
-      setQcallMinimized(false);
+      // The join flow selects the compact navbar view before the asynchronous
+      // audio engine reports `joining`. Do not overwrite that requested view
+      // during the startup gap. Inactive calls are already excluded from both
+      // the stage and nav widget, and each new Qortal call explicitly starts
+      // minimized.
       setQcallPrimaryNames({});
     }
-  }, [visible, setQcallMinimized, setQcallPrimaryNames]);
+  }, [visible, setQcallPrimaryNames]);
 
   const [transportTick, bumpTransport] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
@@ -277,17 +281,17 @@ export function QortalGroupVoiceCallStage() {
     },
     tooltip: {
       sx: {
-        bgcolor: '#f8fafc',
-        border: `1px solid ${alpha('#0f172a', 0.12)}`,
+        bgcolor: '#111827',
+        border: `1px solid ${alpha('#ffffff', 0.16)}`,
         boxShadow: '0 10px 30px rgba(0,0,0,0.32)',
-        color: '#111827',
+        color: '#ffffff',
         fontSize: 12,
         fontWeight: 700,
       },
     },
     arrow: {
       sx: {
-        color: '#f8fafc',
+        color: '#111827',
       },
     },
   } as const;

@@ -9,12 +9,18 @@
  */
 
 import { EventEmitter } from 'events';
-import { log as loggerLog, error as loggerError, warn as loggerWarn } from './logger';
+import { randomBytes } from 'crypto';
+import {
+  log as loggerLog,
+  error as loggerError,
+  warn as loggerWarn,
+} from './logger';
 import { wireFitsReticulum } from './reticulum-wire-size';
 import { deriveAddressFromPublicKey } from './presence';
 import { VerifyWorkerPool } from './verify-worker-pool';
-import type { PresenceManager } from './presence';
+import type { PresenceManager, PresenceRoute } from './presence';
 import type { ReticulumBridge } from './reticulum-bridge';
+import { getRouteBoundDestinationHash } from './reticulum-route-bound-id';
 
 const CALL_MAX_HOPS = 4;
 const CALL_REQUEST_TTL_MS = 60_000;
@@ -46,6 +52,39 @@ export const CALL_MESSAGE_TYPES = new Set<string>([
   'CALL_HANGUP',
 ]);
 
+export function resolveDirectCallSourceEndpoint(
+  verifiedRouteHashes: readonly string[],
+  stampedSourceHash: string,
+  transportPeerHash: string
+): string | null {
+  const routes = [
+    ...new Set(
+      verifiedRouteHashes
+        .map((hash) => hash.trim().toLowerCase())
+        .filter((hash) => /^[0-9a-f]{32}$/.test(hash))
+    ),
+  ];
+  const stamped = stampedSourceHash.trim().toLowerCase();
+  if (routes.includes(stamped)) return stamped;
+  const transport = transportPeerHash.trim().toLowerCase();
+  if (routes.includes(transport)) return transport;
+  // An older relay may have replaced the source hint. A single verified
+  // account route is unambiguous and is safer than selecting the relay.
+  if (routes.length === 1) return routes[0]!;
+  // With several account devices, wait for a copy carrying one of their
+  // verified routes rather than guessing which device owns this call.
+  if (routes.length > 1) return null;
+  // A genuinely unstamped legacy frame can only identify the authenticated
+  // immediate link peer. Once `r` exists, however, accepting an unverified
+  // transport fallback would let a relay become the media destination.
+  if (!stamped && transport) return transport;
+  // Compatibility for old direct callers. Current relays preserve `r`, so a
+  // relayed frame normally has different origin/transport values. Route-bound
+  // calls below do not rely on this legacy-only heuristic.
+  if (stamped && stamped === transport) return stamped;
+  return null;
+}
+
 function buildDirectCallChatId(addressA: string, addressB: string): string {
   return `direct:${[addressA, addressB].sort().join(':')}`;
 }
@@ -60,6 +99,9 @@ function encodeCallWire(env: CallWireEnvelope): Record<string, unknown> {
         k: env.fromPublicKey,
         g: env.signature,
         m: env.timestamp,
+        ...(env.reticulumDestinationHash
+          ? { r: env.reticulumDestinationHash }
+          : {}),
       };
       // For direct calls the chatId is derivable from sender + overlay target address,
       // so omit it to stay under Reticulum's encrypted MDU.
@@ -75,6 +117,9 @@ function encodeCallWire(env: CallWireEnvelope): Record<string, unknown> {
         k: env.fromPublicKey,
         g: env.signature,
         m: env.timestamp,
+        ...(env.reticulumDestinationHash
+          ? { r: env.reticulumDestinationHash }
+          : {}),
       };
     case 'CALL_REJECT':
       return {
@@ -86,6 +131,9 @@ function encodeCallWire(env: CallWireEnvelope): Record<string, unknown> {
         k: env.fromPublicKey,
         g: env.signature,
         m: env.timestamp,
+        ...(env.reticulumDestinationHash
+          ? { r: env.reticulumDestinationHash }
+          : {}),
       };
     case 'CALL_HANGUP':
       return {
@@ -94,6 +142,9 @@ function encodeCallWire(env: CallWireEnvelope): Record<string, unknown> {
         k: env.fromPublicKey,
         g: env.signature,
         m: env.timestamp,
+        ...(env.reticulumDestinationHash
+          ? { r: env.reticulumDestinationHash }
+          : {}),
       };
     default:
       return {};
@@ -122,6 +173,10 @@ function decodeCompactCallWire(
             ? buildDirectCallChatId(wire.a, wire.U)
             : null;
       if (!chatId) return null;
+      const reticulumDestinationHash = getRouteBoundDestinationHash(
+        'call',
+        wire.c
+      );
       return {
         type: 'CALL_REQUEST',
         callId: wire.c,
@@ -130,6 +185,7 @@ function decodeCompactCallWire(
         chatId,
         signature: wire.g,
         timestamp: wire.m,
+        ...(reticulumDestinationHash ? { reticulumDestinationHash } : {}),
       };
     }
     case CALL_WIRE_ACCEPT:
@@ -194,6 +250,7 @@ export interface CallRequestEnvelope {
   chatId: string;
   signature: string;
   timestamp: number;
+  reticulumDestinationHash?: string;
   hopsRemaining?: number;
 }
 
@@ -203,6 +260,7 @@ export interface CallAcceptEnvelope {
   fromPublicKey: string;
   signature: string;
   timestamp: number;
+  reticulumDestinationHash?: string;
   hopsRemaining?: number;
 }
 
@@ -213,6 +271,7 @@ export interface CallRejectEnvelope {
   fromPublicKey: string;
   signature: string;
   timestamp: number;
+  reticulumDestinationHash?: string;
   hopsRemaining?: number;
 }
 
@@ -222,6 +281,7 @@ export interface CallHangupEnvelope {
   fromPublicKey: string;
   signature: string;
   timestamp: number;
+  reticulumDestinationHash?: string;
   hopsRemaining?: number;
 }
 
@@ -233,17 +293,43 @@ export type CallWireEnvelope =
 
 export type CallDirection = 'outbound' | 'inbound';
 export type CallState = 'pending' | 'active' | 'ended';
+export type DirectCallHistoryOutcome =
+  | 'answered'
+  | 'declined'
+  | 'missed'
+  | 'cancelled'
+  | 'no_answer';
+
+export type DirectCallHistoryUpdate = {
+  callId: string;
+  localAddress: string;
+  remoteAddress: string;
+  chatId: string;
+  direction: CallDirection;
+  outcome: DirectCallHistoryOutcome;
+  startedAt: number;
+  endedAt: number;
+};
 
 interface CallRecord {
   callId: string;
   localAddress: string;
   remoteAddress: string;
   reticulumPeerPresenceHash: string;
+  invitedReticulumPeerHashes?: Set<string>;
+  rejectedReticulumPeerHashes?: Set<string>;
+  /** Authenticated rejection reason per invited endpoint; null is legacy/generic. */
+  rejectionReasonsByReticulumPeerHash?: Map<string, string | null>;
+  acceptedReticulumPeerHash?: string;
+  cancellationSignature?: string;
+  cancellationPublicKey?: string;
+  cancellationTimestamp?: number;
   chatId: string;
   direction: CallDirection;
   state: CallState;
   startedAt: number;
   cleanupTimer?: ReturnType<typeof setTimeout>;
+  rejectionFinalizeTimer?: ReturnType<typeof setTimeout>;
   controlRepeatTimers?: Set<ReturnType<typeof setTimeout>>;
 }
 
@@ -253,6 +339,7 @@ interface CallRecord {
  *   'call:accepted'  { callId }
  *   'call:rejected'  { callId, reason? }
  *   'call:hangup'    { callId }
+ *   'call:history'   DirectCallHistoryUpdate
  */
 export class CallManager extends EventEmitter {
   private presence: PresenceManager;
@@ -269,6 +356,8 @@ export class CallManager extends EventEmitter {
     ctx: { senderDestinationHash: string };
     receivedAt: number;
   }> = [];
+  private localAccountGeneration = 0;
+  private acceptPendingIncomingWithoutLocal = true;
   private verifyPool = new VerifyWorkerPool(
     'call',
     CALL_VERIFY_WORKER_COUNT,
@@ -291,6 +380,24 @@ export class CallManager extends EventEmitter {
     super();
     this.presence = presence;
     this.reticulumBridge = reticulumBridge ?? null;
+  }
+
+  private emitDirectCallHistory(
+    call: CallRecord,
+    outcome: DirectCallHistoryOutcome,
+    endedAt = Date.now()
+  ): void {
+    if (!call.chatId.startsWith('direct:')) return;
+    this.emit('call:history', {
+      callId: call.callId,
+      localAddress: call.localAddress,
+      remoteAddress: call.remoteAddress,
+      chatId: call.chatId,
+      direction: call.direction,
+      outcome,
+      startedAt: call.startedAt,
+      endedAt,
+    } satisfies DirectCallHistoryUpdate);
   }
 
   private attachReticulumBridge(): void {
@@ -353,6 +460,9 @@ export class CallManager extends EventEmitter {
     this.detachReticulumBridge();
     for (const call of this.activeCalls.values()) {
       if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+      if (call.rejectionFinalizeTimer) {
+        clearTimeout(call.rejectionFinalizeTimer);
+      }
       this.clearControlRepeatTimers(call);
     }
     this.activeCalls.clear();
@@ -363,8 +473,27 @@ export class CallManager extends EventEmitter {
 
   setLocalAddresses(addresses: string[]): void {
     this.localAddresses = new Set(addresses);
+    if (this.localAddresses.size > 0) {
+      this.acceptPendingIncomingWithoutLocal = true;
+    }
     retainedCallLocalAddresses = [...this.localAddresses];
     this.flushPendingVerifiedIncomingRequests();
+  }
+
+  clearLocalAccountState(): void {
+    this.localAccountGeneration += 1;
+    this.acceptPendingIncomingWithoutLocal = false;
+    this.localAddresses.clear();
+    retainedCallLocalAddresses = [];
+    this.pendingVerifiedIncomingWhenNoLocal = [];
+    for (const call of this.activeCalls.values()) {
+      if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+      if (call.rejectionFinalizeTimer) {
+        clearTimeout(call.rejectionFinalizeTimer);
+      }
+      this.clearControlRepeatTimers(call);
+    }
+    this.activeCalls.clear();
   }
 
   /**
@@ -407,6 +536,36 @@ export class CallManager extends EventEmitter {
     return out;
   }
 
+  /**
+   * Return the authenticated device selected for an active 1:1 call.
+   * This is consumed by the main-process media join path so renderer state or
+   * a later account-wide presence update cannot reroute media to another
+   * computer logged into the same account.
+   */
+  getActiveMediaPeerDestinationHash(
+    chatId: string,
+    localAddress: string,
+    callId?: string
+  ): string | null {
+    for (const call of this.activeCalls.values()) {
+      if (
+        call.state !== 'active' ||
+        call.chatId !== chatId ||
+        call.localAddress !== localAddress ||
+        (callId && call.callId !== callId)
+      ) {
+        continue;
+      }
+      const endpoint =
+        call.direction === 'outbound'
+          ? call.acceptedReticulumPeerHash
+          : call.reticulumPeerPresenceHash;
+      const normalized = endpoint?.trim().toLowerCase() ?? '';
+      if (normalized) return normalized;
+    }
+    return null;
+  }
+
   private enqueuePendingVerifiedIncomingRequest(
     env: CallRequestEnvelope,
     senderDestinationHash: string
@@ -415,9 +574,7 @@ export class CallManager extends EventEmitter {
     const cutoff = now - CALL_REQUEST_TTL_MS;
     this.pendingVerifiedIncomingWhenNoLocal =
       this.pendingVerifiedIncomingWhenNoLocal.filter(
-        (p) =>
-          p.receivedAt >= cutoff &&
-          p.env.callId !== env.callId
+        (p) => p.receivedAt >= cutoff && p.env.callId !== env.callId
       );
     this.pendingVerifiedIncomingWhenNoLocal.push({
       env,
@@ -451,8 +608,25 @@ export class CallManager extends EventEmitter {
     signature: string,
     publicKey: string,
     callId: string,
-    timestamp: number
+    timestamp: number,
+    cancellationSignature?: string,
+    cancellationPublicKey?: string,
+    cancellationTimestamp?: number
   ): Promise<string | null> {
+    const boundLocalDestination = getRouteBoundDestinationHash('call', callId);
+    const currentLocalDestination =
+      this.reticulumBridge?.getLocalDestinationHash?.()?.trim().toLowerCase() ??
+      '';
+    if (
+      boundLocalDestination &&
+      (!currentLocalDestination ||
+        boundLocalDestination !== currentLocalDestination)
+    ) {
+      loggerWarn(
+        `[Call] Refusing call with stale local route binding callId=${callId.slice(0, 8)}…`
+      );
+      return null;
+    }
     const env: CallRequestEnvelope = {
       type: 'CALL_REQUEST',
       callId,
@@ -461,14 +635,23 @@ export class CallManager extends EventEmitter {
       chatId,
       signature,
       timestamp,
+      ...(boundLocalDestination
+        ? { reticulumDestinationHash: boundLocalDestination }
+        : {}),
       hopsRemaining: CALL_MAX_HOPS,
     };
 
-    const route = this.presence.getRouteForAddress(targetAddress);
-    if (
-      route?.kind !== 'reticulum' ||
-      this.reticulumBridge?.getState() !== 'ready'
-    ) {
+    const allRoutes: PresenceRoute[] =
+      typeof this.presence.getRoutesForAddress === 'function'
+        ? this.presence.getRoutesForAddress(targetAddress)
+        : [this.presence.getRouteForAddress(targetAddress)].filter(
+            (route): route is PresenceRoute => route !== null
+          );
+    const routes = allRoutes.filter(
+      (route): route is Extract<PresenceRoute, { kind: 'reticulum' }> =>
+        route.kind === 'reticulum'
+    );
+    if (routes.length === 0) {
       loggerLog(`[Call] No Reticulum route to ${targetAddress}`);
       return null;
     }
@@ -477,7 +660,14 @@ export class CallManager extends EventEmitter {
       callId,
       localAddress,
       remoteAddress: targetAddress,
-      reticulumPeerPresenceHash: route.destinationHash,
+      reticulumPeerPresenceHash: routes[0].destinationHash,
+      invitedReticulumPeerHashes: new Set(
+        routes.map((route) => route.destinationHash)
+      ),
+      rejectedReticulumPeerHashes: new Set(),
+      cancellationSignature,
+      cancellationPublicKey,
+      cancellationTimestamp,
       chatId,
       direction: 'outbound',
       state: 'pending',
@@ -487,6 +677,7 @@ export class CallManager extends EventEmitter {
     record.cleanupTimer = setTimeout(() => {
       if (this.activeCalls.get(callId)?.state === 'pending') {
         loggerLog(`[Call] Request ${callId.slice(0, 8)}… timed out.`);
+        this.emitDirectCallHistory(record, 'no_answer');
         this.activeCalls.delete(callId);
       }
     }, CALL_REQUEST_TTL_MS);
@@ -510,6 +701,7 @@ export class CallManager extends EventEmitter {
     if (!call || call.direction !== 'inbound') return;
     if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
     call.state = 'active';
+    this.emitDirectCallHistory(call, 'answered', timestamp);
 
     const env: CallAcceptEnvelope = {
       type: 'CALL_ACCEPT',
@@ -533,25 +725,42 @@ export class CallManager extends EventEmitter {
     reason?: string,
     signature?: string,
     publicKey?: string,
-    timestamp?: number
+    timestamp?: number,
+    reasonSignature?: string
   ): void {
     const call = this.activeCalls.get(callId);
     if (!call) return;
     if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+    if (call.rejectionFinalizeTimer) {
+      clearTimeout(call.rejectionFinalizeTimer);
+      call.rejectionFinalizeTimer = undefined;
+    }
     this.clearControlRepeatTimers(call);
     call.state = 'ended';
     this.activeCalls.delete(callId);
+    if (call.direction === 'inbound' && reason === 'rejected') {
+      this.emitDirectCallHistory(call, 'declined', timestamp ?? Date.now());
+    }
 
-    const env: CallRejectEnvelope = {
+    const legacyEnv: CallRejectEnvelope = {
       type: 'CALL_REJECT',
       callId,
-      reason,
       fromPublicKey: publicKey ?? '',
       signature: signature ?? '',
       timestamp: timestamp ?? Date.now(),
       hopsRemaining: CALL_MAX_HOPS,
     };
-    this.sendToCall(call, env);
+    // Send the authenticated, descriptive rejection first. Older callers
+    // reject this signature (because they verify the legacy field set), then
+    // accept the reason-less legacy envelope sent immediately afterwards.
+    if (reason && reasonSignature) {
+      this.sendToCall(call, {
+        ...legacyEnv,
+        reason,
+        signature: reasonSignature,
+      });
+    }
+    this.sendToCall(call, legacyEnv);
     loggerLog(`[Call] Rejected call ${callId.slice(0, 8)}…`);
   }
 
@@ -563,10 +772,24 @@ export class CallManager extends EventEmitter {
   ): void {
     const call = this.activeCalls.get(callId);
     if (!call) return;
+    const previousState = call.state;
     if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+    if (call.rejectionFinalizeTimer) {
+      clearTimeout(call.rejectionFinalizeTimer);
+      call.rejectionFinalizeTimer = undefined;
+    }
     this.clearControlRepeatTimers(call);
     call.state = 'ended';
     this.activeCalls.delete(callId);
+    this.emitDirectCallHistory(
+      call,
+      previousState === 'active'
+        ? 'answered'
+        : call.direction === 'outbound'
+          ? 'cancelled'
+          : 'missed',
+      timestamp
+    );
 
     const env: CallHangupEnvelope = {
       type: 'CALL_HANGUP',
@@ -624,17 +847,14 @@ export class CallManager extends EventEmitter {
     const localRecipient = this.localCallRecipientAddress(env);
     if (!localRecipient) return;
 
-    const presenceRoute = this.presence.getRouteForAddress(env.fromAddress);
-    const retHash =
-      presenceRoute?.kind === 'reticulum'
-        ? presenceRoute.destinationHash
-        : ctx.senderDestinationHash;
-
     const record: CallRecord = {
       callId: env.callId,
       localAddress: localRecipient,
       remoteAddress: env.fromAddress,
-      reticulumPeerPresenceHash: retHash,
+      // The authenticated ingress endpoint is the exact device that placed
+      // this call. A generic account presence route may belong to another
+      // laptop, so all replies for this interaction remain pinned here.
+      reticulumPeerPresenceHash: ctx.senderDestinationHash,
       chatId: env.chatId,
       direction: 'inbound',
       state: 'pending',
@@ -644,6 +864,7 @@ export class CallManager extends EventEmitter {
     record.cleanupTimer = setTimeout(() => {
       if (this.activeCalls.get(env.callId)?.state === 'pending') {
         loggerLog(`[Call] Incoming call ${env.callId.slice(0, 8)}… timed out.`);
+        this.emitDirectCallHistory(record, 'missed');
         this.activeCalls.delete(env.callId);
       }
     }, CALL_REQUEST_TTL_MS);
@@ -660,7 +881,10 @@ export class CallManager extends EventEmitter {
     );
   }
 
-  private handleAccept(env: CallAcceptEnvelope): void {
+  private handleAccept(
+    env: CallAcceptEnvelope,
+    senderDestinationHash: string
+  ): void {
     const call = this.activeCalls.get(env.callId);
     if (!call || call.direction !== 'outbound') return;
 
@@ -674,6 +898,7 @@ export class CallManager extends EventEmitter {
     }
 
     const expectedAddress = call.remoteAddress;
+    const accountGeneration = this.localAccountGeneration;
     void this.verifyPool
       .verify({
         kind: 'call_signed',
@@ -685,20 +910,32 @@ export class CallManager extends EventEmitter {
         expectedAddress,
       })
       .then((ok) => {
+        if (accountGeneration !== this.localAccountGeneration) return;
         if (!ok) {
           loggerLog('[Call] Dropped CALL_ACCEPT: invalid signature');
           return;
         }
         const c = this.activeCalls.get(env.callId);
-        if (!c || c.direction !== 'outbound') return;
+        if (!c || c.direction !== 'outbound' || c.state !== 'pending') return;
         if (c.cleanupTimer) clearTimeout(c.cleanupTimer);
+        if (c.rejectionFinalizeTimer) {
+          clearTimeout(c.rejectionFinalizeTimer);
+          c.rejectionFinalizeTimer = undefined;
+        }
+        c.acceptedReticulumPeerHash = senderDestinationHash;
+        c.reticulumPeerPresenceHash = senderDestinationHash;
         c.state = 'active';
+        this.emitDirectCallHistory(c, 'answered', env.timestamp);
+        this.cancelOtherRingingEndpoints(c);
         this.emit('call:accepted', { callId: env.callId });
         loggerLog(`[Call] Call ${env.callId.slice(0, 8)}… accepted.`);
       });
   }
 
-  private handleReject(env: CallRejectEnvelope): void {
+  private handleReject(
+    env: CallRejectEnvelope,
+    senderDestinationHash: string
+  ): void {
     const call = this.activeCalls.get(env.callId);
     if (!call) return;
 
@@ -712,8 +949,83 @@ export class CallManager extends EventEmitter {
     }
 
     const expectedAddress = call.remoteAddress;
-    void this.verifyPool
-      .verify({
+    const accountGeneration = this.localAccountGeneration;
+    const boundedReason =
+      typeof env.reason === 'string' && env.reason.length <= 32
+        ? env.reason.trim()
+        : '';
+    const reasonFields = boundedReason
+      ? {
+          type: env.type,
+          callId: env.callId,
+          timestamp: env.timestamp,
+          reason: boundedReason,
+        }
+      : null;
+    if (reasonFields) {
+      const timestampSkew = Date.now() - env.timestamp;
+      if (timestampSkew > 30_000 || timestampSkew < -10_000) {
+        loggerLog('[Call] Dropped CALL_REJECT: invalid timestamp');
+        return;
+      }
+    }
+    const applyVerifiedReject = (reasonAuthenticated: boolean, ok: boolean) => {
+      if (accountGeneration !== this.localAccountGeneration) return;
+      if (!ok) {
+        loggerLog('[Call] Dropped CALL_REJECT: invalid signature');
+        return;
+      }
+      const c = this.activeCalls.get(env.callId);
+      if (!c || c.state !== 'pending') return;
+      if (c.direction === 'outbound') {
+        const invited = c.invitedReticulumPeerHashes ?? new Set<string>();
+        if (senderDestinationHash) invited.add(senderDestinationHash);
+        c.invitedReticulumPeerHashes = invited;
+        const rejected = c.rejectedReticulumPeerHashes ?? new Set<string>();
+        if (senderDestinationHash) rejected.add(senderDestinationHash);
+        c.rejectedReticulumPeerHashes = rejected;
+        const reasons =
+          c.rejectionReasonsByReticulumPeerHash ??
+          new Map<string, string | null>();
+        if (senderDestinationHash) {
+          const previous = reasons.get(senderDestinationHash);
+          // A later legacy compatibility envelope must never erase the
+          // authenticated reason received just before it.
+          if (reasonAuthenticated || previous === undefined) {
+            reasons.set(
+              senderDestinationHash,
+              reasonAuthenticated ? boundedReason : null
+            );
+          }
+        }
+        c.rejectionReasonsByReticulumPeerHash = reasons;
+        if ([...invited].some((peer) => !rejected.has(peer))) {
+          loggerLog(
+            `[Call] Endpoint rejected ${env.callId.slice(0, 8)}…; waiting for ${invited.size - rejected.size} other endpoint(s).`
+          );
+          return;
+        }
+        if (
+          [...reasons.values()].some((item) => item === null) &&
+          !reasonAuthenticated
+        ) {
+          // The authenticated-reason and legacy compatibility frames are
+          // sent back-to-back. Briefly tolerate network reordering before
+          // settling on the generic result.
+          if (!c.rejectionFinalizeTimer) {
+            c.rejectionFinalizeTimer = setTimeout(() => {
+              this.finalizeRejectedCall(env.callId, env.timestamp);
+            }, 250);
+            c.rejectionFinalizeTimer.unref?.();
+          }
+          return;
+        }
+      }
+      this.finalizeRejectedCall(env.callId, env.timestamp);
+    };
+
+    const verifyLegacy = () =>
+      this.verifyPool.verify({
         kind: 'call_signed',
         wireType: env.type,
         callId: env.callId,
@@ -721,24 +1033,63 @@ export class CallManager extends EventEmitter {
         signature: env.signature,
         fromPublicKey: env.fromPublicKey,
         expectedAddress,
+      });
+
+    if (!reasonFields) {
+      void verifyLegacy().then((ok) => applyVerifiedReject(false, ok));
+      return;
+    }
+
+    void this.verifyPool
+      .verify({
+        kind: 'gc',
+        fields: reasonFields,
+        signature: env.signature,
+        fromPublicKey: env.fromPublicKey,
+        fromAddress: expectedAddress,
       })
-      .then((ok) => {
-        if (!ok) {
-          loggerLog('[Call] Dropped CALL_REJECT: invalid signature');
+      .then((reasonAuthenticated) => {
+        if (reasonAuthenticated) {
+          applyVerifiedReject(true, true);
           return;
         }
-        const c = this.activeCalls.get(env.callId);
-        if (!c) return;
-        if (c.cleanupTimer) clearTimeout(c.cleanupTimer);
-        this.clearControlRepeatTimers(c);
-        c.state = 'ended';
-        this.activeCalls.delete(env.callId);
-        this.emit('call:rejected', { callId: env.callId, reason: env.reason });
-        loggerLog(`[Call] Call ${env.callId.slice(0, 8)}… rejected.`);
+        void verifyLegacy().then((ok) => applyVerifiedReject(false, ok));
       });
   }
 
-  private handleHangup(env: CallHangupEnvelope): void {
+  private finalizeRejectedCall(callId: string, timestamp: number): void {
+    const call = this.activeCalls.get(callId);
+    if (!call || call.state !== 'pending') return;
+    if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+    if (call.rejectionFinalizeTimer) {
+      clearTimeout(call.rejectionFinalizeTimer);
+      call.rejectionFinalizeTimer = undefined;
+    }
+    this.clearControlRepeatTimers(call);
+    call.state = 'ended';
+    this.activeCalls.delete(callId);
+    if (call.direction === 'outbound') {
+      this.emitDirectCallHistory(call, 'declined', timestamp);
+    }
+    const endpointReasons = [
+      ...(call.rejectionReasonsByReticulumPeerHash?.values() ?? []),
+    ];
+    const reason =
+      endpointReasons.length > 0 &&
+      endpointReasons.every((item) => item === 'not_friend')
+        ? 'not_friend'
+        : endpointReasons.length > 0 &&
+            endpointReasons.every((item) => item === 'media unavailable')
+          ? 'media unavailable'
+          : 'rejected';
+    this.emit('call:rejected', { callId, reason });
+    loggerLog(`[Call] Call ${callId.slice(0, 8)}… rejected.`);
+  }
+
+  private handleHangup(
+    env: CallHangupEnvelope,
+    senderDestinationHash: string
+  ): void {
     const call = this.activeCalls.get(env.callId);
     if (!call) return;
 
@@ -769,10 +1120,38 @@ export class CallManager extends EventEmitter {
         }
         const c = this.activeCalls.get(env.callId);
         if (!c) return;
+        const previousState = c.state;
+        const expectedEndpoint =
+          c.direction === 'outbound'
+            ? c.acceptedReticulumPeerHash
+            : c.reticulumPeerPresenceHash;
+        if (
+          expectedEndpoint &&
+          senderDestinationHash &&
+          senderDestinationHash !== expectedEndpoint
+        ) {
+          loggerLog(
+            `[Call] Dropped CALL_HANGUP from unselected endpoint callId=${env.callId.slice(0, 8)}…`
+          );
+          return;
+        }
         if (c.cleanupTimer) clearTimeout(c.cleanupTimer);
+        if (c.rejectionFinalizeTimer) {
+          clearTimeout(c.rejectionFinalizeTimer);
+          c.rejectionFinalizeTimer = undefined;
+        }
         this.clearControlRepeatTimers(c);
         c.state = 'ended';
         this.activeCalls.delete(env.callId);
+        this.emitDirectCallHistory(
+          c,
+          previousState === 'active'
+            ? 'answered'
+            : c.direction === 'inbound'
+              ? 'missed'
+              : 'cancelled',
+          env.timestamp
+        );
         this.emit('call:hangup', { callId: env.callId });
         loggerLog(`[Call] Remote hung up call ${env.callId.slice(0, 8)}…`);
       });
@@ -783,11 +1162,97 @@ export class CallManager extends EventEmitter {
     senderDestinationHash: string,
     peerPresenceHash: string
   ): void {
+    // `r` is the original sender's stamped call destination. Direct legacy
+    // frames may omit it, in which case the authenticated link peer is the
+    // only safe fallback. Never prefer the relay/link peer when `r` exists.
+    let sourceEndpoint = (senderDestinationHash || peerPresenceHash)
+      .trim()
+      .toLowerCase();
+    const env = this.parseCallEnvelope(wire);
+    if (!env) return;
     const overlayMeta = this.parseReticulumOverlayMeta(wire);
+    const call = this.activeCalls.get(env.callId);
+    const boundCallerDestination = getRouteBoundDestinationHash(
+      'call',
+      env.callId
+    );
+    const expectedSourceAddress =
+      env.type === 'CALL_REQUEST' ? env.fromAddress : call?.remoteAddress;
+    const targetIsLocal = overlayMeta
+      ? this.localAddresses.has(overlayMeta.targetAddress)
+      : Boolean(call);
+    if (
+      expectedSourceAddress &&
+      (targetIsLocal || Boolean(call) || this.localAddresses.size === 0)
+    ) {
+      let resolvedSource: string | null = null;
+      const wireSource = senderDestinationHash.trim().toLowerCase();
+      const transportSource = peerPresenceHash.trim().toLowerCase();
+      const callerAuthoredControl =
+        env.type === 'CALL_REQUEST' || call?.direction === 'inbound';
+
+      if (boundCallerDestination && callerAuthoredControl) {
+        // The call id is wallet-signed by the caller and embeds its exact
+        // Reticulum destination. Use that binding even if an older relay
+        // replaced `r` with its own transport hash; the request is not applied
+        // until its wallet signature is verified. Current senders also verify
+        // this binding against their local bridge destination before sending.
+        resolvedSource = boundCallerDestination;
+      } else if (call?.direction === 'outbound') {
+        // Responses come from one of the exact routes invited by this caller.
+        // This remains deterministic for legacy callees without consulting a
+        // mutable presence cache after the call has started.
+        const invited = new Set(
+          [
+            ...(call.invitedReticulumPeerHashes ?? []),
+            call.acceptedReticulumPeerHash,
+            call.reticulumPeerPresenceHash,
+          ]
+            .filter((hash): hash is string => Boolean(hash))
+            .map((hash) => hash.trim().toLowerCase())
+        );
+        resolvedSource = invited.has(wireSource)
+          ? wireSource
+          : invited.has(transportSource)
+            ? transportSource
+            : null;
+      } else {
+        const sourceRoutes: PresenceRoute[] =
+          typeof this.presence.getRoutesForAddress === 'function'
+            ? this.presence.getRoutesForAddress(expectedSourceAddress)
+            : [this.presence.getRouteForAddress(expectedSourceAddress)].filter(
+                (route): route is PresenceRoute => route !== null
+              );
+        const verifiedRouteHashes = sourceRoutes
+          .filter(
+            (route): route is Extract<PresenceRoute, { kind: 'reticulum' }> =>
+              route.kind === 'reticulum'
+          )
+          .map((route) => route.destinationHash);
+        resolvedSource = resolveDirectCallSourceEndpoint(
+          verifiedRouteHashes,
+          senderDestinationHash,
+          peerPresenceHash
+        );
+      }
+      if (!resolvedSource) {
+        loggerLog(
+          `[Call] Ignored ${env.type} with an unauthenticated device route callId=${env.callId.slice(0, 8)}… from=${expectedSourceAddress}`
+        );
+        // Do not remember the overlay id: a direct/authentic device copy with
+        // the same id may still arrive and must remain processable.
+        return;
+      }
+      if (resolvedSource !== sourceEndpoint) {
+        loggerLog(
+          `[Call] Replaced relay route with verified call endpoint callId=${env.callId.slice(0, 8)}… relay=${sourceEndpoint.slice(0, 8)} endpoint=${resolvedSource.slice(0, 8)}`
+        );
+      }
+      sourceEndpoint = resolvedSource;
+    }
     if (overlayMeta) {
       if (this.hasSeenReticulumOverlayId(overlayMeta.overlayId)) return;
       this.rememberReticulumOverlayId(overlayMeta.overlayId);
-      const targetIsLocal = this.localAddresses.has(overlayMeta.targetAddress);
       if (overlayMeta.hopsRemaining > 0) {
         const forwarded = {
           ...wire,
@@ -805,23 +1270,20 @@ export class CallManager extends EventEmitter {
       }
     }
 
-    const env = this.parseCallEnvelope(wire);
-    if (!env) return;
-
     if (env.type === 'CALL_REQUEST') {
-      this.handleRequestReticulum(senderDestinationHash, env);
+      if (sourceEndpoint) this.handleRequestReticulum(sourceEndpoint, env);
       return;
     }
 
     switch (env.type) {
       case 'CALL_ACCEPT':
-        this.handleAccept(env);
+        this.handleAccept(env, sourceEndpoint);
         break;
       case 'CALL_REJECT':
-        this.handleReject(env);
+        this.handleReject(env, sourceEndpoint);
         break;
       case 'CALL_HANGUP':
-        this.handleHangup(env);
+        this.handleHangup(env, sourceEndpoint);
         break;
       default:
         break;
@@ -872,6 +1334,7 @@ export class CallManager extends EventEmitter {
       return;
     }
 
+    const accountGeneration = this.localAccountGeneration;
     void this.verifyPool
       .verify({
         kind: 'call_request',
@@ -887,12 +1350,17 @@ export class CallManager extends EventEmitter {
         fromPublicKey: env.fromPublicKey,
       })
       .then((ok) => {
+        if (accountGeneration !== this.localAccountGeneration) return;
         if (!ok) {
           loggerLog('[Call] Dropped CALL_REQUEST (RT): invalid signature');
           return;
         }
         if (this.localAddresses.size === 0) {
-          this.enqueuePendingVerifiedIncomingRequest(env, senderDestinationHash);
+          if (!this.acceptPendingIncomingWithoutLocal) return;
+          this.enqueuePendingVerifiedIncomingRequest(
+            env,
+            senderDestinationHash
+          );
           return;
         }
         try {
@@ -906,7 +1374,108 @@ export class CallManager extends EventEmitter {
   }
 
   private sendToCall(call: CallRecord, env: CallWireEnvelope): void {
-    this.sendEnvelope(call.remoteAddress, env);
+    const peers = new Set<string>();
+    if (call.direction === 'inbound') {
+      peers.add(call.reticulumPeerPresenceHash);
+    } else if (call.acceptedReticulumPeerHash) {
+      peers.add(call.acceptedReticulumPeerHash);
+    } else if (call.invitedReticulumPeerHashes?.size) {
+      for (const peer of call.invitedReticulumPeerHashes) peers.add(peer);
+    } else {
+      peers.add(call.reticulumPeerPresenceHash);
+    }
+    const wire = encodeCallWire(env);
+    if (!wireFitsReticulum(wire)) {
+      loggerWarn('[Call] Skipping pinned call send: wire exceeds limit');
+      return;
+    }
+    for (const peer of peers) {
+      const normalized = peer.trim().toLowerCase();
+      if (normalized) this.sendPinnedCallWireWhenReady(normalized, wire, 0);
+    }
+  }
+
+  private sendPinnedCallWireWhenReady(
+    peerDestinationHash: string,
+    wire: Record<string, unknown>,
+    attempt: number
+  ): void {
+    if (!this.started) return;
+    const bridge = this.reticulumBridge;
+    if (!bridge || bridge.getState() !== 'ready') {
+      if (attempt >= CALL_SEND_MAX_ATTEMPTS) {
+        loggerWarn(
+          `[Call] Abandoned pinned send after retries peer=${peerDestinationHash.slice(0, 16)}`
+        );
+        return;
+      }
+      const timer = setTimeout(
+        () =>
+          this.sendPinnedCallWireWhenReady(
+            peerDestinationHash,
+            wire,
+            attempt + 1
+          ),
+        CALL_SEND_RETRY_MS
+      );
+      timer.unref?.();
+      return;
+    }
+    void bridge
+      .sendCallDetailed(peerDestinationHash, wire)
+      .then((result) => {
+        if (result.ok === true || attempt >= CALL_SEND_MAX_ATTEMPTS) return;
+        const timer = setTimeout(
+          () =>
+            this.sendPinnedCallWireWhenReady(
+              peerDestinationHash,
+              wire,
+              attempt + 1
+            ),
+          CALL_SEND_RETRY_MS
+        );
+        timer.unref?.();
+      })
+      .catch(() => {
+        if (attempt >= CALL_SEND_MAX_ATTEMPTS) return;
+        const timer = setTimeout(
+          () =>
+            this.sendPinnedCallWireWhenReady(
+              peerDestinationHash,
+              wire,
+              attempt + 1
+            ),
+          CALL_SEND_RETRY_MS
+        );
+        timer.unref?.();
+      });
+  }
+
+  private cancelOtherRingingEndpoints(call: CallRecord): void {
+    if (
+      call.direction !== 'outbound' ||
+      !call.cancellationSignature ||
+      !call.cancellationPublicKey ||
+      !Number.isFinite(call.cancellationTimestamp)
+    ) {
+      return;
+    }
+    const acceptedPeer = call.acceptedReticulumPeerHash;
+    const otherPeers = [...(call.invitedReticulumPeerHashes ?? [])].filter(
+      (peer) => peer && peer !== acceptedPeer
+    );
+    if (otherPeers.length === 0) return;
+    const wire = encodeCallWire({
+      type: 'CALL_HANGUP',
+      callId: call.callId,
+      fromPublicKey: call.cancellationPublicKey,
+      signature: call.cancellationSignature,
+      timestamp: call.cancellationTimestamp!,
+    });
+    if (!wireFitsReticulum(wire)) return;
+    for (const peer of otherPeers) {
+      this.sendPinnedCallWireWhenReady(peer, wire, 0);
+    }
   }
 
   private clearControlRepeatTimers(call: CallRecord): void {
@@ -947,10 +1516,7 @@ export class CallManager extends EventEmitter {
     }
   }
 
-  private sendEnvelope(
-    targetAddress: string,
-    env: CallWireEnvelope
-  ): void {
+  private sendEnvelope(targetAddress: string, env: CallWireEnvelope): void {
     void this.sendEnvelopeWhenReady(targetAddress, env, 0);
   }
 
@@ -985,7 +1551,7 @@ export class CallManager extends EventEmitter {
   }
 
   private nextReticulumOverlayId(): string {
-    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    return randomBytes(8).toString('hex');
   }
 
   private attachReticulumOverlayMeta(
@@ -1001,9 +1567,11 @@ export class CallManager extends EventEmitter {
     };
   }
 
-  private parseReticulumOverlayMeta(
-    wire: Record<string, unknown>
-  ): { overlayId: string; targetAddress: string; hopsRemaining: number } | null {
+  private parseReticulumOverlayMeta(wire: Record<string, unknown>): {
+    overlayId: string;
+    targetAddress: string;
+    hopsRemaining: number;
+  } | null {
     if (
       typeof wire.X !== 'string' ||
       typeof wire.U !== 'string' ||

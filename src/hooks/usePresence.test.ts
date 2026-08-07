@@ -3,6 +3,7 @@ import { renderHook, act } from '@testing-library/react';
 import { Provider, createStore } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { extStateAtom, userInfoAtom } from '../atoms/global';
+import { appLockedAtom, isIdleAtom, myStatusAtom } from '../atoms/presence';
 import { buildPresenceSnapshot } from './usePresence';
 import { usePresence } from './usePresence';
 
@@ -68,7 +69,9 @@ describe('usePresence', () => {
     const announce = vi.fn(async () => ({ success: true }));
     const heartbeat = vi.fn(async () => ({ success: true }));
     const offline = vi.fn(async () => ({ success: true }));
+    const startHeartbeatScheduler = vi.fn(async () => ({ success: true }));
     let onlineRemoteHubInterfaces = 0;
+    let heartbeatRequestedHandler: (() => void) | undefined;
 
     Object.assign(window as any, {
       sendMessage: vi.fn(async () => ({ signature: 'sig' })),
@@ -81,18 +84,30 @@ describe('usePresence', () => {
         reticulumGetStatus: vi.fn(async () => ({
           onlineRemoteHubInterfaces,
         })),
+        reticulumGetLocalDestinationHash: vi.fn(async () => ({
+          destinationHash: 'a'.repeat(32),
+        })),
       },
       presence: {
         announce,
         heartbeat,
         offline,
-        getStatus: vi.fn(async () => ({ online: false, lastSeen: null, sessions: [] })),
+        startHeartbeatScheduler,
+        getStatus: vi.fn(async () => ({
+          online: false,
+          lastSeen: null,
+          sessions: [],
+        })),
         getOnlineAddresses: vi.fn(async () => []),
         getAllOnline: vi.fn(async () => []),
         onUpdateBatch: vi.fn(() => vi.fn()),
         onCleared: vi.fn(() => vi.fn()),
         onStarted: vi.fn((cb: () => void) => {
           startedHandler = cb;
+          return vi.fn();
+        }),
+        onHeartbeatRequested: vi.fn((cb: () => void) => {
+          heartbeatRequestedHandler = cb;
           return vi.fn();
         }),
       },
@@ -133,14 +148,76 @@ describe('usePresence', () => {
     });
 
     expect(announce).toHaveBeenCalledTimes(1);
+    expect((announce.mock.lastCall?.[0] as any)?.id).toMatch(
+      /^[A-Za-z0-9_-]{16}$/
+    );
+    expect((announce.mock.lastCall?.[0] as any)?.payload?.sessionId).toMatch(
+      /^P[A-Za-z0-9_-]{35}$/
+    );
+    expect(startHeartbeatScheduler).toHaveBeenCalledTimes(1);
+    expect(heartbeat).not.toHaveBeenCalled();
 
     await act(async () => {
-      vi.advanceTimersByTime(25_000);
+      heartbeatRequestedHandler?.();
       await Promise.resolve();
       await Promise.resolve();
     });
 
     expect(heartbeat).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      store.set(appLockedAtom, true);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(store.get(isIdleAtom)).toBe(true);
+    expect((heartbeat.mock.lastCall?.[0] as any)?.payload?.status).toBe('idle');
+
+    act(() => {
+      document.dispatchEvent(new MouseEvent('mousemove'));
+    });
+    expect(store.get(isIdleAtom)).toBe(true);
+
+    await act(async () => {
+      store.set(appLockedAtom, false);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(store.get(isIdleAtom)).toBe(false);
+    expect((heartbeat.mock.lastCall?.[0] as any)?.payload?.status).toBe(
+      'online'
+    );
+
+    await act(async () => {
+      store.set(myStatusAtom, 'offline');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(offline).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(offline).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      store.set(myStatusAtom, 'online');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(70_000);
+      await Promise.resolve();
+    });
+
+    expect(offline).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       unmount();
