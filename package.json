@@ -126,6 +126,7 @@
     "jsdom": "^26.1.0",
     "prettier": "^3.8.0",
     "rename-cli": "^7.0.1",
+    "sharp": "^0.34.5",
     "tweetnacl": "^1.0.3",
     "typescript": "^5.9.2",
     "vite": "^7.3.0",
