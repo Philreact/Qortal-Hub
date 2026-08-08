@@ -51,6 +51,17 @@ PLACEHOLDER = re.compile(r'{{(\w+)}}')
 COGNATE_ALLOWLIST = {'message', 'microphone', 'maximum', 'level {{level}}'}
 
 
+def sort_node(node):
+    """Recursively sort dict keys — locale files are kept alphabetical at every
+    level so keys are findable by eye and appends do not collide. See
+    scripts/i18n_sort.py."""
+    if isinstance(node, dict):
+        return {k: sort_node(node[k]) for k in sorted(node, key=str.lower)}
+    if isinstance(node, list):
+        return [sort_node(item) for item in node]
+    return node
+
+
 def flatten(node, prefix=''):
     flat = {}
     for key, value in node.items():
@@ -107,7 +118,7 @@ def apply_translations(path_arg):
             for key, value in entries.items():
                 put(data, key, value)
             path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2) + '\n',
+                json.dumps(sort_node(data), ensure_ascii=False, indent=2) + '\n',
                 encoding='utf-8',
             )
             written += len(entries)

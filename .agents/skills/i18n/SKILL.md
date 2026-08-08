@@ -89,8 +89,15 @@ how keys go missing from one language, so reach for these instead:
 | Seed new keys into all 12 locales | `python3 scripts/i18n_add_keys.py <ns> <patch.json>`             |
 | Apply the translations            | `python3 scripts/i18n_apply_translations.py <translations.json>` |
 | Check nothing is left             | `python3 scripts/i18n_apply_translations.py --audit`             |
+| Sort / verify sorting             | `python3 scripts/i18n_sort.py [--check]`                         |
 
-All four run from the repo root and take `--help`.
+All five run from the repo root and take `--help`.
+
+**Locale files are sorted alphabetically at every nesting level, and that is
+mandatory.** `i18n_add_keys.py` and `i18n_apply_translations.py` re-sort the file
+they write, so following the workflow keeps it true automatically. If you ever
+edit a locale file by hand, run `i18n_sort.py` afterwards; `--check` exits 1 on
+anything unsorted and is what CI should call.
 
 ## The workflow
 
@@ -128,7 +135,8 @@ python3 scripts/i18n_add_keys.py group /tmp/new-keys.json
 ```
 
 It never overwrites an existing value, so it is safe to re-run as the patch
-grows. Nest values by topic. Pick the namespace by domain:
+grows, and it re-sorts the file on write — never hand-append a key to the end of
+a block. Nest values by topic. Pick the namespace by domain:
 `core` for shared UI vocabulary and generic messages, `group` for
 group/chat/Reticulum features, `auth`, `node`, `question`, `tutorial` for their
 own areas. A _new_ namespace also has to be registered in the `namespaces` array
@@ -260,6 +268,7 @@ Both of these must come back clean — they are the definition of done:
 ```bash
 python3 scripts/i18n_scan_hardcoded.py --detail <file>   # no user-readable English left
 python3 scripts/i18n_apply_translations.py --audit       # no English in non-English locales
+python3 scripts/i18n_sort.py --check                     # locale files still sorted
 ```
 
 Anything the first returns that a user can read must become a `t()` call. Any key

@@ -1,68 +1,131 @@
 {
-  "setup": {
-    "title": "Local setup: Hub and Core run on the same system",
-    "advancedOptions": "advanced options",
-    "pickPath": "pick a custom Qortal installation path if your Core is installed in a non-default location.",
-    "removePath": "remove custom Qortal path"
+  "actions": {
+    "continue": "continue",
+    "continueLocal": "continue with Local",
+    "continuePublic": "continue with public node",
+    "finished": "finished",
+    "goToDownloads": "go to downloads",
+    "install": "install and start Qortal Core",
+    "openSetup": "open local setup",
+    "resetKey": "reset apikey",
+    "start": "start Qortal Core"
+  },
+  "bootstrap": "bootstrap",
+  "bootstrapChainHelp": {
+    "body": "One tool: bootstrap from snapshot when Core is up, or wipe local chain DB and start Core again when bootstrap is not possible. Your wallet is stored separately.",
+    "title": "Bootstrap chain"
+  },
+  "confirmations": {
+    "bootstrap": "Are you sure you want to bootstrap?",
+    "bootstrapOrClearChain": "Runs the bootstrap snapshot when Core is running locally. If that is not possible or bootstrap fails, local chain DB may be removed and Core will start again—wallet files are left alone. Continue?",
+    "delete": "Are you sure you want to delete the db?",
+    "stop": "Are you sure you want to stop the core?"
+  },
+  "coreSetupDialog": {
+    "actionDone": "Done",
+    "actionDownload": "Download Core",
+    "actionStart": "Start Core",
+    "advancedSubtitle": "Advanced tools and options for Core.",
+    "advancedTitle": "Advanced",
+    "cancel": "Cancel",
+    "change": "Change",
+    "choose": "Choose",
+    "clear": "Clear",
+    "confirmTitle": "Confirm action",
+    "folderCopied": "Core folder copied",
+    "helpers": {
+      "downloadActive": "Downloading and preparing Qortal Core.",
+      "downloadDone": "Core files are installed and ready.",
+      "downloadIdle": "Download Qortal Core to run your own node.",
+      "runningBlocked": "Available after Core is downloaded.",
+      "runningDone": "Core is running locally.",
+      "runningDoneSyncing": "Core is running and syncing blockchain data.",
+      "runningWaiting": "Core will start and begin syncing in the background."
+    },
+    "introSubtitle": "You can use a public node while Core starts and syncs.",
+    "introTitle": "Run your own node locally.",
+    "locationCustom": "Qortal Core will run from this folder.",
+    "locationDefault": "Qortal Core will use the default folder for this system.",
+    "locationPathDefault": "Default Qortal Core location",
+    "locationTitle": "Core location",
+    "maintenanceUnavailable": "Core maintenance tools are unavailable while Core is starting or syncing.",
+    "nextStepPill": "Next step",
+    "progressAriaLabel": "{{label}} progress",
+    "publicNodeUnavailable": "Public nodes are currently unavailable. Keep this screen open while local Core starts and syncs.",
+    "readyToDownload": "Ready to download",
+    "readyToStart": "Ready to start",
+    "steps": {
+      "downloadActive": "Downloading Core",
+      "downloadDone": "Downloaded Core",
+      "downloadIdle": "Download Core",
+      "runningActive": "Starting Core",
+      "runningDone": "Core running",
+      "runningIdle": "Start Core"
+    },
+    "stopButton": "Stop",
+    "stopCoreBody": "Stops the local Core process.",
+    "stopCoreTitle": "Stop Core",
+    "syncing": "Syncing",
+    "title": "Set up Qortal Core"
+  },
+  "coreStatusNotice": {
+    "actions": {
+      "ignore": "Ignore",
+      "later": "Later",
+      "openSetup": "Open setup",
+      "start": "Start",
+      "starting": "Starting...",
+      "switchToLocal": "Switch to local"
+    },
+    "installedPrompt": {
+      "description": "You already have a local node installed. Would you like to start it while you use the public node?",
+      "title": "Local node installed"
+    },
+    "installing": {
+      "description": "Downloading and installing Qortal Core.",
+      "title": "Installing Qortal Core"
+    },
+    "localReady": {
+      "description": "Qortal Core is synced. You can switch from the public node to your local node now.",
+      "title": "Local node ready"
+    },
+    "needsAttention": {
+      "description": "Core needs attention. Open setup to review the issue.",
+      "title": "Core setup needs attention"
+    },
+    "starting": {
+      "description": "Starting Qortal Core.",
+      "preparing": "Core is starting and preparing blockchain data.",
+      "title": "Starting local Core"
+    },
+    "syncing": {
+      "checking": "Core is running. Checking blockchain sync progress.",
+      "description": "Your local node is catching up in the background.",
+      "title": "Syncing blockchain"
+    }
+  },
+  "delete": "delete db",
+  "enableAuthWhenSyncing": "enable auth when syncing",
+  "error": {
+    "failed_bootstrap": "unable to bootstrap",
+    "failed_bootstrap_or_clear": "could not bootstrap, clear chain data, or start Core",
+    "failed_delete": "unable to delete db",
+    "failed_stop": "unable to stop the Core",
+    "invalidKey": "invalid apikey",
+    "noJar": "chosen directory does not contain a qortal.jar"
   },
   "introSetup": {
-    "paragraph1": "Qortal is a decentralized platform that gives you full control over your data, applications, and finances. To get started, we recommend that you install the <strong>Qortal Core</strong>, which powers the network and enables all features of Qortal.",
-    "paragraph2": "This setup wizard will guide you through installing and configuring the Qortal Core on your device. Click <strong>Next</strong> to continue with the installation.",
+    "advanced": "if you are using a remote node, please close this setup wizard and then click \"Choose custom node\"",
     "note": "note for advanced users",
-    "advanced": "if you are using a remote node, please close this setup wizard and then click \"Choose custom node\""
-  },
-  "sync": {
-    "behind": "You are {{count}} blocks behind.",
-    "waiting": "Please wait until you are synchronized.",
-    "not_synchronized": "not synchronized",
-    "synchronized": "synchronized",
-    "synchronized_desc": "you are now synchronized. you may continue.",
-    "description": "If you do not want to wait until your Local Node is synced, continue with public for now. (If you are aware that your node is behind/off, you can continue with local anyway, or switch to public node.)"
-  },
-  "steps": {
-    "java": "has java",
-    "downloaded": "downloaded Core",
-    "running": "core running"
-  },
-  "actions": {
-    "finished": "finished",
-    "start": "start Qortal Core",
-    "install": "install and start Qortal Core",
-    "continuePublic": "continue with public node",
-    "continueLocal": "continue with Local",
-    "openSetup": "open local setup",
-    "goToDownloads": "go to downloads",
-    "resetKey": "reset apikey",
-    "continue": "continue"
-  },
-  "error": {
-    "noJar": "chosen directory does not contain a qortal.jar",
-    "invalidKey": "invalid apikey",
-    "failed_stop": "unable to stop the Core",
-    "failed_bootstrap": "unable to bootstrap",
-    "failed_delete": "unable to delete db",
-    "failed_bootstrap_or_clear": "could not bootstrap, clear chain data, or start Core"
-  },
-  "status": {
-    "complete": "complete",
-    "inProgress": "in progress",
-    "pending": "pending",
-    "error": "error"
-  },
-  "recommendation": {
-    "title": "using your local core",
-    "description": "you may proceed with the public node if you wish, but we strongly recommend using your local node for the best experience. (If you are attempting to access with no connectivity, you may continue with public without a connection.)",
-    "subTitle": "advantages of using a local node:",
-    "point1": "full decentralized access",
-    "point2": "faster downloads",
-    "point3": "user-controlled data",
-    "publicExplanation": " The public node you connect to is actually a privately operated node that has been made publicly accessible. While convenient, it comes with certain limitations compared to running your own."
+    "paragraph1": "Qortal is a decentralized platform that gives you full control over your data, applications, and finances. To get started, we recommend that you install the <strong>Qortal Core</strong>, which powers the network and enables all features of Qortal.",
+    "paragraph2": "This setup wizard will guide you through installing and configuring the Qortal Core on your device. Click <strong>Next</strong> to continue with the installation."
   },
   "invalidKey": {
-    "title": "invalid apikey",
     "description": "Your apikey is invalid. Please insert a valid apikey.",
-    "resetDescription": "Your apikey is invalid. Click reset to proceed."
+    "resetDescription": "Your apikey is invalid. Click reset to proceed.",
+    "title": "invalid apikey"
   },
+  "less": "less options",
   "messages": {
     "001": "starting up the core... please wait.",
     "002": "error: Unable to start repository",
@@ -75,113 +138,50 @@
     "009": "downloading the Qortal Core... please wait.",
     "010": "error: unable to download or install the Core"
   },
-  "url": {
-    "title": "url invalid",
-    "description": "incorrect url or node not running"
+  "more": "more options",
+  "NotFullyStarted": {
+    "descNotReady": "The Qortal Core has yet to be fully started. Please wait.",
+    "descReady": "All ready to continue",
+    "titleNotReady": "Core not fully started",
+    "titleReady": "Qortal Core is ready"
   },
-  "confirmations": {
-    "stop": "Are you sure you want to stop the core?",
-    "bootstrap": "Are you sure you want to bootstrap?",
-    "delete": "Are you sure you want to delete the db?",
-    "bootstrapOrClearChain": "Runs the bootstrap snapshot when Core is running locally. If that is not possible or bootstrap fails, local chain DB may be removed and Core will start again—wallet files are left alone. Continue?"
+  "recommendation": {
+    "description": "you may proceed with the public node if you wish, but we strongly recommend using your local node for the best experience. (If you are attempting to access with no connectivity, you may continue with public without a connection.)",
+    "point1": "full decentralized access",
+    "point2": "faster downloads",
+    "point3": "user-controlled data",
+    "publicExplanation": " The public node you connect to is actually a privately operated node that has been made publicly accessible. While convenient, it comes with certain limitations compared to running your own.",
+    "subTitle": "advantages of using a local node:",
+    "title": "using your local core"
   },
-  "bootstrapChainHelp": {
-    "title": "Bootstrap chain",
-    "body": "One tool: bootstrap from snapshot when Core is up, or wipe local chain DB and start Core again when bootstrap is not possible. Your wallet is stored separately."
+  "setup": {
+    "advancedOptions": "advanced options",
+    "pickPath": "pick a custom Qortal installation path if your Core is installed in a non-default location.",
+    "removePath": "remove custom Qortal path",
+    "title": "Local setup: Hub and Core run on the same system"
+  },
+  "status": {
+    "complete": "complete",
+    "error": "error",
+    "inProgress": "in progress",
+    "pending": "pending"
+  },
+  "steps": {
+    "downloaded": "downloaded Core",
+    "java": "has java",
+    "running": "core running"
   },
   "stop": "stop Core",
-  "bootstrap": "bootstrap",
-  "delete": "delete db",
-  "more": "more options",
-  "less": "less options",
-  "enableAuthWhenSyncing": "enable auth when syncing",
-  "coreSetupDialog": {
-    "title": "Set up Qortal Core",
-    "introTitle": "Run your own node locally.",
-    "introSubtitle": "You can use a public node while Core starts and syncs.",
-    "publicNodeUnavailable": "Public nodes are currently unavailable. Keep this screen open while local Core starts and syncs.",
-    "steps": {
-      "downloadDone": "Downloaded Core",
-      "downloadActive": "Downloading Core",
-      "downloadIdle": "Download Core",
-      "runningDone": "Core running",
-      "runningActive": "Starting Core",
-      "runningIdle": "Start Core"
-    },
-    "readyToDownload": "Ready to download",
-    "readyToStart": "Ready to start",
-    "syncing": "Syncing",
-    "helpers": {
-      "downloadDone": "Core files are installed and ready.",
-      "downloadActive": "Downloading and preparing Qortal Core.",
-      "downloadIdle": "Download Qortal Core to run your own node.",
-      "runningDoneSyncing": "Core is running and syncing blockchain data.",
-      "runningDone": "Core is running locally.",
-      "runningWaiting": "Core will start and begin syncing in the background.",
-      "runningBlocked": "Available after Core is downloaded."
-    },
-    "nextStepPill": "Next step",
-    "locationTitle": "Core location",
-    "locationCustom": "Qortal Core will run from this folder.",
-    "locationDefault": "Qortal Core will use the default folder for this system.",
-    "locationPathDefault": "Default Qortal Core location",
-    "change": "Change",
-    "choose": "Choose",
-    "clear": "Clear",
-    "advancedTitle": "Advanced",
-    "advancedSubtitle": "Advanced tools and options for Core.",
-    "maintenanceUnavailable": "Core maintenance tools are unavailable while Core is starting or syncing.",
-    "stopCoreTitle": "Stop Core",
-    "stopCoreBody": "Stops the local Core process.",
-    "stopButton": "Stop",
-    "cancel": "Cancel",
-    "actionDownload": "Download Core",
-    "actionStart": "Start Core",
-    "actionDone": "Done",
-    "confirmTitle": "Confirm action",
-    "folderCopied": "Core folder copied",
-    "progressAriaLabel": "{{label}} progress"
+  "sync": {
+    "behind": "You are {{count}} blocks behind.",
+    "description": "If you do not want to wait until your Local Node is synced, continue with public for now. (If you are aware that your node is behind/off, you can continue with local anyway, or switch to public node.)",
+    "not_synchronized": "not synchronized",
+    "synchronized": "synchronized",
+    "synchronized_desc": "you are now synchronized. you may continue.",
+    "waiting": "Please wait until you are synchronized."
   },
-  "NotFullyStarted": {
-    "titleNotReady": "Core not fully started",
-    "descNotReady": "The Qortal Core has yet to be fully started. Please wait.",
-    "titleReady": "Qortal Core is ready",
-    "descReady": "All ready to continue"
-  },
-  "coreStatusNotice": {
-    "installedPrompt": {
-      "title": "Local node installed",
-      "description": "You already have a local node installed. Would you like to start it while you use the public node?"
-    },
-    "localReady": {
-      "title": "Local node ready",
-      "description": "Qortal Core is synced. You can switch from the public node to your local node now."
-    },
-    "installing": {
-      "title": "Installing Qortal Core",
-      "description": "Downloading and installing Qortal Core."
-    },
-    "starting": {
-      "title": "Starting local Core",
-      "description": "Starting Qortal Core.",
-      "preparing": "Core is starting and preparing blockchain data."
-    },
-    "syncing": {
-      "title": "Syncing blockchain",
-      "description": "Your local node is catching up in the background.",
-      "checking": "Core is running. Checking blockchain sync progress."
-    },
-    "needsAttention": {
-      "title": "Core setup needs attention",
-      "description": "Core needs attention. Open setup to review the issue."
-    },
-    "actions": {
-      "ignore": "Ignore",
-      "start": "Start",
-      "starting": "Starting...",
-      "later": "Later",
-      "switchToLocal": "Switch to local",
-      "openSetup": "Open setup"
-    }
+  "url": {
+    "description": "incorrect url or node not running",
+    "title": "url invalid"
   }
 }

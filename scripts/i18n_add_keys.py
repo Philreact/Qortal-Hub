@@ -36,6 +36,17 @@ LANGS = ['ar', 'de', 'en', 'es', 'et', 'fi', 'fr', 'it', 'ja', 'pt', 'ru', 'zh']
 NAMESPACES = ['auth', 'core', 'group', 'node', 'question', 'tutorial']
 
 
+def sort_node(node):
+    """Recursively sort dict keys — locale files are kept alphabetical at every
+    level so keys are findable by eye and appends do not collide. See
+    scripts/i18n_sort.py."""
+    if isinstance(node, dict):
+        return {k: sort_node(node[k]) for k in sorted(node, key=str.lower)}
+    if isinstance(node, list):
+        return [sort_node(item) for item in node]
+    return node
+
+
 def merge(dst, src, added, path=''):
     """Deep-merge src into dst without overwriting. Records added key paths."""
     for key, value in src.items():
@@ -76,7 +87,7 @@ def main():
             added_en = added
         if added and not args.dry_run:
             path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2) + '\n',
+                json.dumps(sort_node(data), ensure_ascii=False, indent=2) + '\n',
                 encoding='utf-8',
             )
 

@@ -28,8 +28,16 @@ holds German, `ja/core.json` Japanese. English text left in a non-English locale
 is an unfinished key, not an acceptable placeholder: it renders as English to
 that user.
 
-Keys are grouped by topic rather than strictly sorted, so add a new key beside
-its siblings instead of appending it to the end of the file.
+**Keys are sorted alphabetically at every nesting level.** This is mandatory, not
+cosmetic: it makes a key findable by eye, keeps siblings together, and stops two
+people appending to the same spot from conflicting. The tooling sorts on write,
+so you rarely need to think about it — but never hand-append a key to the end of
+a block.
+
+```bash
+python3 scripts/i18n_sort.py           # sort every locale file
+python3 scripts/i18n_sort.py --check   # exit 1 if anything is unsorted (CI)
+```
 
 ## Namespaces
 
@@ -132,9 +140,11 @@ language. Scripts in `scripts/`, all run from the repo root and take `--help`:
 | Add new keys to all twelve locales | `python3 scripts/i18n_add_keys.py <namespace> <patch.json>` |
 | Apply reviewed translations        | `python3 scripts/i18n_apply_translations.py <file.json>`    |
 | Audit for English left behind      | `python3 scripts/i18n_apply_translations.py --audit`        |
+| Sort / verify sorting              | `python3 scripts/i18n_sort.py [--check]`                    |
 
 `i18n_add_keys.py` seeds a key into every locale and never overwrites an existing
-value. `i18n_apply_translations.py` refuses to write if a translation drops or
+value. Both it and `i18n_apply_translations.py` re-sort the file they write, so
+the alphabetical order is maintained automatically. `i18n_apply_translations.py` refuses to write if a translation drops or
 renames a placeholder, or names a key that does not exist.
 
 Two older scripts are also present. `i18n_checker.py` is an earlier scanner that
