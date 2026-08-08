@@ -26,7 +26,8 @@
     "scroll_bottom": "vieritä alas",
     "scroll_unread_messages": "siirry lukemattomiin viesteihin",
     "select_group": "valitse ryhmä",
-    "visit_q_mintership": "vieraile Q-Mintershipissä"
+    "visit_q_mintership": "vieraile Q-Mintershipissä",
+    "jump_latest": "siirry uusimpaan"
   },
   "dashboard": {
     "qort_balance": "QORT-saldo",
@@ -213,7 +214,11 @@
     "group_activity_module": "Ryhmän toiminta",
     "group_activity_module_desc": "Näytä Ryhmän toiminta -moduuli etusivulla. Poista käytöstä, jotta sitä ei renderöidä.",
     "quitter_feed_module": "Quitter-syöte",
-    "quitter_feed_module_desc": "Näytä Quitter-syöte-moduuli etusivulla. Poista käytöstä, jotta sitä ei renderöidä."
+    "quitter_feed_module_desc": "Näytä Quitter-syöte-moduuli etusivulla. Poista käytöstä, jotta sitä ei renderöidä.",
+    "close_action_update_error": "Ikkunan sulkemisen toimintaa ei voitu päivittää juuri nyt.",
+    "reticulum_chat_update_error": "Reticulum-ryhmäkeskustelua ei voitu päivittää juuri nyt.",
+    "reticulum_group_chat": "Reticulum-ryhmäkeskustelu",
+    "reticulum_group_chat_desc": "Käytä ryhmäkeskusteluviesteille kokeellista Reticulum-siirtoa, kun se on saatavilla."
   },
   "groups_widget": {
     "accept": "Hyväksy",
@@ -289,7 +294,11 @@
     "wants_to_join": "Haluaa liittyä tähän ryhmään.",
     "you": "Sinä",
     "publish": "Julkaise",
-    "recent_activity_placeholder": "Viimeaikainen ryhmätoiminta"
+    "recent_activity_placeholder": "Viimeaikainen ryhmätoiminta",
+    "reticulum_mentions_one": "{{count}} maininta",
+    "reticulum_mentions_other": "{{count}} mainintaa",
+    "reticulum_new_messages_one": "{{count}} uusi viesti",
+    "reticulum_new_messages_other": "{{count}} uutta viestiä"
   },
   "subscription": {
     "subscriptions": "tilaukset",

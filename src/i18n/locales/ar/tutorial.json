@@ -66,6 +66,8 @@
     "persistent_guide_register_name": "بعد ذلك سجِّل اسمك.",
     "persistent_guide_load_avatar": "وأخيرًا أضف صورة رمزية.",
     "post_onboarding_workspace_ready": "تمّ كل شيء. يمكنك البدء ببناء مساحة العمل أعلاه.",
-    "next": "التالي"
+    "next": "التالي",
+    "qorts_acquired": "تم الحصول على QORT",
+    "qorts_acquired_hint": "انتهى الجزء الأصعب. اضغط «التالي» عندما تكون مستعدًا لتسجيل اسمك."
   }
 }

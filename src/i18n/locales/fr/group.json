@@ -26,7 +26,8 @@
     "scroll_bottom": "faire défiler vers le bas",
     "scroll_unread_messages": "faire défiler vers les messages non lus",
     "select_group": "sélectionner un groupe",
-    "visit_q_mintership": "visiter Q-Mintership"
+    "visit_q_mintership": "visiter Q-Mintership",
+    "jump_latest": "aller au plus récent"
   },
   "dashboard": {
     "qort_balance": "Solde QORT",
@@ -213,7 +214,11 @@
     "group_activity_module": "Activité du groupe",
     "group_activity_module_desc": "Affichez le module Activité du groupe sur l’accueil. Désactivez-le pour ne plus le rendre.",
     "quitter_feed_module": "Flux Quitter",
-    "quitter_feed_module_desc": "Affichez le module Flux Quitter sur l’accueil. Désactivez-le pour ne plus le rendre."
+    "quitter_feed_module_desc": "Affichez le module Flux Quitter sur l’accueil. Désactivez-le pour ne plus le rendre.",
+    "close_action_update_error": "Impossible de mettre à jour le comportement de fermeture de la fenêtre pour le moment.",
+    "reticulum_chat_update_error": "Impossible de mettre à jour le chat de groupe Reticulum pour le moment.",
+    "reticulum_group_chat": "Chat de groupe Reticulum",
+    "reticulum_group_chat_desc": "Utiliser le transport expérimental Reticulum pour les messages de chat de groupe lorsqu'il est disponible."
   },
   "groups_widget": {
     "accept": "Accepter",
@@ -289,7 +294,11 @@
     "wants_to_join": "Souhaite rejoindre ce groupe.",
     "you": "Vous",
     "publish": "Publier",
-    "recent_activity_placeholder": "Activité récente du groupe"
+    "recent_activity_placeholder": "Activité récente du groupe",
+    "reticulum_mentions_one": "{{count}} mention",
+    "reticulum_mentions_other": "{{count}} mentions",
+    "reticulum_new_messages_one": "{{count}} nouveau message",
+    "reticulum_new_messages_other": "{{count}} nouveaux messages"
   },
   "subscription": {
     "subscriptions": "abonnements",

@@ -66,6 +66,8 @@
     "persistent_guide_register_name": "Em seguida registre seu nome.",
     "persistent_guide_load_avatar": "Por fim adicione seu avatar.",
     "post_onboarding_workspace_ready": "Tudo pronto. Você já pode montar seu workspace acima.",
-    "next": "seguinte"
+    "next": "seguinte",
+    "qorts_acquired": "QORT obtidos",
+    "qorts_acquired_hint": "A parte mais difícil já passou. Prime Seguinte quando estiveres pronto para registar o teu nome."
   }
 }

@@ -26,7 +26,8 @@
     "scroll_bottom": "прокрутить вниз",
     "scroll_unread_messages": "перейти к непрочитанным сообщениям",
     "select_group": "выбрать группу",
-    "visit_q_mintership": "посетить Q-Mintership"
+    "visit_q_mintership": "посетить Q-Mintership",
+    "jump_latest": "перейти к последнему"
   },
   "dashboard": {
     "qort_balance": "Баланс QORT",
@@ -213,7 +214,11 @@
     "group_activity_module": "Активность группы",
     "group_activity_module_desc": "Показывать модуль активности группы на главной странице. Отключите, чтобы он не отрисовывался.",
     "quitter_feed_module": "Лента Quitter",
-    "quitter_feed_module_desc": "Показывать модуль ленты Quitter на главной странице. Отключите, чтобы он не отрисовывался."
+    "quitter_feed_module_desc": "Показывать модуль ленты Quitter на главной странице. Отключите, чтобы он не отрисовывался.",
+    "close_action_update_error": "Сейчас не удалось изменить поведение при закрытии окна.",
+    "reticulum_chat_update_error": "Сейчас не удалось обновить групповой чат Reticulum.",
+    "reticulum_group_chat": "Групповой чат Reticulum",
+    "reticulum_group_chat_desc": "Использовать экспериментальный транспорт Reticulum для сообщений группового чата, когда он доступен."
   },
   "groups_widget": {
     "accept": "Принять",
@@ -289,7 +294,11 @@
     "wants_to_join": "Хочет вступить в эту группу.",
     "you": "Вы",
     "publish": "Опубликовать",
-    "recent_activity_placeholder": "Недавняя активность группы"
+    "recent_activity_placeholder": "Недавняя активность группы",
+    "reticulum_mentions_one": "{{count}} упоминание",
+    "reticulum_mentions_other": "{{count}} упоминаний",
+    "reticulum_new_messages_one": "{{count}} новое сообщение",
+    "reticulum_new_messages_other": "{{count}} новых сообщений"
   },
   "subscription": {
     "subscriptions": "подписки",

@@ -66,6 +66,8 @@
     "persistent_guide_register_name": "接下来注册你的名字。",
     "persistent_guide_load_avatar": "最后上传你的头像。",
     "post_onboarding_workspace_ready": "全部就绪。你可以开始在上方搭建工作区。",
-    "next": "下一步"
+    "next": "下一步",
+    "qorts_acquired": "已获得 QORT",
+    "qorts_acquired_hint": "最难的部分已经结束。准备好注册名称后请按“下一步”。"
   }
 }

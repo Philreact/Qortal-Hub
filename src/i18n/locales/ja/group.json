@@ -26,7 +26,8 @@
     "scroll_bottom": "一番下までスクロール",
     "scroll_unread_messages": "未読メッセージへスクロール",
     "select_group": "グループを選択",
-    "visit_q_mintership": "Q-Mintership を訪問"
+    "visit_q_mintership": "Q-Mintership を訪問",
+    "jump_latest": "最新へ移動"
   },
   "dashboard": {
     "qort_balance": "QORT 残高",
@@ -213,7 +214,11 @@
     "group_activity_module": "グループアクティビティ",
     "group_activity_module_desc": "ホームにグループアクティビティモジュールを表示します。オフにするとレンダリングされません。",
     "quitter_feed_module": "Quitter フィード",
-    "quitter_feed_module_desc": "ホームに Quitter フィードモジュールを表示します。オフにするとレンダリングされません。"
+    "quitter_feed_module_desc": "ホームに Quitter フィードモジュールを表示します。オフにするとレンダリングされません。",
+    "close_action_update_error": "ウィンドウを閉じるときの動作を今は更新できませんでした。",
+    "reticulum_chat_update_error": "Reticulum グループチャットを今は更新できませんでした。",
+    "reticulum_group_chat": "Reticulum グループチャット",
+    "reticulum_group_chat_desc": "利用可能な場合、グループチャットのメッセージに実験的な Reticulum トランスポートを使用します。"
   },
   "groups_widget": {
     "accept": "承認する",
@@ -289,7 +294,11 @@
     "wants_to_join": "このグループへの参加を希望しています。",
     "you": "あなた",
     "publish": "公開",
-    "recent_activity_placeholder": "最近のグループアクティビティ"
+    "recent_activity_placeholder": "最近のグループアクティビティ",
+    "reticulum_mentions_one": "{{count}} 件のメンション",
+    "reticulum_mentions_other": "{{count}} 件のメンション",
+    "reticulum_new_messages_one": "{{count}} 件の新着メッセージ",
+    "reticulum_new_messages_other": "{{count}} 件の新着メッセージ"
   },
   "subscription": {
     "subscriptions": "サブスクリプション",

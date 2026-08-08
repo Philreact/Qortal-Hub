@@ -66,6 +66,8 @@
     "persistent_guide_register_name": "Seuraavaksi rekisteröi nimesi.",
     "persistent_guide_load_avatar": "Vielä lisää avatarisi.",
     "post_onboarding_workspace_ready": "Valmista. Voit alkaa rakentaa työtilaa yläpuolella.",
-    "next": "seuraava"
+    "next": "seuraava",
+    "qorts_acquired": "QORT hankittu",
+    "qorts_acquired_hint": "Vaikein osuus on ohi. Paina Seuraava, kun olet valmis rekisteröimään nimesi."
   }
 }

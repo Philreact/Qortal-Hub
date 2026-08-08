@@ -26,7 +26,8 @@
     "scroll_bottom": "滚动到底部",
     "scroll_unread_messages": "滚动到未读消息",
     "select_group": "选择群组",
-    "visit_q_mintership": "访问 Q-Mintership"
+    "visit_q_mintership": "访问 Q-Mintership",
+    "jump_latest": "跳转到最新"
   },
   "dashboard": {
     "qort_balance": "QORT 余额",
@@ -213,7 +214,11 @@
     "group_activity_module": "群组活动",
     "group_activity_module_desc": "在首页显示群组活动模块。关闭后将不再渲染。",
     "quitter_feed_module": "Quitter 动态",
-    "quitter_feed_module_desc": "在首页显示 Quitter 动态模块。关闭后将不再渲染。"
+    "quitter_feed_module_desc": "在首页显示 Quitter 动态模块。关闭后将不再渲染。",
+    "close_action_update_error": "目前无法更新关闭窗口的行为。",
+    "reticulum_chat_update_error": "目前无法更新 Reticulum 群组聊天。",
+    "reticulum_group_chat": "Reticulum 群组聊天",
+    "reticulum_group_chat_desc": "在可用时对群组聊天消息使用实验性的 Reticulum 传输。"
   },
   "groups_widget": {
     "accept": "接受",
@@ -289,7 +294,11 @@
     "wants_to_join": "希望加入此群组。",
     "you": "你",
     "publish": "发布",
-    "recent_activity_placeholder": "最近的群组活动"
+    "recent_activity_placeholder": "最近的群组活动",
+    "reticulum_mentions_one": "{{count}} 条提及",
+    "reticulum_mentions_other": "{{count}} 条提及",
+    "reticulum_new_messages_one": "{{count}} 条新消息",
+    "reticulum_new_messages_other": "{{count}} 条新消息"
   },
   "subscription": {
     "subscriptions": "订阅",

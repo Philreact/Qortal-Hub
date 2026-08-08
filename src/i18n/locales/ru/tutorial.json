@@ -66,6 +66,8 @@
     "persistent_guide_register_name": "Далее зарегистрируй своё имя.",
     "persistent_guide_load_avatar": "Наконец добавь аватар.",
     "post_onboarding_workspace_ready": "Готово. Выше можно настраивать рабочую область.",
-    "next": "далее"
+    "next": "далее",
+    "qorts_acquired": "QORT получены",
+    "qorts_acquired_hint": "Самое сложное позади. Нажмите «Далее», когда будете готовы зарегистрировать имя."
   }
 }

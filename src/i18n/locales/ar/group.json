@@ -26,7 +26,8 @@
     "scroll_bottom": "روح لآخر الصفحة",
     "scroll_unread_messages": "روح للرسائل الجديدة",
     "select_group": "اختار جروب",
-    "visit_q_mintership": "روح ل Q-Mintership"
+    "visit_q_mintership": "روح ل Q-Mintership",
+    "jump_latest": "الانتقال إلى الأحدث"
   },
   "dashboard": {
     "qort_balance": "رصيد QORT",
@@ -213,7 +214,11 @@
     "group_activity_module": "نشاط المجموعة",
     "group_activity_module_desc": "اعرض وحدة نشاط المجموعة في الصفحة الرئيسية. أوقفها لمنع عرضها.",
     "quitter_feed_module": "موجز Quitter",
-    "quitter_feed_module_desc": "اعرض وحدة موجز Quitter في الصفحة الرئيسية. أوقفها لمنع عرضها."
+    "quitter_feed_module_desc": "اعرض وحدة موجز Quitter في الصفحة الرئيسية. أوقفها لمنع عرضها.",
+    "close_action_update_error": "تعذّر تحديث سلوك إغلاق النافذة الآن.",
+    "reticulum_chat_update_error": "تعذّر تحديث دردشة مجموعة Reticulum الآن.",
+    "reticulum_group_chat": "دردشة مجموعة Reticulum",
+    "reticulum_group_chat_desc": "استخدم نقل Reticulum التجريبي لرسائل دردشة المجموعة عند توفره."
   },
   "groups_widget": {
     "accept": "قبول",
@@ -289,7 +294,11 @@
     "wants_to_join": "يريد الانضمام إلى هذه المجموعة.",
     "you": "أنت",
     "publish": "نشر",
-    "recent_activity_placeholder": "نشاط المجموعة الأخير"
+    "recent_activity_placeholder": "نشاط المجموعة الأخير",
+    "reticulum_mentions_one": "{{count}} إشارة",
+    "reticulum_mentions_other": "{{count}} إشارات",
+    "reticulum_new_messages_one": "{{count}} رسالة جديدة",
+    "reticulum_new_messages_other": "{{count}} رسائل جديدة"
   },
   "subscription": {
     "subscriptions": "الاشتراكات",

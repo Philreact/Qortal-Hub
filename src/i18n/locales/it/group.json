@@ -26,7 +26,8 @@
     "scroll_bottom": "scorri in fondo",
     "scroll_unread_messages": "scendi ai messaggi non letti",
     "select_group": "seleziona un gruppo",
-    "visit_q_mintership": "visita Q-Mintership"
+    "visit_q_mintership": "visita Q-Mintership",
+    "jump_latest": "vai al più recente"
   },
   "dashboard": {
     "qort_balance": "Saldo QORT",
@@ -213,7 +214,11 @@
     "group_activity_module": "Attività del gruppo",
     "group_activity_module_desc": "Mostra il modulo Attività del gruppo nella Home. Disattivalo per non renderizzarlo.",
     "quitter_feed_module": "Feed Quitter",
-    "quitter_feed_module_desc": "Mostra il modulo Feed Quitter nella Home. Disattivalo per non renderizzarlo."
+    "quitter_feed_module_desc": "Mostra il modulo Feed Quitter nella Home. Disattivalo per non renderizzarlo.",
+    "close_action_update_error": "Non è stato possibile aggiornare il comportamento alla chiusura della finestra in questo momento.",
+    "reticulum_chat_update_error": "Non è stato possibile aggiornare la chat di gruppo Reticulum in questo momento.",
+    "reticulum_group_chat": "Chat di gruppo Reticulum",
+    "reticulum_group_chat_desc": "Usa il trasporto sperimentale Reticulum per i messaggi della chat di gruppo quando disponibile."
   },
   "groups_widget": {
     "accept": "Accetta",
@@ -289,7 +294,11 @@
     "wants_to_join": "Vuole unirsi a questo gruppo.",
     "you": "Tu",
     "publish": "Pubblica",
-    "recent_activity_placeholder": "Attività recente del gruppo"
+    "recent_activity_placeholder": "Attività recente del gruppo",
+    "reticulum_mentions_one": "{{count}} menzione",
+    "reticulum_mentions_other": "{{count}} menzioni",
+    "reticulum_new_messages_one": "{{count}} nuovo messaggio",
+    "reticulum_new_messages_other": "{{count}} nuovi messaggi"
   },
   "subscription": {
     "subscriptions": "abbonamenti",

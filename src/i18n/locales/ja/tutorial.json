@@ -66,6 +66,8 @@
     "persistent_guide_register_name": "次に名前を登録しましょう。",
     "persistent_guide_load_avatar": "最後にアバターを設定しましょう。",
     "post_onboarding_workspace_ready": "準備完了です。上のワークスペースを組み立て始められます。",
-    "next": "次へ"
+    "next": "次へ",
+    "qorts_acquired": "QORT を取得しました",
+    "qorts_acquired_hint": "最難関は終わりました。名前を登録する準備ができたら「次へ」を押してください。"
   }
 }

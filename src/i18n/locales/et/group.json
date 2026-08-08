@@ -26,7 +26,8 @@
     "scroll_bottom": "keri alla",
     "scroll_unread_messages": "keri lugemata sõnumite juurde",
     "select_group": "vali rühm",
-    "visit_q_mintership": "külasta Q-Vermimist"
+    "visit_q_mintership": "külasta Q-Vermimist",
+    "jump_latest": "hüppa uusimale"
   },
   "dashboard": {
     "qort_balance": "QORT saldo",
@@ -213,7 +214,11 @@
     "group_activity_module": "Grupi tegevus",
     "group_activity_module_desc": "Kuva avalehel grupi tegevuse moodul. Lülita välja, et seda ei renderdataks.",
     "quitter_feed_module": "Quitteri voog",
-    "quitter_feed_module_desc": "Kuva avalehel Quitteri voo moodul. Lülita välja, et seda ei renderdataks."
+    "quitter_feed_module_desc": "Kuva avalehel Quitteri voo moodul. Lülita välja, et seda ei renderdataks.",
+    "close_action_update_error": "Akna sulgemise käitumist ei õnnestunud praegu uuendada.",
+    "reticulum_chat_update_error": "Reticulumi rühmavestlust ei õnnestunud praegu uuendada.",
+    "reticulum_group_chat": "Reticulumi rühmavestlus",
+    "reticulum_group_chat_desc": "Kasuta rühmavestluse sõnumite jaoks eksperimentaalset Reticulumi transporti, kui see on saadaval."
   },
   "groups_widget": {
     "accept": "Nõustu",
@@ -289,7 +294,11 @@
     "wants_to_join": "Soovib sellesse gruppi liituda.",
     "you": "Sina",
     "publish": "Avalda",
-    "recent_activity_placeholder": "Hiljutine grupitegevus"
+    "recent_activity_placeholder": "Hiljutine grupitegevus",
+    "reticulum_mentions_one": "{{count}} mainimine",
+    "reticulum_mentions_other": "{{count}} mainimist",
+    "reticulum_new_messages_one": "{{count}} uus sõnum",
+    "reticulum_new_messages_other": "{{count}} uut sõnumit"
   },
   "subscription": {
     "subscriptions": "tellimused",
