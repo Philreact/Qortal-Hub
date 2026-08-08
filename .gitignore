@@ -14,7 +14,8 @@ dist
 dist.zip
 dist-ssr
 *.local
-.claude
+.agents/settings.*
+.claude/settings.*
 
 # Editor directories and files
 .vscode/*
