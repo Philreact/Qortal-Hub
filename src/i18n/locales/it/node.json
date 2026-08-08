@@ -12,12 +12,12 @@
   },
   "bootstrap": "bootstrap",
   "bootstrapChainHelp": {
-    "body": "Un solo strumento: bootstrap dall’istantanea quando Core è attivo oppure ripulire la DB catena locale e riavviare Core quando il bootstrap non è possibile. Il portafoglio è archiviato separatamente.",
-    "title": "Bootstrap della catena"
+    "body": "Un solo strumento: bootstrap da snapshot quando Core è attivo oppure ripulire il DB locale e riavviare Core quando il bootstrap non è possibile. Il portafoglio è archiviato separatamente.",
+    "title": "Bootstrap database"
   },
   "confirmations": {
     "bootstrap": "sei sicuro di voler eseguire il bootstrap?",
-    "bootstrapOrClearChain": "Esegue il bootstrap dall’istantanea quando Core è in esecuzione in locale. Se non è possibile o il bootstrap fallisce, la DB catena locale può essere rimossa e Core viene riavviato; i file del portafoglio non vengono toccati. Continuare?",
+    "bootstrapOrClearChain": "Esegue il bootstrap da snapshot quando Core è in esecuzione in locale. Se non è possibile o il bootstrap fallisce, il DB cate locale può essere rimossa e Core viene riavviato; i file del portafoglio non vengono toccati. Continuare?",
     "delete": "sei sicuro di voler eliminare il database?",
     "stop": "sei sicuro di voler fermare il Core?"
   },
