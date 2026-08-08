@@ -126,9 +126,15 @@ const normalizeReticulumExpiryMs = (value: unknown): number | null => {
 };
 
 const formatReticulumExpiry = (value: number | null): string => {
-  if (!value) return 'No Expiry';
+  if (!value)
+    return t('group:reticulum.expiry.no_expiry', {
+      postProcess: 'capitalizeEachFirstChar',
+    });
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'No Expiry';
+  if (Number.isNaN(date.getTime()))
+    return t('group:reticulum.expiry.no_expiry', {
+      postProcess: 'capitalizeEachFirstChar',
+    });
   const pad = (part: number) => String(part).padStart(2, '0');
   const monthAndDay = date.toLocaleDateString('en-US', {
     month: 'short',
@@ -781,8 +787,8 @@ export const MessageItemComponent = ({
     reticulumDownloadAttachment.fileName.trim()
       ? reticulumDownloadAttachment.fileName.trim()
       : largeReticulumImageAttachment
-        ? 'Image attachment'
-        : 'File attachment';
+        ? t('group:message_item.image_attachment')
+        : t('group:message_item.file_attachment');
   const reticulumFileSize =
     typeof reticulumDownloadAttachment?.sizeBytes === 'number'
       ? reticulumDownloadAttachment.sizeBytes
@@ -1518,7 +1524,10 @@ export const MessageItemComponent = ({
       (isReticulumDirectResourceMessage &&
         (!myAddress || !reticulumDirectPeerAddress))
     ) {
-      return { success: false, error: 'Invalid resource attachment' };
+      return {
+        success: false,
+        error: t('group:message_item.invalid_attachment'),
+      };
     }
     const ready = await markFileResourceReadyIfComplete();
     if (ready) {
@@ -1618,9 +1627,7 @@ export const MessageItemComponent = ({
         reticulumFileName
       );
       if (!result?.success) {
-        setFileOpenError(
-          result?.error || 'The operating system could not open this file.'
-        );
+        setFileOpenError(result?.error || t('group:message_item.open_failed'));
         return;
       }
       setIsFileOpenWarningOpen(false);
@@ -1628,7 +1635,7 @@ export const MessageItemComponent = ({
       setFileOpenError(
         error instanceof Error
           ? error.message
-          : 'The operating system could not open this file.'
+          : t('group:message_item.open_failed')
       );
     } finally {
       setIsOpeningFile(false);
@@ -1844,23 +1851,25 @@ export const MessageItemComponent = ({
   const fileResourceStatusLabel = (() => {
     if (fileResourceStatus === 'ready') return 'Downloaded';
     if (fileResourceStatus === 'saving') return 'Saving...';
-    if (fileResourceUnavailableNoPeers) return 'File unavailable';
+    if (fileResourceUnavailableNoPeers)
+      return t('group:message_item.file_unavailable');
     if (fileResourceFailureReason === 'verification_failed') {
-      return 'Verification failed';
+      return t('group:message_item.verification_failed');
     }
-    if (fileResourceStatus === 'error') return 'Download failed';
+    if (fileResourceStatus === 'error')
+      return t('group:message_item.download_failed');
     if (fileResourceStatus === 'downloading') {
       return fileResourceProgress === null
         ? 'Downloading...'
         : `Downloading ${fileResourceProgress}%`;
     }
-    return 'Not downloaded';
+    return t('group:message_item.not_downloaded');
   })();
   const fileResourceActionLabel =
     fileResourceStatus === 'downloading' && !fileResourceUnavailableNoPeers
       ? 'Cancel'
       : fileResourceUnavailableNoPeers || fileResourceStatus === 'error'
-        ? 'Try again'
+        ? t('group:message_item.try_again')
         : fileResourceStatus === 'ready'
           ? 'Save'
           : fileResourceStatus === 'saving'
@@ -2113,7 +2122,7 @@ export const MessageItemComponent = ({
           id="unread-divider-id"
         >
           {reticulumChatEnabled
-            ? 'New messages'
+            ? t('group:message_item.new_messages')
             : t('core:message.generic.unread_messages', {
                 postProcess: 'capitalizeFirstChar',
               })}
@@ -2611,7 +2620,12 @@ export const MessageItemComponent = ({
                   )}
 
                   {isOwnReticulumEditable && (
-                    <Tooltip title="Edit" disableFocusListener>
+                    <Tooltip
+                      title={t('core:action.edit', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                      disableFocusListener
+                    >
                       <ButtonBase
                         sx={{
                           borderRadius: '6px',
@@ -2631,7 +2645,12 @@ export const MessageItemComponent = ({
                     </Tooltip>
                   )}
 
-                  <Tooltip title="Reply" disableFocusListener>
+                  <Tooltip
+                    title={t('core:action.reply', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                    disableFocusListener
+                  >
                     <ButtonBase
                       sx={{
                         borderRadius: '6px',
@@ -2651,7 +2670,10 @@ export const MessageItemComponent = ({
                   </Tooltip>
 
                   {isOwnReticulumDeletable && (
-                    <Tooltip title="Delete (shift+del)" disableFocusListener>
+                    <Tooltip
+                      title={t('group:message_item.delete_shortcut')}
+                      disableFocusListener
+                    >
                       <ButtonBase
                         sx={{
                           borderRadius: '6px',
@@ -2804,7 +2826,7 @@ export const MessageItemComponent = ({
                     >
                       {reticulumChatEnabled
                         ? isRepliedToMe
-                          ? 'Replying to you'
+                          ? t('group:message_item.replying_to_you')
                           : `Replying to ${
                               reply?.senderName ||
                               reply?.senderAddress ||
@@ -2942,7 +2964,9 @@ export const MessageItemComponent = ({
                           ? t(
                               'core:message.generic.replied_to_deleted_message',
                               {
-                                defaultValue: 'Replied to deleted message',
+                                defaultValue: t(
+                                  'group:message_item.replied_to_deleted'
+                                ),
                               }
                             )
                           : replyExpiredMeta?.senderName ||
@@ -3035,7 +3059,8 @@ export const MessageItemComponent = ({
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {qchatFileData?.fileName || 'File transfer'}
+                    {qchatFileData?.fileName ||
+                      t('group:message_item.file_transfer')}
                   </Typography>
                   <Typography
                     sx={{
@@ -3296,7 +3321,7 @@ export const MessageItemComponent = ({
                         }}
                       >
                         {reticulumImageDownloadIssue === 'unavailable'
-                          ? 'Image unavailable right now (no peers)'
+                          ? t('group:message_item.image_unavailable_no_peers')
                           : "Couldn't download image"}
                       </Typography>
                       <Button
@@ -3843,7 +3868,10 @@ export const MessageItemComponent = ({
                   {message?.isNotEncrypted &&
                     isPrivate &&
                     !reticulumChatEnabled && (
-                      <Tooltip title="Unencrypted" disableFocusListener>
+                      <Tooltip
+                        title={t('group:message_item.unencrypted')}
+                        disableFocusListener
+                      >
                         <KeyOffIcon
                           sx={{
                             color: theme.palette.text.secondary,
@@ -3926,7 +3954,10 @@ export const MessageItemComponent = ({
                   (r) => (reactions[r]?.length ?? 0) > 0
                 )
               ) && (
-                <Tooltip title="Unencrypted" disableFocusListener>
+                <Tooltip
+                  title={t('group:message_item.unencrypted')}
+                  disableFocusListener
+                >
                   <KeyOffIcon
                     sx={{
                       color: theme.palette.text.secondary,
@@ -4292,7 +4323,7 @@ export const MessageItemComponent = ({
               textTransform: 'none',
             }}
           >
-            {isOpeningFile ? 'Opening...' : 'Open file'}
+            {isOpeningFile ? 'Opening...' : t('group:message_item.open_file')}
           </Button>
         </DialogActions>
       </Dialog>
@@ -4340,7 +4371,7 @@ export const MessageItemComponent = ({
         }}
       >
         <Box
-          aria-label="Quick reactions"
+          aria-label={t('group:message_item.quick_reactions')}
           role="group"
           sx={{
             alignItems: 'center',
@@ -4465,7 +4496,9 @@ export const MessageItemComponent = ({
           aria-label={
             hasReticulumExpiry
               ? `Message expires ${reticulumExpiryText}`
-              : 'No Expiry'
+              : t('group:reticulum.expiry.no_expiry', {
+                  postProcess: 'capitalizeEachFirstChar',
+                })
           }
           role="status"
           sx={{

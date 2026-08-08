@@ -1939,9 +1939,6 @@ export const ChatList = ({
           >
             {hasNewerMessages
               ? t('group:action.jump_latest', {
-                  defaultValue: t('group:action.jump_latest', {
-                    postProcess: 'capitalizeFirstChar',
-                  }),
                   postProcess: 'capitalizeFirstChar',
                 })
               : t('group:action.scroll_unread_messages', {

@@ -10,7 +10,7 @@ python3 scripts/i18n_apply_translations.py --audit    # untranslated values
 python3 scripts/i18n_scan_hardcoded.py src            # hardcoded strings in code
 ```
 
-**Baseline:** `en` holds **2,009 keys** across 6 namespaces (up from 1,990 — the
+**Baseline:** `en` holds **2,264 keys** across 6 namespaces (up from 1,990 — the
 fixes below added keys).
 
 | namespace  | keys |
@@ -146,6 +146,33 @@ is misspelled (should be `decrypt_`), and its sibling
 `group:message.generic.descrypt_wallet` too. Renaming means touching 12 locale
 files plus 2 call sites — deferred, not urgent.
 
+### ✅ FIXED — 22 more broken keys the first audit could not see
+
+Found during the item-5 migration. The item-1 audit regex required a
+`namespace:` prefix, so calls using the **bare default namespace** were invisible
+to it:
+
+```tsx
+t('calendar.title', 'Group Calendar'); // resolves to <defaultNS>:calendar.title
+```
+
+A bare key resolves against the component's **first declared namespace**, not
+`core` — `useTranslation('group')` makes `group` the default. An intermediate
+count of 104 was wrong for exactly this reason; resolving each file's default
+namespace properly gives **22**.
+
+All 22 carried a `defaultValue`, so users saw English rather than raw keys —
+untranslatable, not visibly broken. Twelve were the GroupsWidget "ignored
+invites/requests" UI; the rest were the calendar dialog, `EventCoverCropDialog`
+and `GeneralNotifications`.
+
+**Six were duplicates.** `common.back` / `common.cancel` / `common.close` and
+`calendar.join` already existed as `core:action.*`; those call sites were
+remapped rather than given parallel keys.
+
+**Audit both forms.** `t('ns:key')` and bare `t('key')` need separate checks, and
+the bare one must resolve the file's `useTranslation` namespace first.
+
 ### ⚠️ CORRECTION, then ✅ FIXED — placeholder integrity
 
 **The three originally reported defects were false positives.** The audit regex
@@ -216,18 +243,27 @@ Values shared by 3 or more keys, which `docs/i18n_languages.md` asks to avoid:
 - `"wallet password"` × 4
 - `"create account"` × 3, `"unblock"` × 3, `"backup wallet"` × 3, `"continue"` × 3, `"local node"` × 3, `"address"` × 3
 
-### 🟢 Hardcoded strings still in components
+### 🔄 Hardcoded strings in components — Chat done, QortalLand remaining
 
-| area                         | candidates          |
-| ---------------------------- | ------------------- |
-| `src/components/Chat/`       | 347 across 26 files |
-| `src/components/QortalLand/` | 270 across 14 files |
+| area                         | before | now                           |
+| ---------------------------- | ------ | ----------------------------- |
+| `src/components/Chat/`       | 347    | **8** (7 are false positives) |
+| `src/components/QortalLand/` | 270    | 270 — not started             |
 
-Largest: `ChatGroup.tsx`, `QortalLand.tsx`, `ReticulumGroupCalendarDialog.tsx`,
-`ChatDirect.tsx`, the three game dialogs. Also
-`src/components/QortalLand/games/gameDialogText.ts`, which returns English
+Chat is complete across 22 files. The 8 remaining are `Promise` type annotations
+picked up by the JSX-text pattern, a dynamic `${safeDisplayName}` aria-label, and
+one real leftover in `reticulumMessageExpiry.ts`.
+
+**A large share needed no new keys.** In the calendar dialog, 80 of ~90 strings
+were redundant positional `defaultValue` arguments on keys that already existed
+_and were already translated_ — `t('calendar.startDate', 'Start Date')`. Removing
+the default and adding the explicit `core:` prefix made them translatable without
+adding anything. Check for an existing key before creating one.
+
+QortalLand still contains `games/gameDialogText.ts`, which returns English
 sentences from plain functions and needs restructuring to take `t` as a
-parameter.
+parameter. Its three game dialogs are also the files with the pre-existing test
+flakiness — worth stabilising that signal before migrating into it.
 
 ### Aside — not i18n
 
@@ -239,43 +275,76 @@ file (it crashed the audit script until guarded).
 
 ## Progress
 
-| #   | item                                   | status                                                         |
-| --- | -------------------------------------- | -------------------------------------------------------------- |
-| 1   | 32 broken key references               | ✅ done — all `t()` calls resolve                              |
-| 2   | placeholder integrity                  | ✅ done — 3 false positives, 7 real bugs fixed, 11 normalised  |
-| 3   | casing convention                      | ✅ decided — both cases allowed; doc, skill and script aligned |
-| 4   | backfill missing + untranslated keys   | ✅ done — 100% key coverage, 1,648 translations                |
-| 5   | component migration (Chat, QortalLand) | ⬜ not started — 617 hardcoded strings                         |
+| #   | item                                 | status                                                         |
+| --- | ------------------------------------ | -------------------------------------------------------------- |
+| 1   | broken key references                | ✅ done — 32 namespaced + 22 bare, all resolve                 |
+| 2   | placeholder integrity                | ✅ done — 3 false positives, 7 real bugs fixed, 11 normalised  |
+| 3   | casing convention                    | ✅ decided — both cases allowed; doc, skill and script aligned |
+| 4   | backfill missing + untranslated keys | ✅ done — 100% key coverage                                    |
+| 5   | component migration                  | 🔄 Chat done (22 files); QortalLand remaining (270 strings)    |
 
-### Item 4 — closed
+**Totals so far: 2,968 translations applied**, `en` baseline grown 1,990 → 2,264
+keys, every locale at 100% key coverage with one intentional placeholder
+exception.
 
-| sub-item                             | result                                    |
-| ------------------------------------ | ----------------------------------------- |
-| 107 keys missing from all 11 locales | ✅ 1,177 translations                     |
-| 452 untranslated values              | ✅ 358 translations, 11 correct survivors |
-| `fi`'s 61 missing keys               | ✅ included in the final 106              |
-| ~45 stragglers across the other ten  | ✅ included in the final 106              |
+### Item 5 — Chat complete
 
-**1,648 translations applied in total.** Every locale is at 100% key coverage
-with one intentional placeholder exception.
+| cluster                              | files | strings |
+| ------------------------------------ | ----- | ------- |
+| Reticulum previews/viewers           | 5     | 55      |
+| Calendar                             | 2     | 57      |
+| Support chat                         | 4     | 56      |
+| ChatGroup / ChatDirect / MessageItem | 3     | 158     |
+| Small components                     | 8     | ~20     |
 
-### Next: item 5
+The 120 new keys were translated into all 11 languages in one batch at the end,
+per the skill: 1,320 translations, 0 missing, 0 untranslated, 0 placeholder
+defects.
 
-The only substantial i18n work left is the component migration — **617 hardcoded
-strings**, 347 in `src/components/Chat/` and 270 in `src/components/QortalLand/`.
-Per the `i18n` skill: migrate to `t()` first, then translate the new keys in one
-batch at the end.
+### Next: QortalLand
+
+270 candidates across 14 files, including `QortalLand.tsx` (~11k lines), three
+game dialogs, and `gameDialogText.ts`.
 
 Worth doing first: collapse the **16 duplicated English values**, so the same
 phrase is not translated four times.
 
 ### Method notes
 
+**Translation**
+
 - Emit only `(key, language)` pairs that are actually missing or untranslated.
   Applying a whole key set to every locale silently overwrites reviewed work.
-- Batch by feature, not alphabetically — the `qortino_workspace` subtree
-  translated as one unit keeps its terminology consistent.
+- Batch by feature, not alphabetically — a subtree translated as one unit keeps
+  its terminology consistent.
 - Audit placeholders across **every** key, not just the ones in flight; that is
   how the 7 real defects surfaced.
-- `scripts/i18n_apply_translations.py` validates placeholders and refuses to
-  write on mismatch; finish every pass with `--audit`.
+- Some values are correctly identical to English — the literal `delete`
+  confirmation word, product names, cognates. Exclude them explicitly rather than
+  forcing a translation.
+
+**Migration**
+
+- Look for an existing key before creating one. A redundant `defaultValue` on an
+  already-translated key is the most common shape of "hardcoded" string here.
+- `t()` cannot appear at module scope. Module-level label maps must hold **keys**
+  and resolve through `t()` at render — the pattern used for
+  `reticulumChannelTypeOptions` and `ROLE_LABEL_KEYS`.
+- Exported helpers that return display text should take `t` as a parameter,
+  defaulted to the shared instance (`t: TFunction = i18n.t`) so existing tests
+  keep passing unchanged.
+- Never rebuild a source file from parsed pieces. Doing so silently dropped four
+  files' import blocks. Use string substitution and assert the file grew and its
+  first line is unchanged.
+- Blanket string replacement can nest a `t()` inside an existing `defaultValue`.
+  Re-scan after replacing.
+
+**Testing**
+
+- **The app's i18n instance is not initialised in the test environment**, so
+  `useTranslation` returns raw keys. Tests that appeared to assert translated
+  text were really asserting a `defaultValue`. Add `import '../../i18n/i18n';` to
+  a test that needs real strings.
+- The QortalLand game-dialog and `AppPublish` tests fail intermittently under
+  parallel load and pass in isolation. Verified identical at `HEAD` — pre-existing,
+  unrelated to i18n, and worth fixing separately.

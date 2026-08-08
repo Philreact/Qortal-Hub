@@ -6,6 +6,9 @@ import {
   waitFor,
 } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// Initialises the shared i18n instance so useTranslation resolves real strings
+// rather than returning raw keys.
+import '../../i18n/i18n';
 import { ChatList } from './ChatList';
 
 const virtualizer = vi.hoisted(() => ({
