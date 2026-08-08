@@ -494,5 +494,57 @@
     "unmute_push_notifications": "Activar notificaciones push",
     "mark_all_read": "Marcar todo como leído"
   },
-  "thread_posts": "nuevas publicaciones del hilo"
+  "thread_posts": "nuevas publicaciones del hilo",
+  "reticulum": {
+    "call_history": {
+      "answered": "llamada de voz",
+      "cancelled": "llamada de voz cancelada",
+      "declined": "llamada de voz rechazada",
+      "missed": "llamada de voz perdida",
+      "no_answer": "sin respuesta"
+    },
+    "hide_user": {
+      "error_hide": "no se puede ocultar al usuario",
+      "error_unhide": "no se puede mostrar al usuario",
+      "for_1_hour": "ocultar durante 1 hora",
+      "for_24_hours": "ocultar durante 24 horas",
+      "hide": "ocultar",
+      "unhide": "mostrar",
+      "until_unhidden": "ocultar hasta volver a mostrar"
+    },
+    "mention": {
+      "channels": "canales",
+      "empty": "no se encontraron coincidencias",
+      "people": "personas",
+      "special": "menciones especiales",
+      "suggestions": "sugerencias de menciones"
+    },
+    "user_card": {
+      "address_copied": "dirección copiada",
+      "copy_address": "copiar dirección",
+      "copy_full_address": "copiar la dirección completa de qortal",
+      "hide_user": "ocultar usuario",
+      "message": "mensaje",
+      "minter_level": "nivel de minter",
+      "minter_level_value": "nivel {{level}}",
+      "qort_balance": "saldo de qort",
+      "qort_balance_value": "{{amount}} QORT",
+      "qortal_address": "dirección de qortal",
+      "send_qort": "enviar QORT",
+      "view_profile": "ver perfil",
+      "view_profile_of": "ver el perfil de {{name}}"
+    },
+    "expiry": {
+      "channel_default": "valor predeterminado del canal",
+      "channel_default_no_expiry": "valor predeterminado del canal (sin caducidad)",
+      "channel_default_with": "valor predeterminado del canal ({{duration}})",
+      "do_not_auto_delete": "no eliminar automáticamente",
+      "maximum": "máximo {{duration}}",
+      "no_expiry": "sin caducidad",
+      "set": "establecer la caducidad del mensaje",
+      "title": "caducidad del mensaje",
+      "tooltip_value": "caducidad del mensaje: {{value}}",
+      "unavailable": "la caducidad del mensaje no está disponible"
+    }
+  }
 }

@@ -10,6 +10,7 @@ import {
 } from '@mui/material';
 import AllInclusiveRoundedIcon from '@mui/icons-material/AllInclusiveRounded';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
+import { useTranslation } from 'react-i18next';
 import { CustomStyledMenu } from '../ContextMenu';
 import {
   formatReticulumExpiryDuration,
@@ -69,30 +70,57 @@ export function ReticulumMessageExpiryButton({
   segmented = false,
   value,
 }: ReticulumMessageExpiryButtonProps) {
+  const { t } = useTranslation(['group']);
   const theme = useTheme();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const effectiveExpiryDurationMs =
     value === null ? undefined : (value ?? channelExpiryDurationMs);
   const indicatorLabel = expiryIndicatorLabel(effectiveExpiryDurationMs);
   const channelDefaultSummary = channelExpiryDurationMs
-    ? `Maximum ${formatReticulumExpiryDuration(channelExpiryDurationMs)}`
-    : 'No expiry';
+    ? t('group:reticulum.expiry.maximum', {
+        duration: formatReticulumExpiryDuration(channelExpiryDurationMs),
+        postProcess: 'capitalizeFirstChar',
+      })
+    : t('group:reticulum.expiry.no_expiry', {
+        postProcess: 'capitalizeFirstChar',
+      });
   const channelDefaultLabel = useMemo(
     () =>
       channelExpiryDurationMs
-        ? `Channel default (${formatReticulumExpiryDuration(channelExpiryDurationMs)})`
-        : 'Channel default (no expiry)',
-    [channelExpiryDurationMs]
+        ? t('group:reticulum.expiry.channel_default_with', {
+            duration: formatReticulumExpiryDuration(channelExpiryDurationMs),
+            postProcess: 'capitalizeFirstChar',
+          })
+        : t('group:reticulum.expiry.channel_default_no_expiry', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+    [channelExpiryDurationMs, t]
   );
   const tooltip = disabled
-    ? disabledReason || 'Message expiry is unavailable'
+    ? disabledReason ||
+      t('group:reticulum.expiry.unavailable', {
+        postProcess: 'capitalizeFirstChar',
+      })
     : segmented
-      ? 'Message expiry'
+      ? t('group:reticulum.expiry.title', {
+          postProcess: 'capitalizeFirstChar',
+        })
       : value === null
-        ? 'Message expiry: No expiry'
+        ? t('group:reticulum.expiry.tooltip_value', {
+            postProcess: 'capitalizeFirstChar',
+            value: t('group:reticulum.expiry.no_expiry', {
+              postProcess: 'capitalizeFirstChar',
+            }),
+          })
         : value
-          ? `Message expiry: ${formatReticulumExpiryDuration(value)}`
-          : `Message expiry: ${channelDefaultLabel}`;
+          ? t('group:reticulum.expiry.tooltip_value', {
+              postProcess: 'capitalizeFirstChar',
+              value: formatReticulumExpiryDuration(value),
+            })
+          : t('group:reticulum.expiry.tooltip_value', {
+              postProcess: 'capitalizeFirstChar',
+              value: channelDefaultLabel,
+            });
 
   useEffect(() => {
     if (disabled) setAnchorEl(null);
@@ -118,7 +146,9 @@ export function ReticulumMessageExpiryButton({
           }
         >
           <IconButton
-            aria-label="Set message expiry"
+            aria-label={t('group:reticulum.expiry.set', {
+              postProcess: 'capitalizeFirstChar',
+            })}
             aria-haspopup="menu"
             aria-expanded={anchorEl ? 'true' : undefined}
             disabled={disabled}
@@ -182,7 +212,9 @@ export function ReticulumMessageExpiryButton({
             ) : (
               <AllInclusiveRoundedIcon
                 sx={{ color: 'inherit' }}
-                titleAccess="No expiry"
+                titleAccess={t('group:reticulum.expiry.no_expiry', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
               />
             )}
           </IconButton>
@@ -220,8 +252,22 @@ export function ReticulumMessageExpiryButton({
               ) : null}
             </ListItemIcon>
             <ListItemText
-              primary={direct ? 'No expiry' : 'Channel default'}
-              secondary={direct ? 'Do not auto-delete' : channelDefaultSummary}
+              primary={
+                direct
+                  ? t('group:reticulum.expiry.no_expiry', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+                  : t('group:reticulum.expiry.channel_default', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+              }
+              secondary={
+                direct
+                  ? t('group:reticulum.expiry.do_not_auto_delete', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+                  : channelDefaultSummary
+              }
             />
           </MenuItem>
           {RETICULUM_MESSAGE_EXPIRY_OPTIONS.map((option) => {

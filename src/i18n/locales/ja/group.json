@@ -494,5 +494,57 @@
     "unmute_push_notifications": "プッシュ通知をオン",
     "mark_all_read": "すべて既読にする"
   },
-  "thread_posts": "新しいスレッド投稿"
+  "thread_posts": "新しいスレッド投稿",
+  "reticulum": {
+    "call_history": {
+      "answered": "音声通話",
+      "cancelled": "キャンセルされた音声通話",
+      "declined": "拒否された音声通話",
+      "missed": "不在の音声通話",
+      "no_answer": "応答なし"
+    },
+    "hide_user": {
+      "error_hide": "ユーザーを非表示にできません",
+      "error_unhide": "ユーザーを再表示できません",
+      "for_1_hour": "1時間非表示にする",
+      "for_24_hours": "24時間非表示にする",
+      "hide": "非表示",
+      "unhide": "再表示",
+      "until_unhidden": "再表示するまで非表示"
+    },
+    "mention": {
+      "channels": "チャンネル",
+      "empty": "一致するものがありません",
+      "people": "ユーザー",
+      "special": "特別なメンション",
+      "suggestions": "メンションの候補"
+    },
+    "user_card": {
+      "address_copied": "アドレスをコピーしました",
+      "copy_address": "アドレスをコピー",
+      "copy_full_address": "qortal アドレス全体をコピー",
+      "hide_user": "ユーザーを非表示",
+      "message": "メッセージ",
+      "minter_level": "マインターレベル",
+      "minter_level_value": "レベル {{level}}",
+      "qort_balance": "qort 残高",
+      "qort_balance_value": "{{amount}} QORT",
+      "qortal_address": "qortal アドレス",
+      "send_qort": "QORT を送る",
+      "view_profile": "プロフィールを表示",
+      "view_profile_of": "{{name}} のプロフィールを表示"
+    },
+    "expiry": {
+      "channel_default": "チャンネルの既定",
+      "channel_default_no_expiry": "チャンネルの既定（有効期限なし）",
+      "channel_default_with": "チャンネルの既定（{{duration}}）",
+      "do_not_auto_delete": "自動削除しない",
+      "maximum": "最大 {{duration}}",
+      "no_expiry": "有効期限なし",
+      "set": "メッセージの有効期限を設定",
+      "title": "メッセージの有効期限",
+      "tooltip_value": "メッセージの有効期限: {{value}}",
+      "unavailable": "メッセージの有効期限は利用できません"
+    }
+  }
 }

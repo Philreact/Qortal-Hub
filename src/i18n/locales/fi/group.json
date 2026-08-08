@@ -494,5 +494,57 @@
     "unmute_push_notifications": "Poista push-ilmoitusten mykistys",
     "mark_all_read": "Merkitse kaikki luetuksi"
   },
-  "thread_posts": "uudet ketjun julkaisut"
+  "thread_posts": "uudet ketjun julkaisut",
+  "reticulum": {
+    "call_history": {
+      "answered": "puhelu",
+      "cancelled": "peruttu puhelu",
+      "declined": "hylätty puhelu",
+      "missed": "vastaamaton puhelu",
+      "no_answer": "ei vastausta"
+    },
+    "hide_user": {
+      "error_hide": "käyttäjän piilottaminen epäonnistui",
+      "error_unhide": "käyttäjän näyttäminen epäonnistui",
+      "for_1_hour": "piilota 1 tunniksi",
+      "for_24_hours": "piilota 24 tunniksi",
+      "hide": "piilota",
+      "unhide": "näytä",
+      "until_unhidden": "piilota toistaiseksi"
+    },
+    "mention": {
+      "channels": "kanavat",
+      "empty": "ei osumia",
+      "people": "ihmiset",
+      "special": "erikoismaininnat",
+      "suggestions": "mainintaehdotukset"
+    },
+    "user_card": {
+      "address_copied": "osoite kopioitu",
+      "copy_address": "kopioi osoite",
+      "copy_full_address": "kopioi koko qortal-osoite",
+      "hide_user": "piilota käyttäjä",
+      "message": "viesti",
+      "minter_level": "minter-taso",
+      "minter_level_value": "taso {{level}}",
+      "qort_balance": "qort-saldo",
+      "qort_balance_value": "{{amount}} QORT",
+      "qortal_address": "qortal-osoite",
+      "send_qort": "lähetä QORT",
+      "view_profile": "näytä profiili",
+      "view_profile_of": "näytä käyttäjän {{name}} profiili"
+    },
+    "expiry": {
+      "channel_default": "kanavan oletus",
+      "channel_default_no_expiry": "kanavan oletus (ei vanhenemista)",
+      "channel_default_with": "kanavan oletus ({{duration}})",
+      "do_not_auto_delete": "älä poista automaattisesti",
+      "maximum": "enintään {{duration}}",
+      "no_expiry": "ei vanhenemista",
+      "set": "aseta viestin vanheneminen",
+      "title": "viestin vanheneminen",
+      "tooltip_value": "viestin vanheneminen: {{value}}",
+      "unavailable": "viestin vanheneminen ei ole käytettävissä"
+    }
+  }
 }

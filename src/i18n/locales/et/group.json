@@ -495,5 +495,57 @@
     "unmute_push_notifications": "Lõpeta tõuketeavituste summutamine",
     "mark_all_read": "Märgi kõik loetuks"
   },
-  "thread_posts": "uued teemapostitused"
+  "thread_posts": "uued teemapostitused",
+  "reticulum": {
+    "call_history": {
+      "answered": "kõne",
+      "cancelled": "tühistatud kõne",
+      "declined": "tagasi lükatud kõne",
+      "missed": "vastamata kõne",
+      "no_answer": "vastust ei tulnud"
+    },
+    "hide_user": {
+      "error_hide": "kasutajat ei saa peita",
+      "error_unhide": "kasutajat ei saa uuesti kuvada",
+      "for_1_hour": "peida 1 tunniks",
+      "for_24_hours": "peida 24 tunniks",
+      "hide": "peida",
+      "unhide": "kuva",
+      "until_unhidden": "peida kuni uuesti kuvamiseni"
+    },
+    "mention": {
+      "channels": "kanalid",
+      "empty": "vasteid ei leitud",
+      "people": "inimesed",
+      "special": "erimainimised",
+      "suggestions": "mainimissoovitused"
+    },
+    "user_card": {
+      "address_copied": "aadress kopeeritud",
+      "copy_address": "kopeeri aadress",
+      "copy_full_address": "kopeeri täielik qortali aadress",
+      "hide_user": "peida kasutaja",
+      "message": "sõnum",
+      "minter_level": "minteri tase",
+      "minter_level_value": "tase {{level}}",
+      "qort_balance": "qorti saldo",
+      "qort_balance_value": "{{amount}} QORT",
+      "qortal_address": "qortali aadress",
+      "send_qort": "saada QORT",
+      "view_profile": "vaata profiili",
+      "view_profile_of": "vaata kasutaja {{name}} profiili"
+    },
+    "expiry": {
+      "channel_default": "kanali vaikeseade",
+      "channel_default_no_expiry": "kanali vaikeseade (aegumiseta)",
+      "channel_default_with": "kanali vaikeseade ({{duration}})",
+      "do_not_auto_delete": "ära kustuta automaatselt",
+      "maximum": "kuni {{duration}}",
+      "no_expiry": "aegumiseta",
+      "set": "määra sõnumi aegumine",
+      "title": "sõnumi aegumine",
+      "tooltip_value": "sõnumi aegumine: {{value}}",
+      "unavailable": "sõnumi aegumine pole saadaval"
+    }
+  }
 }

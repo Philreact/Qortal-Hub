@@ -779,5 +779,11 @@
     "delete_folder_title": "フォルダーを削除しますか？",
     "delete_folder_message": "このフォルダー内のブックマークはトップレベルに移動されます。"
   },
-  "group_call_p2p_health_not_good": "グループ音声通話には、より安定したP2P接続が必要です。少し待って、改善しない場合はコア情報を確認してください。"
+  "group_call_p2p_health_not_good": "グループ音声通話には、より安定したP2P接続が必要です。少し待って、改善しない場合はコア情報を確認してください。",
+  "loading_ellipsis": "読み込み中...",
+  "not_available": "該当なし",
+  "call_audio_list_error": "デバイスを一覧表示できませんでした",
+  "call_audio_microphone": "マイク",
+  "call_audio_settings": "通話音声設定",
+  "call_audio_speaker": "スピーカー"
 }

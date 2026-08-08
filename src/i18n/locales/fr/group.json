@@ -494,5 +494,57 @@
     "unmute_push_notifications": "Réactiver les notifications push",
     "mark_all_read": "Tout marquer comme lu"
   },
-  "thread_posts": "nouveaux messages du fil"
+  "thread_posts": "nouveaux messages du fil",
+  "reticulum": {
+    "call_history": {
+      "answered": "appel vocal",
+      "cancelled": "appel vocal annulé",
+      "declined": "appel vocal refusé",
+      "missed": "appel vocal manqué",
+      "no_answer": "sans réponse"
+    },
+    "hide_user": {
+      "error_hide": "impossible de masquer l'utilisateur",
+      "error_unhide": "impossible d'afficher l'utilisateur",
+      "for_1_hour": "masquer pendant 1 heure",
+      "for_24_hours": "masquer pendant 24 heures",
+      "hide": "masquer",
+      "unhide": "afficher",
+      "until_unhidden": "masquer jusqu'à réaffichage"
+    },
+    "mention": {
+      "channels": "canaux",
+      "empty": "aucun résultat trouvé",
+      "people": "personnes",
+      "special": "mentions spéciales",
+      "suggestions": "suggestions de mentions"
+    },
+    "user_card": {
+      "address_copied": "adresse copiée",
+      "copy_address": "copier l'adresse",
+      "copy_full_address": "copier l'adresse qortal complète",
+      "hide_user": "masquer l'utilisateur",
+      "message": "message",
+      "minter_level": "niveau de minter",
+      "minter_level_value": "niveau {{level}}",
+      "qort_balance": "solde qort",
+      "qort_balance_value": "{{amount}} QORT",
+      "qortal_address": "adresse qortal",
+      "send_qort": "envoyer des QORT",
+      "view_profile": "voir le profil",
+      "view_profile_of": "voir le profil de {{name}}"
+    },
+    "expiry": {
+      "channel_default": "valeur par défaut du canal",
+      "channel_default_no_expiry": "valeur par défaut du canal (aucune expiration)",
+      "channel_default_with": "valeur par défaut du canal ({{duration}})",
+      "do_not_auto_delete": "ne pas supprimer automatiquement",
+      "maximum": "maximum {{duration}}",
+      "no_expiry": "aucune expiration",
+      "set": "définir l'expiration du message",
+      "title": "expiration du message",
+      "tooltip_value": "expiration du message : {{value}}",
+      "unavailable": "l'expiration des messages est indisponible"
+    }
+  }
 }

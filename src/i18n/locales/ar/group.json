@@ -494,5 +494,57 @@
     "unmute_push_notifications": "إلغاء كتم إشعارات الدفع",
     "mark_all_read": "وضع علامة مقروء على الكل"
   },
-  "thread_posts": "بُوستات جديدة في الموضوع"
+  "thread_posts": "بُوستات جديدة في الموضوع",
+  "reticulum": {
+    "call_history": {
+      "answered": "مكالمة صوتية",
+      "cancelled": "مكالمة صوتية ملغاة",
+      "declined": "مكالمة صوتية مرفوضة",
+      "missed": "مكالمة صوتية فائتة",
+      "no_answer": "لا يوجد رد"
+    },
+    "hide_user": {
+      "error_hide": "تعذّر إخفاء المستخدم",
+      "error_unhide": "تعذّر إظهار المستخدم",
+      "for_1_hour": "إخفاء لمدة ساعة واحدة",
+      "for_24_hours": "إخفاء لمدة 24 ساعة",
+      "hide": "إخفاء",
+      "unhide": "إظهار",
+      "until_unhidden": "إخفاء حتى الإظهار"
+    },
+    "mention": {
+      "channels": "القنوات",
+      "empty": "لا توجد نتائج",
+      "people": "الأشخاص",
+      "special": "إشارات خاصة",
+      "suggestions": "اقتراحات الإشارة"
+    },
+    "user_card": {
+      "address_copied": "تم نسخ العنوان",
+      "copy_address": "نسخ العنوان",
+      "copy_full_address": "نسخ عنوان qortal كاملاً",
+      "hide_user": "إخفاء المستخدم",
+      "message": "رسالة",
+      "minter_level": "مستوى المُعدِّن",
+      "minter_level_value": "المستوى {{level}}",
+      "qort_balance": "رصيد qort",
+      "qort_balance_value": "{{amount}} QORT",
+      "qortal_address": "عنوان qortal",
+      "send_qort": "إرسال QORT",
+      "view_profile": "عرض الملف الشخصي",
+      "view_profile_of": "عرض الملف الشخصي لـ {{name}}"
+    },
+    "expiry": {
+      "channel_default": "الإعداد الافتراضي للقناة",
+      "channel_default_no_expiry": "الإعداد الافتراضي للقناة (بدون انتهاء)",
+      "channel_default_with": "الإعداد الافتراضي للقناة ({{duration}})",
+      "do_not_auto_delete": "عدم الحذف التلقائي",
+      "maximum": "الحد الأقصى {{duration}}",
+      "no_expiry": "بدون انتهاء",
+      "set": "تعيين مدة انتهاء الرسالة",
+      "title": "انتهاء الرسالة",
+      "tooltip_value": "انتهاء الرسالة: {{value}}",
+      "unavailable": "انتهاء الرسائل غير متاح"
+    }
+  }
 }

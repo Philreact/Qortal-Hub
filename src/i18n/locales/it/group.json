@@ -494,5 +494,57 @@
     "unmute_push_notifications": "Riattiva notifiche push",
     "mark_all_read": "Segna tutto come letto"
   },
-  "thread_posts": "nuovi post di thread"
+  "thread_posts": "nuovi post di thread",
+  "reticulum": {
+    "call_history": {
+      "answered": "chiamata vocale",
+      "cancelled": "chiamata vocale annullata",
+      "declined": "chiamata vocale rifiutata",
+      "missed": "chiamata vocale persa",
+      "no_answer": "nessuna risposta"
+    },
+    "hide_user": {
+      "error_hide": "impossibile nascondere l'utente",
+      "error_unhide": "impossibile mostrare l'utente",
+      "for_1_hour": "nascondi per 1 ora",
+      "for_24_hours": "nascondi per 24 ore",
+      "hide": "nascondi",
+      "unhide": "mostra",
+      "until_unhidden": "nascondi fino a nuova visualizzazione"
+    },
+    "mention": {
+      "channels": "canali",
+      "empty": "nessun risultato trovato",
+      "people": "persone",
+      "special": "menzioni speciali",
+      "suggestions": "suggerimenti di menzione"
+    },
+    "user_card": {
+      "address_copied": "indirizzo copiato",
+      "copy_address": "copia indirizzo",
+      "copy_full_address": "copia l'indirizzo qortal completo",
+      "hide_user": "nascondi utente",
+      "message": "messaggio",
+      "minter_level": "livello di minter",
+      "minter_level_value": "livello {{level}}",
+      "qort_balance": "saldo qort",
+      "qort_balance_value": "{{amount}} QORT",
+      "qortal_address": "indirizzo qortal",
+      "send_qort": "invia QORT",
+      "view_profile": "visualizza profilo",
+      "view_profile_of": "visualizza il profilo di {{name}}"
+    },
+    "expiry": {
+      "channel_default": "impostazione predefinita del canale",
+      "channel_default_no_expiry": "impostazione predefinita del canale (nessuna scadenza)",
+      "channel_default_with": "impostazione predefinita del canale ({{duration}})",
+      "do_not_auto_delete": "non eliminare automaticamente",
+      "maximum": "massimo {{duration}}",
+      "no_expiry": "nessuna scadenza",
+      "set": "imposta la scadenza del messaggio",
+      "title": "scadenza del messaggio",
+      "tooltip_value": "scadenza del messaggio: {{value}}",
+      "unavailable": "la scadenza dei messaggi non è disponibile"
+    }
+  }
 }

@@ -494,5 +494,57 @@
     "unmute_push_notifications": "Включить push-уведомления",
     "mark_all_read": "Отметить все как прочитанные"
   },
-  "thread_posts": "новые сообщения темы"
+  "thread_posts": "новые сообщения темы",
+  "reticulum": {
+    "call_history": {
+      "answered": "голосовой вызов",
+      "cancelled": "отменённый голосовой вызов",
+      "declined": "отклонённый голосовой вызов",
+      "missed": "пропущенный голосовой вызов",
+      "no_answer": "нет ответа"
+    },
+    "hide_user": {
+      "error_hide": "не удалось скрыть пользователя",
+      "error_unhide": "не удалось показать пользователя",
+      "for_1_hour": "скрыть на 1 час",
+      "for_24_hours": "скрыть на 24 часа",
+      "hide": "скрыть",
+      "unhide": "показать",
+      "until_unhidden": "скрыть до отмены"
+    },
+    "mention": {
+      "channels": "каналы",
+      "empty": "совпадений не найдено",
+      "people": "люди",
+      "special": "особые упоминания",
+      "suggestions": "подсказки упоминаний"
+    },
+    "user_card": {
+      "address_copied": "адрес скопирован",
+      "copy_address": "копировать адрес",
+      "copy_full_address": "копировать полный адрес qortal",
+      "hide_user": "скрыть пользователя",
+      "message": "сообщение",
+      "minter_level": "уровень минтера",
+      "minter_level_value": "уровень {{level}}",
+      "qort_balance": "баланс qort",
+      "qort_balance_value": "{{amount}} QORT",
+      "qortal_address": "адрес qortal",
+      "send_qort": "отправить QORT",
+      "view_profile": "открыть профиль",
+      "view_profile_of": "открыть профиль {{name}}"
+    },
+    "expiry": {
+      "channel_default": "настройка канала по умолчанию",
+      "channel_default_no_expiry": "настройка канала по умолчанию (без срока)",
+      "channel_default_with": "настройка канала по умолчанию ({{duration}})",
+      "do_not_auto_delete": "не удалять автоматически",
+      "maximum": "максимум {{duration}}",
+      "no_expiry": "без срока",
+      "set": "задать срок хранения сообщения",
+      "title": "срок хранения сообщения",
+      "tooltip_value": "срок хранения сообщения: {{value}}",
+      "unavailable": "срок хранения сообщений недоступен"
+    }
+  }
 }

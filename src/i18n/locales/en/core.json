@@ -883,5 +883,11 @@
     "more": "More",
     "delete_folder_title": "Delete folder?",
     "delete_folder_message": "Bookmarks in this folder will be moved to the top level."
-  }
+  },
+  "loading_ellipsis": "loading...",
+  "not_available": "n/a",
+  "call_audio_list_error": "could not list devices",
+  "call_audio_microphone": "microphone",
+  "call_audio_settings": "call audio settings",
+  "call_audio_speaker": "speaker"
 }

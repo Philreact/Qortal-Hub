@@ -779,5 +779,11 @@
     "delete_folder_title": "删除文件夹？",
     "delete_folder_message": "此文件夹中的书签将移至顶层。"
   },
-  "group_call_p2p_health_not_good": "群组语音通话需要更稳定的 P2P 连接。请稍等片刻，如果没有改善，请查看核心信息。"
+  "group_call_p2p_health_not_good": "群组语音通话需要更稳定的 P2P 连接。请稍等片刻，如果没有改善，请查看核心信息。",
+  "loading_ellipsis": "加载中...",
+  "not_available": "不适用",
+  "call_audio_list_error": "无法列出设备",
+  "call_audio_microphone": "麦克风",
+  "call_audio_settings": "通话音频设置",
+  "call_audio_speaker": "扬声器"
 }

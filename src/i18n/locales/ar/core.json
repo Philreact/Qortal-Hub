@@ -781,5 +781,11 @@
     "delete_folder_title": "حذف المجلد؟",
     "delete_folder_message": "سيتم نقل الإشارات في هذا المجلد إلى المستوى الأعلى."
   },
-  "group_call_p2p_health_not_good": "تحتاج مكالمات الصوت الجماعية إلى اتصال P2P أكثر استقرارًا. انتظر قليلًا، ثم تحقق من معلومات Core إذا لم يتحسن الاتصال."
+  "group_call_p2p_health_not_good": "تحتاج مكالمات الصوت الجماعية إلى اتصال P2P أكثر استقرارًا. انتظر قليلًا، ثم تحقق من معلومات Core إذا لم يتحسن الاتصال.",
+  "loading_ellipsis": "جارٍ التحميل...",
+  "not_available": "غير متاح",
+  "call_audio_list_error": "تعذّر سرد الأجهزة",
+  "call_audio_microphone": "الميكروفون",
+  "call_audio_settings": "إعدادات صوت المكالمة",
+  "call_audio_speaker": "مكبر الصوت"
 }

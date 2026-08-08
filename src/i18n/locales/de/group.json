@@ -494,5 +494,57 @@
     "unmute_push_notifications": "Push-Benachrichtigungen aktivieren",
     "mark_all_read": "Alle als gelesen markieren"
   },
-  "thread_posts": "Neue Thread-Beiträge"
+  "thread_posts": "Neue Thread-Beiträge",
+  "reticulum": {
+    "call_history": {
+      "answered": "sprachanruf",
+      "cancelled": "abgebrochener sprachanruf",
+      "declined": "abgelehnter sprachanruf",
+      "missed": "verpasster sprachanruf",
+      "no_answer": "keine antwort"
+    },
+    "hide_user": {
+      "error_hide": "benutzer kann nicht ausgeblendet werden",
+      "error_unhide": "benutzer kann nicht wieder eingeblendet werden",
+      "for_1_hour": "für 1 stunde ausblenden",
+      "for_24_hours": "für 24 stunden ausblenden",
+      "hide": "ausblenden",
+      "unhide": "einblenden",
+      "until_unhidden": "ausblenden bis zur wiedereinblendung"
+    },
+    "mention": {
+      "channels": "kanäle",
+      "empty": "keine treffer gefunden",
+      "people": "personen",
+      "special": "besondere erwähnungen",
+      "suggestions": "erwähnungsvorschläge"
+    },
+    "user_card": {
+      "address_copied": "adresse kopiert",
+      "copy_address": "adresse kopieren",
+      "copy_full_address": "vollständige qortal-adresse kopieren",
+      "hide_user": "benutzer ausblenden",
+      "message": "nachricht",
+      "minter_level": "minter-level",
+      "minter_level_value": "level {{level}}",
+      "qort_balance": "qort-guthaben",
+      "qort_balance_value": "{{amount}} QORT",
+      "qortal_address": "qortal-adresse",
+      "send_qort": "QORT senden",
+      "view_profile": "profil ansehen",
+      "view_profile_of": "profil von {{name}} ansehen"
+    },
+    "expiry": {
+      "channel_default": "kanalstandard",
+      "channel_default_no_expiry": "kanalstandard (kein ablauf)",
+      "channel_default_with": "kanalstandard ({{duration}})",
+      "do_not_auto_delete": "nicht automatisch löschen",
+      "maximum": "maximal {{duration}}",
+      "no_expiry": "kein ablauf",
+      "set": "ablaufzeit der nachricht festlegen",
+      "title": "nachrichtenablauf",
+      "tooltip_value": "nachrichtenablauf: {{value}}",
+      "unavailable": "nachrichtenablauf ist nicht verfügbar"
+    }
+  }
 }

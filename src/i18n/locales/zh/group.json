@@ -494,5 +494,57 @@
     "unmute_push_notifications": "取消静音推送通知",
     "mark_all_read": "全部标为已读"
   },
-  "thread_posts": "新主题消息"
+  "thread_posts": "新主题消息",
+  "reticulum": {
+    "call_history": {
+      "answered": "语音通话",
+      "cancelled": "已取消的语音通话",
+      "declined": "已拒绝的语音通话",
+      "missed": "未接语音通话",
+      "no_answer": "无人接听"
+    },
+    "hide_user": {
+      "error_hide": "无法隐藏该用户",
+      "error_unhide": "无法取消隐藏该用户",
+      "for_1_hour": "隐藏 1 小时",
+      "for_24_hours": "隐藏 24 小时",
+      "hide": "隐藏",
+      "unhide": "取消隐藏",
+      "until_unhidden": "隐藏至手动取消"
+    },
+    "mention": {
+      "channels": "频道",
+      "empty": "未找到匹配项",
+      "people": "成员",
+      "special": "特殊提及",
+      "suggestions": "提及建议"
+    },
+    "user_card": {
+      "address_copied": "地址已复制",
+      "copy_address": "复制地址",
+      "copy_full_address": "复制完整的 qortal 地址",
+      "hide_user": "隐藏用户",
+      "message": "消息",
+      "minter_level": "铸造者等级",
+      "minter_level_value": "等级 {{level}}",
+      "qort_balance": "qort 余额",
+      "qort_balance_value": "{{amount}} QORT",
+      "qortal_address": "qortal 地址",
+      "send_qort": "发送 QORT",
+      "view_profile": "查看资料",
+      "view_profile_of": "查看 {{name}} 的资料"
+    },
+    "expiry": {
+      "channel_default": "频道默认设置",
+      "channel_default_no_expiry": "频道默认设置（永不过期）",
+      "channel_default_with": "频道默认设置（{{duration}}）",
+      "do_not_auto_delete": "不自动删除",
+      "maximum": "最长 {{duration}}",
+      "no_expiry": "永不过期",
+      "set": "设置消息过期时间",
+      "title": "消息过期时间",
+      "tooltip_value": "消息过期时间：{{value}}",
+      "unavailable": "消息过期功能不可用"
+    }
+  }
 }

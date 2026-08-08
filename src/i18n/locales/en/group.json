@@ -504,5 +504,57 @@
     "unmute_push_notifications": "Unmute push notifications",
     "mark_all_read": "Mark all as read"
   },
-  "thread_posts": "new thread posts"
+  "thread_posts": "new thread posts",
+  "reticulum": {
+    "call_history": {
+      "answered": "voice call",
+      "cancelled": "cancelled voice call",
+      "declined": "declined voice call",
+      "missed": "missed voice call",
+      "no_answer": "no answer"
+    },
+    "hide_user": {
+      "error_hide": "unable to hide user",
+      "error_unhide": "unable to unhide user",
+      "for_1_hour": "hide for 1 hour",
+      "for_24_hours": "hide for 24 hours",
+      "hide": "hide",
+      "unhide": "unhide",
+      "until_unhidden": "hide until unhidden"
+    },
+    "mention": {
+      "channels": "channels",
+      "empty": "no matches found",
+      "people": "people",
+      "special": "special mentions",
+      "suggestions": "mention suggestions"
+    },
+    "user_card": {
+      "address_copied": "address copied",
+      "copy_address": "copy address",
+      "copy_full_address": "copy full qortal address",
+      "hide_user": "hide user",
+      "message": "message",
+      "minter_level": "minter level",
+      "minter_level_value": "level {{level}}",
+      "qort_balance": "qort balance",
+      "qort_balance_value": "{{amount}} QORT",
+      "qortal_address": "qortal address",
+      "send_qort": "send QORT",
+      "view_profile": "view profile",
+      "view_profile_of": "view {{name}}'s profile"
+    },
+    "expiry": {
+      "channel_default": "channel default",
+      "channel_default_no_expiry": "channel default (no expiry)",
+      "channel_default_with": "channel default ({{duration}})",
+      "do_not_auto_delete": "do not auto-delete",
+      "maximum": "maximum {{duration}}",
+      "no_expiry": "no expiry",
+      "set": "set message expiry",
+      "title": "message expiry",
+      "tooltip_value": "message expiry: {{value}}",
+      "unavailable": "message expiry is unavailable"
+    }
+  }
 }

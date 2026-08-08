@@ -720,5 +720,11 @@
     "delete_folder_title": "Poistetaanko kansio?",
     "delete_folder_message": "Tämän kansion kirjanmerkit siirretään ylimmälle tasolle."
   },
-  "group_call_p2p_health_not_good": "Ryhmäpuhelut tarvitsevat vakaamman P2P-yhteyden. Odota hetki ja tarkista Core-tiedot, jos tilanne ei parane."
+  "group_call_p2p_health_not_good": "Ryhmäpuhelut tarvitsevat vakaamman P2P-yhteyden. Odota hetki ja tarkista Core-tiedot, jos tilanne ei parane.",
+  "loading_ellipsis": "ladataan...",
+  "not_available": "ei saatavilla",
+  "call_audio_list_error": "laitteita ei voitu listata",
+  "call_audio_microphone": "mikrofoni",
+  "call_audio_settings": "puhelun ääniasetukset",
+  "call_audio_speaker": "kaiutin"
 }

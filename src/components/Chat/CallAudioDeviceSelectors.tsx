@@ -31,6 +31,7 @@ import {
 } from 'react';
 import type { SvgIconProps } from '@mui/material/SvgIcon';
 import type { TooltipProps } from '@mui/material/Tooltip';
+import { useTranslation } from 'react-i18next';
 import { callAudioDevicesAtom } from '../../atoms/global';
 import {
   ensureMicPermissionForLabels,
@@ -158,6 +159,7 @@ export function CallAudioSettingsButton({
   advancedContent,
   advancedActions,
 }: Props) {
+  const { t } = useTranslation(['core']);
   const [open, setOpen] = useState(false);
   const [prefs, setPrefs] = useAtom(callAudioDevicesAtom);
   const [inputs, setInputs] = useState<CallAudioDeviceOption[]>([]);
@@ -204,12 +206,16 @@ export function CallAudioSettingsButton({
       }
     } catch (e) {
       setRefreshError(
-        e instanceof Error ? e.message : 'Could not list devices'
+        e instanceof Error
+          ? e.message
+          : t('core:call_audio_list_error', {
+              postProcess: 'capitalizeFirstChar',
+            })
       );
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!open) return;
@@ -315,11 +321,18 @@ export function CallAudioSettingsButton({
 
   return (
     <>
-      <Tooltip title="Call audio settings" placement={tooltipPlacement}>
+      <Tooltip
+        title={t('core:call_audio_settings', {
+          postProcess: 'capitalizeFirstChar',
+        })}
+        placement={tooltipPlacement}
+      >
         <IconButton
           size={iconButtonSize}
           onClick={() => setOpen(true)}
-          aria-label="Call audio settings"
+          aria-label={t('core:call_audio_settings', {
+            postProcess: 'capitalizeFirstChar',
+          })}
           sx={{ p: iconButtonSize === 'small' ? 0.5 : 1 }}
         >
           <IconComponent
@@ -402,10 +415,16 @@ export function CallAudioSettingsButton({
             sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 0.5 }}
           >
             <FormControl size="small" fullWidth variant="outlined">
-              <InputLabel id="qortal-call-mic-dialog">Microphone</InputLabel>
+              <InputLabel id="qortal-call-mic-dialog">
+                {t('core:call_audio_microphone', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </InputLabel>
               <Select
                 labelId="qortal-call-mic-dialog"
-                label="Microphone"
+                label={t('core:call_audio_microphone', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
                 value={inputSelectValue}
                 onChange={onIn}
                 disabled={refreshing}
@@ -447,10 +466,16 @@ export function CallAudioSettingsButton({
               variant="outlined"
               disabled={!outputSupported || refreshing}
             >
-              <InputLabel id="qortal-call-out-dialog">Speaker</InputLabel>
+              <InputLabel id="qortal-call-out-dialog">
+                {t('core:call_audio_speaker', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </InputLabel>
               <Select
                 labelId="qortal-call-out-dialog"
-                label="Speaker"
+                label={t('core:call_audio_speaker', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
                 value={outputSelectValue}
                 onChange={onOut}
                 MenuProps={selectMenuProps}

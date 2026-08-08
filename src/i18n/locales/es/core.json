@@ -779,5 +779,11 @@
     "delete_folder_title": "¿Eliminar carpeta?",
     "delete_folder_message": "Los marcadores de esta carpeta se moverán al nivel superior."
   },
-  "group_call_p2p_health_not_good": "Las llamadas de voz grupales necesitan una conexión P2P más estable. Espera un momento y revisa la información del Core si no mejora."
+  "group_call_p2p_health_not_good": "Las llamadas de voz grupales necesitan una conexión P2P más estable. Espera un momento y revisa la información del Core si no mejora.",
+  "loading_ellipsis": "cargando...",
+  "not_available": "n/d",
+  "call_audio_list_error": "no se pudieron listar los dispositivos",
+  "call_audio_microphone": "micrófono",
+  "call_audio_settings": "ajustes de audio de llamada",
+  "call_audio_speaker": "altavoz"
 }
