@@ -69,9 +69,12 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
     [file, open]
   );
 
-  useEffect(() => () => {
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
-  }, [objectUrl]);
+  useEffect(
+    () => () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    },
+    [objectUrl]
+  );
 
   useEffect(() => {
     compressionOperationRef.current += 1;
@@ -97,7 +100,10 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
         stage.clientWidth / naturalSize.width,
         stage.clientHeight / naturalSize.height
       ) * nextZoom;
-    const maxX = Math.max(0, (naturalSize.width * scale - stage.clientWidth) / 2);
+    const maxX = Math.max(
+      0,
+      (naturalSize.width * scale - stage.clientWidth) / 2
+    );
     const maxY = Math.max(
       0,
       (naturalSize.height * scale - stage.clientHeight) / 2
@@ -184,7 +190,8 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
         throw new Error('The cover image could not be compressed enough');
       }
       if (compressionOperationRef.current !== operationId) return;
-      const baseName = file.name.replace(/\.[^.]+$/, '').trim() || 'event-cover';
+      const baseName =
+        file.name.replace(/\.[^.]+$/, '').trim() || 'event-cover';
       onApply({
         base64: compressedBase64,
         fileName: `${baseName}.webp`,
@@ -372,7 +379,7 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
               },
             }}
           >
-            {t('common.cancel', 'Cancel')}
+            {t('core:action.cancel', 'Cancel')}
           </Button>
           <Button
             disabled={working || !naturalSize.width}

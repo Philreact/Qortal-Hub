@@ -1348,9 +1348,7 @@ export const ChatGroup = ({
   const userInfo = useAtomValue(userInfoAtom);
   const balance = useAtomValue(balanceAtom);
   const reticulumChatTextScale = useAtomValue(reticulumChatTextScaleAtom);
-  const legacyThreadsEnabled = useAtomValue(
-    reticulumLegacyThreadsEnabledAtom
-  );
+  const legacyThreadsEnabled = useAtomValue(reticulumLegacyThreadsEnabledAtom);
   const [qManagerPopupSize, setQManagerPopupSize] = useAtom(
     groupQManagerPopupSizeAtom
   );
@@ -1504,8 +1502,10 @@ export const ChatGroup = ({
   );
   const [reticulumSearchOpen, setReticulumSearchOpen] = useState(false);
   const [reticulumCalendarOpen, setReticulumCalendarOpen] = useState(false);
-  const [reticulumCalendarSystemOccurrences, setReticulumCalendarSystemOccurrences] =
-    useState<ReticulumCalendarOccurrence[]>([]);
+  const [
+    reticulumCalendarSystemOccurrences,
+    setReticulumCalendarSystemOccurrences,
+  ] = useState<ReticulumCalendarOccurrence[]>([]);
   const [reticulumCalendarSystemNow, setReticulumCalendarSystemNow] = useState(
     Date.now()
   );
@@ -2469,8 +2469,7 @@ export const ChatGroup = ({
     const nextBoundary = reticulumCalendarSystemOccurrences.reduce(
       (closest, occurrence) => {
         const boundaries = [
-          occurrence.occurrenceStart -
-            RETICULUM_CALENDAR_TEN_MINUTES_MS,
+          occurrence.occurrenceStart - RETICULUM_CALENDAR_TEN_MINUTES_MS,
           occurrence.occurrenceStart,
         ];
         for (const boundary of boundaries) {
@@ -9391,7 +9390,7 @@ export const ChatGroup = ({
                 })}
                 {renderReticulumHeaderAction({
                   active: reticulumCalendarOpen,
-                  label: t('calendar.title', 'Group Calendar'),
+                  label: t('core:calendar.title', 'Group Calendar'),
                   icon: <CalendarMonthRoundedIcon sx={{ fontSize: 19 }} />,
                   onClick: () => {
                     setActiveReticulumCalendarTarget(null);
@@ -9899,7 +9898,10 @@ export const ChatGroup = ({
                       <Box
                         sx={{
                           alignItems: 'center',
-                          backgroundColor: alpha(theme.palette.text.primary, 0.07),
+                          backgroundColor: alpha(
+                            theme.palette.text.primary,
+                            0.07
+                          ),
                           border: `1px solid ${theme.palette.divider}`,
                           borderBottom: 0,
                           borderRadius: '8px 8px 0 0',

@@ -107,7 +107,8 @@
     "full_screen": "ecrã inteiro",
     "open_in_new": "abrir numa nova janela",
     "restore": "restaurar",
-    "resize": "redimensionar"
+    "resize": "redimensionar",
+    "next": "next"
   },
   "address_your": "seu endereço:",
   "admin": "administrador",
@@ -348,7 +349,8 @@
       "no_primary_name": "sem nome principal",
       "replied_to_deleted_message": "respondeu a uma mensagem eliminada",
       "replied_to_you": "↩ respondeu-te",
-      "replying_to": "a responder a {{name}}"
+      "replying_to": "a responder a {{name}}",
+      "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel."
     },
     "message": "messagem",
     "promotion_text": "texto promocional",
@@ -809,7 +811,16 @@
     "timeAndLocationHelp": "Escolhe quando e onde decorre o evento.",
     "upcomingEvents": "Próximos eventos",
     "uploadCover": "Carregar banner",
-    "yourTime": "a tua hora"
+    "yourTime": "a tua hora",
+    "eventRequiresSourceMembership": "You must be a member of the source group to view this event.",
+    "eventUnavailable": "Event unavailable",
+    "joinSourceGroupQuestion": "Join this group?",
+    "requestSourceGroupQuestion": "Request to join this group?",
+    "sourceGroupJoinError": "Unable to join this group. Please try again.",
+    "viewGroup": "View Group",
+    "openEvent": "Open event {{title}}",
+    "pending": "Pending",
+    "request": "Request"
   },
   "bookmarks": {
     "title": "Marcadores",

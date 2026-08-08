@@ -107,7 +107,8 @@
     "full_screen": "täisekraan",
     "open_in_new": "ava uues aknas",
     "restore": "taasta",
-    "resize": "muuda suurust"
+    "resize": "muuda suurust",
+    "next": "next"
   },
   "address_your": "sinu aadress",
   "admin": "admin",
@@ -348,7 +349,8 @@
       "no_primary_name": "peamine nimi puudub",
       "replied_to_deleted_message": "vastas kustutatud sõnumile",
       "replied_to_you": "↩ vastas sulle",
-      "replying_to": "vastab kasutajale {{name}}"
+      "replying_to": "vastab kasutajale {{name}}",
+      "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel."
     },
     "message": "sõnum",
     "promotion_text": "Sisesta lühikene tutvustus",
@@ -809,7 +811,16 @@
     "timeAndLocationHelp": "Vali, millal ja kus sündmus toimub.",
     "upcomingEvents": "Tulevased sündmused",
     "uploadCover": "Laadi bänner üles",
-    "yourTime": "sinu aeg"
+    "yourTime": "sinu aeg",
+    "eventRequiresSourceMembership": "You must be a member of the source group to view this event.",
+    "eventUnavailable": "Event unavailable",
+    "joinSourceGroupQuestion": "Join this group?",
+    "requestSourceGroupQuestion": "Request to join this group?",
+    "sourceGroupJoinError": "Unable to join this group. Please try again.",
+    "viewGroup": "View Group",
+    "openEvent": "Open event {{title}}",
+    "pending": "Pending",
+    "request": "Request"
   },
   "bookmarks": {
     "title": "Järjehoidjad",

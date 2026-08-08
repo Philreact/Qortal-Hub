@@ -107,7 +107,8 @@
     "full_screen": "全屏",
     "open_in_new": "在新窗口中打开",
     "restore": "还原",
-    "resize": "调整大小"
+    "resize": "调整大小",
+    "next": "next"
   },
   "address_your": "您的地址",
   "admin": "行政",
@@ -348,7 +349,8 @@
       "no_primary_name": "没有主要名称",
       "replied_to_deleted_message": "回复了一条已删除的消息",
       "replied_to_you": "↩ 回复了你",
-      "replying_to": "正在回复 {{name}}"
+      "replying_to": "正在回复 {{name}}",
+      "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel."
     },
     "message": "信息",
     "promotion_text": "促销文本",
@@ -809,7 +811,16 @@
     "timeAndLocationHelp": "选择活动的时间和地点。",
     "upcomingEvents": "即将开始的活动",
     "uploadCover": "上传横幅",
-    "yourTime": "你的时间"
+    "yourTime": "你的时间",
+    "eventRequiresSourceMembership": "You must be a member of the source group to view this event.",
+    "eventUnavailable": "Event unavailable",
+    "joinSourceGroupQuestion": "Join this group?",
+    "requestSourceGroupQuestion": "Request to join this group?",
+    "sourceGroupJoinError": "Unable to join this group. Please try again.",
+    "viewGroup": "View Group",
+    "openEvent": "Open event {{title}}",
+    "pending": "Pending",
+    "request": "Request"
   },
   "bookmarks": {
     "title": "书签",

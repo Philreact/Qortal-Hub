@@ -107,7 +107,8 @@
     "full_screen": "全画面表示",
     "open_in_new": "新しいウィンドウで開く",
     "restore": "元に戻す",
-    "resize": "サイズ変更"
+    "resize": "サイズ変更",
+    "next": "next"
   },
   "address_your": "あなたの住所",
   "admin": "管理者",
@@ -348,7 +349,8 @@
       "no_primary_name": "プライマリ名がありません",
       "replied_to_deleted_message": "削除されたメッセージに返信しました",
       "replied_to_you": "↩ あなたに返信しました",
-      "replying_to": "{{name}} に返信中"
+      "replying_to": "{{name}} に返信中",
+      "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel."
     },
     "message": "メッセージ",
     "promotion_text": "プロモーションテキスト",
@@ -809,7 +811,16 @@
     "timeAndLocationHelp": "イベントの日時と場所を選んでください。",
     "upcomingEvents": "今後のイベント",
     "uploadCover": "バナーをアップロード",
-    "yourTime": "あなたの時間"
+    "yourTime": "あなたの時間",
+    "eventRequiresSourceMembership": "You must be a member of the source group to view this event.",
+    "eventUnavailable": "Event unavailable",
+    "joinSourceGroupQuestion": "Join this group?",
+    "requestSourceGroupQuestion": "Request to join this group?",
+    "sourceGroupJoinError": "Unable to join this group. Please try again.",
+    "viewGroup": "View Group",
+    "openEvent": "Open event {{title}}",
+    "pending": "Pending",
+    "request": "Request"
   },
   "bookmarks": {
     "title": "ブックマーク",

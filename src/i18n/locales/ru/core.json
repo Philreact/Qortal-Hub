@@ -107,7 +107,8 @@
     "full_screen": "полный экран",
     "open_in_new": "открыть в новом окне",
     "restore": "восстановить",
-    "resize": "изменить размер"
+    "resize": "изменить размер",
+    "next": "next"
   },
   "address_your": "Ваш адрес",
   "admin": "администратор",
@@ -348,7 +349,8 @@
       "no_primary_name": "основное имя отсутствует",
       "replied_to_deleted_message": "ответил на удалённое сообщение",
       "replied_to_you": "↩ ответил вам",
-      "replying_to": "отвечает {{name}}"
+      "replying_to": "отвечает {{name}}",
+      "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel."
     },
     "message": "сообщение",
     "promotion_text": "Текст продвижения",
@@ -811,7 +813,16 @@
     "timeAndLocationHelp": "Выберите, когда и где проходит событие.",
     "upcomingEvents": "Предстоящие события",
     "uploadCover": "Загрузить баннер",
-    "yourTime": "ваше время"
+    "yourTime": "ваше время",
+    "eventRequiresSourceMembership": "You must be a member of the source group to view this event.",
+    "eventUnavailable": "Event unavailable",
+    "joinSourceGroupQuestion": "Join this group?",
+    "requestSourceGroupQuestion": "Request to join this group?",
+    "sourceGroupJoinError": "Unable to join this group. Please try again.",
+    "viewGroup": "View Group",
+    "openEvent": "Open event {{title}}",
+    "pending": "Pending",
+    "request": "Request"
   },
   "bookmarks": {
     "title": "Закладки",

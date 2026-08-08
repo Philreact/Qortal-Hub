@@ -107,7 +107,8 @@
     "full_screen": "ملء الشاشة",
     "open_in_new": "فتح في نافذة جديدة",
     "restore": "استعادة",
-    "resize": "تغيير الحجم"
+    "resize": "تغيير الحجم",
+    "next": "next"
   },
   "address_your": "عنوانك",
   "admin": "أدمن",
@@ -348,7 +349,8 @@
       "no_primary_name": "لا يوجد اسم أساسي",
       "replied_to_deleted_message": "ردّ على رسالة محذوفة",
       "replied_to_you": "↩ ردّ عليك",
-      "replying_to": "ردًا على {{name}}"
+      "replying_to": "ردًا على {{name}}",
+      "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel."
     },
     "message": "رسالة",
     "promotion_text": "نص الترويج",
@@ -809,7 +811,16 @@
     "timeAndLocationHelp": "اختر متى وأين يقام الحدث.",
     "upcomingEvents": "الأحداث القادمة",
     "uploadCover": "رفع لافتة",
-    "yourTime": "توقيتك"
+    "yourTime": "توقيتك",
+    "eventRequiresSourceMembership": "You must be a member of the source group to view this event.",
+    "eventUnavailable": "Event unavailable",
+    "joinSourceGroupQuestion": "Join this group?",
+    "requestSourceGroupQuestion": "Request to join this group?",
+    "sourceGroupJoinError": "Unable to join this group. Please try again.",
+    "viewGroup": "View Group",
+    "openEvent": "Open event {{title}}",
+    "pending": "Pending",
+    "request": "Request"
   },
   "bookmarks": {
     "title": "الإشارات المرجعية",

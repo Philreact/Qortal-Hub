@@ -700,7 +700,7 @@ export function ReticulumGroupCalendarDialog({
         <EventRoundedIcon color="primary" />
         <Box sx={{ flex: 1 }}>
           <Typography component="div" fontSize={18} fontWeight={700}>
-            {t('calendar.title', 'Group Calendar')}
+            {t('core:calendar.title', 'Group Calendar')}
           </Typography>
           <Typography color="text.secondary" fontSize={12}>
             {t('calendar.subtitle', 'Events shared with this group')}
@@ -743,7 +743,10 @@ export function ReticulumGroupCalendarDialog({
             {t('calendar.add', 'Add event')}
           </Button>
         )}
-        <IconButton aria-label={t('common.close', 'Close')} onClick={onClose}>
+        <IconButton
+          aria-label={t('core:action.close', 'Close')}
+          onClick={onClose}
+        >
           <CloseRoundedIcon />
         </IconButton>
       </DialogTitle>
@@ -1266,7 +1269,7 @@ export function ReticulumGroupCalendarDialog({
               : t('calendar.add', 'Add event')}
           </Box>
           <IconButton
-            aria-label={t('common.close', 'Close')}
+            aria-label={t('core:action.close', 'Close')}
             disabled={saving}
             onClick={() => setEditing(false)}
             size="small"
@@ -1434,8 +1437,7 @@ export function ReticulumGroupCalendarDialog({
                     height: 38,
                     minWidth: 148,
                     textTransform: 'none',
-                    transition:
-                      'background-color 0.18s ease, color 0.18s ease',
+                    transition: 'background-color 0.18s ease, color 0.18s ease',
                     '&:hover': {
                       backgroundColor: RETICULUM_ACTIVE_BLUE,
                       borderColor: RETICULUM_ACTIVE_BLUE,
@@ -1796,7 +1798,7 @@ export function ReticulumGroupCalendarDialog({
               },
             }}
           >
-            {t('common.back', 'Back')}
+            {t('core:action.back', 'Back')}
           </Button>
           <Stack direction="row" spacing={1}>
             <Button
@@ -1814,7 +1816,7 @@ export function ReticulumGroupCalendarDialog({
                 '&:hover': { bgcolor: wizardColors.secondaryButtonHover },
               }}
             >
-              {t('common.cancel', 'Cancel')}
+              {t('core:action.cancel', 'Cancel')}
             </Button>
             <Button
               onClick={() =>
@@ -1855,7 +1857,7 @@ export function ReticulumGroupCalendarDialog({
               {saving ? (
                 <CircularProgress color="inherit" size={20} />
               ) : editingStep < 2 ? (
-                t('common.next', 'Next')
+                t('core:action.next', 'Next')
               ) : (
                 t('calendar.post', 'Post')
               )}
@@ -1931,7 +1933,7 @@ export function ReticulumGroupCalendarDialog({
             {t('calendar.eventCreated', 'Event successfully created!')}
           </Typography>
           <IconButton
-            aria-label={t('common.close', 'Close')}
+            aria-label={t('core:action.close', 'Close')}
             onClick={() => {
               setPostSuccessLink('');
               setShareCopied(false);
@@ -2059,7 +2061,7 @@ export function ReticulumGroupCalendarDialog({
                 </IconButton>
               )}
               <IconButton
-                aria-label={t('common.close', 'Close')}
+                aria-label={t('core:action.close', 'Close')}
                 onClick={() => setSelected(null)}
               >
                 <CloseRoundedIcon />
@@ -2264,7 +2266,7 @@ export function ReticulumGroupCalendarDialog({
             {t('calendar.delete', 'Delete event')}
           </Typography>
           <IconButton
-            aria-label={t('common.close', 'Close')}
+            aria-label={t('core:action.close', 'Close')}
             disabled={saving}
             onClick={() => setDeleteConfirmationOpen(false)}
           >
@@ -2305,7 +2307,7 @@ export function ReticulumGroupCalendarDialog({
               },
             }}
           >
-            {t('common.cancel', 'Cancel')}
+            {t('core:action.cancel', 'Cancel')}
           </Button>
           <Button
             disabled={saving}

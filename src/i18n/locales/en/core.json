@@ -107,7 +107,8 @@
     "vote": "vote",
     "full_screen": "full screen",
     "open_in_new": "open in new window",
-    "restore": "restore"
+    "restore": "restore",
+    "next": "next"
   },
   "address_your": "your address",
   "admin": "admin",
@@ -378,7 +379,8 @@
       "address_copied": "address copied to clipboard.",
       "avatar_publish_fee": "publishing an avatar requires a fee of {{fee}} QORT",
       "link_copied": "link copied to clipboard.",
-      "no_primary_name": "no primary name"
+      "no_primary_name": "no primary name",
+      "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel."
     },
     "message": "message",
     "promotion_text": "promotion text",
@@ -860,7 +862,16 @@
     "reminder600000": "10 minutes before",
     "reminder1800000": "30 minutes before",
     "reminder3600000": "1 hour before",
-    "reminder86400000": "1 day before"
+    "reminder86400000": "1 day before",
+    "eventRequiresSourceMembership": "You must be a member of the source group to view this event.",
+    "eventUnavailable": "Event unavailable",
+    "joinSourceGroupQuestion": "Join this group?",
+    "requestSourceGroupQuestion": "Request to join this group?",
+    "sourceGroupJoinError": "Unable to join this group. Please try again.",
+    "viewGroup": "View Group",
+    "openEvent": "Open event {{title}}",
+    "pending": "Pending",
+    "request": "Request"
   },
   "bookmarks": {
     "title": "Bookmarks",

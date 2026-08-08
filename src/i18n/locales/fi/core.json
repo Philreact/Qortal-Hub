@@ -107,7 +107,8 @@
     "full_screen": "koko näyttö",
     "open_in_new": "avaa uudessa ikkunassa",
     "restore": "palauta",
-    "resize": "muuta kokoa"
+    "resize": "muuta kokoa",
+    "next": "next"
   },
   "address_your": "sinun osoitteesi",
   "admin": "ylläpitäjä",
@@ -348,7 +349,8 @@
       "select_image": "valitse kuva logoksi",
       "select_zip": "valitse .zip-tiedosto, joka sisältää staattisen sisällön:",
       "space_for_admins": "valitettavasti tämä tila on vain ylläpitäjille.",
-      "unsaved_changes": "sinulla on tallentamattomia muutoksia kiinnitettyihin sovelluksiin. Tallenna ne QDN:ään."
+      "unsaved_changes": "sinulla on tallentamattomia muutoksia kiinnitettyihin sovelluksiin. Tallenna ne QDN:ään.",
+      "hub_notification_settings_desc": "Choose which Hub features appear in your notification panel."
     },
     "success": {
       "transfer": "siirto onnistui!",
@@ -809,7 +811,16 @@
     "timeAndLocationHelp": "Valitse, milloin ja missä tapahtuma järjestetään.",
     "upcomingEvents": "Tulevat tapahtumat",
     "uploadCover": "Lataa banneri",
-    "yourTime": "sinun aikasi"
+    "yourTime": "sinun aikasi",
+    "eventRequiresSourceMembership": "You must be a member of the source group to view this event.",
+    "eventUnavailable": "Event unavailable",
+    "joinSourceGroupQuestion": "Join this group?",
+    "requestSourceGroupQuestion": "Request to join this group?",
+    "sourceGroupJoinError": "Unable to join this group. Please try again.",
+    "viewGroup": "View Group",
+    "openEvent": "Open event {{title}}",
+    "pending": "Pending",
+    "request": "Request"
   },
   "bookmarks": {
     "title": "Kirjanmerkit",

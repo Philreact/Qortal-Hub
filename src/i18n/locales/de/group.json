@@ -298,7 +298,23 @@
     "reticulum_mentions_one": "{{count}} Erwähnung",
     "reticulum_mentions_other": "{{count}} Erwähnungen",
     "reticulum_new_messages_one": "{{count}} neue Nachricht",
-    "reticulum_new_messages_other": "{{count}} neue Nachrichten"
+    "reticulum_new_messages_other": "{{count}} neue Nachrichten",
+    "back_to_invites": "Back to invites",
+    "back_to_requests": "Back to requests",
+    "hidden_invites_count_one": "{{count}} ignored",
+    "hidden_invites_count_other": "{{count}} ignored",
+    "hidden_requests_count_one": "{{count}} ignored",
+    "hidden_requests_count_other": "{{count}} ignored",
+    "ignored_invites_one": "Ignored invites ({{count}})",
+    "ignored_invites_other": "Ignored invites ({{count}})",
+    "ignored_invites_empty_description": "Ignored invites are checked against your current pending invites.",
+    "ignored_invites_empty_title": "No ignored invites",
+    "ignored_requests_one": "Ignored requests ({{count}})",
+    "ignored_requests_other": "Ignored requests ({{count}})",
+    "ignored_requests_empty_description": "Ignored requests are checked against your current pending requests.",
+    "ignored_requests_empty_title": "No ignored requests",
+    "restore": "Restore",
+    "show_ignored": "Show ignored"
   },
   "subscription": {
     "subscriptions": "abonnements",
@@ -564,6 +580,66 @@
       "title": "nachrichtenablauf",
       "tooltip_value": "nachrichtenablauf: {{value}}",
       "unavailable": "nachrichtenablauf ist nicht verfügbar"
+    },
+    "join_group_question": "join this group?",
+    "image_viewer": {
+      "actions": "image actions",
+      "chat_image": "chat image",
+      "clipboard_unavailable": "image clipboard is unavailable",
+      "close": "close image viewer",
+      "copied": "image copied",
+      "copy": "copy image",
+      "copy_failed": "unable to copy image",
+      "download": "download image",
+      "download_failed": "unable to download image",
+      "prepare_failed": "unable to prepare image for clipboard",
+      "read_failed": "unable to read image",
+      "zoom_in": "zoom in",
+      "zoom_out": "zoom out"
+    },
+    "event_preview": {
+      "all_day": "all day",
+      "calendar_unavailable": "calendar is unavailable",
+      "join_failed": "unable to join this group. Please try again.",
+      "loading": "loading event preview",
+      "member_required": "you must be a member of the source group to view this event.",
+      "not_found": "event not found",
+      "request_join_question": "request to join this group?",
+      "unavailable": "event unavailable",
+      "unavailable_temporarily": "event preview is temporarily unavailable",
+      "view_group": "view group"
+    },
+    "qapp_preview": {
+      "check_again": "check again",
+      "no_resource": "no Q-App resource was found for this link.",
+      "open_in_quitter": "open this post in Quitter.",
+      "open_publication": "open this publication to read the full article.",
+      "preview_unavailable": "preview unavailable",
+      "resource_not_found": "resource not found",
+      "shared_photo": "shared a photo",
+      "shared_video": "shared a video",
+      "view_on_quitter": "view this post on Quitter",
+      "watch_on_qtube": "watch this video on Q-Tube.",
+      "preview_failed": "the resource exists, but its preview could not be loaded right now.",
+      "shared_video_titled": "shared a video: {{title}}"
+    },
+    "discussion": {
+      "choose_emoji": "choose emoji",
+      "close": "close discussion",
+      "initial_post": "initial post",
+      "remove_attachment": "remove attachment",
+      "reply_placeholder": "reply to discussion...",
+      "wait_until_ready": "wait until the discussion is ready",
+      "replies": "replies:",
+      "remove_file": "remove {{fileName}}"
+    },
+    "invite": {
+      "apply_question": "apply to join this group?",
+      "closed_group": "closed group",
+      "open_group": "open group",
+      "apply": "apply",
+      "joined": "joined",
+      "pending": "pending"
     }
   }
 }

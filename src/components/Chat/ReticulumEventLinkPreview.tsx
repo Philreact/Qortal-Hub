@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Button,
@@ -20,6 +14,7 @@ import EventRoundedIcon from '@mui/icons-material/EventRounded';
 import LocationOnRoundedIcon from '@mui/icons-material/LocationOnRounded';
 import { useAtom, useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
+import i18n from '../../i18n/i18n';
 import { QORTAL_APP_CONTEXT } from '../../App';
 import {
   memberGroupsAtom,
@@ -140,9 +135,7 @@ const parseCandidate = (candidate: string): ReticulumEventLink | null => {
   // reports "//APP/Q-Chat/calendar" as the pathname with an empty hostname,
   // while Node reports APP as the hostname. Parse the canonical Qortal route
   // directly so previews behave identically in tests and in Electron.
-  const routeMatch = link.match(
-    /^qortal:\/\/APP\/Q-Chat\/calendar\?([^#]+)$/i
-  );
+  const routeMatch = link.match(/^qortal:\/\/APP\/Q-Chat\/calendar\?([^#]+)$/i);
   if (!routeMatch) return null;
   const searchParams = new URLSearchParams(routeMatch[1]);
   const groupId = Number(searchParams.get('groupId'));
@@ -238,7 +231,11 @@ const loadEventPreview = async (
     const cached = readCachedPreview(key);
     if (cached) return cached;
     if (hasCachedPreviewFailure(key)) {
-      throw new Error('Event preview is temporarily unavailable');
+      throw new Error(
+        i18n.t('group:reticulum.event_preview.unavailable_temporarily', {
+          postProcess: 'capitalizeFirstChar',
+        })
+      );
     }
     const inflight = eventPreviewInflight.get(key);
     if (inflight) return inflight;
@@ -247,15 +244,26 @@ const loadEventPreview = async (
   }
   const request = (async () => {
     if (!window.reticulumChat?.getCalendarEvent) {
-      throw new Error('Calendar is unavailable');
+      throw new Error(
+        i18n.t('group:reticulum.event_preview.calendar_unavailable', {
+          postProcess: 'capitalizeFirstChar',
+        })
+      );
     }
     const occurrence = await window.reticulumChat.getCalendarEvent(
       link.groupId,
       link.eventId,
       link.occurrenceStart
     );
-    if (!occurrence) throw new Error('Event not found');
-    const group = await getReticulumGroupMetadata(link.groupId).catch(() => null);
+    if (!occurrence)
+      throw new Error(
+        i18n.t('group:reticulum.event_preview.not_found', {
+          postProcess: 'capitalizeFirstChar',
+        })
+      );
+    const group = await getReticulumGroupMetadata(link.groupId).catch(
+      () => null
+    );
     const groupName = String(
       group?.groupName || group?.name || `Group ${link.groupId}`
     ).trim();
@@ -379,7 +387,7 @@ function EventPreviewCard({
   const coverUrl = useCoverUrl(occurrence);
   const start = occurrence.occurrenceStart;
   const location = occurrence.location.trim() || data.groupName;
-  const allDayLabel = t('calendar.allDay', 'All day');
+  const allDayLabel = t('core:calendar.allDay');
   const timeRange = formatTimeRange(occurrence, i18n.language, allDayLabel);
   const month = new Intl.DateTimeFormat(i18n.language, {
     month: 'short',
@@ -650,12 +658,20 @@ function EventPreviewCard({
               }}
             >
               <LocationOnRoundedIcon
-                sx={{ color: EVENT_PREVIEW_ACCENT, flexShrink: 0, fontSize: 21 }}
+                sx={{
+                  color: EVENT_PREVIEW_ACCENT,
+                  flexShrink: 0,
+                  fontSize: 21,
+                }}
               />
               <Tooltip arrow placement="top" title={location}>
                 <Typography
                   noWrap
-                  sx={{ fontSize: 13.5, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                  sx={{
+                    fontSize: 13.5,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
                 >
                   {location}
                 </Typography>
@@ -671,7 +687,11 @@ function EventPreviewCard({
               }}
             >
               <AccessTimeRoundedIcon
-                sx={{ color: EVENT_PREVIEW_ACCENT, flexShrink: 0, fontSize: 21 }}
+                sx={{
+                  color: EVENT_PREVIEW_ACCENT,
+                  flexShrink: 0,
+                  fontSize: 21,
+                }}
               />
               <Box sx={{ minWidth: 0 }}>
                 <Typography
@@ -689,7 +709,7 @@ function EventPreviewCard({
                 >
                   {timeRange}
                   {!occurrence.allDay
-                    ? ` (${t('calendar.yourTime', 'your time')})`
+                    ? ` (${t('core:calendar.yourTime')})`
                     : ''}
                 </Typography>
               </Box>
@@ -735,11 +755,8 @@ function EventUnavailableCard({
       const fee = await getFee('JOIN_GROUP');
       await show({
         message: openGroup
-          ? t('calendar.joinSourceGroupQuestion', 'Join this group?')
-          : t(
-              'calendar.requestSourceGroupQuestion',
-              'Request to join this group?'
-            ),
+          ? t('core:calendar.joinSourceGroupQuestion')
+          : t('core:calendar.requestSourceGroupQuestion'),
         publishFee: `${fee.fee} QORT`,
       });
       const response = await window.sendMessage('joinGroup', { groupId });
@@ -762,13 +779,7 @@ function EventUnavailableCard({
       ]);
     } catch (error: any) {
       if (!error?.isCanceled) {
-        setJoinError(
-          error?.message ||
-            t(
-              'calendar.sourceGroupJoinError',
-              'Unable to join this group. Please try again.'
-            )
-        );
+        setJoinError(error?.message || t('core:calendar.sourceGroupJoinError'));
       }
     } finally {
       setIsJoining(false);
@@ -810,15 +821,17 @@ function EventUnavailableCard({
         </Typography>
       </Box>
       <Typography sx={{ fontSize: 16, fontWeight: 700 }}>
-        {t('calendar.eventUnavailable', 'Event unavailable')}
+        {t('core:calendar.eventUnavailable')}
       </Typography>
       <Typography
-        sx={{ color: 'text.secondary', fontSize: 13.5, lineHeight: 1.5, mt: 0.35 }}
+        sx={{
+          color: 'text.secondary',
+          fontSize: 13.5,
+          lineHeight: 1.5,
+          mt: 0.35,
+        }}
       >
-        {t(
-          'calendar.eventRequiresSourceMembership',
-          'You must be a member of the source group to view this event.'
-        )}
+        {t('core:calendar.eventRequiresSourceMembership')}
       </Typography>
       {joinError ? (
         <Typography
@@ -835,7 +848,8 @@ function EventUnavailableCard({
             openGroupOverview(group);
           }}
           sx={{
-            backgroundColor: theme.palette.mode === 'dark' ? '#262b34' : '#e8ebf0',
+            backgroundColor:
+              theme.palette.mode === 'dark' ? '#262b34' : '#e8ebf0',
             border: '1px solid',
             borderColor: 'divider',
             borderRadius: '8px',
@@ -846,12 +860,13 @@ function EventUnavailableCard({
             px: 1.75,
             textTransform: 'none',
             '&:hover': {
-              backgroundColor: theme.palette.mode === 'dark' ? '#303640' : '#dfe3e9',
+              backgroundColor:
+                theme.palette.mode === 'dark' ? '#303640' : '#dfe3e9',
               borderColor: 'divider',
             },
           }}
         >
-          {t('calendar.viewGroup', 'View Group')}
+          {t('core:calendar.viewGroup')}
         </Button>
         <Button
           disabled={isJoining || pending}
@@ -885,11 +900,11 @@ function EventUnavailableCard({
           {isJoining ? (
             <CircularProgress color="inherit" size={17} />
           ) : pending ? (
-            t('calendar.pending', 'Pending')
+            t('core:calendar.pending')
           ) : openGroup ? (
-            t('calendar.join', 'Join')
+            t('core:action.join', 'Join')
           ) : (
-            t('calendar.request', 'Request')
+            t('core:calendar.request')
           )}
         </Button>
       </Box>
@@ -899,9 +914,7 @@ function EventUnavailableCard({
 
 function EventPreview({ link }: { link: ReticulumEventLink }) {
   const memberGroups = useAtomValue(memberGroupsAtom);
-  const memberGroupsLoadedAddress = useAtomValue(
-    memberGroupsLoadedAddressAtom
-  );
+  const memberGroupsLoadedAddress = useAtomValue(memberGroupsLoadedAddressAtom);
   const userInfo = useAtomValue(userInfoAtom);
   const key = previewKey(link);
   const [data, setData] = useState<EventPreviewData | null>(() =>
@@ -976,7 +989,9 @@ function EventPreview({ link }: { link: ReticulumEventLink }) {
   if (!membershipResolved || (!isMember && (!groupLoadFinished || !group))) {
     return (
       <Box
-        aria-label="Loading event preview"
+        aria-label={t('group:reticulum.event_preview.loading', {
+          postProcess: 'capitalizeFirstChar',
+        })}
         sx={{
           border: '1px solid',
           borderColor: 'divider',
