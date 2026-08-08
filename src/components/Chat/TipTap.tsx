@@ -56,13 +56,7 @@ const MenuBar = memo(
     const { editor } = useCurrentEditor();
     const fileInputRef = useRef(null);
     const theme = useTheme();
-    const { t } = useTranslation([
-      'auth',
-      'core',
-      'group',
-      'question',
-      'tutorial',
-    ]);
+    const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
     useEffect(() => {
       if (editor && setEditorRef) {
@@ -568,13 +562,7 @@ const Tiptap = ({
   collapseFormattingTraySignal,
 }: TiptapProps) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const compactFileInputRef = useRef<HTMLInputElement | null>(null);
   const [showFormattingTray, setShowFormattingTray] = useState(false);
 

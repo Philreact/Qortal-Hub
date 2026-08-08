@@ -73,13 +73,7 @@ const ListOfMembers = ({
   );
   const landSessionsRef = useRef(new Map());
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const listRef = useRef(null);
   const onlineAddresses = useOnlineAddresses();
   const statusMap = useAtomValue(statusMapAtom);
@@ -104,8 +98,7 @@ const ListOfMembers = ({
     const numericGroupId = Number(groupId);
     if (!Number.isInteger(numericGroupId) || numericGroupId <= 0) return;
 
-    const initialMembers =
-      getQortalLandPresence(numericGroupId)?.members ?? [];
+    const initialMembers = getQortalLandPresence(numericGroupId)?.members ?? [];
     landSessionsRef.current = new Map(
       initialMembers.map((presence) => [
         `${presence.address}:snapshot`,
@@ -202,10 +195,7 @@ const ListOfMembers = ({
     return () => {
       unsubscribe?.();
       window.clearInterval(pruneTimer);
-      window.removeEventListener(
-        QORTAL_LAND_PRESENCE_EVENT,
-        onSharedPresence
-      );
+      window.removeEventListener(QORTAL_LAND_PRESENCE_EVENT, onSharedPresence);
     };
   }, [categorizedReticulumMembers, currentAddress, groupId]);
 
@@ -244,9 +234,13 @@ const ListOfMembers = ({
     const labelForMember = (member) =>
       (member?.primaryName || member?.name || member?.member || '').toString();
     const sortByName = (left, right) => {
-      return labelForMember(left).localeCompare(labelForMember(right), undefined, {
-        sensitivity: 'base',
-      });
+      return labelForMember(left).localeCompare(
+        labelForMember(right),
+        undefined,
+        {
+          sensitivity: 'base',
+        }
+      );
     };
     const sortAdmins = (left, right) => {
       const leftIsOwner = left?.member === ownerAddress;
@@ -269,19 +263,13 @@ const ListOfMembers = ({
       landPresenceByAddress.has(member?.member) ||
       onlineAddresses.has(member?.member) ||
       statusMap.has(member?.member);
-    const allAdmins = allMembers
-      .filter(
-        (member) =>
-          member?.member === ownerAddress || Boolean(member?.isAdmin)
-      );
-    const admins = allAdmins
-      .filter(isMemberOnline)
-      .sort(sortAdmins);
-    const allRegularMembers = allMembers
-      .filter(
-        (member) =>
-          member?.member !== ownerAddress && !Boolean(member?.isAdmin)
-      );
+    const allAdmins = allMembers.filter(
+      (member) => member?.member === ownerAddress || Boolean(member?.isAdmin)
+    );
+    const admins = allAdmins.filter(isMemberOnline).sort(sortAdmins);
+    const allRegularMembers = allMembers.filter(
+      (member) => member?.member !== ownerAddress && !Boolean(member?.isAdmin)
+    );
     const loungeMembers = allRegularMembers
       .filter(
         (member) =>
@@ -300,8 +288,7 @@ const ListOfMembers = ({
     const remainingMembers = allRegularMembers
       .filter(
         (member) =>
-          isMemberOnline(member) &&
-          !landPresenceByAddress.has(member.member)
+          isMemberOnline(member) && !landPresenceByAddress.has(member.member)
       )
       .sort(sortByName);
     const offlineMembers = allMembers
@@ -684,8 +671,13 @@ const ListOfMembers = ({
     const popoverWidth =
       popoverAnchor?.getBoundingClientRect?.().width || (compact ? 240 : 325);
     const memberRole =
-      member?.member === ownerAddress ? 'Owner' : member?.isAdmin ? 'Admin' : null;
-    const memberLandPresence = landPresenceByAddress.get(member?.member) ?? null;
+      member?.member === ownerAddress
+        ? 'Owner'
+        : member?.isAdmin
+          ? 'Admin'
+          : null;
+    const memberLandPresence =
+      landPresenceByAddress.get(member?.member) ?? null;
     const memberRoleColor = isOfflineRow
       ? theme.palette.text.secondary
       : memberRole === 'Owner'
@@ -736,13 +728,12 @@ const ListOfMembers = ({
         <ListItemAvatar sx={{ minWidth: compact ? 42 : undefined }}>
           <PresenceStatusBadge
             online={
-              onlineAddresses.has(member?.member) ||
-              Boolean(memberLandPresence)
+              onlineAddresses.has(member?.member) || Boolean(memberLandPresence)
             }
             status={
               memberLandPresence?.afk
                 ? 'idle'
-                : statusMap.get(member?.member) ?? null
+                : (statusMap.get(member?.member) ?? null)
             }
           >
             <Avatar
@@ -750,7 +741,9 @@ const ListOfMembers = ({
               sx={{
                 height: compact ? 34 : undefined,
                 width: compact ? 34 : undefined,
-                ...(!member?.primaryName ? getFallbackAvatarOutlineSx(theme) : {}),
+                ...(!member?.primaryName
+                  ? getFallbackAvatarOutlineSx(theme)
+                  : {}),
               }}
               src={
                 member?.primaryName
@@ -763,7 +756,15 @@ const ListOfMembers = ({
         <ListItemText
           id={memberLabel}
           primary={
-            <Box component="span" sx={{ alignItems: 'baseline', display: 'flex', gap: 0.5, minWidth: 0 }}>
+            <Box
+              component="span"
+              sx={{
+                alignItems: 'baseline',
+                display: 'flex',
+                gap: 0.5,
+                minWidth: 0,
+              }}
+            >
               <Box
                 component="span"
                 sx={{
@@ -796,7 +797,8 @@ const ListOfMembers = ({
                     backgroundColor: alpha('#20c7d9', 0.13),
                     border: `1px solid ${alpha('#20c7d9', 0.52)}`,
                     borderRadius: '4px',
-                    color: theme.palette.mode === 'dark' ? '#55dcea' : '#087b88',
+                    color:
+                      theme.palette.mode === 'dark' ? '#55dcea' : '#087b88',
                     flexShrink: 0,
                     fontSize: 9,
                     fontWeight: 800,
@@ -808,13 +810,15 @@ const ListOfMembers = ({
                   Q-LAND
                 </Box>
               )}
-              <QortalLandAvailabilityTags
-                availability={memberLandPresence}
-              />
+              <QortalLandAvailabilityTags availability={memberLandPresence} />
             </Box>
           }
           primaryTypographyProps={{
-            sx: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+            sx: {
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            },
           }}
         />
       </>

@@ -193,13 +193,7 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
   const [isPrivateKeyPasswordEditable, setIsPrivateKeyPasswordEditable] =
     useState(false);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
     setChecked(event.target.checked);
@@ -1138,13 +1132,7 @@ const ExportPrivateKey = ({ rawWallet }) => {
   const setOpenSnackGlobal = useSetAtom(openSnackGlobalAtom);
   const setInfoSnackCustom = useSetAtom(infoSnackGlobalAtom);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const exportPrivateKeyFunc = async () => {
     try {

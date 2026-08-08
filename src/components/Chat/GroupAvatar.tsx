@@ -42,13 +42,7 @@ export const GroupAvatar = ({
   const [avatarFile, setAvatarFile] = useState(null);
   const [tempAvatar, setTempAvatar] = useState(null);
   const { show } = useContext(QORTAL_APP_CONTEXT);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const theme = useTheme();
   const [anchorEl, setAnchorEl] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -349,13 +343,7 @@ const PopoverComp = ({
   dialogOpen,
 }) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const content = (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, p: 2 }}>

@@ -48,7 +48,6 @@ python3 scripts/i18n_sort.py --check   # exit 1 if anything is unsorted (CI)
 | `group`    | group management, chat and Reticulum features                |
 | `node`     | node setup and connection                                    |
 | `question` | questions put to the user                                    |
-| `tutorial` | the tutorial pages                                           |
 
 Always prefix a key with its namespace — `t('core:action.close')`. `core` is the
 default namespace, but be explicit anyway. Using several namespaces on one page

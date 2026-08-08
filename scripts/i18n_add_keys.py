@@ -33,7 +33,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOCALES = REPO_ROOT / 'src' / 'i18n' / 'locales'
 LANGS = ['ar', 'de', 'en', 'es', 'et', 'fi', 'fr', 'it', 'ja', 'pt', 'ru', 'zh']
-NAMESPACES = ['auth', 'core', 'group', 'node', 'question', 'tutorial']
+NAMESPACES = ['auth', 'core', 'group', 'node', 'question']
 
 
 def sort_node(node):

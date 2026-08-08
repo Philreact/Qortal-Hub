@@ -58,7 +58,6 @@ export const namespaces = [
   'core',
   'group',
   'question',
-  'tutorial',
   'node',
 ] as const;
 

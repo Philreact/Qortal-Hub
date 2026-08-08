@@ -39,7 +39,7 @@ i18n.init({
   fallbackLng: 'en',
   resources: {
     en: {
-      tutorial: {
+      group: {
         'home.featured_apps': 'Featured Apps',
         'home.open_app': 'Open',
       },
@@ -50,9 +50,7 @@ i18n.init({
 
 // --- Component ---
 
-import {
-  HomeFeaturedApps,
-} from '../HomeFeaturedApps';
+import { HomeFeaturedApps } from '../HomeFeaturedApps';
 
 const FEATURED_APP_NAMES = [
   'Q-Tube',
@@ -107,9 +105,7 @@ describe('HomeFeaturedApps', () => {
   it('renders a clickable tile for each featured app', () => {
     renderComponent();
     for (const appName of FEATURED_APP_NAMES) {
-      expect(
-        screen.getByRole('button', { name: appName })
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: appName })).toBeInTheDocument();
     }
   });
 
@@ -126,7 +122,9 @@ describe('HomeFeaturedApps', () => {
 
   it('opens the app library from the footer CTA', () => {
     renderComponent();
-    fireEvent.click(screen.getByRole('button', { name: /Explore All Q-Apps/i }));
+    fireEvent.click(
+      screen.getByRole('button', { name: /Explore All Q-Apps/i })
+    );
 
     expect(mockExecuteEvent).toHaveBeenCalledWith('openAppsLibrarySearch', {
       data: { query: '' },

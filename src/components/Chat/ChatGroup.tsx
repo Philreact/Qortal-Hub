@@ -553,13 +553,7 @@ function ReticulumChannelExpiryField({
   onChange: (durationMs: number | undefined) => void;
   value?: number;
 }) {
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const normalizedValue =
     Number.isFinite(value) && Number(value) > 0 ? Number(value) : '';
   const hasCustomValue =
@@ -866,13 +860,7 @@ function ReticulumSortableChannelButton({
   unreadCount,
   replyCount,
 }: ReticulumSortableChannelButtonProps) {
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: reticulumChannelDragId(channel.channelId),
     disabled: !isAdmin,
@@ -1127,13 +1115,7 @@ function ReticulumSortableCategory({
   onToggleCollapsed: (categoryId: string) => void;
 }) {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: reticulumCategoryDragId(category.categoryId),
     disabled: !isAdmin,
@@ -1889,13 +1871,7 @@ export const ChatGroup = ({
   const [isResizingQManager, setIsResizingQManager] = useState(false);
   const qManagerResizeInitialSizeRef = useRef(qManagerSize);
 
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const maxQManagerWidth = Math.max(Q_MANAGER_MIN_WIDTH, windowSize.width);
   const maxQManagerHeight = Math.max(

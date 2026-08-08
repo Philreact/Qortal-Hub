@@ -329,13 +329,7 @@ export const UserLookup = ({
   setIsOpenDrawerLookup,
 }: UserLookupProps) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const currentUser = useAtomValue(userInfoAtom);
   const isRunningPublicNode = useAtomValue(isRunningPublicNodeAtom);
   const setInfoSnack = useSetAtom(infoSnackGlobalAtom);
@@ -698,7 +692,7 @@ export const UserLookup = ({
     navigator.clipboard.writeText(addressInfo.address);
     pushSnack(
       'success',
-      t('tutorial:home.address_copied', {
+      t('group:home.address_copied', {
         postProcess: 'capitalizeFirstChar',
       })
     );

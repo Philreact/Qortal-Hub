@@ -103,13 +103,7 @@ export const AdminSpaceInner = ({
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const setInfoSnackCustom = useSetAtom(infoSnackGlobalAtom);
   const setOpenSnackGlobal = useSetAtom(openSnackGlobalAtom);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const getAdminGroupSecretKey = useCallback(async () => {
     try {

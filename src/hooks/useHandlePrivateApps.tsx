@@ -20,13 +20,7 @@ export const useHandlePrivateApps = () => {
   const [infoSnackCustom, setInfoSnackCustom] = useAtom(infoSnackGlobalAtom);
   const setSortablePinnedApps = useSetAtom(sortablePinnedAppsAtom);
   const setSettingsLocalLastUpdated = useSetAtom(settingsLocalLastUpdatedAtom);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const openApp = async (
     privateAppProperties,

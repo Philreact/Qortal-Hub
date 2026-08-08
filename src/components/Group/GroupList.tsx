@@ -629,8 +629,8 @@ const ReticulumChatSettingsDialog = ({
                 }}
               >
                 Threads will be removed in the upcoming release. Move any
-                important thread information to a safe place or to a new
-                channel in Q-Chat before updating.
+                important thread information to a safe place or to a new channel
+                in Q-Chat before updating.
               </Typography>
             </>
           ) : null}
@@ -820,13 +820,7 @@ const GroupListInner = ({
   reticulumChatEnabled,
 }) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const [isRunningPublicNode] = useAtom(isRunningPublicNodeAtom);
   const [reticulumSettingsOpen, setReticulumSettingsOpen] = useState(false);
   const [reticulumWhatsNewOpen, setReticulumWhatsNewOpen] = useState(false);
@@ -1537,8 +1531,7 @@ const GroupItem = memo(
       if (!ownerName) return null;
       return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${group?.groupId}?async=true`;
     }, [ownerName, group?.groupId]);
-    const isAvatarLoaded =
-      Boolean(avatarUrl) && loadedAvatarUrl === avatarUrl;
+    const isAvatarLoaded = Boolean(avatarUrl) && loadedAvatarUrl === avatarUrl;
 
     useEffect(() => {
       if (railMode) prefetchReticulumGroupAboutMetadata(group);

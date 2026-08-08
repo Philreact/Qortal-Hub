@@ -30,13 +30,7 @@ export const AppsDevModeNavBar = ({
   const [navigationController, setNavigationController] = useAtom(
     navigationControllerAtom
   );
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const theme = useTheme();
 
   const [isNewTabWindow, setIsNewTabWindow] = useState(false);

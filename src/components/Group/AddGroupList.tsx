@@ -38,11 +38,7 @@ import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
 import { useTranslation } from 'react-i18next';
 import { useAtom } from 'jotai';
-import {
-  memberGroupsAtom,
-  txListAtom,
-  userInfoAtom,
-} from '../../atoms/global';
+import { memberGroupsAtom, txListAtom, userInfoAtom } from '../../atoms/global';
 import qortalWhiteLogo from '../../assets/sidebar/qortal-logo-white.png';
 import {
   ensureReticulumGroupScore,
@@ -55,7 +51,9 @@ const FIND_GROUPS_PAGE_SIZE = 10;
 const FIND_GROUPS_AVATAR_LIMIT = 20;
 
 export const isOpenGroup = (group) =>
-  group?.isOpen === true || group?.groupType === 0 || group?.groupType === 'OPEN';
+  group?.isOpen === true ||
+  group?.groupType === 0 ||
+  group?.groupType === 'OPEN';
 const formatMemberCount = (count) =>
   new Intl.NumberFormat().format(Math.max(0, Number(count) || 0));
 
@@ -71,13 +69,7 @@ export const AddGroupList = ({
   const [memberGroups] = useAtom(memberGroupsAtom);
   const [txList, setTxList] = useAtom(txListAtom);
   const [userInfo] = useAtom(userInfoAtom);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const [groups, setGroups] = useState([]);
   const [groupsLoading, setGroupsLoading] = useState(true);
   const [selectedGroup, setSelectedGroup] = useState(initialSelectedGroup);
@@ -100,18 +92,23 @@ export const AddGroupList = ({
   const joiningGroupIdRef = useRef<string | null>(null);
   const [joinError, setJoinError] = useState('');
   const [ownerAddressCopied, setOwnerAddressCopied] = useState(false);
-  const ownerCopyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ownerCopyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
   const theme = useTheme();
 
   useEffect(() => {
     if (overviewOnly) setSelectedGroup(initialSelectedGroup);
   }, [initialSelectedGroup, overviewOnly]);
 
-  useEffect(() => () => {
-    if (ownerCopyResetTimerRef.current) {
-      clearTimeout(ownerCopyResetTimerRef.current);
-    }
-  }, []);
+  useEffect(
+    () => () => {
+      if (ownerCopyResetTimerRef.current) {
+        clearTimeout(ownerCopyResetTimerRef.current);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (!selectedGroup?.groupId) {
@@ -187,10 +184,15 @@ export const AddGroupList = ({
       .filter((item) => {
         const matchesQuery =
           !query ||
-          String(item?.groupName || '').toLowerCase().includes(query) ||
-          String(item?.description || '').toLowerCase().includes(query);
+          String(item?.groupName || '')
+            .toLowerCase()
+            .includes(query) ||
+          String(item?.description || '')
+            .toLowerCase()
+            .includes(query);
         if (publicOnlySort && !isOpenGroup(item)) return false;
-        const matchesAccess = (!showOpen && !showPrivate) ||
+        const matchesAccess =
+          (!showOpen && !showPrivate) ||
           (showOpen && isOpenGroup(item)) ||
           (showPrivate && !isOpenGroup(item));
         return matchesQuery && matchesAccess;
@@ -237,14 +239,7 @@ export const AddGroupList = ({
           compareCreated(a, b)
         );
       });
-  }, [
-    groups,
-    inputValue,
-    groupScoreSnapshot,
-    showOpen,
-    showPrivate,
-    sortMode,
-  ]);
+  }, [groups, inputValue, groupScoreSnapshot, showOpen, showPrivate, sortMode]);
 
   const visibleItems = useMemo(
     () => filteredItems.slice(0, visibleCount),
@@ -253,7 +248,9 @@ export const AddGroupList = ({
   const avatarEligibleGroupIds = useMemo(() => {
     const ids = new Set(
       [...groups]
-        .sort((a, b) => Number(b?.memberCount || 0) - Number(a?.memberCount || 0))
+        .sort(
+          (a, b) => Number(b?.memberCount || 0) - Number(a?.memberCount || 0)
+        )
         .slice(0, FIND_GROUPS_AVATAR_LIMIT)
         .map((group) => String(group.groupId))
     );
@@ -288,7 +285,9 @@ export const AddGroupList = ({
           return [String(group.groupId), group.ownerPrimaryName];
         }
         try {
-          const response = await fetch(`${getBaseApiReact()}/groups/${group.groupId}`);
+          const response = await fetch(
+            `${getBaseApiReact()}/groups/${group.groupId}`
+          );
           const data = await response.json();
           return [String(group.groupId), data?.ownerPrimaryName || null];
         } catch {
@@ -360,8 +359,7 @@ export const AddGroupList = ({
   const handleGroupClick = (group) => {
     if (isJoinedGroup(group?.groupId) && onJoinedGroupOpen) {
       const joinedGroup = (memberGroups || []).find(
-        (memberGroup) =>
-          String(memberGroup?.groupId) === String(group?.groupId)
+        (memberGroup) => String(memberGroup?.groupId) === String(group?.groupId)
       );
       onJoinedGroupOpen(joinedGroup || group);
       return;
@@ -526,8 +524,35 @@ export const AddGroupList = ({
     if (index === visibleItems.length) {
       return (
         <div key={key} style={style}>
-          <Box sx={{ alignItems: 'center', borderTop: `1px solid ${theme.palette.divider}`, display: 'flex', height: '100%', justifyContent: 'center' }}>
-            <ButtonBase onClick={() => setVisibleCount((count) => Math.min(count + FIND_GROUPS_PAGE_SIZE, filteredItems.length))} sx={{ border: `1px solid ${theme.palette.divider}`, borderRadius: '7px', color: 'text.secondary', fontSize: 13.5, fontWeight: 650, minHeight: 34, px: 3.5, '&:hover': { backgroundColor: theme.palette.action.hover, color: 'text.primary' } }}>
+          <Box
+            sx={{
+              alignItems: 'center',
+              borderTop: `1px solid ${theme.palette.divider}`,
+              display: 'flex',
+              height: '100%',
+              justifyContent: 'center',
+            }}
+          >
+            <ButtonBase
+              onClick={() =>
+                setVisibleCount((count) =>
+                  Math.min(count + FIND_GROUPS_PAGE_SIZE, filteredItems.length)
+                )
+              }
+              sx={{
+                border: `1px solid ${theme.palette.divider}`,
+                borderRadius: '7px',
+                color: 'text.secondary',
+                fontSize: 13.5,
+                fontWeight: 650,
+                minHeight: 34,
+                px: 3.5,
+                '&:hover': {
+                  backgroundColor: theme.palette.action.hover,
+                  color: 'text.primary',
+                },
+              }}
+            >
               Load more
             </ButtonBase>
           </Box>
@@ -552,7 +577,10 @@ export const AddGroupList = ({
       : undefined;
     return (
       <div key={key} style={style}>
-        <ListItem disablePadding sx={{ borderBottom: '1px solid rgba(255,255,255,0.065)', px: 0 }}>
+        <ListItem
+          disablePadding
+          sx={{ borderBottom: '1px solid rgba(255,255,255,0.065)', px: 0 }}
+        >
           <ListItemButton
             onClick={() => handleGroupClick(group)}
             sx={{
@@ -589,10 +617,28 @@ export const AddGroupList = ({
                 '& .MuiAvatar-img': { objectFit: 'cover' },
               }}
             >
-              <Box alt="" aria-hidden component="img" src={qortalWhiteLogo} sx={{ height: 22, objectFit: 'contain', opacity: 0.15, width: 22 }} />
+              <Box
+                alt=""
+                aria-hidden
+                component="img"
+                src={qortalWhiteLogo}
+                sx={{
+                  height: 22,
+                  objectFit: 'contain',
+                  opacity: 0.15,
+                  width: 22,
+                }}
+              />
             </Avatar>
             <Box sx={{ minWidth: 0 }}>
-              <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.75, minWidth: 0 }}>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  gap: 0.75,
+                  minWidth: 0,
+                }}
+              >
                 <Typography
                   sx={{
                     fontSize: 16,
@@ -608,40 +654,76 @@ export const AddGroupList = ({
                 >
                   {group?.groupName}
                 </Typography>
-                <Tooltip title={openGroup ? 'Open Group' : 'Reticulum Encrypted Group'}>
+                <Tooltip
+                  title={openGroup ? 'Open Group' : 'Reticulum Encrypted Group'}
+                >
                   {openGroup ? (
-                    <PublicRoundedIcon aria-label="Open Group" sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 15 }} />
+                    <PublicRoundedIcon
+                      aria-label="Open Group"
+                      sx={{
+                        color: 'text.secondary',
+                        flexShrink: 0,
+                        fontSize: 15,
+                      }}
+                    />
                   ) : (
-                    <LockIcon aria-label="Reticulum Encrypted Group" sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 15 }} />
+                    <LockIcon
+                      aria-label="Reticulum Encrypted Group"
+                      sx={{
+                        color: 'text.secondary',
+                        flexShrink: 0,
+                        fontSize: 15,
+                      }}
+                    />
                   )}
                 </Tooltip>
               </Box>
               {group?.description && (
-                <Tooltip disableInteractive placement="top-start" title={group.description}>
-                <Typography
-                  variant="body2"
-                  sx={{
-                    color: theme.palette.text.secondary,
-                    WebkitBoxOrient: 'vertical',
-                    WebkitLineClamp: { xs: 1, sm: 2 },
-                    display: '-webkit-box',
-                    fontSize: 14,
-                    fontWeight: 400,
-                    lineHeight: '18px',
-                    maxWidth: 540,
-                    mt: '3px',
-                    overflow: 'hidden',
-                  }}
+                <Tooltip
+                  disableInteractive
+                  placement="top-start"
+                  title={group.description}
                 >
-                  {group.description}
-                </Typography>
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: theme.palette.text.secondary,
+                      WebkitBoxOrient: 'vertical',
+                      WebkitLineClamp: { xs: 1, sm: 2 },
+                      display: '-webkit-box',
+                      fontSize: 14,
+                      fontWeight: 400,
+                      lineHeight: '18px',
+                      maxWidth: 540,
+                      mt: '3px',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {group.description}
+                  </Typography>
                 </Tooltip>
               )}
-              <Typography noWrap sx={{ color: 'text.secondary', display: { xs: 'block', sm: 'none' }, fontSize: 11.5, lineHeight: '16px', mt: 0.15 }}>
-                {formatMemberCount(memberCount)} {memberCount === 1 ? 'member' : 'members'}
+              <Typography
+                noWrap
+                sx={{
+                  color: 'text.secondary',
+                  display: { xs: 'block', sm: 'none' },
+                  fontSize: 11.5,
+                  lineHeight: '16px',
+                  mt: 0.15,
+                }}
+              >
+                {formatMemberCount(memberCount)}{' '}
+                {memberCount === 1 ? 'member' : 'members'}
               </Typography>
             </Box>
-            <Box sx={{ alignItems: 'center', display: 'flex', justifyContent: 'center' }}>
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                justifyContent: 'center',
+              }}
+            >
               {groupScore ? (
                 <GroupScoreBadge
                   circleSize={36}
@@ -652,9 +734,25 @@ export const AddGroupList = ({
                 />
               ) : null}
             </Box>
-            <Box sx={{ color: 'text.secondary', display: { xs: 'none', sm: 'block' }, width: '100%' }}>
-              <Typography noWrap sx={{ fontSize: 14, fontWeight: 400, letterSpacing: '-0.005em', lineHeight: '20px', textAlign: 'left' }}>
-                {formatMemberCount(memberCount)} {memberCount === 1 ? 'member' : 'members'}
+            <Box
+              sx={{
+                color: 'text.secondary',
+                display: { xs: 'none', sm: 'block' },
+                width: '100%',
+              }}
+            >
+              <Typography
+                noWrap
+                sx={{
+                  fontSize: 14,
+                  fontWeight: 400,
+                  letterSpacing: '-0.005em',
+                  lineHeight: '20px',
+                  textAlign: 'left',
+                }}
+              >
+                {formatMemberCount(memberCount)}{' '}
+                {memberCount === 1 ? 'member' : 'members'}
               </Typography>
             </Box>
             <ButtonBase
@@ -677,10 +775,15 @@ export const AddGroupList = ({
                     : 'transparent',
                 border: `1px solid ${membershipUnavailable ? theme.palette.divider : openGroup ? '#5ea2ff' : theme.palette.divider}`,
                 borderRadius: '8px',
-                boxShadow: openGroup && !joinedGroup
-                  ? '0 3px 10px rgba(47,111,216,0.22), inset 0 1px 0 rgba(255,255,255,0.12)'
-                  : 'none',
-                color: membershipUnavailable ? 'text.secondary' : openGroup ? '#ffffff' : 'text.secondary',
+                boxShadow:
+                  openGroup && !joinedGroup
+                    ? '0 3px 10px rgba(47,111,216,0.22), inset 0 1px 0 rgba(255,255,255,0.12)'
+                    : 'none',
+                color: membershipUnavailable
+                  ? 'text.secondary'
+                  : openGroup
+                    ? '#ffffff'
+                    : 'text.secondary',
                 fontSize: 14,
                 fontWeight: 600,
                 height: 38,
@@ -696,11 +799,17 @@ export const AddGroupList = ({
                     : openGroup
                       ? 'linear-gradient(180deg, #4b96ff 0%, #3779e8 100%)'
                       : theme.palette.action.hover,
-                  borderColor: openGroup && !membershipUnavailable ? '#78b1ff' : undefined,
-                  color: membershipUnavailable ? 'text.secondary' : openGroup ? '#ffffff' : 'text.primary',
+                  borderColor:
+                    openGroup && !membershipUnavailable ? '#78b1ff' : undefined,
+                  color: membershipUnavailable
+                    ? 'text.secondary'
+                    : openGroup
+                      ? '#ffffff'
+                      : 'text.primary',
                 },
                 '&:active': {
-                  background: openGroup && !membershipUnavailable ? '#2b63c5' : undefined,
+                  background:
+                    openGroup && !membershipUnavailable ? '#2b63c5' : undefined,
                   boxShadow: 'none',
                 },
                 '&:focus-visible': {
@@ -708,7 +817,11 @@ export const AddGroupList = ({
                   outlineOffset: 2,
                 },
                 '&.Mui-disabled': {
-                  color: membershipUnavailable ? theme.palette.text.secondary : openGroup ? '#ffffff' : theme.palette.text.secondary,
+                  color: membershipUnavailable
+                    ? theme.palette.text.secondary
+                    : openGroup
+                      ? '#ffffff'
+                      : theme.palette.text.secondary,
                   cursor: pendingGroup ? 'not-allowed' : undefined,
                   opacity: membershipUnavailable ? 0.72 : 0.5,
                 },
@@ -716,7 +829,15 @@ export const AddGroupList = ({
             >
               {joiningGroup ? (
                 <CircularProgress color="inherit" size={15} thickness={5} />
-              ) : joinedGroup ? 'Joined' : pendingGroup ? 'Pending' : openGroup ? 'Join' : 'Request'}
+              ) : joinedGroup ? (
+                'Joined'
+              ) : pendingGroup ? (
+                'Pending'
+              ) : openGroup ? (
+                'Join'
+              ) : (
+                'Request'
+              )}
             </ButtonBase>
           </ListItemButton>
         </ListItem>
@@ -796,7 +917,14 @@ export const AddGroupList = ({
             }}
           >
             <Box component="header" sx={{ position: 'relative', pr: 5 }}>
-              <Typography sx={{ color: 'text.secondary', fontSize: 14, fontWeight: 500, lineHeight: '20px' }}>
+              <Typography
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: 14,
+                  fontWeight: 500,
+                  lineHeight: '20px',
+                }}
+              >
                 Join group
               </Typography>
               <Typography
@@ -816,18 +944,32 @@ export const AddGroupList = ({
               >
                 {selectedGroup.groupName}
               </Typography>
-              <Box sx={{ alignItems: 'center', color: 'text.secondary', display: 'flex', fontSize: 14, lineHeight: '20px', mt: 1.25 }}>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  color: 'text.secondary',
+                  display: 'flex',
+                  fontSize: 14,
+                  lineHeight: '20px',
+                  mt: 1.25,
+                }}
+              >
                 {isSelectedGroupOpen ? (
-                  <PublicRoundedIcon sx={{ flexShrink: 0, fontSize: 17, mr: 1 }} />
+                  <PublicRoundedIcon
+                    sx={{ flexShrink: 0, fontSize: 17, mr: 1 }}
+                  />
                 ) : (
                   <LockIcon sx={{ flexShrink: 0, fontSize: 17, mr: 1 }} />
                 )}
                 <Typography component="span" sx={{ fontSize: 14 }}>
                   {isSelectedGroupOpen ? 'Public' : 'Private'}
                 </Typography>
-                <Box component="span" sx={{ mx: 1 }}>•</Box>
+                <Box component="span" sx={{ mx: 1 }}>
+                  •
+                </Box>
                 <Typography component="span" sx={{ fontSize: 14 }}>
-                  {formatMemberCount(selectedGroupMemberCount)} {selectedGroupMemberCount === 1 ? 'member' : 'members'}
+                  {formatMemberCount(selectedGroupMemberCount)}{' '}
+                  {selectedGroupMemberCount === 1 ? 'member' : 'members'}
                 </Typography>
               </Box>
               <IconButton
@@ -841,8 +983,14 @@ export const AddGroupList = ({
                   right: -2,
                   top: -2,
                   width: 34,
-                  '&:hover': { backgroundColor: 'action.hover', color: 'text.primary' },
-                  '&:focus-visible': { outline: '2px solid #60a5fa', outlineOffset: 2 },
+                  '&:hover': {
+                    backgroundColor: 'action.hover',
+                    color: 'text.primary',
+                  },
+                  '&:focus-visible': {
+                    outline: '2px solid #60a5fa',
+                    outlineOffset: 2,
+                  },
                 }}
               >
                 <CloseRoundedIcon sx={{ fontSize: 18 }} />
@@ -854,11 +1002,29 @@ export const AddGroupList = ({
             <Box>
               <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.125 }}>
                 <DescriptionIcon sx={{ color: 'primary.main', fontSize: 16 }} />
-                <Typography sx={{ color: 'text.secondary', fontSize: 12, fontWeight: 700, letterSpacing: '0.09em', lineHeight: '16px' }}>
+                <Typography
+                  sx={{
+                    color: 'text.secondary',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    letterSpacing: '0.09em',
+                    lineHeight: '16px',
+                  }}
+                >
                   DESCRIPTION
                 </Typography>
               </Box>
-              <Typography sx={{ color: 'text.primary', fontSize: 16, fontWeight: 400, letterSpacing: '-0.005em', lineHeight: '25px', mt: 1.5, overflowWrap: 'anywhere' }}>
+              <Typography
+                sx={{
+                  color: 'text.primary',
+                  fontSize: 16,
+                  fontWeight: 400,
+                  letterSpacing: '-0.005em',
+                  lineHeight: '25px',
+                  mt: 1.5,
+                  overflowWrap: 'anywhere',
+                }}
+              >
                 {selectedGroup.description?.trim() || '—'}
               </Typography>
             </Box>
@@ -868,16 +1034,57 @@ export const AddGroupList = ({
             <Box>
               <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.125 }}>
                 <GroupIcon sx={{ color: 'primary.main', fontSize: 16 }} />
-                <Typography sx={{ color: 'text.secondary', fontSize: 12, fontWeight: 700, letterSpacing: '0.09em', lineHeight: '16px' }}>
+                <Typography
+                  sx={{
+                    color: 'text.secondary',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    letterSpacing: '0.09em',
+                    lineHeight: '16px',
+                  }}
+                >
                   MEMBERS
                 </Typography>
               </Box>
-              <Box sx={{ alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.025)', border: `1px solid ${theme.palette.divider}`, borderRadius: '9px', display: 'inline-flex', height: 48, mt: 1.5, pl: 1.25, pr: 2 }}>
-                <Box sx={{ alignItems: 'center', backgroundColor: 'rgba(59,130,246,0.12)', border: '1px solid rgba(96,165,250,0.28)', borderRadius: '50%', color: 'primary.main', display: 'flex', height: 32, justifyContent: 'center', mr: 1.5, width: 32 }}>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  backgroundColor: 'rgba(255,255,255,0.025)',
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: '9px',
+                  display: 'inline-flex',
+                  height: 48,
+                  mt: 1.5,
+                  pl: 1.25,
+                  pr: 2,
+                }}
+              >
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    backgroundColor: 'rgba(59,130,246,0.12)',
+                    border: '1px solid rgba(96,165,250,0.28)',
+                    borderRadius: '50%',
+                    color: 'primary.main',
+                    display: 'flex',
+                    height: 32,
+                    justifyContent: 'center',
+                    mr: 1.5,
+                    width: 32,
+                  }}
+                >
                   <GroupIcon sx={{ fontSize: 18 }} />
                 </Box>
-                <Typography sx={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em', lineHeight: '20px' }}>
-                  {formatMemberCount(selectedGroupMemberCount)} {selectedGroupMemberCount === 1 ? 'member' : 'members'}
+                <Typography
+                  sx={{
+                    fontSize: 16,
+                    fontWeight: 600,
+                    letterSpacing: '-0.01em',
+                    lineHeight: '20px',
+                  }}
+                >
+                  {formatMemberCount(selectedGroupMemberCount)}{' '}
+                  {selectedGroupMemberCount === 1 ? 'member' : 'members'}
                 </Typography>
               </Box>
             </Box>
@@ -887,16 +1094,49 @@ export const AddGroupList = ({
             <Box>
               <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.125 }}>
                 <PersonIcon sx={{ color: 'primary.main', fontSize: 16 }} />
-                <Typography sx={{ color: 'text.secondary', fontSize: 12, fontWeight: 700, letterSpacing: '0.09em', lineHeight: '16px' }}>
+                <Typography
+                  sx={{
+                    color: 'text.secondary',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    letterSpacing: '0.09em',
+                    lineHeight: '16px',
+                  }}
+                >
                   OWNER
                 </Typography>
               </Box>
-              <Box sx={{ alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.025)', border: `1px solid ${theme.palette.divider}`, borderRadius: '9px', columnGap: 1.5, display: 'grid', gridTemplateColumns: '44px minmax(0,1fr) 34px', minHeight: 66, mt: 1.5, px: 1.5, py: 1.25 }}>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  backgroundColor: 'rgba(255,255,255,0.025)',
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: '9px',
+                  columnGap: 1.5,
+                  display: 'grid',
+                  gridTemplateColumns: '44px minmax(0,1fr) 34px',
+                  minHeight: 66,
+                  mt: 1.5,
+                  px: 1.5,
+                  py: 1.25,
+                }}
+              >
                 {ownerLoading ? (
                   <Skeleton height={44} variant="circular" width={44} />
                 ) : (
-                  <Avatar src={selectedOwnerAvatarUrl} sx={{ backgroundColor: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)', fontSize: 18, fontWeight: 600, height: 44, width: 44 }}>
-                    {String(selectedOwnerDisplayName).charAt(0).toUpperCase() || '?'}
+                  <Avatar
+                    src={selectedOwnerAvatarUrl}
+                    sx={{
+                      backgroundColor: 'rgba(96,165,250,0.18)',
+                      border: '1px solid rgba(96,165,250,0.35)',
+                      fontSize: 18,
+                      fontWeight: 600,
+                      height: 44,
+                      width: 44,
+                    }}
+                  >
+                    {String(selectedOwnerDisplayName).charAt(0).toUpperCase() ||
+                      '?'}
                   </Avatar>
                 )}
                 <Box sx={{ minWidth: 0 }}>
@@ -907,34 +1147,76 @@ export const AddGroupList = ({
                     </Stack>
                   ) : (
                     <>
-                      <Typography noWrap sx={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em', lineHeight: '20px' }}>
+                      <Typography
+                        noWrap
+                        sx={{
+                          fontSize: 15,
+                          fontWeight: 600,
+                          letterSpacing: '-0.01em',
+                          lineHeight: '20px',
+                        }}
+                      >
                         {selectedOwnerDisplayName}
                       </Typography>
                       <Tooltip arrow title={ownerAddress || ''}>
-                        <Typography component="span" tabIndex={ownerAddress ? 0 : -1} sx={{ color: 'text.secondary', display: 'block', fontSize: 13, lineHeight: '18px', mt: '3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <Typography
+                          component="span"
+                          tabIndex={ownerAddress ? 0 : -1}
+                          sx={{
+                            color: 'text.secondary',
+                            display: 'block',
+                            fontSize: 13,
+                            lineHeight: '18px',
+                            mt: '3px',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
                           {ownerAddress || '—'}
                         </Typography>
                       </Tooltip>
                     </>
                   )}
                 </Box>
-                <Tooltip arrow title={ownerAddressCopied ? 'Copied' : 'Copy address'}>
+                <Tooltip
+                  arrow
+                  title={ownerAddressCopied ? 'Copied' : 'Copy address'}
+                >
                   <span>
                     <IconButton
-                      aria-label={ownerAddressCopied ? 'Address copied' : 'Copy owner address'}
+                      aria-label={
+                        ownerAddressCopied
+                          ? 'Address copied'
+                          : 'Copy owner address'
+                      }
                       disabled={!ownerAddress || ownerLoading}
                       onClick={handleCopyAddress}
                       sx={{
                         border: `1px solid ${theme.palette.divider}`,
                         borderRadius: '8px',
-                        color: ownerAddressCopied ? 'success.main' : 'text.secondary',
+                        color: ownerAddressCopied
+                          ? 'success.main'
+                          : 'text.secondary',
                         height: 34,
                         width: 34,
-                        '&:hover': { backgroundColor: 'action.hover', color: ownerAddressCopied ? 'success.main' : 'primary.main' },
-                        '&:focus-visible': { outline: '2px solid #60a5fa', outlineOffset: 2 },
+                        '&:hover': {
+                          backgroundColor: 'action.hover',
+                          color: ownerAddressCopied
+                            ? 'success.main'
+                            : 'primary.main',
+                        },
+                        '&:focus-visible': {
+                          outline: '2px solid #60a5fa',
+                          outlineOffset: 2,
+                        },
                       }}
                     >
-                      {ownerAddressCopied ? <CheckRoundedIcon sx={{ fontSize: 17 }} /> : <ContentCopyIcon sx={{ fontSize: 17 }} />}
+                      {ownerAddressCopied ? (
+                        <CheckRoundedIcon sx={{ fontSize: 17 }} />
+                      ) : (
+                        <ContentCopyIcon sx={{ fontSize: 17 }} />
+                      )}
                     </IconButton>
                   </span>
                 </Tooltip>
@@ -943,7 +1225,15 @@ export const AddGroupList = ({
 
             <Box sx={{ mt: 3 }}>
               {joinError ? (
-                <Typography role="alert" sx={{ color: 'error.main', fontSize: 13, lineHeight: '18px', mb: 1 }}>
+                <Typography
+                  role="alert"
+                  sx={{
+                    color: 'error.main',
+                    fontSize: 13,
+                    lineHeight: '18px',
+                    mb: 1,
+                  }}
+                >
                   {joinError}
                 </Typography>
               ) : null}
@@ -955,187 +1245,411 @@ export const AddGroupList = ({
                   Boolean(joiningGroupId)
                 }
                 fullWidth
-                loading={isLoading && joiningGroupId === String(selectedGroup.groupId)}
-                onClick={() => handleJoinGroup(selectedGroup, isSelectedGroupOpen)}
+                loading={
+                  isLoading && joiningGroupId === String(selectedGroup.groupId)
+                }
+                onClick={() =>
+                  handleJoinGroup(selectedGroup, isSelectedGroupOpen)
+                }
                 sx={{
-                  background: isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.action.selected : 'linear-gradient(180deg, #3f8cff 0%, #2f6fd8 100%)',
+                  background:
+                    isSelectedGroupJoined || isSelectedGroupPending
+                      ? theme.palette.action.selected
+                      : 'linear-gradient(180deg, #3f8cff 0%, #2f6fd8 100%)',
                   border: `1px solid ${isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.divider : '#5ea2ff'}`,
                   borderRadius: '9px',
-                  boxShadow: isSelectedGroupJoined || isSelectedGroupPending ? 'none' : '0 3px 10px rgba(47,111,216,0.22), inset 0 1px 0 rgba(255,255,255,0.12)',
-                  color: isSelectedGroupJoined || isSelectedGroupPending ? 'text.secondary' : '#ffffff',
+                  boxShadow:
+                    isSelectedGroupJoined || isSelectedGroupPending
+                      ? 'none'
+                      : '0 3px 10px rgba(47,111,216,0.22), inset 0 1px 0 rgba(255,255,255,0.12)',
+                  color:
+                    isSelectedGroupJoined || isSelectedGroupPending
+                      ? 'text.secondary'
+                      : '#ffffff',
                   fontSize: 14,
                   fontWeight: 600,
                   height: 46,
                   letterSpacing: '0.01em',
                   lineHeight: 1,
                   textTransform: 'none',
-                  '&:hover': { background: isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.action.selected : 'linear-gradient(180deg, #4b96ff 0%, #3779e8 100%)', borderColor: isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.divider : '#78b1ff' },
-                  '&:active': { background: isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.action.selected : '#2b63c5', boxShadow: 'none' },
-                  '&:focus-visible': { outline: '2px solid #93c5fd', outlineOffset: 2 },
-                  '&.Mui-disabled': { color: isSelectedGroupJoined || isSelectedGroupPending ? theme.palette.text.secondary : '#ffffff', opacity: isSelectedGroupJoined || isSelectedGroupPending ? 0.72 : 0.5 },
+                  '&:hover': {
+                    background:
+                      isSelectedGroupJoined || isSelectedGroupPending
+                        ? theme.palette.action.selected
+                        : 'linear-gradient(180deg, #4b96ff 0%, #3779e8 100%)',
+                    borderColor:
+                      isSelectedGroupJoined || isSelectedGroupPending
+                        ? theme.palette.divider
+                        : '#78b1ff',
+                  },
+                  '&:active': {
+                    background:
+                      isSelectedGroupJoined || isSelectedGroupPending
+                        ? theme.palette.action.selected
+                        : '#2b63c5',
+                    boxShadow: 'none',
+                  },
+                  '&:focus-visible': {
+                    outline: '2px solid #93c5fd',
+                    outlineOffset: 2,
+                  },
+                  '&.Mui-disabled': {
+                    color:
+                      isSelectedGroupJoined || isSelectedGroupPending
+                        ? theme.palette.text.secondary
+                        : '#ffffff',
+                    opacity:
+                      isSelectedGroupJoined || isSelectedGroupPending
+                        ? 0.72
+                        : 0.5,
+                  },
                 }}
               >
                 {isSelectedGroupJoined
                   ? 'Joined'
                   : isSelectedGroupPending
                     ? 'Pending'
-                  : isSelectedGroupOpen
-                    ? 'Join Group'
-                    : 'Apply to Join'}
+                    : isSelectedGroupOpen
+                      ? 'Join Group'
+                      : 'Apply to Join'}
               </LoadingButton>
             </Box>
           </DialogContent>
         )}
       </Dialog>
 
-      {!overviewOnly && <Box
-        sx={{
-          display: 'flex',
-          flexDirection: 'column',
-          flexGrow: 1,
-          gap: 1.5,
-          minHeight: 0,
-        }}
-      >
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1 }}>
-          <TextField
-            inputProps={{ 'aria-label': 'Search groups by name' }}
-            placeholder="Search by group name"
-            variant="outlined"
-            fullWidth
-            value={inputValue}
-            onChange={handleChange}
-            InputProps={{
-              startAdornment: <InputAdornment position="start"><SearchRoundedIcon sx={{ color: 'text.secondary', fontSize: 18, mr: 0.5 }} /></InputAdornment>,
-              endAdornment: inputValue ? <InputAdornment position="end"><IconButton aria-label="Clear search" onClick={() => setInputValue('')} size="small"><CloseRoundedIcon fontSize="small" /></IconButton></InputAdornment> : undefined,
-            }}
-            sx={{
-              '& .MuiOutlinedInput-root': {
-                borderRadius: '9px',
-                bgcolor: 'background.default',
-                color: 'text.primary',
-                fontSize: 15,
-                height: 44,
-                letterSpacing: '-0.005em',
-                px: 2,
-                '& .MuiOutlinedInput-notchedOutline': {
-                  borderColor: 'divider',
-                },
-                '&:hover .MuiOutlinedInput-notchedOutline': {
-                  borderColor: 'text.secondary',
-                },
-                '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                  borderColor: '#2563eb',
-                  borderWidth: 1,
-                },
-              },
-            }}
-          />
-          <Box sx={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 1.25 }}>
-              {[
-                { icon: <EmojiEventsRoundedIcon sx={{ fontSize: 17 }} />, label: 'Top', selected: sortMode === 'top', onClick: () => handleSortChange('top') },
-                { icon: <BoltRoundedIcon sx={{ fontSize: 17 }} />, label: 'Active', selected: sortMode === 'active', onClick: () => handleSortChange('active') },
-                { icon: <ScheduleRoundedIcon sx={{ fontSize: 17 }} />, label: 'Newest', selected: sortMode === 'newest', onClick: () => handleSortChange('newest') },
-                { icon: <GroupsRoundedIcon sx={{ fontSize: 17 }} />, label: 'Largest', selected: sortMode === 'largest', onClick: () => handleSortChange('largest') },
-                { icon: <AccountBalanceWalletRoundedIcon sx={{ fontSize: 17 }} />, label: 'QORT Holdings', selected: sortMode === 'holdings', onClick: () => handleSortChange('holdings') },
-              ].map((filter) => (
-                <ButtonBase aria-pressed={filter.selected} key={filter.label} onClick={filter.onClick} sx={{ backgroundColor: filter.selected ? 'primary.main' : 'transparent', border: `1px solid ${filter.selected ? theme.palette.primary.main : theme.palette.divider}`, borderRadius: '9px', color: filter.selected ? 'primary.contrastText' : 'text.secondary', fontSize: 14, fontWeight: 600, gap: 1, height: 40, letterSpacing: '-0.01em', px: 1.75, '&:hover': { backgroundColor: filter.selected ? 'primary.dark' : theme.palette.action.hover }, '&:focus-visible': { outline: '2px solid #60a5fa', outlineOffset: 2 } }}>{filter.icon}{filter.label}</ButtonBase>
-              ))}
-              <ButtonBase aria-pressed={showOpen} onClick={() => setShowOpen((current) => !current)} sx={{ backgroundColor: showOpen ? 'primary.main' : 'transparent', border: `1px solid ${showOpen ? theme.palette.primary.main : theme.palette.divider}`, borderRadius: '9px', color: showOpen ? 'primary.contrastText' : 'text.secondary', fontSize: 14, fontWeight: 600, gap: 1, height: 40, letterSpacing: '-0.01em', px: 1.75, '&:hover': { backgroundColor: showOpen ? 'primary.dark' : theme.palette.action.hover }, '&:focus-visible': { outline: '2px solid #60a5fa', outlineOffset: 2 } }}><PublicRoundedIcon sx={{ fontSize: 17 }} />Open</ButtonBase>
-              <Tooltip arrow title={privateFilterExplanation}>
-                <span style={{ display: 'inline-flex' }}>
-                  <ButtonBase aria-pressed={showPrivate} disabled={privateFilterDisabled} onClick={() => setShowPrivate((current) => !current)} sx={{ backgroundColor: showPrivate ? 'primary.main' : 'transparent', border: `1px solid ${showPrivate ? theme.palette.primary.main : theme.palette.divider}`, borderRadius: '9px', color: showPrivate ? 'primary.contrastText' : 'text.secondary', fontSize: 14, fontWeight: 600, gap: 1, height: 40, letterSpacing: '-0.01em', px: 1.75, '&:hover': { backgroundColor: showPrivate ? 'primary.dark' : theme.palette.action.hover }, '&:focus-visible': { outline: '2px solid #60a5fa', outlineOffset: 2 }, '&.Mui-disabled': { borderColor: theme.palette.divider, color: theme.palette.text.disabled, opacity: 0.58 } }}><LockIcon sx={{ fontSize: 17 }} />Private</ButtonBase>
-                </span>
-              </Tooltip>
-          </Box>
-        </Box>
-
+      {!overviewOnly && (
         <Box
           sx={{
-            position: 'relative',
-            width: '100%',
-            flexGrow: 1,
-            minHeight: 0,
-            backgroundColor: 'background.default',
-            border: `1px solid ${theme.palette.divider}`,
-            borderRadius: '10px',
             display: 'flex',
             flexDirection: 'column',
-            overflow: 'hidden',
+            flexGrow: 1,
+            gap: 1.5,
+            minHeight: 0,
           }}
         >
-          <Box sx={{ alignItems: 'center', backgroundColor: 'background.paper', borderBottom: `1px solid ${theme.palette.divider}`, boxSizing: 'border-box', display: 'flex', flexShrink: 0, height: 44, justifyContent: 'space-between', px: 2 }}>
-            <Typography sx={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', lineHeight: '21px' }}>Groups</Typography>
-            <Typography sx={{ color: 'text.secondary', fontSize: 13.5, fontWeight: 500 }}>{sortDescription}</Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1 }}>
+            <TextField
+              inputProps={{ 'aria-label': 'Search groups by name' }}
+              placeholder="Search by group name"
+              variant="outlined"
+              fullWidth
+              value={inputValue}
+              onChange={handleChange}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchRoundedIcon
+                      sx={{ color: 'text.secondary', fontSize: 18, mr: 0.5 }}
+                    />
+                  </InputAdornment>
+                ),
+                endAdornment: inputValue ? (
+                  <InputAdornment position="end">
+                    <IconButton
+                      aria-label="Clear search"
+                      onClick={() => setInputValue('')}
+                      size="small"
+                    >
+                      <CloseRoundedIcon fontSize="small" />
+                    </IconButton>
+                  </InputAdornment>
+                ) : undefined,
+              }}
+              sx={{
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: '9px',
+                  bgcolor: 'background.default',
+                  color: 'text.primary',
+                  fontSize: 15,
+                  height: 44,
+                  letterSpacing: '-0.005em',
+                  px: 2,
+                  '& .MuiOutlinedInput-notchedOutline': {
+                    borderColor: 'divider',
+                  },
+                  '&:hover .MuiOutlinedInput-notchedOutline': {
+                    borderColor: 'text.secondary',
+                  },
+                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                    borderColor: '#2563eb',
+                    borderWidth: 1,
+                  },
+                },
+              }}
+            />
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 1.25,
+              }}
+            >
+              {[
+                {
+                  icon: <EmojiEventsRoundedIcon sx={{ fontSize: 17 }} />,
+                  label: 'Top',
+                  selected: sortMode === 'top',
+                  onClick: () => handleSortChange('top'),
+                },
+                {
+                  icon: <BoltRoundedIcon sx={{ fontSize: 17 }} />,
+                  label: 'Active',
+                  selected: sortMode === 'active',
+                  onClick: () => handleSortChange('active'),
+                },
+                {
+                  icon: <ScheduleRoundedIcon sx={{ fontSize: 17 }} />,
+                  label: 'Newest',
+                  selected: sortMode === 'newest',
+                  onClick: () => handleSortChange('newest'),
+                },
+                {
+                  icon: <GroupsRoundedIcon sx={{ fontSize: 17 }} />,
+                  label: 'Largest',
+                  selected: sortMode === 'largest',
+                  onClick: () => handleSortChange('largest'),
+                },
+                {
+                  icon: (
+                    <AccountBalanceWalletRoundedIcon sx={{ fontSize: 17 }} />
+                  ),
+                  label: 'QORT Holdings',
+                  selected: sortMode === 'holdings',
+                  onClick: () => handleSortChange('holdings'),
+                },
+              ].map((filter) => (
+                <ButtonBase
+                  aria-pressed={filter.selected}
+                  key={filter.label}
+                  onClick={filter.onClick}
+                  sx={{
+                    backgroundColor: filter.selected
+                      ? 'primary.main'
+                      : 'transparent',
+                    border: `1px solid ${filter.selected ? theme.palette.primary.main : theme.palette.divider}`,
+                    borderRadius: '9px',
+                    color: filter.selected
+                      ? 'primary.contrastText'
+                      : 'text.secondary',
+                    fontSize: 14,
+                    fontWeight: 600,
+                    gap: 1,
+                    height: 40,
+                    letterSpacing: '-0.01em',
+                    px: 1.75,
+                    '&:hover': {
+                      backgroundColor: filter.selected
+                        ? 'primary.dark'
+                        : theme.palette.action.hover,
+                    },
+                    '&:focus-visible': {
+                      outline: '2px solid #60a5fa',
+                      outlineOffset: 2,
+                    },
+                  }}
+                >
+                  {filter.icon}
+                  {filter.label}
+                </ButtonBase>
+              ))}
+              <ButtonBase
+                aria-pressed={showOpen}
+                onClick={() => setShowOpen((current) => !current)}
+                sx={{
+                  backgroundColor: showOpen ? 'primary.main' : 'transparent',
+                  border: `1px solid ${showOpen ? theme.palette.primary.main : theme.palette.divider}`,
+                  borderRadius: '9px',
+                  color: showOpen ? 'primary.contrastText' : 'text.secondary',
+                  fontSize: 14,
+                  fontWeight: 600,
+                  gap: 1,
+                  height: 40,
+                  letterSpacing: '-0.01em',
+                  px: 1.75,
+                  '&:hover': {
+                    backgroundColor: showOpen
+                      ? 'primary.dark'
+                      : theme.palette.action.hover,
+                  },
+                  '&:focus-visible': {
+                    outline: '2px solid #60a5fa',
+                    outlineOffset: 2,
+                  },
+                }}
+              >
+                <PublicRoundedIcon sx={{ fontSize: 17 }} />
+                Open
+              </ButtonBase>
+              <Tooltip arrow title={privateFilterExplanation}>
+                <span style={{ display: 'inline-flex' }}>
+                  <ButtonBase
+                    aria-pressed={showPrivate}
+                    disabled={privateFilterDisabled}
+                    onClick={() => setShowPrivate((current) => !current)}
+                    sx={{
+                      backgroundColor: showPrivate
+                        ? 'primary.main'
+                        : 'transparent',
+                      border: `1px solid ${showPrivate ? theme.palette.primary.main : theme.palette.divider}`,
+                      borderRadius: '9px',
+                      color: showPrivate
+                        ? 'primary.contrastText'
+                        : 'text.secondary',
+                      fontSize: 14,
+                      fontWeight: 600,
+                      gap: 1,
+                      height: 40,
+                      letterSpacing: '-0.01em',
+                      px: 1.75,
+                      '&:hover': {
+                        backgroundColor: showPrivate
+                          ? 'primary.dark'
+                          : theme.palette.action.hover,
+                      },
+                      '&:focus-visible': {
+                        outline: '2px solid #60a5fa',
+                        outlineOffset: 2,
+                      },
+                      '&.Mui-disabled': {
+                        borderColor: theme.palette.divider,
+                        color: theme.palette.text.disabled,
+                        opacity: 0.58,
+                      },
+                    }}
+                  >
+                    <LockIcon sx={{ fontSize: 17 }} />
+                    Private
+                  </ButtonBase>
+                </span>
+              </Tooltip>
+            </Box>
           </Box>
+
           <Box
             sx={{
-              flex: 1,
+              position: 'relative',
+              width: '100%',
+              flexGrow: 1,
               minHeight: 0,
-              '& .ReactVirtualized__List': {
-                scrollbarColor: 'rgba(143,150,165,0.62) transparent',
-                scrollbarGutter: 'stable',
-                scrollbarWidth: 'thin',
-                '&::-webkit-scrollbar': { width: 6 },
-                '&::-webkit-scrollbar-thumb': {
-                  backgroundColor: 'rgba(143,150,165,0.62)',
-                  borderRadius: 8,
-                },
-                '&::-webkit-scrollbar-track': { backgroundColor: 'transparent' },
-              },
+              backgroundColor: 'background.default',
+              border: `1px solid ${theme.palette.divider}`,
+              borderRadius: '10px',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
             }}
           >
-          {groupsLoading ? (
-            <Stack
-              alignItems="center"
-              justifyContent="center"
-              spacing={1.5}
+            <Box
               sx={{
-                width: '100%',
-                height: '100%',
-                minHeight: 200,
+                alignItems: 'center',
+                backgroundColor: 'background.paper',
+                borderBottom: `1px solid ${theme.palette.divider}`,
+                boxSizing: 'border-box',
+                display: 'flex',
+                flexShrink: 0,
+                height: 44,
+                justifyContent: 'space-between',
+                px: 2,
               }}
             >
-              <CircularProgress size={32} thickness={4} />
-              <Typography variant="body2" color="text.secondary">
-                {t('core:loading.generic', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
+              <Typography
+                sx={{
+                  fontSize: 15,
+                  fontWeight: 700,
+                  letterSpacing: '-0.01em',
+                  lineHeight: '21px',
+                }}
+              >
+                Groups
               </Typography>
-            </Stack>
-          ) : filteredItems.length === 0 ? (
-            <Stack
-              alignItems="center"
-              justifyContent="center"
+              <Typography
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: 13.5,
+                  fontWeight: 500,
+                }}
+              >
+                {sortDescription}
+              </Typography>
+            </Box>
+            <Box
               sx={{
-                width: '100%',
-                height: '100%',
-                minHeight: 200,
+                flex: 1,
+                minHeight: 0,
+                '& .ReactVirtualized__List': {
+                  scrollbarColor: 'rgba(143,150,165,0.62) transparent',
+                  scrollbarGutter: 'stable',
+                  scrollbarWidth: 'thin',
+                  '&::-webkit-scrollbar': { width: 6 },
+                  '&::-webkit-scrollbar-thumb': {
+                    backgroundColor: 'rgba(143,150,165,0.62)',
+                    borderRadius: 8,
+                  },
+                  '&::-webkit-scrollbar-track': {
+                    backgroundColor: 'transparent',
+                  },
+                },
               }}
             >
-              <Typography variant="body2" color="text.secondary">
-                {t('group:group.no_groups_found', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-              </Typography>
-            </Stack>
-          ) : (
-            <AutoSizer>
-              {({ height, width }) => (
-                <List
-                  ref={listRef}
-                  width={width}
-                  height={height}
-                  rowCount={visibleItems.length + (visibleItems.length < filteredItems.length ? 1 : 0)}
-                  rowHeight={({ index }) => index === visibleItems.length ? 60 : GROUP_ROW_HEIGHT}
-                  rowRenderer={rowRenderer}
-                />
+              {groupsLoading ? (
+                <Stack
+                  alignItems="center"
+                  justifyContent="center"
+                  spacing={1.5}
+                  sx={{
+                    width: '100%',
+                    height: '100%',
+                    minHeight: 200,
+                  }}
+                >
+                  <CircularProgress size={32} thickness={4} />
+                  <Typography variant="body2" color="text.secondary">
+                    {t('core:loading.generic', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                  </Typography>
+                </Stack>
+              ) : filteredItems.length === 0 ? (
+                <Stack
+                  alignItems="center"
+                  justifyContent="center"
+                  sx={{
+                    width: '100%',
+                    height: '100%',
+                    minHeight: 200,
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    {t('group:group.no_groups_found', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                  </Typography>
+                </Stack>
+              ) : (
+                <AutoSizer>
+                  {({ height, width }) => (
+                    <List
+                      ref={listRef}
+                      width={width}
+                      height={height}
+                      rowCount={
+                        visibleItems.length +
+                        (visibleItems.length < filteredItems.length ? 1 : 0)
+                      }
+                      rowHeight={({ index }) =>
+                        index === visibleItems.length ? 60 : GROUP_ROW_HEIGHT
+                      }
+                      rowRenderer={rowRenderer}
+                    />
+                  )}
+                </AutoSizer>
               )}
-            </AutoSizer>
-          )}
+            </Box>
           </Box>
         </Box>
-      </Box>}
+      )}
     </>
   );
 };

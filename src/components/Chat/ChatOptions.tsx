@@ -80,13 +80,7 @@ export const ChatOptions = ({
   const [searchValue, setSearchValue] = useState('');
   const [selectedMember, setSelectedMember] = useState(0);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const parentRef = useRef(null);
   const parentRefMentions = useRef(null);
   const [lastMentionTimestamp, setLastMentionTimestamp] = useState(null);

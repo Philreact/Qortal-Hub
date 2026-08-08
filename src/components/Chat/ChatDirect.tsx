@@ -427,13 +427,7 @@ export const ChatDirect = ({
     signCallRequest,
   ]);
 
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const p2pHealthBadTooltip = t('core:p2p_health_bad_call_tooltip');
   const { queueChats, addToQueue, processWithNewMessages } = useMessageQueue();
   const [isFocusedParent, setIsFocusedParent] = useState(false);

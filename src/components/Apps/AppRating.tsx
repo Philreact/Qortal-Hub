@@ -15,13 +15,7 @@ const AppRatingInner = ({ app, myName, ratingCountPosition = 'right' }) => {
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const [openSnack, setOpenSnack] = useState(false);
   const [infoSnack, setInfoSnack] = useState(null);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const { rating, containerRef, refresh } = useAppRating(
     app?.name,

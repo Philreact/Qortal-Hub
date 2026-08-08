@@ -66,13 +66,7 @@ export const ListOfBans = ({
   const [openPopoverIndex, setOpenPopoverIndex] = useState(null); // Track which list item has the popover open
   const listRef = useRef(null);
   const [isLoadingUnban, setIsLoadingUnban] = useState(false);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const getInvites = async (groupId) => {
     try {
@@ -182,48 +176,50 @@ export const ListOfBans = ({
           <div style={style} onLoad={measure}>
             <ListItem disablePadding>
               {!compact && (
-              <Popover
-                open={openPopoverIndex === index}
-                anchorEl={popoverAnchor}
-                onClose={handlePopoverClose}
-                anchorOrigin={{
-                  vertical: 'bottom',
-                  horizontal: 'center',
-                }}
-                transformOrigin={{
-                  vertical: 'top',
-                  horizontal: 'center',
-                }}
-                style={{ marginTop: '8px' }}
-              >
-                <Box
-                  sx={{
-                    alignItems: 'center',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '10px',
-                    height: '250px',
-                    padding: '10px',
-                    width: '325px',
+                <Popover
+                  open={openPopoverIndex === index}
+                  anchorEl={popoverAnchor}
+                  onClose={handlePopoverClose}
+                  anchorOrigin={{
+                    vertical: 'bottom',
+                    horizontal: 'center',
                   }}
+                  transformOrigin={{
+                    vertical: 'top',
+                    horizontal: 'center',
+                  }}
+                  style={{ marginTop: '8px' }}
                 >
-                  <LoadingButton
-                    loading={isLoadingUnban}
-                    loadingPosition="start"
-                    variant="contained"
-                    onClick={() => handleCancelBan(member?.offender)}
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px',
+                      height: '250px',
+                      padding: '10px',
+                      width: '325px',
+                    }}
                   >
-                    {t('group:action.cancel_ban', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </LoadingButton>
-                </Box>
-              </Popover>
+                    <LoadingButton
+                      loading={isLoadingUnban}
+                      loadingPosition="start"
+                      variant="contained"
+                      onClick={() => handleCancelBan(member?.offender)}
+                    >
+                      {t('group:action.cancel_ban', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                    </LoadingButton>
+                  </Box>
+                </Popover>
               )}
 
               <ListItemButton
                 onClick={
-                  compact ? undefined : (event) => handlePopoverOpen(event, index)
+                  compact
+                    ? undefined
+                    : (event) => handlePopoverOpen(event, index)
                 }
                 sx={{
                   borderRadius: compact ? '6px' : undefined,

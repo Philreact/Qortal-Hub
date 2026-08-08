@@ -345,13 +345,7 @@ function App() {
   const [sendqortState, setSendqortState] = useState<any>(null);
   const [isLoading, setIsLoading] = useAtom(isLoadingAuthenticateAtom);
   const isAuthenticated = extState === 'authenticated';
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const theme = useTheme();
 
   const [

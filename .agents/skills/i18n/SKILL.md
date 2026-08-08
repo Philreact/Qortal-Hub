@@ -26,7 +26,7 @@ Do NOT translate: log messages, event names passed to `executeEvent` /
 ```tsx
 import { useTranslation } from 'react-i18next';
 
-const { t } = useTranslation(['auth', 'core', 'group', 'question', 'tutorial']);
+const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
 <Button>
   {t('core:action.close', { postProcess: 'capitalizeFirstChar' })}
@@ -138,8 +138,8 @@ It never overwrites an existing value, so it is safe to re-run as the patch
 grows, and it re-sorts the file on write — never hand-append a key to the end of
 a block. Nest values by topic. Pick the namespace by domain:
 `core` for shared UI vocabulary and generic messages, `group` for
-group/chat/Reticulum features, `auth`, `node`, `question`, `tutorial` for their
-own areas. A _new_ namespace also has to be registered in the `namespaces` array
+group/chat/Reticulum features and the onboarding/home dashboard, `auth`, `node`,
+`question` for their own areas. A _new_ namespace also has to be registered in the `namespaces` array
 in `src/i18n/i18n.ts`.
 
 At this point all 12 locales hold English. That is a deliberate, temporary state

@@ -25,7 +25,7 @@ type InfoDialogProps = {
 
 export function InfoDialog({ open, message, onClose }: InfoDialogProps) {
   const theme = useTheme();
-  const { t } = useTranslation(['core', 'tutorial']);
+  const { t } = useTranslation(['core', 'group']);
 
   return (
     <Dialog
@@ -36,11 +36,8 @@ export function InfoDialog({ open, message, onClose }: InfoDialogProps) {
         sx: getDialogPaperSx(theme, { maxWidth: 420 }),
       }}
     >
-      <DialogTitle
-        id="alert-dialog-title"
-        sx={dialogTitleSx}
-      >
-        {t('tutorial:important_info', { postProcess: 'capitalizeAll' })}
+      <DialogTitle id="alert-dialog-title" sx={dialogTitleSx}>
+        {t('group:important_info', { postProcess: 'capitalizeAll' })}
       </DialogTitle>
       <DialogContent sx={dialogContentSx}>
         <DialogContentText

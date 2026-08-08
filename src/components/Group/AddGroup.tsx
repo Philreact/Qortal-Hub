@@ -84,13 +84,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
     setMaxBlock(event.target.value as string);
   };
 
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const handleCreateGroup = async () => {
     if (isCreating) return;
     try {
@@ -526,20 +520,14 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                             : 'divider',
                           borderLeft: {
                             xs: 'none',
-                            sm:
-                              index === 0
-                                ? 'none'
-                                : '1px solid',
+                            sm: index === 0 ? 'none' : '1px solid',
                           },
                           borderRadius: {
                             xs: index === 0 ? '9px 9px 0 0' : '0 0 9px 9px',
                             sm: index === 0 ? '9px 0 0 9px' : '0 9px 9px 0',
                           },
                           borderTop: {
-                            xs:
-                              index === 0
-                                ? 'none'
-                                : '1px solid',
+                            xs: index === 0 ? 'none' : '1px solid',
                             sm: 'none',
                           },
                           boxShadow: selected

@@ -20,13 +20,7 @@ export const AnnouncementList = ({
   myName,
 }) => {
   const [messages, setMessages] = useState(initialMessages);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   useEffect(() => {
     cache.clearAll();

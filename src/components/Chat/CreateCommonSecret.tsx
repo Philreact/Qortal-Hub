@@ -48,13 +48,7 @@ export const CreateCommonSecret = ({
   const [addNewKey, setAddNewKey] = useState(false);
 
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const getPublishesFromAdmins = async (admins: string[]) => {
     const queryString = admins.map((name) => `name=${name}`).join('&');

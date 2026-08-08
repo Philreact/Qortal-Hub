@@ -37,13 +37,7 @@ export const WrapperUserAction = ({
   fullWidth = false,
 }) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const [isRunningPublicNode] = useAtom(isRunningPublicNodeAtom);
   const [anchorEl, setAnchorEl] = useState(null);
   const [cardAnchorEl, setCardAnchorEl] = useState(null);
@@ -373,13 +367,7 @@ const BlockUser = ({ address, name, handleClose, reticulumMenu = false }) => {
   const { isUserBlocked, addToBlockList, removeBlockFromList } =
     useBlockedAddresses(true);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   useEffect(() => {
     if (!address) return;
@@ -442,4 +430,3 @@ const BlockUser = ({ address, name, handleClose, reticulumMenu = false }) => {
     </Button>
   );
 };
-

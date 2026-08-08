@@ -49,13 +49,7 @@ export const Minting = ({ setIsOpenMinting, myAddress, show }) => {
   const setTxList = useSetAtom(txListAtom);
   const [groups] = useAtom(memberGroupsAtom);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const [mintingAccounts, setMintingAccounts] = useState([]);
   const [accountInfo, setAccountInfo] = useState(null);

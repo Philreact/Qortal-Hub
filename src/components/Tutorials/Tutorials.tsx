@@ -17,11 +17,12 @@ import { VideoPlayer } from '../Embeds/VideoPlayer';
 import { useTranslation } from 'react-i18next';
 
 export const Tutorials = () => {
-  const [openTutorialModal, setOpenTutorialModal] =
-    useAtom(openTutorialModalAtom);
+  const [openTutorialModal, setOpenTutorialModal] = useAtom(
+    openTutorialModalAtom
+  );
   const [multiNumber, setMultiNumber] = useState(0);
   const theme = useTheme();
-  const { t } = useTranslation(['core', 'tutorial']);
+  const { t } = useTranslation(['core']);
 
   const handleClose = () => {
     setOpenTutorialModal(null);

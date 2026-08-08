@@ -6,7 +6,10 @@ import { traceGcallAudioSurface } from './lib/group-call/gcallAudioSurfaceTrace'
 const runtime = new GroupCallAudioEngineRuntime();
 
 if (!window.audioSurfaceHost) {
-  traceGcallAudioSurface('audio-surface page: window.audioSurfaceHost is missing; IPC bridge will not work', {});
+  traceGcallAudioSurface(
+    'audio-surface page: window.audioSurfaceHost is missing; IPC bridge will not work',
+    {}
+  );
 } else {
   traceGcallAudioSurface('audio-surface page: host bridge present', {});
 }
@@ -35,7 +38,9 @@ if (window.audioSurfaceHost) {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'audio-engine-command-throw';
-      traceGcallAudioSurface('audio-surface page: handleCommand threw', { message });
+      traceGcallAudioSurface('audio-surface page: handleCommand threw', {
+        message,
+      });
       response = { ok: false, error: message };
     }
     traceGcallAudioSurface('audio-surface page: resolveCommand', {

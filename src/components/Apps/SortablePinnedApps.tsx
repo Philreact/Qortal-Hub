@@ -49,13 +49,7 @@ const SortableItem = ({ id, name, app, isDesktop }) => {
     transition,
   };
 
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   return (
     <ContextMenuPinnedApps app={app} isMine={!!app?.isMine}>

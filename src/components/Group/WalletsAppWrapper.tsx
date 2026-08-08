@@ -41,13 +41,7 @@ type WalletsEmbeddedTab = {
 };
 
 export const WalletsAppWrapper = () => {
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const theme = useTheme();
   const iframeRef = useRef(null);
   const [isOpen, setIsOpen] = useState(false);

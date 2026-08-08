@@ -673,13 +673,7 @@ export const MessageItemComponent = ({
     userInfo >= 0
       ? Math.trunc(userInfo)
       : null;
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const hasUnsafeSenderName = Boolean(
     message?.senderName && hasInvisibleCharacters(message.senderName)
   );
@@ -4626,13 +4620,7 @@ export const ReplyPreview = ({
   reticulumOnlyContent = false,
 }) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const replyMessageText = useMemo(() => {
     if (!message?.messageText) return null;

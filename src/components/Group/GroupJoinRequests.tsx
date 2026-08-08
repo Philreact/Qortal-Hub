@@ -2,7 +2,18 @@ import { useContext, useEffect, useMemo, useState } from 'react';
 import { RequestQueueWithPromise } from '../../utils/queue/queue';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import CloseIcon from '@mui/icons-material/Close';
-import { Box, Button, ButtonBase, Collapse, Dialog, DialogContent, DialogTitle, IconButton, Typography, useTheme } from '@mui/material';
+import {
+  Box,
+  Button,
+  ButtonBase,
+  Collapse,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  IconButton,
+  Typography,
+  useTheme,
+} from '@mui/material';
 import { CustomLoader } from '../../common/CustomLoader';
 import { QORTAL_APP_CONTEXT, getBaseApiReact } from '../../App';
 import {
@@ -52,17 +63,13 @@ export const GroupJoinRequests = ({
   onLoadingChange?: (loading: boolean) => void;
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const [groupsWithJoinRequests, setGroupsWithJoinRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [txList] = useAtom(txListAtom);
-  const [joinRequestsCache, setJoinRequestsCache] = useAtom(joinRequestsCacheAtom);
+  const [joinRequestsCache, setJoinRequestsCache] = useAtom(
+    joinRequestsCacheAtom
+  );
 
   const [myGroupsWhereIAmAdmin] = useAtom(myGroupsWhereIAmAdminAtom);
   const { show } = useContext(QORTAL_APP_CONTEXT);
@@ -72,7 +79,10 @@ export const GroupJoinRequests = ({
     groupName: string;
   } | null>(null);
   const [openSnack, setOpenSnack] = useState(false);
-  const [infoSnack, setInfoSnack] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [infoSnack, setInfoSnack] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   const theme = useTheme();
   const compactViewportHeightCss =
@@ -89,12 +99,15 @@ export const GroupJoinRequests = ({
 
   const isCacheValid = useMemo(() => {
     if (!joinRequestsCache || adminGroupIds.length === 0) return false;
-    if (joinRequestsCache.adminGroupIds.length !== adminGroupIds.length) return false;
+    if (joinRequestsCache.adminGroupIds.length !== adminGroupIds.length)
+      return false;
     const same = joinRequestsCache.adminGroupIds.every(
       (id, i) => id === adminGroupIds[i]
     );
     if (!same) return false;
-    return Date.now() - joinRequestsCache.fetchedAt < GROUP_ACTIVITY_CACHE_TTL_MS;
+    return (
+      Date.now() - joinRequestsCache.fetchedAt < GROUP_ACTIVITY_CACHE_TTL_MS
+    );
   }, [joinRequestsCache, adminGroupIds]);
 
   const getJoinRequests = async (silent = false, force = false) => {
@@ -109,8 +122,10 @@ export const GroupJoinRequests = ({
       const response = await fetch(
         `${getBaseApiReact()}/groups/joinrequests/admin/${myAddress}`
       );
-      const raw: Array<{ group: any; joinRequests: Array<{ groupId: number; joiner: string }> }> =
-        await response.json();
+      const raw: Array<{
+        group: any;
+        joinRequests: Array<{ groupId: number; joiner: string }>;
+      }> = await response.json();
       const res = raw.map((item) => ({
         group: item.group,
         data: item.joinRequests ?? [],
@@ -229,14 +244,29 @@ export const GroupJoinRequests = ({
         flex: hasFixedCompactViewport ? 1 : undefined,
         height: hasFixedCompactViewport ? '100%' : compact ? 'auto' : '250px',
         maxHeight: compact && !hasFixedCompactViewport ? '300px' : undefined,
-        minHeight: hasFixedCompactViewport ? compactViewportHeightCss : undefined,
-        overflow: hasFixedCompactViewport ? 'hidden' : compact ? 'auto' : undefined,
+        minHeight: hasFixedCompactViewport
+          ? compactViewportHeightCss
+          : undefined,
+        overflow: hasFixedCompactViewport
+          ? 'hidden'
+          : compact
+            ? 'auto'
+            : undefined,
         padding: compact ? 1.5 : 2,
         width: compact ? '100%' : '322px',
       }}
     >
       {loading && filteredJoinRequests.length === 0 && (
-        <Box sx={{ alignItems: 'center', display: 'flex', flex: hasFixedCompactViewport ? 1 : undefined, justifyContent: 'center', py: 4, width: '100%' }}>
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            flex: hasFixedCompactViewport ? 1 : undefined,
+            justifyContent: 'center',
+            py: 4,
+            width: '100%',
+          }}
+        >
           <CustomLoader />
         </Box>
       )}
@@ -302,7 +332,8 @@ export const GroupJoinRequests = ({
                   gap: 1.5,
                   justifyContent: 'space-between',
                   padding: '12px 14px',
-                  transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                  transition:
+                    'background-color 0.2s ease, border-color 0.2s ease',
                   '&:hover': {
                     bgcolor: theme.palette.action.hover,
                     borderColor: theme.palette.divider,
@@ -328,13 +359,10 @@ export const GroupJoinRequests = ({
                       mt: 0.25,
                     }}
                   >
-                    {t(
-                      'group:message.generic.pending_join_requests_count',
-                      {
-                        count,
-                        postProcess: 'capitalizeFirstChar',
-                      }
-                    )}
+                    {t('group:message.generic.pending_join_requests_count', {
+                      count,
+                      postProcess: 'capitalizeFirstChar',
+                    })}
                   </Typography>
                 </Box>
                 <Button
@@ -354,7 +382,7 @@ export const GroupJoinRequests = ({
                     py: 0.75,
                   }}
                 >
-                  {t('tutorial:home.open', { postProcess: 'capitalizeFirstChar' })}
+                  {t('group:home.open', { postProcess: 'capitalizeFirstChar' })}
                 </Button>
               </Box>
             );
@@ -372,7 +400,9 @@ export const GroupJoinRequests = ({
         flexDirection: 'column',
         alignItems: compact ? 'stretch' : 'center',
         height: hasFixedCompactViewport ? compactViewportHeightCss : undefined,
-        minHeight: hasFixedCompactViewport ? compactViewportHeightCss : undefined,
+        minHeight: hasFixedCompactViewport
+          ? compactViewportHeightCss
+          : undefined,
       }}
     >
       {!compact && (
@@ -399,7 +429,9 @@ export const GroupJoinRequests = ({
         </ButtonBase>
       )}
 
-      {compact ? listContent : (
+      {compact ? (
+        listContent
+      ) : (
         <Collapse in={isExpanded} timeout="auto" unmountOnExit>
           {listContent}
         </Collapse>
@@ -431,22 +463,36 @@ export const GroupJoinRequests = ({
         >
           <Typography variant="h6" component="span" sx={{ fontWeight: 600 }}>
             {selectedGroupForDialog
-              ? t('group:join_requests', { postProcess: 'capitalizeFirstChar' }) +
+              ? t('group:join_requests', {
+                  postProcess: 'capitalizeFirstChar',
+                }) +
                 ' – ' +
                 selectedGroupForDialog.groupName
               : ''}
           </Typography>
           <IconButton
-            aria-label={t('core:action.close', { postProcess: 'capitalizeFirstChar' })}
+            aria-label={t('core:action.close', {
+              postProcess: 'capitalizeFirstChar',
+            })}
             onClick={handleCloseJoinRequestsDialog}
             size="small"
           >
             <CloseIcon />
           </IconButton>
         </DialogTitle>
-        <DialogContent sx={{ px: 0, py: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <DialogContent
+          sx={{
+            px: 0,
+            py: 0,
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
           {selectedGroupForDialog && (
-            <Box sx={{ flex: 1, minHeight: 320, overflow: 'auto', px: 2, py: 2 }}>
+            <Box
+              sx={{ flex: 1, minHeight: 320, overflow: 'auto', px: 2, py: 2 }}
+            >
               <ListOfJoinRequests
                 groupId={selectedGroupForDialog.groupId}
                 show={show}
@@ -458,7 +504,12 @@ export const GroupJoinRequests = ({
         </DialogContent>
       </Dialog>
 
-      <CustomizedSnackbars open={openSnack} setOpen={setOpenSnack} info={infoSnack} setInfo={setInfoSnack} />
+      <CustomizedSnackbars
+        open={openSnack}
+        setOpen={setOpenSnack}
+        info={infoSnack}
+        setInfo={setInfoSnack}
+      />
     </Box>
   );
 };
