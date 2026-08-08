@@ -68,22 +68,135 @@ Available processors (see `src/i18n/processors.ts`):
 | `capitalizeSentenceStarts` | capitalizes after `.`/`!`/`?` and newlines |
 | `capitalizeAll` | ALL CAPS — for stat labels and similar |
 
-## Adding a new key
+## Never hand-edit 12 locale files
 
-1. Add it to `src/i18n/locales/en/<namespace>.json`, lowercase, nested by topic.
-2. **Add the same key to all 12 locale dirs** under `src/i18n/locales/` — `ar`,
-   `de`, `en`, `es`, `et`, `fi`, `fr`, `it`, `ja`, `pt`, `ru`, `zh`. Every locale
-   must carry the identical key set and the identical file set
-   (`auth`, `core`, `group`, `node`, `question`, `tutorial`). English text is an
-   acceptable placeholder for a language you cannot translate — a *missing* key
-   is not.
-3. Pick the namespace by domain: `core` for shared UI vocabulary and generic
-   messages, `group` for group/chat/Reticulum features, `auth`, `node`,
-   `question`, `tutorial` for their own areas.
+Every locale operation has a script in `scripts/`. Editing the JSON by hand is
+how keys go missing from one language, so reach for these instead:
 
-Adding a *new* namespace also requires registering it in the `namespaces` array
-in `src/i18n/i18n.ts` — the locale files are glob-loaded, but the namespace list
-is explicit.
+| Task | Command |
+| --- | --- |
+| Find what needs migrating | `python3 scripts/i18n_scan_hardcoded.py <path>` |
+| Seed new keys into all 12 locales | `python3 scripts/i18n_add_keys.py <ns> <patch.json>` |
+| Apply the translations | `python3 scripts/i18n_apply_translations.py <translations.json>` |
+| Check nothing is left | `python3 scripts/i18n_apply_translations.py --audit` |
+
+All four run from the repo root and take `--help`.
+
+## The workflow
+
+### 1. Find the strings
+
+```bash
+python3 scripts/i18n_scan_hardcoded.py src/components/Chat          # summary per file
+python3 scripts/i18n_scan_hardcoded.py --detail <file>              # every hit
+python3 scripts/i18n_scan_hardcoded.py -o /tmp/hits.json src/       # machine-readable
+```
+
+Hits are candidates, not confirmed defects — CSS values and API field names show
+up too. Read them before acting.
+
+### 2. Seed the keys
+
+Write a patch file mirroring the locale structure, values in English:
+
+```json
+{
+  "reticulum": {
+    "expiry": {
+      "no_expiry": "no expiry",
+      "maximum": "maximum {{duration}}"
+    }
+  }
+}
+```
+
+Then seed all 12 locales at once:
+
+```bash
+python3 scripts/i18n_add_keys.py group /tmp/new-keys.json --dry-run   # preview
+python3 scripts/i18n_add_keys.py group /tmp/new-keys.json
+```
+
+It never overwrites an existing value, so it is safe to re-run as the patch
+grows. Values are lowercase, nested by topic. Pick the namespace by domain:
+`core` for shared UI vocabulary and generic messages, `group` for
+group/chat/Reticulum features, `auth`, `node`, `question`, `tutorial` for their
+own areas. A *new* namespace also has to be registered in the `namespaces` array
+in `src/i18n/i18n.ts`.
+
+At this point all 12 locales hold English. That is a deliberate, temporary state
+— it keeps the key set complete so nothing crashes mid-task. Keep the list of
+keys you added; step 4 needs it.
+
+### 3. Migrate the components
+
+Replace the literals with `t()` calls. Do not stop to translate — that fragments
+the work and produces inconsistent wording across a feature.
+
+### 4. Translate, in one batch, at the end
+
+**Every value must be written in the language of its folder.** `de/core.json`
+holds German, `ja/core.json` Japanese, `ar/core.json` Arabic. English sitting in
+a non-English locale is an unfinished key, not a valid placeholder — it renders
+as English to that user, which is the exact bug this skill exists to prevent.
+
+Translate the whole set in one pass, language by language — that is what keeps
+terminology consistent, so the same button label is not rendered three different
+ways in one locale. Write them as namespace → language → dotted key → value:
+
+```json
+{
+  "group": {
+    "de": { "reticulum.expiry.no_expiry": "kein ablauf" },
+    "fi": { "reticulum.expiry.no_expiry": "ei vanhenemista" }
+  }
+}
+```
+
+```bash
+python3 scripts/i18n_apply_translations.py /tmp/translations.json
+```
+
+It aborts before writing anything if a value drops or renames a `{{placeholder}}`,
+is not lowercase, or names a key that does not exist.
+
+The task is not finished while any non-English locale still holds English for a
+key you introduced.
+
+#### Translation rules
+
+- Keep the value **lowercase** — casing is applied by `postProcess` at render
+  time, in every language.
+- Preserve every `{{placeholder}}` name exactly; reorder them freely within the
+  sentence to suit the target language's word order.
+- Leave proper nouns and protocol terms untranslated: `Qortal`, `QORT`, `QDN`,
+  `Reticulum`, `Q-App`, `Q-Tube`, `Quitter`, `LXMF`.
+- `ar` is right-to-left; write natural Arabic and let the UI handle direction.
+- For `ja` and `zh`, do not insert spaces between characters the way the English
+  source has them.
+- Match the register of the existing translations in that file rather than
+  translating word for word — check a neighbouring key before inventing a term.
+
+### 5. Verify
+
+```bash
+python3 scripts/i18n_apply_translations.py --audit
+```
+
+Lists values still identical to English. It compares against `en`, so genuine
+cognates (`message` and `microphone` in French, `level` in German) appear as
+false positives — confirm before "fixing" them.
+
+## Two older scripts in the same folder
+
+`i18n_checker.py` is an earlier scanner. It catches string literals and JSX text
+but **not** JSX attributes, so it misses `aria-label`, `placeholder` and `title`.
+Prefer `i18n_scan_hardcoded.py`.
+
+**Do not run `i18n_translate_json.py`** on a namespace that already has reviewed
+translations. It machine-translates the whole file and overwrites the target,
+discarding human work; it also skips any string containing `{{`, and its language
+list is missing `ar`, `et`, `fi` and `pt`.
 
 ## Key naming
 
@@ -123,12 +236,23 @@ Large parts of the newer UI were written **without** i18n and are being migrated
 `t()` for the lines you touch, and mention any remaining hardcoded strings you
 noticed rather than silently leaving them.
 
-## Before you finish
-
-Re-read your diff for quoted English. A quick check:
+Run the scanner over the file you are about to touch to see what you are walking
+into:
 
 ```bash
-grep -nE '(aria-)?label="[A-Za-z]|placeholder="[A-Za-z]|title="[A-Za-z]|>[A-Z][a-z]+ ' <file>
+python3 scripts/i18n_scan_hardcoded.py --detail src/components/Chat/ChatGroup.tsx
 ```
 
-Anything it returns that a user can read must be a `t()` call.
+## Before you finish
+
+Both of these must come back clean — they are the definition of done:
+
+```bash
+python3 scripts/i18n_scan_hardcoded.py --detail <file>   # no user-readable English left
+python3 scripts/i18n_apply_translations.py --audit       # no English in non-English locales
+```
+
+Anything the first returns that a user can read must become a `t()` call. Any key
+you added that the second still reports means the batch translation is unfinished
+— and so is the task. Also run `npx vitest run <dir>` and
+`npx eslint <changed files>` before reporting.
