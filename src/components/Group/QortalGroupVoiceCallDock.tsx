@@ -13,7 +13,6 @@ import { useAtom, useAtomValue } from 'jotai';
 import {
   Avatar,
   Box,
-  Chip,
   IconButton,
   Tooltip,
   Typography,
@@ -57,11 +56,9 @@ export function QortalGroupVoiceCallDock() {
   const [minimized, setMinimized] = useAtom(qortalGroupVoiceCallMinimizedAtom);
   const {
     roomState,
-    mediaViable,
     roomId,
     participants,
     activeSpeakers,
-    topologyLabel,
     startupStatus,
     leaveGroupCall,
     setMuted,
@@ -101,27 +98,6 @@ export function QortalGroupVoiceCallDock() {
     typeof roomId === 'string' && roomId.startsWith('gcall-qortal-');
   const active =
     isQortal && (roomState === 'connected' || roomState === 'joining');
-
-  const transport = useMemo(() => {
-    if (roomState === 'connected' && !mediaViable) {
-      return {
-        mode: 'connecting' as const,
-        label: topologyLabel,
-        tooltip: `${topologyLabel} audio is still establishing; you may not hear others yet.`,
-      };
-    }
-    return {
-      mode:
-        topologyLabel === 'WebRTC'
-          ? ('webrtc' as const)
-          : ('reticulum' as const),
-      label: topologyLabel,
-      tooltip:
-        topologyLabel === 'WebRTC'
-          ? 'Encrypted voice over a WebRTC DataChannel'
-          : 'Encrypted voice over Reticulum',
-    };
-  }, [roomState, mediaViable, topologyLabel]);
 
   const title =
     memberGateGroupName?.trim() ||
@@ -230,27 +206,6 @@ export function QortalGroupVoiceCallDock() {
       >
         {title}
       </Typography>
-
-      <Tooltip title={transport.tooltip} placement="left">
-        <Chip
-          label={transport.label}
-          size="small"
-          sx={{
-            height: 18,
-            maxWidth: '100%',
-            fontSize: 9,
-            fontWeight: 600,
-            bgcolor:
-              transport.mode === 'connecting'
-                ? alpha('#94a3b8', 0.35)
-                : transport.mode === 'webrtc'
-                  ? alpha('#3b82f6', 0.38)
-                  : alpha('#22c55e', 0.35),
-            color: '#dbdee1',
-            '& .MuiChip-label': { px: 0.5, overflow: 'hidden' },
-          }}
-        />
-      </Tooltip>
 
       {startupStatus.headline && startupStatus.stage !== 'connected' ? (
         <Box

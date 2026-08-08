@@ -4,6 +4,7 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   blockedAddressesAtom,
+  callAudioDevicesAtom,
   dmFriendsByAddressAtom,
   infoSnackGlobalAtom,
   userInfoAtom,
@@ -1140,6 +1141,24 @@ describe('useVoiceCall', () => {
           roomKey: expect.any(ArrayBuffer),
         })
       )
+    );
+    audioSurfaceSendCommand.mockClear();
+    await act(async () => {
+      store.set(callAudioDevicesAtom, {
+        inputDeviceId: null,
+        outputDeviceId: 'audio-surface-speaker-2',
+      });
+    });
+    await waitFor(() =>
+      expect(audioSurfaceSendCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'update-direct-voice-media',
+          outputDeviceId: 'audio-surface-speaker-2',
+        })
+      )
+    );
+    expect(store.get(callAudioDevicesAtom).outputDeviceId).toBe(
+      'audio-surface-speaker-2'
     );
     sendKey.mockClear();
 

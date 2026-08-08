@@ -80,11 +80,9 @@ export function QortalGroupVoiceCallStage() {
   const setQcallPrimaryNames = useSetAtom(qortalGroupCallPrimaryNamesAtom);
   const {
     roomState,
-    mediaViable,
     roomId,
     participants,
     activeSpeakers,
-    topologyLabel,
     localConnectionHint,
     startupStatus,
     leaveGroupCall,
@@ -132,27 +130,6 @@ export function QortalGroupVoiceCallStage() {
       setQcallPrimaryNames({});
     }
   }, [visible, setQcallPrimaryNames]);
-
-  const transport = useMemo(() => {
-    if (roomState === 'connected' && !mediaViable) {
-      return {
-        mode: 'connecting' as const,
-        label: topologyLabel,
-        tooltip: `${topologyLabel} audio is still establishing; you may not hear others yet.`,
-      };
-    }
-    return {
-      mode:
-        topologyLabel === 'WebRTC'
-          ? ('webrtc' as const)
-          : ('reticulum' as const),
-      label: topologyLabel,
-      tooltip:
-        topologyLabel === 'WebRTC'
-          ? 'Encrypted voice over a WebRTC DataChannel'
-          : 'Encrypted voice over Reticulum',
-    };
-  }, [roomState, mediaViable, topologyLabel]);
 
   useEffect(() => {
     if (
@@ -391,40 +368,6 @@ export function QortalGroupVoiceCallStage() {
               flexShrink: 0,
             }}
           />
-          <Tooltip title={transport.tooltip} placement="bottom">
-            <Chip
-              label={transport.label}
-              size="small"
-              sx={{
-                height: 20,
-                fontSize: 10,
-                fontWeight: 600,
-                flexShrink: 0,
-                maxWidth: 128,
-                ml: 0.5,
-                bgcolor:
-                  transport.mode === 'connecting'
-                    ? alpha('#94a3b8', 0.16)
-                    : transport.mode === 'webrtc'
-                      ? alpha('#3b82f6', 0.2)
-                      : alpha('#22c55e', 0.18),
-                color:
-                  transport.mode === 'connecting'
-                    ? '#cbd5e1'
-                    : transport.mode === 'webrtc'
-                      ? '#bfdbfe'
-                      : '#9ee6b4',
-                border: `1px solid ${
-                  transport.mode === 'connecting'
-                    ? alpha('#94a3b8', 0.2)
-                    : transport.mode === 'webrtc'
-                      ? alpha('#60a5fa', 0.34)
-                      : alpha('#22c55e', 0.28)
-                }`,
-                '& .MuiChip-label': { px: 0.75 },
-              }}
-            />
-          </Tooltip>
           <Tooltip
             title={t('core:group_call_participants', {
               postProcess: 'capitalizeFirstChar',

@@ -1425,6 +1425,23 @@ export class GroupCallAudioEngineRuntime {
             outputDeviceId: this.outputDeviceId,
             postFailoverRootHoldUntilMs: 0,
           });
+          // The audio surface owns DM playback as well as group playback. Keep
+          // every active DM receiver on the same resolved output device so a
+          // settings change takes effect even if the owning UI hook is not the
+          // component that opened the device dialog.
+          if (this.directVoiceRoomId) {
+            this.directVoiceOutputDeviceId = this.outputDeviceId;
+            if (this.directVoiceRtcRemoteAudio) {
+              await applyCallAudioOutput(this.directVoiceOutputDeviceId, {
+                audioElement: this.directVoiceRtcRemoteAudio,
+              });
+            }
+            if (this.directVoiceReceiveEngine) {
+              await this.directVoiceReceiveEngine.configure({
+                outputDeviceId: this.directVoiceOutputDeviceId,
+              });
+            }
+          }
           return { ok: true };
         case 'list-audio-devices': {
           const devices = await listAudioDevices();

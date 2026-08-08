@@ -312,45 +312,6 @@ export function DirectVoiceCallNavWidget() {
           </Typography>
         ) : null}
 
-        {callState === 'connected' ? (
-          <Tooltip
-            title={
-              audioMode === 'webrtc'
-                ? 'Audio is using the direct WebRTC connection'
-                : audioMode === 'reticulum'
-                  ? 'Audio is using the Reticulum fallback'
-                  : 'Audio transport is being selected'
-            }
-            arrow
-          >
-            <Typography
-              component="span"
-              sx={{
-                color:
-                  audioMode === 'webrtc'
-                    ? VOICE_CONNECTED
-                    : audioMode === 'reticulum'
-                      ? theme.palette.warning.main
-                      : theme.palette.text.disabled,
-                display: { xs: 'none', md: 'block' },
-                flexShrink: 0,
-                fontSize: 9,
-                fontWeight: 900,
-                letterSpacing: '0.04em',
-                lineHeight: '16px',
-                textAlign: 'center',
-                width: 62,
-              }}
-            >
-              {audioMode === 'webrtc'
-                ? 'WEBRTC'
-                : audioMode === 'reticulum'
-                  ? 'RETICULUM'
-                  : 'SELECTING'}
-            </Typography>
-          </Tooltip>
-        ) : null}
-
         <Box
           sx={{
             backgroundColor: theme.palette.border.subtle,

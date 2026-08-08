@@ -8,7 +8,6 @@ import { useAtomValue } from 'jotai';
 import {
   Avatar,
   Box,
-  Chip,
   IconButton,
   Tooltip,
   Typography,
@@ -48,7 +47,6 @@ export function DirectVoiceCallDock() {
   const myAddress = userInfo?.address ?? '';
   const {
     callState,
-    audioMode,
     startupStatus,
     callMediaReady,
     isMuted,
@@ -92,35 +90,6 @@ export function DirectVoiceCallDock() {
   const avatarRegName = peerPrimaryName || undefined;
   const avatarSrc = qortalAvatarThumbnailSrc(avatarRegName);
   const initials = initialsFromDisplayLabel(title, peerAddress || myAddress);
-
-  const transport = useMemo(() => {
-    if (callState === 'calling') {
-      return {
-        label: 'Calling…',
-        tooltip: 'Waiting for peer to answer',
-        mode: 'connecting' as const,
-      };
-    }
-    if (audioMode === 'reticulum' && callMediaReady) {
-      return {
-        label: 'Reticulum',
-        tooltip: 'Encrypted voice over Reticulum',
-        mode: 'reticulum' as const,
-      };
-    }
-    if (audioMode === 'webrtc' && callMediaReady) {
-      return {
-        label: 'Direct',
-        tooltip: 'Encrypted direct voice connection',
-        mode: 'webrtc' as const,
-      };
-    }
-    return {
-      label: 'Connecting…',
-      tooltip: 'Establishing secure audio',
-      mode: 'connecting' as const,
-    };
-  }, [audioMode, callMediaReady, callState]);
 
   const durationLabel = useMemo(() => {
     const s = callDuration;
@@ -184,29 +153,6 @@ export function DirectVoiceCallDock() {
           {durationLabel}
         </Typography>
       )}
-
-      <Tooltip title={transport.tooltip} placement="left">
-        <Chip
-          label={transport.label}
-          size="small"
-          sx={{
-            height: 18,
-            maxWidth: '100%',
-            fontSize: 9,
-            fontWeight: 600,
-            bgcolor:
-              transport.mode === 'connecting'
-                ? alpha('#94a3b8', 0.35)
-                : transport.mode === 'reticulum'
-                  ? alpha(theme.palette.primary.main, 0.4)
-                  : transport.mode === 'webrtc'
-                    ? alpha('#22c55e', 0.3)
-                    : alpha('#94a3b8', 0.35),
-            color: '#dbdee1',
-            '& .MuiChip-label': { px: 0.5, overflow: 'hidden' },
-          }}
-        />
-      </Tooltip>
 
       {startupStatus.headline && startupStatus.stage !== 'connected' ? (
         <Box

@@ -940,7 +940,6 @@ export function AgentSupportDashboard() {
 
   const {
     callState,
-    audioMode,
     isMuted,
     callDuration,
     incomingCall,
@@ -1693,25 +1692,6 @@ export function AgentSupportDashboard() {
             <CallRoundedIcon sx={{ fontSize: 15, color: 'primary.main', flexShrink: 0 }} />
             <Typography variant="caption" sx={{ flex: 1, fontWeight: 600, color: 'primary.main' }}>
               {fmtDuration(callDuration)}
-            </Typography>
-            <Typography
-              variant="caption"
-              sx={{
-                px: 0.75,
-                py: 0.15,
-                borderRadius: 1,
-                backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-                fontWeight: 600,
-                fontSize: 10,
-                letterSpacing: 0.4,
-                color: 'text.secondary',
-              }}
-            >
-              {audioMode === 'webrtc'
-                ? 'Direct'
-                : audioMode === 'reticulum'
-                  ? 'Reticulum'
-                  : '…'}
             </Typography>
             <CallAudioSettingsButton />
             <Tooltip title={isMuted ? 'Unmute' : 'Mute'}>

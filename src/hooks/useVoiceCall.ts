@@ -33,7 +33,6 @@ import {
 } from '../lib/call/directVoiceUiLog';
 import { startDirectOutboundRingtone } from '../lib/call/directIncomingRingtone';
 import i18n from '../i18n/i18n';
-import { applyCallAudioOutput } from '../lib/call/audioDevices';
 import {
   type DecodedAudioPacket,
   decodeAudioPackets,
@@ -436,11 +435,8 @@ export function useVoiceCall(
   audioModeRef.current = audioMode;
 
   const callAudioDevices = useAtomValue(callAudioDevicesAtom);
-  const setCallAudioDevices = useSetAtom(callAudioDevicesAtom);
   const callAudioPrefsRef = useRef(callAudioDevices);
   callAudioPrefsRef.current = callAudioDevices;
-  const setCallAudioDevicesRef = useRef(setCallAudioDevices);
-  setCallAudioDevicesRef.current = setCallAudioDevices;
 
   const showGlobalCallSnack = useCallback(
     (type: 'error' | 'info', message: string) => {
@@ -3479,21 +3475,15 @@ export function useVoiceCall(
 
   useEffect(() => {
     if (callState !== 'connected') return;
-    void (async () => {
-      const out = callAudioDevices.outputDeviceId;
-      const r = await applyCallAudioOutput(out, {
-        audioContext: null,
-      });
-      if (r.clearPersistedOutput) {
-        setCallAudioDevices((p) => ({ ...p, outputDeviceId: null }));
-      }
-      void updateDirectVoiceMediaOnAudioSurface();
-    })();
+    // Device ids are scoped to the audio-surface origin. Validating an id in
+    // the main renderer can incorrectly classify it as stale and reset DM
+    // playback to the system default. Let the audio surface resolve and apply
+    // its own device id instead.
+    void updateDirectVoiceMediaOnAudioSurface();
   }, [
     callState,
     callAudioDevices.outputDeviceId,
     callAudioWireNonce,
-    setCallAudioDevices,
     updateDirectVoiceMediaOnAudioSurface,
   ]);
 

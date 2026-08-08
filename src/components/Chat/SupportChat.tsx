@@ -916,7 +916,6 @@ export function SupportChat() {
 
   const {
     callState,
-    audioMode,
     isMuted,
     callDuration,
     incomingCall,
@@ -1653,25 +1652,6 @@ export function SupportChat() {
           <Typography variant="caption" sx={{ flex: 1, fontWeight: 600, color: 'success.main', fontSize: 11 }}>
             In call — {fmtDuration(callDuration)}
           </Typography>
-
-          {/* Transport mode badge */}
-          {audioMode && (
-            <Typography
-              variant="caption"
-              sx={{
-                px: 0.75,
-                py: 0.2,
-                borderRadius: 1,
-                backgroundColor: 'primary.main',
-                color: '#fff',
-                fontWeight: 600,
-                fontSize: 10,
-                letterSpacing: 0.3,
-              }}
-            >
-              {audioMode === 'webrtc' ? 'Direct' : 'Reticulum'}
-            </Typography>
-          )}
 
           <CallAudioSettingsButton />
 

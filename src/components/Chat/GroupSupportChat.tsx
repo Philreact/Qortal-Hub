@@ -6,7 +6,7 @@
  * (audio-surface engine controller) for the audio layer. Text chat re-uses useSupportChat.
  */
 
-import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import {
   Avatar,
@@ -33,7 +33,6 @@ import { groupChatOpenAtom, userInfoAtom } from '../../atoms/global';
 import { useSupportChat, GROUP_SUPPORT_ADDRESSES } from '../../hooks/useSupportChat';
 import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
-import { getGroupCallTransportSummary } from '../../lib/group-call/router';
 import { CallAudioSettingsButton } from './CallAudioDeviceSelectors';
 import { GroupCallConnectionBanner } from './GroupCallConnectionBanner';
 
@@ -153,7 +152,7 @@ function GroupSupportChatPanel({
 
   // Group voice call
   const {
-    roomState, participants, myRole, activeSpeakers, topologyLabel, metrics,
+    roomState, participants, myRole, activeSpeakers, metrics,
     localConnectionHint,
     joinGroupCall, leaveGroupCall, muted: callMuted, setMuted: setCallMuted,
     exportGroupCallDiagnostics,
@@ -163,17 +162,6 @@ function GroupSupportChatPanel({
   const [diagExporting, setDiagExporting] = useState(false);
 
   const inCall = roomState === 'connected' || roomState === 'joining';
-
-  const [transportTick, bumpTransport] = useReducer((n: number) => n + 1, 0);
-  useEffect(() => {
-    if (!inCall) return;
-    const id = setInterval(bumpTransport, 700);
-    return () => clearInterval(id);
-  }, [inCall]);
-  const transport = useMemo(
-    () => getGroupCallTransportSummary(metrics, Date.now()),
-    [metrics, transportTick]
-  );
 
   const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -250,38 +238,6 @@ function GroupSupportChatPanel({
         <Typography variant="subtitle2" fontWeight={700} sx={{ flex: 1 }}>
           Group Support
         </Typography>
-
-        {/* Topology badge */}
-        {inCall && (
-          <Chip
-            label={topologyLabel}
-            size="small"
-            sx={{
-              height: 18, fontSize: 9, fontWeight: 700,
-              bgcolor: alpha('#fff', 0.2), color: '#fff',
-            }}
-          />
-        )}
-
-        {inCall && (
-          <Tooltip title={transport.tooltip} placement="bottom">
-            <Chip
-              label={transport.label}
-              size="small"
-              sx={{
-                height: 18, fontSize: 9, fontWeight: 700,
-                maxWidth: 120,
-                bgcolor:
-                  transport.mode === 'relay'
-                    ? alpha('#f59e0b', 0.35)
-                    : transport.mode === 'connecting'
-                      ? alpha('#94a3b8', 0.35)
-                      : alpha('#22c55e', 0.35),
-                color: '#fff',
-              }}
-            />
-          </Tooltip>
-        )}
 
         {/* My role badge */}
         {inCall && myRole !== 'participant' && (
@@ -422,7 +378,7 @@ function GroupSupportChatPanel({
               Overloads {metrics.mixerOverloadEvents} | heavy frac {(metrics.mixerHeavyReductionFraction * 100).toFixed(1)}% | conceal {metrics.concealmentTicks}
             </Typography>
             <Typography variant="caption" sx={{ display: 'block', fontSize: 10, color: alpha('#fff', 0.72) }}>
-              Jitter underruns {metrics.jitterUnderruns} | missing {metrics.missingFrames} | transport {transport.label}
+              Jitter underruns {metrics.jitterUnderruns} | missing {metrics.missingFrames}
             </Typography>
           </Box>
         </Box>
