@@ -65,13 +65,7 @@ export const ListOfInvites = ({
   const [popoverAnchor, setPopoverAnchor] = useState(null); // Track which list item the popover is anchored to
   const [openPopoverIndex, setOpenPopoverIndex] = useState(null); // Track which list item has the popover open
   const [isLoadingCancelInvite, setIsLoadingCancelInvite] = useState(false);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const listRef = useRef(null);
 
   const getInvites = async (groupId) => {
@@ -182,48 +176,50 @@ export const ListOfInvites = ({
           <div style={style} onLoad={measure}>
             <ListItem disablePadding>
               {!compact && (
-              <Popover
-                open={openPopoverIndex === index}
-                anchorEl={popoverAnchor}
-                onClose={handlePopoverClose}
-                anchorOrigin={{
-                  vertical: 'bottom',
-                  horizontal: 'center',
-                }}
-                transformOrigin={{
-                  vertical: 'top',
-                  horizontal: 'center',
-                }}
-                style={{ marginTop: '8px' }}
-              >
-                <Box
-                  sx={{
-                    alignItems: 'center',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '10px',
-                    height: '250px',
-                    padding: '10px',
-                    width: '325px',
+                <Popover
+                  open={openPopoverIndex === index}
+                  anchorEl={popoverAnchor}
+                  onClose={handlePopoverClose}
+                  anchorOrigin={{
+                    vertical: 'bottom',
+                    horizontal: 'center',
                   }}
+                  transformOrigin={{
+                    vertical: 'top',
+                    horizontal: 'center',
+                  }}
+                  style={{ marginTop: '8px' }}
                 >
-                  <LoadingButton
-                    loading={isLoadingCancelInvite}
-                    loadingPosition="start"
-                    variant="contained"
-                    onClick={() => handleCancelInvitation(member?.invitee)}
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px',
+                      height: '250px',
+                      padding: '10px',
+                      width: '325px',
+                    }}
                   >
-                    {t('core:action.cancel_invitation', {
-                      postProcess: 'capitalizeFirstChar',
-                    })}
-                  </LoadingButton>
-                </Box>
-              </Popover>
+                    <LoadingButton
+                      loading={isLoadingCancelInvite}
+                      loadingPosition="start"
+                      variant="contained"
+                      onClick={() => handleCancelInvitation(member?.invitee)}
+                    >
+                      {t('core:action.cancel_invitation', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                    </LoadingButton>
+                  </Box>
+                </Popover>
               )}
 
               <ListItemButton
                 onClick={
-                  compact ? undefined : (event) => handlePopoverOpen(event, index)
+                  compact
+                    ? undefined
+                    : (event) => handlePopoverOpen(event, index)
                 }
                 sx={{
                   borderRadius: compact ? '6px' : undefined,

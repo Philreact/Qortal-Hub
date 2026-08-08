@@ -78,6 +78,7 @@ import {
   messageHasImage,
 } from '../../utils/chat';
 import { useTranslation } from 'react-i18next';
+import i18n from '../../i18n/i18n';
 import { ReactionsMap } from './ChatList';
 import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
 import { useStatus } from '../../hooks/usePresence';
@@ -126,9 +127,15 @@ const normalizeReticulumExpiryMs = (value: unknown): number | null => {
 };
 
 const formatReticulumExpiry = (value: number | null): string => {
-  if (!value) return 'No Expiry';
+  if (!value)
+    return i18n.t('group:reticulum.expiry.no_expiry', {
+      postProcess: 'capitalizeEachFirstChar',
+    });
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'No Expiry';
+  if (Number.isNaN(date.getTime()))
+    return i18n.t('group:reticulum.expiry.no_expiry', {
+      postProcess: 'capitalizeEachFirstChar',
+    });
   const pad = (part: number) => String(part).padStart(2, '0');
   const monthAndDay = date.toLocaleDateString('en-US', {
     month: 'short',
@@ -529,32 +536,29 @@ export const MessageItemComponent = ({
     }
   }, [deferredMessage?.messageText, deferredMessage?.editTimestamp]);
 
-  const reticulumInviteSource = useMemo(
-    () => {
-      const candidates = reticulumChatEnabled
-        ? [
-            deferredMessage?.messageText,
-            deferredMessage?.text,
-            message?.decryptedData?.data?.message,
-          ]
-        : [
-            deferredMessage?.text,
-            message?.decryptedData?.data?.message,
-            deferredMessage?.messageText,
-          ];
-      for (const candidate of candidates) {
-        const normalized = normalizeMessageHtmlContent(candidate);
-        if (normalized) return normalized;
-      }
-      return '';
-    },
-    [
-      deferredMessage?.messageText,
-      deferredMessage?.text,
-      message?.decryptedData?.data?.message,
-      reticulumChatEnabled,
-    ]
-  );
+  const reticulumInviteSource = useMemo(() => {
+    const candidates = reticulumChatEnabled
+      ? [
+          deferredMessage?.messageText,
+          deferredMessage?.text,
+          message?.decryptedData?.data?.message,
+        ]
+      : [
+          deferredMessage?.text,
+          message?.decryptedData?.data?.message,
+          deferredMessage?.messageText,
+        ];
+    for (const candidate of candidates) {
+      const normalized = normalizeMessageHtmlContent(candidate);
+      if (normalized) return normalized;
+    }
+    return '';
+  }, [
+    deferredMessage?.messageText,
+    deferredMessage?.text,
+    message?.decryptedData?.data?.message,
+    reticulumChatEnabled,
+  ]);
   const reticulumQAppPreviewLinks = useMemo(
     () =>
       reticulumChatEnabled
@@ -604,7 +608,8 @@ export const MessageItemComponent = ({
       officialGroupSystem?.groupId
     ) {
       return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(
-        reticulumGroupAvatarOwnerName || officialGroupSystem.groupAvatarOwnerName
+        reticulumGroupAvatarOwnerName ||
+          officialGroupSystem.groupAvatarOwnerName
       )}/qortal_group_avatar_${officialGroupSystem.groupId}?async=true`;
     }
     return message?.senderName
@@ -668,13 +673,7 @@ export const MessageItemComponent = ({
     userInfo >= 0
       ? Math.trunc(userInfo)
       : null;
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const hasUnsafeSenderName = Boolean(
     message?.senderName && hasInvisibleCharacters(message.senderName)
   );
@@ -783,8 +782,8 @@ export const MessageItemComponent = ({
     reticulumDownloadAttachment.fileName.trim()
       ? reticulumDownloadAttachment.fileName.trim()
       : largeReticulumImageAttachment
-        ? 'Image attachment'
-        : 'File attachment';
+        ? t('group:message_item.image_attachment')
+        : t('group:message_item.file_attachment');
   const reticulumFileSize =
     typeof reticulumDownloadAttachment?.sizeBytes === 'number'
       ? reticulumDownloadAttachment.sizeBytes
@@ -1520,7 +1519,10 @@ export const MessageItemComponent = ({
       (isReticulumDirectResourceMessage &&
         (!myAddress || !reticulumDirectPeerAddress))
     ) {
-      return { success: false, error: 'Invalid resource attachment' };
+      return {
+        success: false,
+        error: t('group:message_item.invalid_attachment'),
+      };
     }
     const ready = await markFileResourceReadyIfComplete();
     if (ready) {
@@ -1620,9 +1622,7 @@ export const MessageItemComponent = ({
         reticulumFileName
       );
       if (!result?.success) {
-        setFileOpenError(
-          result?.error || 'The operating system could not open this file.'
-        );
+        setFileOpenError(result?.error || t('group:message_item.open_failed'));
         return;
       }
       setIsFileOpenWarningOpen(false);
@@ -1630,7 +1630,7 @@ export const MessageItemComponent = ({
       setFileOpenError(
         error instanceof Error
           ? error.message
-          : 'The operating system could not open this file.'
+          : t('group:message_item.open_failed')
       );
     } finally {
       setIsOpeningFile(false);
@@ -1846,23 +1846,25 @@ export const MessageItemComponent = ({
   const fileResourceStatusLabel = (() => {
     if (fileResourceStatus === 'ready') return 'Downloaded';
     if (fileResourceStatus === 'saving') return 'Saving...';
-    if (fileResourceUnavailableNoPeers) return 'File unavailable';
+    if (fileResourceUnavailableNoPeers)
+      return t('group:message_item.file_unavailable');
     if (fileResourceFailureReason === 'verification_failed') {
-      return 'Verification failed';
+      return t('group:message_item.verification_failed');
     }
-    if (fileResourceStatus === 'error') return 'Download failed';
+    if (fileResourceStatus === 'error')
+      return t('group:message_item.download_failed');
     if (fileResourceStatus === 'downloading') {
       return fileResourceProgress === null
         ? 'Downloading...'
         : `Downloading ${fileResourceProgress}%`;
     }
-    return 'Not downloaded';
+    return t('group:message_item.not_downloaded');
   })();
   const fileResourceActionLabel =
     fileResourceStatus === 'downloading' && !fileResourceUnavailableNoPeers
       ? 'Cancel'
       : fileResourceUnavailableNoPeers || fileResourceStatus === 'error'
-        ? 'Try again'
+        ? t('group:message_item.try_again')
         : fileResourceStatus === 'ready'
           ? 'Save'
           : fileResourceStatus === 'saving'
@@ -2012,8 +2014,8 @@ export const MessageItemComponent = ({
   const hasReticulumExpiry = Boolean(reticulumExpiryMs);
   const isReticulumExpiringSoon = Boolean(
     reticulumExpiryMs &&
-      reticulumExpiryMs > expiryClockMs &&
-      reticulumExpiryMs - expiryClockMs < RETICULUM_EXPIRING_SOON_MS
+    reticulumExpiryMs > expiryClockMs &&
+    reticulumExpiryMs - expiryClockMs < RETICULUM_EXPIRING_SOON_MS
   );
   const reticulumExpiringSoonLabel = isReticulumExpiringSoon ? (
     <Tooltip title={`Message Expiry: ${reticulumExpiryText}`}>
@@ -2115,7 +2117,7 @@ export const MessageItemComponent = ({
           id="unread-divider-id"
         >
           {reticulumChatEnabled
-            ? 'New messages'
+            ? t('group:message_item.new_messages')
             : t('core:message.generic.unread_messages', {
                 postProcess: 'capitalizeFirstChar',
               })}
@@ -2238,7 +2240,7 @@ export const MessageItemComponent = ({
                             : theme.palette.common.black,
                           theme.palette.mode === 'dark' ? 0.045 : 0.04
                         )
-                    : alpha(theme.palette.text.primary, 0.035)
+                      : alpha(theme.palette.text.primary, 0.035)
                   : undefined,
               },
               '&:hover .message-item-toolbar': {
@@ -2613,7 +2615,12 @@ export const MessageItemComponent = ({
                   )}
 
                   {isOwnReticulumEditable && (
-                    <Tooltip title="Edit" disableFocusListener>
+                    <Tooltip
+                      title={t('core:action.edit', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                      disableFocusListener
+                    >
                       <ButtonBase
                         sx={{
                           borderRadius: '6px',
@@ -2633,7 +2640,12 @@ export const MessageItemComponent = ({
                     </Tooltip>
                   )}
 
-                  <Tooltip title="Reply" disableFocusListener>
+                  <Tooltip
+                    title={t('core:action.reply', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                    disableFocusListener
+                  >
                     <ButtonBase
                       sx={{
                         borderRadius: '6px',
@@ -2653,7 +2665,10 @@ export const MessageItemComponent = ({
                   </Tooltip>
 
                   {isOwnReticulumDeletable && (
-                    <Tooltip title="Delete (shift+del)" disableFocusListener>
+                    <Tooltip
+                      title={t('group:message_item.delete_shortcut')}
+                      disableFocusListener
+                    >
                       <ButtonBase
                         sx={{
                           borderRadius: '6px',
@@ -2806,7 +2821,7 @@ export const MessageItemComponent = ({
                     >
                       {reticulumChatEnabled
                         ? isRepliedToMe
-                          ? 'Replying to you'
+                          ? t('group:message_item.replying_to_you')
                           : `Replying to ${
                               reply?.senderName ||
                               reply?.senderAddress ||
@@ -2944,7 +2959,9 @@ export const MessageItemComponent = ({
                           ? t(
                               'core:message.generic.replied_to_deleted_message',
                               {
-                                defaultValue: 'Replied to deleted message',
+                                defaultValue: t(
+                                  'group:message_item.replied_to_deleted'
+                                ),
                               }
                             )
                           : replyExpiredMeta?.senderName ||
@@ -3037,7 +3054,8 @@ export const MessageItemComponent = ({
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {qchatFileData?.fileName || 'File transfer'}
+                    {qchatFileData?.fileName ||
+                      t('group:message_item.file_transfer')}
                   </Typography>
                   <Typography
                     sx={{
@@ -3298,7 +3316,7 @@ export const MessageItemComponent = ({
                         }}
                       >
                         {reticulumImageDownloadIssue === 'unavailable'
-                          ? 'Image unavailable right now (no peers)'
+                          ? t('group:message_item.image_unavailable_no_peers')
                           : "Couldn't download image"}
                       </Typography>
                       <Button
@@ -3801,32 +3819,32 @@ export const MessageItemComponent = ({
             {(isUpdating || isTemp) &&
               (!reticulumChatEnabled ||
                 message?.status === 'failed-permanent') && (
-              <Typography
-                sx={{
-                  color: theme.palette.text.secondary,
-                  fontFamily: 'Inter',
-                  fontSize: '12px',
-                  fontStyle: 'italic',
-                  marginTop: '2px',
-                }}
-              >
-                {!isTemp
-                  ? message?.status === 'failed-permanent'
-                    ? t('core:message.error.update_failed', {
-                        postProcess: 'capitalizeFirstChar',
-                      })
-                    : t('core:message.generic.updating', {
-                        postProcess: 'capitalizeFirstChar',
-                      })
-                  : message?.status === 'failed-permanent'
-                    ? t('core:message.error.send_failed', {
-                        postProcess: 'capitalizeFirstChar',
-                      })
-                    : t('core:message.generic.sending', {
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-              </Typography>
-            )}
+                <Typography
+                  sx={{
+                    color: theme.palette.text.secondary,
+                    fontFamily: 'Inter',
+                    fontSize: '12px',
+                    fontStyle: 'italic',
+                    marginTop: '2px',
+                  }}
+                >
+                  {!isTemp
+                    ? message?.status === 'failed-permanent'
+                      ? t('core:message.error.update_failed', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
+                      : t('core:message.generic.updating', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
+                    : message?.status === 'failed-permanent'
+                      ? t('core:message.error.send_failed', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
+                      : t('core:message.generic.sending', {
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                </Typography>
+              )}
 
             {/* Reactions row */}
             {reactions &&
@@ -3845,7 +3863,10 @@ export const MessageItemComponent = ({
                   {message?.isNotEncrypted &&
                     isPrivate &&
                     !reticulumChatEnabled && (
-                      <Tooltip title="Unencrypted" disableFocusListener>
+                      <Tooltip
+                        title={t('group:message_item.unencrypted')}
+                        disableFocusListener
+                      >
                         <KeyOffIcon
                           sx={{
                             color: theme.palette.text.secondary,
@@ -3928,7 +3949,10 @@ export const MessageItemComponent = ({
                   (r) => (reactions[r]?.length ?? 0) > 0
                 )
               ) && (
-                <Tooltip title="Unencrypted" disableFocusListener>
+                <Tooltip
+                  title={t('group:message_item.unencrypted')}
+                  disableFocusListener
+                >
                   <KeyOffIcon
                     sx={{
                       color: theme.palette.text.secondary,
@@ -3976,115 +4000,115 @@ export const MessageItemComponent = ({
                     setSelectedReaction(null);
                   }}
                 >
-                <Box
-                  sx={{
-                    backgroundColor:
-                      theme.palette.mode === 'dark'
-                        ? '#1e2027'
-                        : theme.palette.background.paper,
-                    backgroundImage: 'none',
-                    border: '1px solid',
-                    borderColor:
-                      theme.palette.mode === 'dark'
-                        ? '#3a414d'
-                        : theme.palette.divider,
-                    borderRadius: '10px',
-                    boxShadow:
-                      theme.palette.mode === 'dark'
-                        ? '0 14px 32px rgba(0, 0, 0, 0.42)'
-                        : theme.shadows[8],
-                    maxWidth: '320px',
-                    minWidth: '260px',
-                    padding: '16px 16px 12px',
-                  }}
-                >
                   <Box
                     sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      gap: '8px',
-                      marginBottom: '12px',
+                      backgroundColor:
+                        theme.palette.mode === 'dark'
+                          ? '#1e2027'
+                          : theme.palette.background.paper,
+                      backgroundImage: 'none',
+                      border: '1px solid',
+                      borderColor:
+                        theme.palette.mode === 'dark'
+                          ? '#3a414d'
+                          : theme.palette.divider,
+                      borderRadius: '10px',
+                      boxShadow:
+                        theme.palette.mode === 'dark'
+                          ? '0 14px 32px rgba(0, 0, 0, 0.42)'
+                          : theme.shadows[8],
+                      maxWidth: '320px',
+                      minWidth: '260px',
+                      padding: '16px 16px 12px',
                     }}
                   >
                     <Box
                       sx={{
                         alignItems: 'center',
-                        backgroundColor: theme.palette.action.hover,
-                        borderRadius: '8px',
                         display: 'flex',
-                        fontSize: '18px',
-                        height: '36px',
-                        justifyContent: 'center',
-                        width: '36px',
+                        gap: '8px',
+                        marginBottom: '12px',
                       }}
                     >
-                      {selectedReaction}
+                      <Box
+                        sx={{
+                          alignItems: 'center',
+                          backgroundColor: theme.palette.action.hover,
+                          borderRadius: '8px',
+                          display: 'flex',
+                          fontSize: '18px',
+                          height: '36px',
+                          justifyContent: 'center',
+                          width: '36px',
+                        }}
+                      >
+                        {selectedReaction}
+                      </Box>
+                      <Typography
+                        sx={{
+                          fontSize: '14px',
+                          fontWeight: 600,
+                          color: theme.palette.text.primary,
+                        }}
+                      >
+                        {t('core:message.generic.people_reaction', {
+                          reaction: selectedReaction,
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                      </Typography>
                     </Box>
-                    <Typography
+
+                    <List
+                      disablePadding
                       sx={{
-                        fontSize: '14px',
-                        fontWeight: 600,
-                        color: theme.palette.text.primary,
+                        maxHeight: '240px',
+                        overflow: 'auto',
                       }}
                     >
-                      {t('core:message.generic.people_reaction', {
-                        reaction: selectedReaction,
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-                    </Typography>
-                  </Box>
+                      {reactions[selectedReaction]?.map((reactionItem) => {
+                        const hasUnsafeReactionName = Boolean(
+                          reactionItem.senderName &&
+                          hasInvisibleCharacters(reactionItem.senderName)
+                        );
 
-                  <List
-                    disablePadding
-                    sx={{
-                      maxHeight: '240px',
-                      overflow: 'auto',
-                    }}
-                  >
-                    {reactions[selectedReaction]?.map((reactionItem) => {
-                      const hasUnsafeReactionName = Boolean(
-                        reactionItem.senderName &&
-                        hasInvisibleCharacters(reactionItem.senderName)
-                      );
-
-                      return (
-                        <ListItem
-                          key={reactionItem.sender}
-                          disablePadding
-                          sx={{
-                            borderRadius: '8px',
-                            marginBottom: '2px',
-                            '&:last-of-type': { marginBottom: 0 },
-                            '&:hover': {
-                              backgroundColor: theme.palette.action.hover,
-                            },
-                          }}
-                        >
-                          <ListItemText
-                            primary={
-                              reactionItem.senderName || reactionItem.sender
-                            }
-                            primaryTypographyProps={{
-                              sx: {
-                                fontSize: '14px',
-                                fontWeight: 500,
-                                ...(hasUnsafeReactionName
-                                  ? {
-                                      textDecorationLine: 'line-through',
-                                      textDecorationThickness: '2px',
-                                      textDecorationColor:
-                                        theme.palette.error.main,
-                                    }
-                                  : {}),
+                        return (
+                          <ListItem
+                            key={reactionItem.sender}
+                            disablePadding
+                            sx={{
+                              borderRadius: '8px',
+                              marginBottom: '2px',
+                              '&:last-of-type': { marginBottom: 0 },
+                              '&:hover': {
+                                backgroundColor: theme.palette.action.hover,
                               },
                             }}
-                            sx={{ py: '8px', px: '12px' }}
-                          />
-                        </ListItem>
-                      );
-                    })}
-                  </List>
-                </Box>
+                          >
+                            <ListItemText
+                              primary={
+                                reactionItem.senderName || reactionItem.sender
+                              }
+                              primaryTypographyProps={{
+                                sx: {
+                                  fontSize: '14px',
+                                  fontWeight: 500,
+                                  ...(hasUnsafeReactionName
+                                    ? {
+                                        textDecorationLine: 'line-through',
+                                        textDecorationThickness: '2px',
+                                        textDecorationColor:
+                                          theme.palette.error.main,
+                                      }
+                                    : {}),
+                                },
+                              }}
+                              sx={{ py: '8px', px: '12px' }}
+                            />
+                          </ListItem>
+                        );
+                      })}
+                    </List>
+                  </Box>
                 </ClickAwayListener>
               </Popper>
             )}
@@ -4294,7 +4318,7 @@ export const MessageItemComponent = ({
               textTransform: 'none',
             }}
           >
-            {isOpeningFile ? 'Opening...' : 'Open file'}
+            {isOpeningFile ? 'Opening...' : t('group:message_item.open_file')}
           </Button>
         </DialogActions>
       </Dialog>
@@ -4342,7 +4366,7 @@ export const MessageItemComponent = ({
         }}
       >
         <Box
-          aria-label="Quick reactions"
+          aria-label={t('group:message_item.quick_reactions')}
           role="group"
           sx={{
             alignItems: 'center',
@@ -4467,7 +4491,9 @@ export const MessageItemComponent = ({
           aria-label={
             hasReticulumExpiry
               ? `Message expires ${reticulumExpiryText}`
-              : 'No Expiry'
+              : t('group:reticulum.expiry.no_expiry', {
+                  postProcess: 'capitalizeEachFirstChar',
+                })
           }
           role="status"
           sx={{
@@ -4594,13 +4620,7 @@ export const ReplyPreview = ({
   reticulumOnlyContent = false,
 }) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const replyMessageText = useMemo(() => {
     if (!message?.messageText) return null;

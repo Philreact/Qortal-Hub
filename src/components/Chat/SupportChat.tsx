@@ -10,7 +10,15 @@
  *                 QWxEcmZxnM8yb1p92C1YKKRsp8svSVbFEs
  */
 
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { useTranslation } from 'react-i18next';
 import { useMessageReadObserver } from '../../hooks/useMessageReadObserver';
 import { useAtom, useAtomValue } from 'jotai';
 import {
@@ -44,7 +52,11 @@ import MicOffRoundedIcon from '@mui/icons-material/MicOffRounded';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
 import { supportChatOpenAtom, userInfoAtom } from '../../atoms/global';
-import { useSupportChat, SUPPORT_ADDRESSES, decryptAttachmentFromSupport } from '../../hooks/useSupportChat';
+import {
+  useSupportChat,
+  SUPPORT_ADDRESSES,
+  decryptAttachmentFromSupport,
+} from '../../hooks/useSupportChat';
 import { useIsOnline } from '../../hooks/usePresence';
 import ImageUploader from '../../common/ImageUploader';
 import { useVoiceCallContext } from '../../context/VoiceCallContext';
@@ -54,7 +66,18 @@ import { CallAudioSettingsButton } from './CallAudioDeviceSelectors';
 
 export { SUPPORT_ADDRESSES };
 
-const QUICK_REACTIONS = ['👍', '✅', '❤️', '🙏', '🤔', '😮', '😅', '😂', '👀', '🔥'] as const;
+const QUICK_REACTIONS = [
+  '👍',
+  '✅',
+  '❤️',
+  '🙏',
+  '🤔',
+  '😮',
+  '😅',
+  '😂',
+  '👀',
+  '🔥',
+] as const;
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
@@ -89,13 +112,16 @@ function ReplyQuoteBar({
   findMessage: (id: string) => RenderedMessage | undefined;
   isMine: boolean;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   const parent = findMessage(parentId);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
-  const authorColor = parent ? addrColor(parent.authorAddress, isDark) : '#78909c';
+  const authorColor = parent
+    ? addrColor(parent.authorAddress, isDark)
+    : '#78909c';
   const preview = parent
     ? parent.isDeleted
-      ? 'Message deleted'
+      ? t('group:support.message_deleted')
       : parent.content.length > 120
         ? `${parent.content.slice(0, 120)}…`
         : parent.content
@@ -109,9 +135,7 @@ function ReplyQuoteBar({
         py: 0.5,
         borderRadius: 1.5,
         borderLeft: `3px solid ${authorColor}`,
-        backgroundColor: isMine
-          ? 'rgba(0,0,0,0.2)'
-          : `${authorColor}22`,
+        backgroundColor: isMine ? 'rgba(0,0,0,0.2)' : `${authorColor}22`,
         maxWidth: '100%',
       }}
     >
@@ -136,7 +160,12 @@ function ReplyQuoteBar({
           </Box>
           <Typography
             variant="caption"
-            sx={{ color: authorColor, fontWeight: 600, fontSize: 11, lineHeight: 1 }}
+            sx={{
+              color: authorColor,
+              fontWeight: 600,
+              fontSize: 11,
+              lineHeight: 1,
+            }}
           >
             {shortAddr(parent.authorAddress)}
           </Typography>
@@ -218,9 +247,13 @@ function ReactionChips({
                 backdropFilter: 'blur(8px)',
                 backgroundColor: iReacted
                   ? alpha(primaryColor, 0.85)
-                  : isDark ? 'rgba(40,44,52,0.88)' : 'rgba(255,255,255,0.88)',
-                border: `1px solid ${iReacted ? primaryColor : (isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)')}`,
-                color: iReacted ? theme.palette.primary.contrastText : theme.palette.text.primary,
+                  : isDark
+                    ? 'rgba(40,44,52,0.88)'
+                    : 'rgba(255,255,255,0.88)',
+                border: `1px solid ${iReacted ? primaryColor : isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)'}`,
+                color: iReacted
+                  ? theme.palette.primary.contrastText
+                  : theme.palette.text.primary,
                 boxShadow: '0 1px 4px rgba(0,0,0,0.18)',
                 transition: 'transform 0.1s ease, box-shadow 0.1s ease',
                 '&:hover': {
@@ -230,7 +263,10 @@ function ReactionChips({
               }}
             >
               <span style={{ fontSize: 14, lineHeight: 1 }}>{emoji}</span>
-              <Typography component="span" sx={{ fontSize: 11, lineHeight: 1, fontWeight: 600 }}>
+              <Typography
+                component="span"
+                sx={{ fontSize: 11, lineHeight: 1, fontWeight: 600 }}
+              >
                 {addresses.length}
               </Typography>
             </Box>
@@ -315,6 +351,7 @@ function AttachmentImage({
   isAgent?: boolean;
   decryptCache: React.MutableRefObject<Map<string, string>>;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   const [dataUri, setDataUri] = useState<string | null>(
     decryptCache.current.get(eventId) ?? null
   );
@@ -332,11 +369,22 @@ function AttachmentImage({
 
     (async () => {
       try {
-        const raw = attachmentData ?? (await window.chat?.getAttachment(eventId)) ?? null;
-        if (!raw || cancelled) { setLoading(false); return; }
+        const raw =
+          attachmentData ?? (await window.chat?.getAttachment(eventId)) ?? null;
+        if (!raw || cancelled) {
+          setLoading(false);
+          return;
+        }
 
-        const decrypted = await decryptAttachmentFromSupport(raw, senderPublicKey, isAgent);
-        if (!decrypted || cancelled) { setLoading(false); return; }
+        const decrypted = await decryptAttachmentFromSupport(
+          raw,
+          senderPublicKey,
+          isAgent
+        );
+        if (!decrypted || cancelled) {
+          setLoading(false);
+          return;
+        }
 
         const uri = `data:${mimeType};base64,${decrypted}`;
         decryptCache.current.set(eventId, uri);
@@ -348,8 +396,10 @@ function AttachmentImage({
       }
     })();
 
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
 
   const aspectRatio = width && height ? `${width} / ${height}` : undefined;
@@ -381,7 +431,7 @@ function AttachmentImage({
       <Box
         component="img"
         src={dataUri}
-        alt="attachment"
+        alt={t('group:support.attachment')}
         sx={{
           display: 'block',
           maxWidth: 240,
@@ -427,8 +477,13 @@ function AttachmentImage({
           <Box
             component="img"
             src={dataUri}
-            alt="attachment"
-            sx={{ display: 'block', maxWidth: '90vw', maxHeight: '90vh', objectFit: 'contain' }}
+            alt={t('group:support.attachment')}
+            sx={{
+              display: 'block',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              objectFit: 'contain',
+            }}
           />
         </Box>
       </Dialog>
@@ -448,7 +503,9 @@ function DateSeparator({ timestamp }: { timestamp: number }) {
     day: 'numeric',
   });
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, px: 2, py: 1.5 }}>
+    <Box
+      sx={{ display: 'flex', alignItems: 'center', gap: 1.5, px: 2, py: 1.5 }}
+    >
       <Box sx={{ flex: 1, height: '1px', backgroundColor: borderColor }} />
       <Typography
         variant="caption"
@@ -501,6 +558,7 @@ function MessageBubble({
   decryptCache: React.MutableRefObject<Map<string, string>>;
   isGrouped?: boolean;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const color = addrColor(msg.authorAddress, isDark);
@@ -619,9 +677,19 @@ function MessageBubble({
 
           {/* Content */}
           {msg.isDeleted ? (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: isMine ? 0.55 : 0.45 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 0.75,
+                opacity: isMine ? 0.55 : 0.45,
+              }}
+            >
               <RemoveCircleOutlineRoundedIcon sx={{ fontSize: 15 }} />
-              <Typography variant="body2" sx={{ fontStyle: 'italic', fontSize: 13 }}>
+              <Typography
+                variant="body2"
+                sx={{ fontStyle: 'italic', fontSize: 13 }}
+              >
                 This message was deleted
               </Typography>
             </Box>
@@ -676,7 +744,9 @@ function MessageBubble({
               {fmtTime(msg.timestamp)}
             </Typography>
             {isMine && (
-              <Tooltip title={seenByAgent ? 'Seen by agent' : 'Sent'}>
+              <Tooltip
+                title={seenByAgent ? t('group:support.seen_by_agent') : 'Sent'}
+              >
                 <DoneAllRoundedIcon
                   sx={{
                     fontSize: 14,
@@ -722,7 +792,9 @@ function MessageBubble({
           py: 0.5,
         }}
       >
-        <Tooltip title="Reply">
+        <Tooltip
+          title={t('core:action.reply', { postProcess: 'capitalizeFirstChar' })}
+        >
           <IconButton
             size="small"
             sx={{
@@ -739,7 +811,9 @@ function MessageBubble({
           </IconButton>
         </Tooltip>
 
-        <Tooltip title="React">
+        <Tooltip
+          title={t('core:action.react', { postProcess: 'capitalizeFirstChar' })}
+        >
           <IconButton
             size="small"
             sx={{
@@ -766,7 +840,11 @@ function MessageBubble({
                 mx: 0.25,
               }}
             />
-            <Tooltip title="Edit">
+            <Tooltip
+              title={t('core:action.edit', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            >
               <IconButton
                 size="small"
                 sx={{
@@ -782,14 +860,20 @@ function MessageBubble({
                 <DriveFileRenameOutlineRoundedIcon sx={{ fontSize: 17 }} />
               </IconButton>
             </Tooltip>
-            <Tooltip title="Delete">
+            <Tooltip
+              title={t('core:action.delete', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            >
               <IconButton
                 size="small"
                 sx={{
                   borderRadius: '50%',
                   p: 0.6,
                   color: 'error.main',
-                  '&:hover': { backgroundColor: alpha(theme.palette.error.main, 0.12) },
+                  '&:hover': {
+                    backgroundColor: alpha(theme.palette.error.main, 0.12),
+                  },
                 }}
                 onClick={() => onDelete(msg.id)}
               >
@@ -873,6 +957,7 @@ function WelcomeAgentAvatar({ address }: { address: string }) {
 // ── SupportChat ───────────────────────────────────────────────────────────────
 
 export function SupportChat() {
+  const { t } = useTranslation(['core', 'group']);
   const userInfo = useAtomValue(userInfoAtom);
   const myAddress: string = userInfo?.address ?? '';
 
@@ -897,7 +982,9 @@ export function SupportChat() {
     sendImage,
   } = useSupportChat(hasStarted);
 
-  const isAgent = SUPPORT_ADDRESSES.includes(myAddress as typeof SUPPORT_ADDRESSES[number]);
+  const isAgent = SUPPORT_ADDRESSES.includes(
+    myAddress as (typeof SUPPORT_ADDRESSES)[number]
+  );
 
   /** Decrypted data URI cache: eventId → data URI. Prevents re-decryption on re-renders. */
   const decryptCache = useRef<Map<string, string>>(new Map());
@@ -907,12 +994,11 @@ export function SupportChat() {
   // Track online status for each support agent (hooks must be called at top level).
   const agent0Online = useIsOnline(SUPPORT_ADDRESSES[0]);
   const agent1Online = useIsOnline(SUPPORT_ADDRESSES[1]);
-  const onlineAgent =
-    agent0Online
-      ? SUPPORT_ADDRESSES[0]
-      : agent1Online
-        ? SUPPORT_ADDRESSES[1]
-        : null;
+  const onlineAgent = agent0Online
+    ? SUPPORT_ADDRESSES[0]
+    : agent1Online
+      ? SUPPORT_ADDRESSES[1]
+      : null;
 
   const {
     callState,
@@ -932,14 +1018,20 @@ export function SupportChat() {
     if (callState === 'ringing' && incomingCall) {
       return incomingCall.chatId.startsWith('support:');
     }
-    if (callState === 'calling' || callState === 'connected' || callState === 'ended') {
+    if (
+      callState === 'calling' ||
+      callState === 'connected' ||
+      callState === 'ended'
+    ) {
       return activeCallChatId?.startsWith('support:') ?? false;
     }
     return true;
   }, [callState, incomingCall, activeCallChatId]);
 
   const fmtDuration = (secs: number): string => {
-    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const m = Math.floor(secs / 60)
+      .toString()
+      .padStart(2, '0');
     const s = (secs % 60).toString().padStart(2, '0');
     return `${m}:${s}`;
   };
@@ -999,12 +1091,13 @@ export function SupportChat() {
 
   // Intersection-based read receipts: mark messages as read only when they
   // actually enter the visible scroll area (true "eyes-on" confirmation).
-  const { register: registerRead, unregister: unregisterRead } = useMessageReadObserver(
-    myAddress,
-    readReceipts,
-    markMessagesRead,
-    scrollContainerRef
-  );
+  const { register: registerRead, unregister: unregisterRead } =
+    useMessageReadObserver(
+      myAddress,
+      readReceipts,
+      markMessagesRead,
+      scrollContainerRef
+    );
 
   // ── Compose mode helpers ────────────────────────────────────────────────────
 
@@ -1173,7 +1266,10 @@ export function SupportChat() {
               top: 10,
               right: 10,
               color: 'rgba(255,255,255,0.7)',
-              '&:hover': { color: '#fff', backgroundColor: 'rgba(255,255,255,0.12)' },
+              '&:hover': {
+                color: '#fff',
+                backgroundColor: 'rgba(255,255,255,0.12)',
+              },
             }}
           >
             <CloseRoundedIcon fontSize="small" />
@@ -1193,11 +1289,23 @@ export function SupportChat() {
             <HeadsetMicRoundedIcon sx={{ fontSize: 34, color: '#fff' }} />
           </Box>
 
-          <Typography variant="h6" sx={{ color: '#fff', fontWeight: 700, mt: 0.5 }}>
+          <Typography
+            variant="h6"
+            sx={{ color: '#fff', fontWeight: 700, mt: 0.5 }}
+          >
             Qortal Support
           </Typography>
-          <Typography variant="body2" align="center" sx={{ color: 'rgba(255,255,255,0.8)', maxWidth: 280, lineHeight: 1.5 }}>
-            Our team is here to help you. Start a session to connect with an available agent.
+          <Typography
+            variant="body2"
+            align="center"
+            sx={{
+              color: 'rgba(255,255,255,0.8)',
+              maxWidth: 280,
+              lineHeight: 1.5,
+            }}
+          >
+            Our team is here to help you. Start a session to connect with an
+            available agent.
           </Typography>
         </Box>
 
@@ -1215,15 +1323,33 @@ export function SupportChat() {
           {SUPPORT_ADDRESSES.map((addr) => (
             <WelcomeAgentAvatar key={addr} address={addr} />
           ))}
-          <Typography variant="body2" sx={{ color: isAgentOnline ? 'success.main' : 'text.disabled', fontWeight: 500 }}>
-            {isAgentOnline ? 'Agents online' : 'No agents online'}
+          <Typography
+            variant="body2"
+            sx={{
+              color: isAgentOnline ? 'success.main' : 'text.disabled',
+              fontWeight: 500,
+            }}
+          >
+            {isAgentOnline
+              ? t('group:support.agents_online')
+              : t('group:support.no_agents_online')}
           </Typography>
         </Box>
 
         {/* CTA area */}
-        <Box sx={{ px: 2.5, py: 2.5, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+        <Box
+          sx={{
+            px: 2.5,
+            py: 2.5,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 1.5,
+          }}
+        >
           <Tooltip
-            title={!isAgentOnline ? 'No agents are currently online. Please try again later.' : ''}
+            title={
+              !isAgentOnline ? t('group:support.no_agents_online_hint') : ''
+            }
             placement="top"
           >
             <span style={{ width: '100%' }}>
@@ -1233,7 +1359,12 @@ export function SupportChat() {
                 fullWidth
                 disabled={!isAgentOnline}
                 onClick={() => setHasStarted(true)}
-                sx={{ borderRadius: 2.5, py: 1.25, fontWeight: 700, fontSize: 15 }}
+                sx={{
+                  borderRadius: 2.5,
+                  py: 1.25,
+                  fontWeight: 700,
+                  fontSize: 15,
+                }}
                 startIcon={<HeadsetMicRoundedIcon />}
               >
                 Start Support Chat
@@ -1242,7 +1373,11 @@ export function SupportChat() {
           </Tooltip>
 
           {!isAgentOnline && (
-            <Typography variant="caption" align="center" sx={{ color: 'text.disabled', display: 'block' }}>
+            <Typography
+              variant="caption"
+              align="center"
+              sx={{ color: 'text.disabled', display: 'block' }}
+            >
               No agents are currently online. Please try again later.
             </Typography>
           )}
@@ -1281,7 +1416,9 @@ export function SupportChat() {
           gap: 1,
         }}
       >
-        <HeadsetMicRoundedIcon sx={{ fontSize: 20, color: 'text.secondary', flexShrink: 0 }} />
+        <HeadsetMicRoundedIcon
+          sx={{ fontSize: 20, color: 'text.secondary', flexShrink: 0 }}
+        />
         <Typography
           variant="subtitle2"
           sx={{ fontWeight: 700, flex: 1, letterSpacing: 0.3 }}
@@ -1317,7 +1454,14 @@ export function SupportChat() {
                 : 'Connecting…'
           }
         >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.5,
+              flexShrink: 0,
+            }}
+          >
             <Box
               sx={{
                 width: 8,
@@ -1333,7 +1477,11 @@ export function SupportChat() {
             <Typography
               variant="caption"
               sx={{
-                color: !window.chat ? 'error.main' : isReady ? 'success.main' : 'warning.main',
+                color: !window.chat
+                  ? 'error.main'
+                  : isReady
+                    ? 'success.main'
+                    : 'warning.main',
                 fontWeight: 500,
                 fontSize: 11,
               }}
@@ -1348,12 +1496,12 @@ export function SupportChat() {
           <Tooltip
             title={
               callState === 'connected'
-                ? 'In call'
+                ? t('group:support.in_call')
                 : callState !== 'idle'
                   ? ''
                   : !isAgentOnline
-                    ? 'No agents online'
-                    : 'Start voice call'
+                    ? t('group:support.no_agents_online')
+                    : t('group:support.start_voice_call')
             }
           >
             <span>
@@ -1362,9 +1510,11 @@ export function SupportChat() {
                 disabled={callState !== 'idle' && callState !== 'connected'}
                 onClick={callState === 'connected' ? hangUp : handleStartCall}
                 sx={{
-                  color: callState === 'connected' ? '#ef4444' : 'text.secondary',
+                  color:
+                    callState === 'connected' ? '#ef4444' : 'text.secondary',
                   '&:hover': {
-                    color: callState === 'connected' ? '#dc2626' : 'text.primary',
+                    color:
+                      callState === 'connected' ? '#dc2626' : 'text.primary',
                   },
                 }}
               >
@@ -1378,7 +1528,11 @@ export function SupportChat() {
           </Tooltip>
         )}
 
-        <IconButton size="small" onClick={() => setIsOpen(false)} sx={{ ml: 0.25 }}>
+        <IconButton
+          size="small"
+          onClick={() => setIsOpen(false)}
+          sx={{ ml: 0.25 }}
+        >
           <CloseRoundedIcon fontSize="small" />
         </IconButton>
       </Box>
@@ -1396,8 +1550,13 @@ export function SupportChat() {
             backgroundColor: 'primary.dark',
           }}
         >
-          <CallRoundedIcon sx={{ color: '#fff', animation: 'pulse 1s infinite', fontSize: 20 }} />
-          <Typography variant="body2" sx={{ color: '#fff', flex: 1, fontWeight: 600, fontSize: 12 }}>
+          <CallRoundedIcon
+            sx={{ color: '#fff', animation: 'pulse 1s infinite', fontSize: 20 }}
+          />
+          <Typography
+            variant="body2"
+            sx={{ color: '#fff', flex: 1, fontWeight: 600, fontSize: 12 }}
+          >
             Incoming call from {shortAddr(incomingCall.fromAddress)}
           </Typography>
           <IconButton
@@ -1443,7 +1602,10 @@ export function SupportChat() {
           }}
         >
           <CircularProgress size={14} thickness={5} />
-          <Typography variant="body2" sx={{ flex: 1, fontWeight: 600, fontSize: 12 }}>
+          <Typography
+            variant="body2"
+            sx={{ flex: 1, fontWeight: 600, fontSize: 12 }}
+          >
             Calling…
           </Typography>
           <IconButton size="small" onClick={hangUp} sx={{ color: '#ef4444' }}>
@@ -1485,13 +1647,16 @@ export function SupportChat() {
             <ForumRoundedIcon sx={{ fontSize: 44, opacity: 0.2 }} />
             <Typography variant="body2" sx={{ opacity: 0.45, fontWeight: 500 }}>
               {isClosed
-                ? 'This chat was resolved.'
-                : 'No messages yet'}
+                ? t('group:support.resolved')
+                : t('group:support.no_messages_yet')}
             </Typography>
-            <Typography variant="caption" sx={{ opacity: 0.3, display: 'block' }}>
+            <Typography
+              variant="caption"
+              sx={{ opacity: 0.3, display: 'block' }}
+            >
               {isClosed
-                ? 'Send a message to re-open.'
-                : 'Say hello to start the conversation.'}
+                ? t('group:support.send_to_reopen')
+                : t('group:support.say_hello')}
             </Typography>
           </Box>
         )}
@@ -1530,9 +1695,12 @@ export function SupportChat() {
 
         {messages.map((msg, idx) => {
           const prev = idx > 0 ? messages[idx - 1] : null;
-          const isGrouped = prev !== null && prev.authorAddress === msg.authorAddress;
-          const showDateSep = prev !== null &&
-            new Date(msg.timestamp).toDateString() !== new Date(prev.timestamp).toDateString();
+          const isGrouped =
+            prev !== null && prev.authorAddress === msg.authorAddress;
+          const showDateSep =
+            prev !== null &&
+            new Date(msg.timestamp).toDateString() !==
+              new Date(prev.timestamp).toDateString();
           return (
             <React.Fragment key={msg.id}>
               {showDateSep && <DateSeparator timestamp={msg.timestamp} />}
@@ -1589,7 +1757,7 @@ export function SupportChat() {
               sx={{ fontWeight: 600, display: 'block', lineHeight: 1.4 }}
             >
               {editTarget
-                ? 'Editing message'
+                ? t('group:support.editing_message')
                 : `Replying to ${shortAddr(replyTarget!.authorAddress)}`}
             </Typography>
             {replyTarget && (
@@ -1610,7 +1778,7 @@ export function SupportChat() {
               </Typography>
             )}
           </Box>
-          <Tooltip title="Cancel (Esc)">
+          <Tooltip title={t('group:support.cancel_esc')}>
             <IconButton
               size="small"
               onClick={handleCancelCompose}
@@ -1638,7 +1806,9 @@ export function SupportChat() {
             alignItems: 'center',
             flexWrap: 'wrap',
             gap: 1,
-            backgroundColor: isDark ? 'rgba(34,197,94,0.12)' : 'rgba(34,197,94,0.08)',
+            backgroundColor: isDark
+              ? 'rgba(34,197,94,0.12)'
+              : 'rgba(34,197,94,0.08)',
           }}
         >
           <Box
@@ -1650,7 +1820,15 @@ export function SupportChat() {
               flexShrink: 0,
             }}
           />
-          <Typography variant="caption" sx={{ flex: 1, fontWeight: 600, color: 'success.main', fontSize: 11 }}>
+          <Typography
+            variant="caption"
+            sx={{
+              flex: 1,
+              fontWeight: 600,
+              color: 'success.main',
+              fontSize: 11,
+            }}
+          >
             In call — {fmtDuration(callDuration)}
           </Typography>
 
@@ -1684,7 +1862,11 @@ export function SupportChat() {
               color: isMuted ? 'error.main' : 'text.secondary',
             }}
           >
-            {isMuted ? <MicOffRoundedIcon sx={{ fontSize: 15 }} /> : <MicRoundedIcon sx={{ fontSize: 15 }} />}
+            {isMuted ? (
+              <MicOffRoundedIcon sx={{ fontSize: 15 }} />
+            ) : (
+              <MicRoundedIcon sx={{ fontSize: 15 }} />
+            )}
           </IconButton>
           <IconButton
             size="small"
@@ -1742,7 +1924,9 @@ export function SupportChat() {
             alignItems: 'center',
             gap: 1.5,
             borderTop: `1px solid ${borderColor}`,
-            backgroundColor: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)',
+            backgroundColor: isDark
+              ? 'rgba(255,255,255,0.03)'
+              : 'rgba(0,0,0,0.02)',
             flexShrink: 0,
           }}
         >
@@ -1750,8 +1934,14 @@ export function SupportChat() {
             <Box
               component="img"
               src={pendingAttachment.previewUrl}
-              alt="preview"
-              sx={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 1.5, display: 'block' }}
+              alt={t('group:support.preview')}
+              sx={{
+                width: 56,
+                height: 56,
+                objectFit: 'cover',
+                borderRadius: 1.5,
+                display: 'block',
+              }}
             />
             <IconButton
               size="small"
@@ -1811,7 +2001,9 @@ export function SupportChat() {
           onKeyDown={handleKeyDown}
           onPaste={(e: React.ClipboardEvent) => {
             const items = Array.from(e.clipboardData.items);
-            const imageItem = items.find((item) => item.type.startsWith('image/'));
+            const imageItem = items.find((item) =>
+              item.type.startsWith('image/')
+            );
             if (!imageItem) return;
             e.preventDefault();
             const file = imageItem.getAsFile();
@@ -1837,20 +2029,22 @@ export function SupportChat() {
         <IconButton
           size="medium"
           onClick={handleSend}
-          disabled={!isReady || (!inputText.trim() && !pendingAttachment) || isSending || !window.chat || !isAgentOnline}
+          disabled={
+            !isReady ||
+            (!inputText.trim() && !pendingAttachment) ||
+            isSending ||
+            !window.chat ||
+            !isAgentOnline
+          }
           color={editTarget ? 'warning' : 'primary'}
           sx={{ mb: 0.25, '&:disabled': { opacity: 0.35 } }}
         >
-          {isSending ? (
-            <CircularProgress size={20} />
-          ) : (
-            <SendRoundedIcon />
-          )}
+          {isSending ? <CircularProgress size={20} /> : <SendRoundedIcon />}
         </IconButton>
 
         {/* Image attachment button — hidden in edit mode since edits are text-only */}
         {!editTarget && (
-          <Tooltip title="Send image">
+          <Tooltip title={t('group:support.send_image')}>
             <span>
               <ImageUploader
                 onPick={(file) => {
@@ -1863,7 +2057,9 @@ export function SupportChat() {
               >
                 <IconButton
                   size="medium"
-                  disabled={!isReady || isSending || !window.chat || !isAgentOnline}
+                  disabled={
+                    !isReady || isSending || !window.chat || !isAgentOnline
+                  }
                   sx={{ mb: 0.25, '&:disabled': { opacity: 0.35 } }}
                 >
                   <AttachFileRoundedIcon />

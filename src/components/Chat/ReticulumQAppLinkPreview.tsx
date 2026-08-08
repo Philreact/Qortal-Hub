@@ -12,6 +12,8 @@ import {
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
+import { useTranslation, type TFunction } from 'react-i18next';
+import i18n from '../../i18n/i18n';
 import { getBaseApiReact } from '../../utils/globalApi';
 import { executeEvent } from '../../utils/events';
 import qortalWhiteLogo from '../../assets/sidebar/qortal-logo-white.png';
@@ -72,12 +74,20 @@ const safeString = (value: unknown) =>
 const Q_TUBE_INTERNAL_METADATA_PATTERN =
   /\*{0,2}\s*category\s*:[^;\r\n*]+(?:\s*;\s*(?:subcategory|code)\s*:[^;\r\n*]+)*\s*\*{0,2}/gi;
 
-export const normalizeQTubeDescription = (value: unknown) => {
+export const normalizeQTubeDescription = (
+  value: unknown,
+  t: TFunction = i18n.t
+) => {
   const description = safeString(value)
     .replace(Q_TUBE_INTERNAL_METADATA_PATTERN, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  return description || 'Watch this video on Q-Tube.';
+  return (
+    description ||
+    t('group:reticulum.qapp_preview.watch_on_qtube', {
+      postProcess: 'capitalizeFirstChar',
+    })
+  );
 };
 
 const hasMediaItems = (value: unknown) =>
@@ -89,15 +99,28 @@ const hasMediaItems = (value: unknown) =>
 
 export const getQuitterPostSummary = (
   documentValue: Record<string, unknown>,
-  mediaTitle = ''
+  mediaTitle = '',
+  t: TFunction = i18n.t
 ) => {
   const text = safeString(documentValue.text);
   if (text) return text;
-  if (hasMediaItems(documentValue.images)) return 'Shared a photo';
+  if (hasMediaItems(documentValue.images))
+    return t('group:reticulum.qapp_preview.shared_photo', {
+      postProcess: 'capitalizeFirstChar',
+    });
   if (hasMediaItems(documentValue.videos)) {
-    return mediaTitle ? `Shared a video: ${mediaTitle}` : 'Shared a video';
+    return mediaTitle
+      ? t('group:reticulum.qapp_preview.shared_video_titled', {
+          postProcess: 'capitalizeFirstChar',
+          title: mediaTitle,
+        })
+      : t('group:reticulum.qapp_preview.shared_video', {
+          postProcess: 'capitalizeFirstChar',
+        });
   }
-  return 'View this post on Quitter';
+  return t('group:reticulum.qapp_preview.view_on_quitter', {
+    postProcess: 'capitalizeFirstChar',
+  });
 };
 
 const safeNumber = (value: unknown) =>
@@ -656,6 +679,7 @@ function PreviewFailure({
   link: ReticulumQAppLink;
   onRetry: () => void;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   const layout = previewShellLayout(link.kind);
   const notFound = failure === 'not-found';
   return (
@@ -678,7 +702,13 @@ function PreviewFailure({
         <Box sx={{ maxWidth: 420 }}>
           <AppHeader link={link} />
           <Typography sx={{ fontSize: 14, fontWeight: 750, mt: 1.6 }}>
-            {notFound ? 'Resource not found' : 'Preview unavailable'}
+            {notFound
+              ? t('group:reticulum.qapp_preview.resource_not_found', {
+                  postProcess: 'capitalizeFirstChar',
+                })
+              : t('group:reticulum.qapp_preview.preview_unavailable', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
           </Typography>
           <Typography
             sx={{
@@ -689,8 +719,12 @@ function PreviewFailure({
             }}
           >
             {notFound
-              ? 'No Q-App resource was found for this link.'
-              : `The resource exists, but its preview could not be loaded right now.`}
+              ? t('group:reticulum.qapp_preview.no_resource', {
+                  postProcess: 'capitalizeFirstChar',
+                })
+              : t('group:reticulum.qapp_preview.preview_failed', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
           </Typography>
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1.7 }}>
             <Button
@@ -703,7 +737,11 @@ function PreviewFailure({
               variant="contained"
               sx={{ borderRadius: '6px', minHeight: 32, textTransform: 'none' }}
             >
-              {notFound ? 'Check again' : 'Retry'}
+              {notFound
+                ? t('group:reticulum.qapp_preview.check_again', {
+                    postProcess: 'capitalizeFirstChar',
+                  })
+                : t('core:retry', { postProcess: 'capitalizeFirstChar' })}
             </Button>
             {!notFound ? (
               <Button
@@ -948,6 +986,7 @@ function QuitterPreview({
   data: QAppPreviewData;
   link: ReticulumQAppLink;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   const date = formatPreviewDate(data.createdAt);
   const layout = previewShellLayout(link.kind);
   return (
@@ -1039,7 +1078,10 @@ function QuitterPreview({
                 WebkitLineClamp: 3,
               }}
             >
-              {data.body || 'Open this post in Quitter.'}
+              {data.body ||
+                t('group:reticulum.qapp_preview.open_in_quitter', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
             </Typography>
             <Typography
               sx={{
@@ -1065,6 +1107,7 @@ function SubWirePreview({
   data: QAppPreviewData;
   link: ReticulumQAppLink;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   const date = formatPreviewDate(data.createdAt);
   const [mediaFailed, setMediaFailed] = useState(false);
 
@@ -1132,7 +1175,10 @@ function SubWirePreview({
                 WebkitLineClamp: 3,
               }}
             >
-              {data.body || 'Open this publication to read the full article.'}
+              {data.body ||
+                t('group:reticulum.qapp_preview.open_publication', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
             </Typography>
             <Box
               sx={{

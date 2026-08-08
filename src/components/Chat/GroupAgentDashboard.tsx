@@ -5,7 +5,15 @@
  * can join/leave the shared group call room. Uses GroupCallContext.
  */
 
-import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAtom, useAtomValue } from 'jotai';
 import {
   Avatar,
@@ -30,7 +38,10 @@ import HubRoundedIcon from '@mui/icons-material/HubRounded';
 import FileDownloadRoundedIcon from '@mui/icons-material/FileDownloadRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import { groupChatOpenAtom, userInfoAtom } from '../../atoms/global';
-import { useSupportChat, GROUP_SUPPORT_ADDRESSES } from '../../hooks/useSupportChat';
+import {
+  useSupportChat,
+  GROUP_SUPPORT_ADDRESSES,
+} from '../../hooks/useSupportChat';
 import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import { getGroupCallTransportSummary } from '../../lib/group-call/router';
@@ -61,44 +72,55 @@ function addrColor(addr: string): string {
 }
 
 function fmtTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return new Date(ts).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 const ROLE_COLORS: Record<GroupCallRole, string> = {
-  'root-forwarder':    '#6366f1',
+  'root-forwarder': '#6366f1',
   'cluster-forwarder': '#8b5cf6',
   'standby-forwarder': '#f59e0b',
-  'participant':       'transparent',
+  participant: 'transparent',
 };
 
-const ROLE_LABELS: Record<MyRole, string> = {
-  'root-forwarder':    'Root Forwarder',
-  'cluster-forwarder': 'Cluster Forwarder',
-  'standby-forwarder': 'Standby',
-  'participant':       'Participant',
+const ROLE_LABEL_KEYS: Record<GroupCallRole, string> = {
+  'root-forwarder': 'group:support.forwarder_root',
+  'cluster-forwarder': 'group:support.forwarder_cluster',
+  'standby-forwarder': 'group:support.forwarder_standby',
+  participant: 'group:support.role_participant',
 };
 
 // ── ParticipantRow ─────────────────────────────────────────────────────────────
 
 function ParticipantRow({
-  address, speaking, role,
+  address,
+  speaking,
+  role,
 }: {
   address: string;
   speaking: boolean;
   role: GroupCallRole;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   return (
     <Box
       sx={{
-        display: 'flex', alignItems: 'center', gap: 1,
-        px: 1, py: 0.5, borderRadius: 1,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1,
+        px: 1,
+        py: 0.5,
+        borderRadius: 1,
         bgcolor: alpha('#fff', 0.03),
       }}
     >
       <Box sx={{ position: 'relative' }}>
         <Avatar
           sx={{
-            width: 30, height: 30,
+            width: 30,
+            height: 30,
             bgcolor: addrColor(address),
             fontSize: 11,
             outline: speaking ? '2px solid #22c55e' : '2px solid transparent',
@@ -108,25 +130,37 @@ function ParticipantRow({
           {address.slice(0, 2)}
         </Avatar>
         {speaking && (
-          <Box sx={{
-            position: 'absolute', bottom: -1, right: -1,
-            width: 10, height: 10, borderRadius: '50%',
-            bgcolor: '#22c55e', border: '2px solid #1a1b1e',
-          }} />
+          <Box
+            sx={{
+              position: 'absolute',
+              bottom: -1,
+              right: -1,
+              width: 10,
+              height: 10,
+              borderRadius: '50%',
+              bgcolor: '#22c55e',
+              border: '2px solid #1a1b1e',
+            }}
+          />
         )}
       </Box>
 
-      <Typography variant="caption" sx={{ flex: 1, fontSize: 11, color: alpha('#fff', 0.8) }}>
+      <Typography
+        variant="caption"
+        sx={{ flex: 1, fontSize: 11, color: alpha('#fff', 0.8) }}
+      >
         {shortAddr(address)}
       </Typography>
 
       {role !== 'participant' && (
         <Chip
-          label={ROLE_LABELS[role]}
+          label={t(ROLE_LABEL_KEYS[role])}
           size="small"
           icon={<HubRoundedIcon />}
           sx={{
-            height: 16, fontSize: 8, fontWeight: 700,
+            height: 16,
+            fontSize: 8,
+            fontWeight: 700,
             bgcolor: alpha(ROLE_COLORS[role], 0.2),
             color: ROLE_COLORS[role],
             '& .MuiChip-icon': { fontSize: 10, color: ROLE_COLORS[role] },
@@ -144,20 +178,28 @@ function ParticipantRow({
 // ── GroupAgentDashboard ────────────────────────────────────────────────────────
 
 export function GroupAgentDashboard() {
+  const { t } = useTranslation(['core', 'group']);
   const [isOpen, setIsOpen] = useAtom(groupChatOpenAtom);
   const [keepMounted, setKeepMounted] = useState(false);
 
   if (!isOpen && !keepMounted) {
     return (
-      <Tooltip title="Group Call Dashboard" placement="left">
+      <Tooltip title={t('group:support.group_call_dashboard')} placement="left">
         <Box
           onClick={() => setIsOpen(true)}
           sx={{
-            position: 'fixed', bottom: 24, right: 24, zIndex: 1400,
-            width: 52, height: 52, borderRadius: '50%',
+            position: 'fixed',
+            bottom: 24,
+            right: 24,
+            zIndex: 1400,
+            width: 52,
+            height: 52,
+            borderRadius: '50%',
             background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
             color: '#fff',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
             cursor: 'pointer',
             boxShadow: '0 4px 20px rgba(99,102,241,0.5)',
             transition: 'box-shadow 0.3s',
@@ -187,14 +229,23 @@ function GroupAgentDashboardPanel({
   setIsOpen: (open: boolean) => void;
   setKeepMounted: (active: boolean) => void;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   const userInfo = useAtomValue(userInfoAtom);
 
   const { messages, sendMessage, isSending } = useSupportChat();
 
   const {
-    roomState, participants, myRole, activeSpeakers, topologyLabel, metrics,
+    roomState,
+    participants,
+    myRole,
+    activeSpeakers,
+    topologyLabel,
+    metrics,
     localConnectionHint,
-    joinGroupCall, leaveGroupCall, muted: callMuted, setMuted: setCallMuted,
+    joinGroupCall,
+    leaveGroupCall,
+    muted: callMuted,
+    setMuted: setCallMuted,
     exportGroupCallDiagnostics,
   } = useGroupCallContext();
   const { confirmCallSwitch } = useCallSwitchGuard();
@@ -228,9 +279,15 @@ function GroupAgentDashboardPanel({
     setInputValue('');
   }, [inputValue, sendMessage]);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
-  }, [handleSend]);
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSend();
+      }
+    },
+    [handleSend]
+  );
 
   const handleJoinCall = useCallback(async () => {
     const confirmed = await confirmCallSwitch({
@@ -272,18 +329,29 @@ function GroupAgentDashboardPanel({
     <Paper
       elevation={12}
       sx={{
-        position: 'fixed', bottom: 24, right: 24, zIndex: 1400,
-        width: 400, height: inCall ? 620 : 500, borderRadius: 3,
-        display: 'flex', flexDirection: 'column', overflow: 'hidden',
-        bgcolor: '#1a1b1e', color: '#fff',
+        position: 'fixed',
+        bottom: 24,
+        right: 24,
+        zIndex: 1400,
+        width: 400,
+        height: inCall ? 620 : 500,
+        borderRadius: 3,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        bgcolor: '#1a1b1e',
+        color: '#fff',
       }}
     >
       {/* Header */}
       <Box
         sx={{
-          px: 2, py: 1.5,
+          px: 2,
+          py: 1.5,
           background: 'linear-gradient(90deg, #6366f1 0%, #8b5cf6 100%)',
-          display: 'flex', alignItems: 'center', gap: 1,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
         }}
       >
         <Groups2RoundedIcon fontSize="small" />
@@ -295,7 +363,13 @@ function GroupAgentDashboardPanel({
           <Chip
             label={topologyLabel}
             size="small"
-            sx={{ height: 18, fontSize: 9, fontWeight: 700, bgcolor: alpha('#fff', 0.2), color: '#fff' }}
+            sx={{
+              height: 18,
+              fontSize: 9,
+              fontWeight: 700,
+              bgcolor: alpha('#fff', 0.2),
+              color: '#fff',
+            }}
           />
         )}
 
@@ -305,7 +379,9 @@ function GroupAgentDashboardPanel({
               label={transport.label}
               size="small"
               sx={{
-                height: 18, fontSize: 9, fontWeight: 700,
+                height: 18,
+                fontSize: 9,
+                fontWeight: 700,
                 maxWidth: 120,
                 bgcolor:
                   transport.mode === 'relay'
@@ -322,10 +398,12 @@ function GroupAgentDashboardPanel({
         {isForwarder && (
           <Chip
             icon={<HubRoundedIcon />}
-            label={ROLE_LABELS[myRole]}
+            label={t(ROLE_LABEL_KEYS[myRole])}
             size="small"
             sx={{
-              height: 18, fontSize: 9, fontWeight: 700,
+              height: 18,
+              fontSize: 9,
+              fontWeight: 700,
               bgcolor: alpha(ROLE_COLORS[myRole], 0.25),
               color: ROLE_COLORS[myRole],
               '& .MuiChip-icon': { fontSize: 10, color: ROLE_COLORS[myRole] },
@@ -333,7 +411,11 @@ function GroupAgentDashboardPanel({
           />
         )}
 
-        <IconButton size="small" sx={{ color: '#fff' }} onClick={() => setIsOpen(false)}>
+        <IconButton
+          size="small"
+          sx={{ color: '#fff' }}
+          onClick={() => setIsOpen(false)}
+        >
           <CloseRoundedIcon fontSize="small" />
         </IconButton>
       </Box>
@@ -343,7 +425,8 @@ function GroupAgentDashboardPanel({
       {/* Call controls */}
       <Box
         sx={{
-          px: 2, py: 1,
+          px: 2,
+          py: 1,
           bgcolor: alpha(inCall ? '#6366f1' : '#fff', 0.06),
           borderBottom: '1px solid rgba(255,255,255,0.07)',
         }}
@@ -351,7 +434,16 @@ function GroupAgentDashboardPanel({
         {inCall ? (
           <>
             {/* Participant list */}
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mb: 1, maxHeight: 160, overflowY: 'auto' }}>
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 0.5,
+                mb: 1,
+                maxHeight: 160,
+                overflowY: 'auto',
+              }}
+            >
               {participants.map((p) => (
                 <ParticipantRow
                   key={p.address}
@@ -364,16 +456,35 @@ function GroupAgentDashboardPanel({
 
             {/* Active speakers */}
             {activeSpeakers.length > 0 && (
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.75 }}>
-                <RecordVoiceOverRoundedIcon sx={{ fontSize: 12, color: '#22c55e' }} />
-                <Typography variant="caption" sx={{ fontSize: 10, color: '#22c55e' }}>
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
+                  mb: 0.75,
+                }}
+              >
+                <RecordVoiceOverRoundedIcon
+                  sx={{ fontSize: 12, color: '#22c55e' }}
+                />
+                <Typography
+                  variant="caption"
+                  sx={{ fontSize: 10, color: '#22c55e' }}
+                >
                   Speaking: {activeSpeakers.map((a) => shortAddr(a)).join(', ')}
                 </Typography>
               </Box>
             )}
 
             {/* Controls */}
-            <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 1,
+              }}
+            >
               <CallAudioSettingsButton />
               <Tooltip title={callMuted ? 'Unmute' : 'Mute'}>
                 <IconButton
@@ -382,24 +493,38 @@ function GroupAgentDashboardPanel({
                   sx={{
                     color: callMuted ? '#ef4444' : '#22c55e',
                     bgcolor: alpha(callMuted ? '#ef4444' : '#22c55e', 0.12),
-                    width: 28, height: 28,
+                    width: 28,
+                    height: 28,
                   }}
                 >
-                  {callMuted ? <MicOffRoundedIcon sx={{ fontSize: 14 }} /> : <MicRoundedIcon sx={{ fontSize: 14 }} />}
+                  {callMuted ? (
+                    <MicOffRoundedIcon sx={{ fontSize: 14 }} />
+                  ) : (
+                    <MicRoundedIcon sx={{ fontSize: 14 }} />
+                  )}
                 </IconButton>
               </Tooltip>
 
-              <Tooltip title="Leave call">
+              <Tooltip
+                title={t('core:group_call_leave', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              >
                 <IconButton
                   size="small"
                   onClick={leaveGroupCall}
-                  sx={{ color: '#ef4444', bgcolor: alpha('#ef4444', 0.12), width: 28, height: 28 }}
+                  sx={{
+                    color: '#ef4444',
+                    bgcolor: alpha('#ef4444', 0.12),
+                    width: 28,
+                    height: 28,
+                  }}
                 >
                   <CallEndRoundedIcon sx={{ fontSize: 14 }} />
                 </IconButton>
               </Tooltip>
 
-              <Tooltip title="Export call diagnostics (JSON download)">
+              <Tooltip title={t('core:group_call_export_diagnostics')}>
                 <span>
                   <IconButton
                     size="small"
@@ -416,7 +541,7 @@ function GroupAgentDashboardPanel({
                   </IconButton>
                 </span>
               </Tooltip>
-              <Tooltip title="Copy diagnostics JSON to clipboard">
+              <Tooltip title={t('core:group_call_copy_diagnostics')}>
                 <span>
                   <IconButton
                     size="small"
@@ -434,8 +559,12 @@ function GroupAgentDashboardPanel({
                 </span>
               </Tooltip>
 
-              <Typography variant="caption" sx={{ ml: 'auto', fontSize: 10, color: alpha('#fff', 0.5) }}>
-                {participants.length} participant{participants.length !== 1 ? 's' : ''}
+              <Typography
+                variant="caption"
+                sx={{ ml: 'auto', fontSize: 10, color: alpha('#fff', 0.5) }}
+              >
+                {participants.length} participant
+                {participants.length !== 1 ? 's' : ''}
               </Typography>
             </Box>
 
@@ -449,14 +578,40 @@ function GroupAgentDashboardPanel({
                 border: '1px solid rgba(255,255,255,0.05)',
               }}
             >
-              <Typography variant="caption" sx={{ display: 'block', fontSize: 10, color: alpha('#fff', 0.72) }}>
-                Mix load {metrics.mixerActiveSpeakerEstimate} | master {metrics.mixerMasterGain.toFixed(2)} | reduction {metrics.mixerCurrentReductionDb.toFixed(2)} dB
+              <Typography
+                variant="caption"
+                sx={{
+                  display: 'block',
+                  fontSize: 10,
+                  color: alpha('#fff', 0.72),
+                }}
+              >
+                Mix load {metrics.mixerActiveSpeakerEstimate} | master{' '}
+                {metrics.mixerMasterGain.toFixed(2)} | reduction{' '}
+                {metrics.mixerCurrentReductionDb.toFixed(2)} dB
               </Typography>
-              <Typography variant="caption" sx={{ display: 'block', fontSize: 10, color: alpha('#fff', 0.72) }}>
-                Overloads {metrics.mixerOverloadEvents} | heavy frac {(metrics.mixerHeavyReductionFraction * 100).toFixed(1)}% | conceal {metrics.concealmentTicks}
+              <Typography
+                variant="caption"
+                sx={{
+                  display: 'block',
+                  fontSize: 10,
+                  color: alpha('#fff', 0.72),
+                }}
+              >
+                Overloads {metrics.mixerOverloadEvents} | heavy frac{' '}
+                {(metrics.mixerHeavyReductionFraction * 100).toFixed(1)}% |
+                conceal {metrics.concealmentTicks}
               </Typography>
-              <Typography variant="caption" sx={{ display: 'block', fontSize: 10, color: alpha('#fff', 0.72) }}>
-                Jitter underruns {metrics.jitterUnderruns} | missing {metrics.missingFrames} | transport {transport.label}
+              <Typography
+                variant="caption"
+                sx={{
+                  display: 'block',
+                  fontSize: 10,
+                  color: alpha('#fff', 0.72),
+                }}
+              >
+                Jitter underruns {metrics.jitterUnderruns} | missing{' '}
+                {metrics.missingFrames} | transport {transport.label}
               </Typography>
             </Box>
           </>
@@ -464,22 +619,37 @@ function GroupAgentDashboardPanel({
           <Box
             onClick={handleJoinCall}
             sx={{
-              display: 'flex', alignItems: 'center', gap: 1.5,
-              cursor: 'pointer', py: 1, px: 1.5, borderRadius: 1.5,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.5,
+              cursor: 'pointer',
+              py: 1,
+              px: 1.5,
+              borderRadius: 1.5,
               bgcolor: alpha('#6366f1', 0.12),
               '&:hover': { bgcolor: alpha('#6366f1', 0.22) },
               transition: 'background 0.15s',
             }}
           >
-            {roomState === 'joining'
-              ? <CircularProgress size={16} sx={{ color: '#6366f1' }} />
-              : <Groups2RoundedIcon sx={{ fontSize: 18, color: '#6366f1' }} />
-            }
+            {roomState === 'joining' ? (
+              <CircularProgress size={16} sx={{ color: '#6366f1' }} />
+            ) : (
+              <Groups2RoundedIcon sx={{ fontSize: 18, color: '#6366f1' }} />
+            )}
             <Box>
-              <Typography variant="body2" fontWeight={600} sx={{ color: '#6366f1', fontSize: 13 }}>
-                {roomState === 'joining' ? 'Joining group call…' : 'Join Group Call'}
+              <Typography
+                variant="body2"
+                fontWeight={600}
+                sx={{ color: '#6366f1', fontSize: 13 }}
+              >
+                {roomState === 'joining'
+                  ? 'Joining group call…'
+                  : t('group:support.join_group_call')}
               </Typography>
-              <Typography variant="caption" sx={{ color: alpha('#fff', 0.4), fontSize: 10 }}>
+              <Typography
+                variant="caption"
+                sx={{ color: alpha('#fff', 0.4), fontSize: 10 }}
+              >
                 Tap to enter the support room
               </Typography>
             </Box>
@@ -488,39 +658,79 @@ function GroupAgentDashboardPanel({
       </Box>
 
       {/* Messages */}
-      <Box sx={{ flex: 1, overflowY: 'auto', p: 2, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+      <Box
+        sx={{
+          flex: 1,
+          overflowY: 'auto',
+          p: 2,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 1.5,
+        }}
+      >
         {messages.map((msg: any) => {
           const isMe = msg.authorAddress === userInfo?.address;
           return (
             <Box
               key={msg.id}
               sx={{
-                display: 'flex', flexDirection: isMe ? 'row-reverse' : 'row',
-                alignItems: 'flex-end', gap: 0.75,
+                display: 'flex',
+                flexDirection: isMe ? 'row-reverse' : 'row',
+                alignItems: 'flex-end',
+                gap: 0.75,
               }}
             >
               {!isMe && (
-                <Avatar sx={{ width: 26, height: 26, bgcolor: addrColor(msg.authorAddress), fontSize: 10 }}>
+                <Avatar
+                  sx={{
+                    width: 26,
+                    height: 26,
+                    bgcolor: addrColor(msg.authorAddress),
+                    fontSize: 10,
+                  }}
+                >
                   {msg.authorAddress.slice(0, 2)}
                 </Avatar>
               )}
               <Box>
                 {!isMe && (
-                  <Typography variant="caption" sx={{ pl: 0.5, color: addrColor(msg.authorAddress), fontWeight: 600, fontSize: 10 }}>
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      pl: 0.5,
+                      color: addrColor(msg.authorAddress),
+                      fontWeight: 600,
+                      fontSize: 10,
+                    }}
+                  >
                     {shortAddr(msg.authorAddress)}
                   </Typography>
                 )}
                 <Box
                   sx={{
-                    px: 1.5, py: 0.75, borderRadius: 2,
+                    px: 1.5,
+                    py: 0.75,
+                    borderRadius: 2,
                     bgcolor: isMe ? '#6366f1' : alpha('#fff', 0.06),
-                    maxWidth: 260, wordBreak: 'break-word',
+                    maxWidth: 260,
+                    wordBreak: 'break-word',
                   }}
                 >
                   <Typography variant="body2" sx={{ fontSize: 13 }}>
-                    {typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)}
+                    {typeof msg.content === 'string'
+                      ? msg.content
+                      : JSON.stringify(msg.content)}
                   </Typography>
-                  <Typography variant="caption" sx={{ fontSize: 9, opacity: 0.5, display: 'block', textAlign: 'right', mt: 0.25 }}>
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      fontSize: 9,
+                      opacity: 0.5,
+                      display: 'block',
+                      textAlign: 'right',
+                      mt: 0.25,
+                    }}
+                  >
                     {fmtTime(msg.timestamp)}
                   </Typography>
                 </Box>
@@ -534,22 +744,27 @@ function GroupAgentDashboardPanel({
       {/* Input */}
       <Box
         sx={{
-          px: 1.5, py: 1,
+          px: 1.5,
+          py: 1,
           borderTop: '1px solid rgba(255,255,255,0.08)',
-          display: 'flex', alignItems: 'center', gap: 1,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
         }}
       >
         <InputBase
           fullWidth
           multiline
           maxRows={3}
-          placeholder="Reply to group…"
+          placeholder={t('group:support.reply_group_placeholder')}
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
           sx={{
-            fontSize: 13, color: '#fff',
-            px: 1.5, py: 0.75,
+            fontSize: 13,
+            color: '#fff',
+            px: 1.5,
+            py: 0.75,
             bgcolor: alpha('#fff', 0.06),
             borderRadius: 2,
             '& textarea': { color: '#fff' },
@@ -559,9 +774,16 @@ function GroupAgentDashboardPanel({
           size="small"
           onClick={handleSend}
           disabled={isSending || !inputValue.trim()}
-          sx={{ color: '#6366f1', '&:disabled': { color: alpha('#6366f1', 0.3) } }}
+          sx={{
+            color: '#6366f1',
+            '&:disabled': { color: alpha('#6366f1', 0.3) },
+          }}
         >
-          {isSending ? <CircularProgress size={16} /> : <SendRoundedIcon fontSize="small" />}
+          {isSending ? (
+            <CircularProgress size={16} />
+          ) : (
+            <SendRoundedIcon fontSize="small" />
+          )}
         </IconButton>
       </Box>
     </Paper>

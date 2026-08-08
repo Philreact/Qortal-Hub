@@ -24,11 +24,7 @@ import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import { getBaseApiReact } from '../../App';
 import { executeEvent } from '../../utils/events';
 import { useAtom } from 'jotai';
-import {
-  memberGroupsAtom,
-  txListAtom,
-  userInfoAtom,
-} from '../../atoms/global';
+import { memberGroupsAtom, txListAtom, userInfoAtom } from '../../atoms/global';
 import { useTranslation } from 'react-i18next';
 import { TIME_MINUTES_1_IN_MILLISECONDS } from '../../constants/constants';
 import {
@@ -58,13 +54,7 @@ export const TaskManager = ({
     Record<string, ReturnType<typeof setInterval>>
   >({});
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const popoverOpen = Boolean(anchorEl);
 

@@ -44,19 +44,13 @@ export const PollCard = ({
   const userInfo = useAtomValue(userInfoAtom);
   const [isLoadingSubmit, setIsLoadingSubmit] = useState(false);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const handleVote = async () => {
     const fee = await getFee('VOTE_ON_POLL');
 
     await show({
-      message: t('core:question.accept_vote_on_poll', {
+      message: t('core:message.question.accept_vote_on_poll', {
         postProcess: 'capitalizeFirstChar',
       }),
       publishFee: fee.fee + ' QORT',
@@ -387,13 +381,7 @@ const PollResults = ({ votes }) => {
     ...votes?.voteCounts?.map((option) => option.voteCount)
   );
   const options = votes?.voteCounts;
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   return (
     <Box sx={{ width: '100%', p: 2 }}>

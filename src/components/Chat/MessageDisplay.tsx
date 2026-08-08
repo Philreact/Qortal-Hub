@@ -1,16 +1,11 @@
-import {
-  type ReactNode,
-  useCallback,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { type ReactNode, useCallback, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import './chat.css';
 import { executeEvent } from '../../utils/events';
 import { openHttpUrlExternally } from '../../utils/openExternalHttp';
 import { Embed } from '../Embeds/Embed';
 import { Box, IconButton, Tooltip, useTheme } from '@mui/material';
+import { useTranslation } from 'react-i18next';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { ReticulumUserCard } from './ReticulumUserCard';
@@ -266,6 +261,7 @@ export const MessageDisplay = ({
   textColor?: string;
   trailingContent?: ReactNode;
 }) => {
+  const { t } = useTranslation(['core']);
   const theme = useTheme();
   const contentRef = useRef(null);
   const [copied, setCopied] = useState(false);
@@ -409,9 +405,7 @@ export const MessageDisplay = ({
           .trim()
           .replace(/^@/, '')
           .toLowerCase();
-        const label = String(
-          node.dataset.label || node.textContent || ''
-        )
+        const label = String(node.dataset.label || node.textContent || '')
           .trim()
           .replace(/^@/, '')
           .toLowerCase();
@@ -746,7 +740,18 @@ export const MessageDisplay = ({
         />
         {trailingContent}
         {showCopyButton && (
-          <Tooltip title={copied ? 'Copied!' : 'Copy code'} leaveDelay={0}>
+          <Tooltip
+            title={
+              copied
+                ? t('core:action.copied', {
+                    postProcess: 'capitalizeFirstChar',
+                  })
+                : t('core:action.copy_code', {
+                    postProcess: 'capitalizeFirstChar',
+                  })
+            }
+            leaveDelay={0}
+          >
             <IconButton
               className="message-copy-code-btn"
               size="small"
@@ -764,7 +769,15 @@ export const MessageDisplay = ({
                   color: theme.palette.text.primary,
                 },
               }}
-              aria-label={copied ? 'Copied!' : 'Copy code'}
+              aria-label={
+                copied
+                  ? t('core:action.copied', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+                  : t('core:action.copy_code', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+              }
             >
               <ContentCopyIcon sx={{ fontSize: '18px' }} />
             </IconButton>

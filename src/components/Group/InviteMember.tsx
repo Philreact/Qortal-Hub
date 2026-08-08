@@ -30,13 +30,7 @@ export const InviteMember = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
   const [expiryTime, setExpiryTime] = useState<string>('259200');
   const [isLoadingInvite, setIsLoadingInvite] = useState(false);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const searchQuery = searchValue.trim();
   const { results: nameSearchResults, isLoading: isLoadingNameSearch } =
     useNameSearch(searchQuery, 15);
@@ -249,8 +243,7 @@ export const InviteMember = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
         })}
         options={nameOptions}
         onChange={(_event, newValue) => {
-          const nextValue =
-            typeof newValue === 'string' ? newValue.trim() : '';
+          const nextValue = typeof newValue === 'string' ? newValue.trim() : '';
           setValue(nextValue);
           setSearchValue(nextValue);
         }}
@@ -353,14 +346,22 @@ export const InviteMember = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
         >
           <MenuItem value={10800}>{t('core:time.hour', { count: 3 })}</MenuItem>
           <MenuItem value={21600}>{t('core:time.hour', { count: 6 })}</MenuItem>
-          <MenuItem value={43200}>{t('core:time.hour', { count: 12 })}</MenuItem>
+          <MenuItem value={43200}>
+            {t('core:time.hour', { count: 12 })}
+          </MenuItem>
           <MenuItem value={86400}>{t('core:time.day', { count: 1 })}</MenuItem>
           <MenuItem value={259200}>{t('core:time.day', { count: 3 })}</MenuItem>
           <MenuItem value={432000}>{t('core:time.day', { count: 5 })}</MenuItem>
           <MenuItem value={604800}>{t('core:time.day', { count: 7 })}</MenuItem>
-          <MenuItem value={864000}>{t('core:time.day', { count: 10 })}</MenuItem>
-          <MenuItem value={1296000}>{t('core:time.day', { count: 15 })}</MenuItem>
-          <MenuItem value={2592000}>{t('core:time.day', { count: 30 })}</MenuItem>
+          <MenuItem value={864000}>
+            {t('core:time.day', { count: 10 })}
+          </MenuItem>
+          <MenuItem value={1296000}>
+            {t('core:time.day', { count: 15 })}
+          </MenuItem>
+          <MenuItem value={2592000}>
+            {t('core:time.day', { count: 30 })}
+          </MenuItem>
         </Select>
       </Box>
 
@@ -381,7 +382,12 @@ export const InviteMember = ({ groupId, setInfoSnack, setOpenSnack, show }) => {
         }}
       >
         <InfoOutlinedIcon
-          sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 18, mt: 0.05 }}
+          sx={{
+            color: 'text.secondary',
+            flexShrink: 0,
+            fontSize: 18,
+            mt: 0.05,
+          }}
         />
         <Typography
           sx={{ color: 'text.secondary', fontSize: 12, lineHeight: '17px' }}

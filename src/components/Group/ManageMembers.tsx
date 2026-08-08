@@ -91,13 +91,7 @@ export const ManageMembers = ({
     setValue(newValue);
   };
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const setTxList = useSetAtom(txListAtom);
   const canManageMembers = Boolean(isAdmin || isOwner);
@@ -273,64 +267,66 @@ export const ManageMembers = ({
           width: '100%',
         }}
       >
-        {canManageMembers && <Tabs
-          value={value}
-          onChange={handleChange}
-          variant="fullWidth"
-          sx={{
-            borderBottom: 1,
-            borderColor: 'divider',
-            minHeight: 42,
-            '& .MuiTab-root': {
-              color: 'text.secondary',
+        {canManageMembers && (
+          <Tabs
+            value={value}
+            onChange={handleChange}
+            variant="fullWidth"
+            sx={{
+              borderBottom: 1,
+              borderColor: 'divider',
               minHeight: 42,
-              minWidth: 0,
-              p: 0,
-            },
-            '& .Mui-selected': {
-              color: 'primary.main',
-            },
-          }}
-        >
-          {iconTabs.map((tab, index) => (
-            <Tab
-              key={tab.label}
-              icon={
-                <Tooltip title={tab.label}>
-                  <Box
-                    component="span"
-                    sx={{
-                      display: 'inline-flex',
-                      position: 'relative',
-                    }}
-                  >
-                    {tab.icon}
-                    {tab.showNotificationDot && (
-                      <Box
-                        aria-hidden
-                        component="span"
-                        sx={{
-                          backgroundColor: '#f23f42',
-                          border: `2px solid ${theme.palette.background.surface}`,
-                          borderRadius: '50%',
-                          bottom: -3,
-                          boxSizing: 'content-box',
-                          height: 7,
-                          left: -4,
-                          pointerEvents: 'none',
-                          position: 'absolute',
-                          width: 7,
-                        }}
-                      />
-                    )}
-                  </Box>
-                </Tooltip>
-              }
-              aria-label={tab.label}
-              {...a11yProps(index)}
-            />
-          ))}
-        </Tabs>}
+              '& .MuiTab-root': {
+                color: 'text.secondary',
+                minHeight: 42,
+                minWidth: 0,
+                p: 0,
+              },
+              '& .Mui-selected': {
+                color: 'primary.main',
+              },
+            }}
+          >
+            {iconTabs.map((tab, index) => (
+              <Tab
+                key={tab.label}
+                icon={
+                  <Tooltip title={tab.label}>
+                    <Box
+                      component="span"
+                      sx={{
+                        display: 'inline-flex',
+                        position: 'relative',
+                      }}
+                    >
+                      {tab.icon}
+                      {tab.showNotificationDot && (
+                        <Box
+                          aria-hidden
+                          component="span"
+                          sx={{
+                            backgroundColor: '#f23f42',
+                            border: `2px solid ${theme.palette.background.surface}`,
+                            borderRadius: '50%',
+                            bottom: -3,
+                            boxSizing: 'content-box',
+                            height: 7,
+                            left: -4,
+                            pointerEvents: 'none',
+                            position: 'absolute',
+                            width: 7,
+                          }}
+                        />
+                      )}
+                    </Box>
+                  </Tooltip>
+                }
+                aria-label={tab.label}
+                {...a11yProps(index)}
+              />
+            ))}
+          </Tabs>
+        )}
 
         <Box sx={panelContentSx}>
           {value === 0 && (
@@ -405,261 +401,261 @@ export const ManageMembers = ({
 
   const content = (
     <Fragment>
-        <Box
-          sx={{
-            bgcolor: theme.palette.background.default,
-            color: theme.palette.text.primary,
-            flexGrow: 1,
-            overflowY: 'auto',
-          }}
-        >
-          <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-            <Tabs
-              value={value}
-              onChange={handleChange}
-              variant="scrollable" // Make tabs scrollable
-              scrollButtons="auto" // Show scroll buttons automatically
-              allowScrollButtonsMobile // Show scroll buttons on mobile as well
-              sx={{
-                '&.MuiTabs-indicator': {
-                  backgroundColor: theme.palette.background.default,
-                },
-                maxWidth: '100%', // Ensure the tabs container fits within the available space
-                overflow: 'hidden', // Prevents overflow on small screens
-              }}
-            >
-              <Tab
-                label={t('core:list.members', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-                {...a11yProps(0)}
-                sx={{
-                  '&.Mui-selected': {
-                    color: theme.palette.text.primary,
-                  },
-                  fontSize: '1rem',
-                }}
-              />
-
-              <Tab
-                label={t('core:action.invite_member', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-                {...a11yProps(1)}
-                sx={{
-                  '&.Mui-selected': {
-                    color: theme.palette.text.primary,
-                  },
-                  fontSize: '1rem',
-                }}
-              />
-
-              <Tab
-                label={t('core:list.invites', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-                {...a11yProps(2)}
-                sx={{
-                  '&.Mui-selected': {
-                    color: theme.palette.text.primary,
-                  },
-                  fontSize: '1rem',
-                }}
-              />
-
-              <Tab
-                label={t('core:list.bans', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-                {...a11yProps(3)}
-                sx={{
-                  '&.Mui-selected': {
-                    color: theme.palette.text.primary,
-                  },
-                  fontSize: '1rem',
-                }}
-              />
-
-              <Tab
-                label={t('group:join_requests', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-                {...a11yProps(4)}
-                sx={{
-                  '&.Mui-selected': {
-                    color: theme.palette.text.primary,
-                  },
-                  fontSize: '1rem',
-                }}
-              />
-            </Tabs>
-          </Box>
-
-          <Card
+      <Box
+        sx={{
+          bgcolor: theme.palette.background.default,
+          color: theme.palette.text.primary,
+          flexGrow: 1,
+          overflowY: 'auto',
+        }}
+      >
+        <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+          <Tabs
+            value={value}
+            onChange={handleChange}
+            variant="scrollable" // Make tabs scrollable
+            scrollButtons="auto" // Show scroll buttons automatically
+            allowScrollButtonsMobile // Show scroll buttons on mobile as well
             sx={{
-              padding: '10px',
-              cursor: 'default',
+              '&.MuiTabs-indicator': {
+                backgroundColor: theme.palette.background.default,
+              },
+              maxWidth: '100%', // Ensure the tabs container fits within the available space
+              overflow: 'hidden', // Prevents overflow on small screens
             }}
           >
-            <Box>
-              <Typography>
-                {t('group:group.id', { postProcess: 'capitalizeFirstChar' })}:{' '}
-                {groupInfo?.groupId}
-              </Typography>
-
-              <Typography>
-                {t('group:group.name', { postProcess: 'capitalizeFirstChar' })}:{' '}
-                {groupInfo?.groupName}
-              </Typography>
-
-              <Typography>
-                {t('group:group.member_number', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-                : {groupInfo?.memberCount}
-              </Typography>
-
-              <ButtonBase
-                sx={{
-                  gap: '10px',
-                }}
-                onClick={async () => {
-                  const link = `${QORTAL_PROTOCOL}use-group/action-join/groupid-${groupInfo?.groupId}`;
-                  await navigator.clipboard.writeText(link);
-                }}
-              >
-                <InsertLinkIcon />
-
-                <Typography>
-                  {t('group:join_link', { postProcess: 'capitalizeFirstChar' })}
-                </Typography>
-              </ButtonBase>
-            </Box>
-
-            <Spacer height="20px" />
-
-            {selectedGroup?.groupId && !isOwner && (
-              <LoadingButton
-                size="small"
-                loading={isLoadingLeave}
-                loadingPosition="start"
-                variant="contained"
-                onClick={handleLeaveGroup}
-              >
-                {t('group:action.leave_group', {
-                  postProcess: 'capitalizeFirstChar',
-                })}
-              </LoadingButton>
-            )}
-          </Card>
-
-          {value === 0 && (
-            <Box
+            <Tab
+              label={t('core:list.members', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              {...a11yProps(0)}
               sx={{
-                maxWidth: '750px',
-                padding: '25px',
-                width: '100%',
+                '&.Mui-selected': {
+                  color: theme.palette.text.primary,
+                },
+                fontSize: '1rem',
               }}
-            >
-              <Spacer height="10px" />
+            />
 
-              <ListOfMembers
-                members={membersWithNames || []}
-                groupId={selectedGroup?.groupId}
-                setOpenSnack={setOpenSnack}
-                setInfoSnack={setInfoSnack}
-                isAdmin={isAdmin}
-                isOwner={isOwner}
-                show={show}
-                ownerAddress={groupInfo?.owner}
-              />
-            </Box>
-          )}
-
-          {value === 1 && (
-            <Box
+            <Tab
+              label={t('core:action.invite_member', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              {...a11yProps(1)}
               sx={{
-                maxWidth: '750px',
-                padding: '25px',
-                width: '100%',
+                '&.Mui-selected': {
+                  color: theme.palette.text.primary,
+                },
+                fontSize: '1rem',
               }}
-            >
-              <InviteMember
-                show={show}
-                groupId={selectedGroup?.groupId}
-                setOpenSnack={setOpenSnack}
-                setInfoSnack={setInfoSnack}
-              />
-            </Box>
-          )}
+            />
 
-          {value === 2 && (
-            <Box
+            <Tab
+              label={t('core:list.invites', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              {...a11yProps(2)}
               sx={{
-                maxWidth: '750px',
-                padding: '25px',
-                width: '100%',
+                '&.Mui-selected': {
+                  color: theme.palette.text.primary,
+                },
+                fontSize: '1rem',
               }}
-            >
-              <ListOfInvites
-                show={show}
-                groupId={selectedGroup?.groupId}
-                setOpenSnack={setOpenSnack}
-                setInfoSnack={setInfoSnack}
-              />
-            </Box>
-          )}
+            />
 
-          {value === 3 && (
-            <Box
+            <Tab
+              label={t('core:list.bans', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              {...a11yProps(3)}
               sx={{
-                padding: '25px',
-                width: '100%',
-                maxWidth: '750px',
+                '&.Mui-selected': {
+                  color: theme.palette.text.primary,
+                },
+                fontSize: '1rem',
               }}
-            >
-              <ListOfBans
-                show={show}
-                groupId={selectedGroup?.groupId}
-                setOpenSnack={setOpenSnack}
-                setInfoSnack={setInfoSnack}
-              />
-            </Box>
-          )}
+            />
 
-          {value === 4 && (
-            <Box
+            <Tab
+              label={t('group:join_requests', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              {...a11yProps(4)}
               sx={{
-                maxWidth: '750px',
-                padding: '25px',
-                width: '100%',
+                '&.Mui-selected': {
+                  color: theme.palette.text.primary,
+                },
+                fontSize: '1rem',
               }}
-            >
-              <ListOfJoinRequests
-                show={show}
-                setOpenSnack={setOpenSnack}
-                setInfoSnack={setInfoSnack}
-                groupId={selectedGroup?.groupId}
-              />
-            </Box>
-          )}
+            />
+          </Tabs>
         </Box>
 
-        <CustomizedSnackbars
-          open={openSnack}
-          setOpen={setOpenSnack}
-          info={infoSnack}
-          setInfo={setInfoSnack}
-        />
-
-        <LoadingSnackbar
-          open={isLoadingMembers}
-          info={{
-            message: t('group:message.generic.loading_members', {
-              postProcess: 'capitalizeFirstChar',
-            }),
+        <Card
+          sx={{
+            padding: '10px',
+            cursor: 'default',
           }}
-        />
+        >
+          <Box>
+            <Typography>
+              {t('group:group.id', { postProcess: 'capitalizeFirstChar' })}:{' '}
+              {groupInfo?.groupId}
+            </Typography>
+
+            <Typography>
+              {t('group:group.name', { postProcess: 'capitalizeFirstChar' })}:{' '}
+              {groupInfo?.groupName}
+            </Typography>
+
+            <Typography>
+              {t('group:group.member_number', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              : {groupInfo?.memberCount}
+            </Typography>
+
+            <ButtonBase
+              sx={{
+                gap: '10px',
+              }}
+              onClick={async () => {
+                const link = `${QORTAL_PROTOCOL}use-group/action-join/groupid-${groupInfo?.groupId}`;
+                await navigator.clipboard.writeText(link);
+              }}
+            >
+              <InsertLinkIcon />
+
+              <Typography>
+                {t('group:join_link', { postProcess: 'capitalizeFirstChar' })}
+              </Typography>
+            </ButtonBase>
+          </Box>
+
+          <Spacer height="20px" />
+
+          {selectedGroup?.groupId && !isOwner && (
+            <LoadingButton
+              size="small"
+              loading={isLoadingLeave}
+              loadingPosition="start"
+              variant="contained"
+              onClick={handleLeaveGroup}
+            >
+              {t('group:action.leave_group', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </LoadingButton>
+          )}
+        </Card>
+
+        {value === 0 && (
+          <Box
+            sx={{
+              maxWidth: '750px',
+              padding: '25px',
+              width: '100%',
+            }}
+          >
+            <Spacer height="10px" />
+
+            <ListOfMembers
+              members={membersWithNames || []}
+              groupId={selectedGroup?.groupId}
+              setOpenSnack={setOpenSnack}
+              setInfoSnack={setInfoSnack}
+              isAdmin={isAdmin}
+              isOwner={isOwner}
+              show={show}
+              ownerAddress={groupInfo?.owner}
+            />
+          </Box>
+        )}
+
+        {value === 1 && (
+          <Box
+            sx={{
+              maxWidth: '750px',
+              padding: '25px',
+              width: '100%',
+            }}
+          >
+            <InviteMember
+              show={show}
+              groupId={selectedGroup?.groupId}
+              setOpenSnack={setOpenSnack}
+              setInfoSnack={setInfoSnack}
+            />
+          </Box>
+        )}
+
+        {value === 2 && (
+          <Box
+            sx={{
+              maxWidth: '750px',
+              padding: '25px',
+              width: '100%',
+            }}
+          >
+            <ListOfInvites
+              show={show}
+              groupId={selectedGroup?.groupId}
+              setOpenSnack={setOpenSnack}
+              setInfoSnack={setInfoSnack}
+            />
+          </Box>
+        )}
+
+        {value === 3 && (
+          <Box
+            sx={{
+              padding: '25px',
+              width: '100%',
+              maxWidth: '750px',
+            }}
+          >
+            <ListOfBans
+              show={show}
+              groupId={selectedGroup?.groupId}
+              setOpenSnack={setOpenSnack}
+              setInfoSnack={setInfoSnack}
+            />
+          </Box>
+        )}
+
+        {value === 4 && (
+          <Box
+            sx={{
+              maxWidth: '750px',
+              padding: '25px',
+              width: '100%',
+            }}
+          >
+            <ListOfJoinRequests
+              show={show}
+              setOpenSnack={setOpenSnack}
+              setInfoSnack={setInfoSnack}
+              groupId={selectedGroup?.groupId}
+            />
+          </Box>
+        )}
+      </Box>
+
+      <CustomizedSnackbars
+        open={openSnack}
+        setOpen={setOpenSnack}
+        info={infoSnack}
+        setInfo={setInfoSnack}
+      />
+
+      <LoadingSnackbar
+        open={isLoadingMembers}
+        info={{
+          message: t('group:message.generic.loading_members', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+        }}
+      />
     </Fragment>
   );
 

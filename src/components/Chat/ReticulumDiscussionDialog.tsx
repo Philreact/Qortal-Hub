@@ -10,6 +10,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
+import { useTranslation } from 'react-i18next';
 import { alpha, useTheme } from '@mui/material/styles';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded';
@@ -106,6 +107,7 @@ export const ReticulumDiscussionDialog = ({
   selectedGroup,
 }: ReticulumDiscussionDialogProps) => {
   const theme = useTheme();
+  const { t } = useTranslation(['core', 'group']);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [expiryDurationMs, setExpiryDurationMs] = useState<
     number | undefined
@@ -283,7 +285,9 @@ export const ReticulumDiscussionDialog = ({
           </Box>
         </Box>
         <IconButton
-          aria-label="Close discussion"
+          aria-label={t('group:reticulum.discussion.close', {
+            postProcess: 'capitalizeFirstChar',
+          })}
           disabled={closeDisabled}
           onClick={closeDisabled ? undefined : onClose}
           size="small"
@@ -369,7 +373,13 @@ export const ReticulumDiscussionDialog = ({
                         textTransform: 'uppercase',
                       }}
                     >
-                      {index === 0 ? 'Initial Post' : 'Replies:'}
+                      {index === 0
+                        ? t('group:reticulum.discussion.initial_post', {
+                            postProcess: 'capitalizeEachFirstChar',
+                          })
+                        : t('group:reticulum.discussion.replies', {
+                            postProcess: 'capitalizeFirstChar',
+                          })}
                     </Typography>
                   )}
                   <Box
@@ -539,9 +549,16 @@ export const ReticulumDiscussionDialog = ({
                 >
                   {file.fileName}
                 </Typography>
-                <Tooltip title="Remove attachment">
+                <Tooltip
+                  title={t('group:reticulum.discussion.remove_attachment', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                >
                   <IconButton
-                    aria-label={`Remove ${file.fileName}`}
+                    aria-label={t('group:reticulum.discussion.remove_file', {
+                      fileName: file.fileName,
+                      postProcess: 'capitalizeFirstChar',
+                    })}
                     onClick={() => onRemoveFile(index)}
                     size="small"
                   >
@@ -576,11 +593,17 @@ export const ReticulumDiscussionDialog = ({
               onTypingChange(Boolean(nextEditor.getText().trim()));
             }}
             onEnter={send}
-            placeholder="Reply to discussion..."
+            placeholder={t('group:reticulum.discussion.reply_placeholder', {
+              postProcess: 'capitalizeFirstChar',
+            })}
             setEditorRef={setEditor}
             setIsFocusedParent={setFocused}
           />
-          <Tooltip title="Choose Emoji">
+          <Tooltip
+            title={t('group:reticulum.discussion.choose_emoji', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+          >
             <Box
               sx={{
                 alignItems: 'center',
@@ -613,7 +636,9 @@ export const ReticulumDiscussionDialog = ({
             <ReticulumMessageExpiryButton
               channelExpiryDurationMs={channelExpiryDurationMs}
               disabled={loading || closeDisabled}
-              disabledReason="Wait until the discussion is ready"
+              disabledReason={t('group:reticulum.discussion.wait_until_ready', {
+                postProcess: 'capitalizeFirstChar',
+              })}
               onChange={setExpiryDurationMs}
               segmented
               value={expiryDurationMs}

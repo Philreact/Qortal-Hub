@@ -74,13 +74,7 @@ const unblockButtonSx = (theme: ReturnType<typeof useTheme>) => ({
 
 export const BlockedUsersModal = () => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const [isOpenBlockedModal, setIsOpenBlockedModal] = useAtom(
     isOpenBlockedModalAtom
   );
@@ -342,7 +336,14 @@ export const BlockedUsersModal = () => {
             })}
           </Typography>
 
-          <Box sx={{ alignItems: 'stretch', display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1.25 }}>
+          <Box
+            sx={{
+              alignItems: 'stretch',
+              display: 'flex',
+              flexDirection: { xs: 'column', sm: 'row' },
+              gap: 1.25,
+            }}
+          >
             <TextField
               fullWidth
               placeholder={t('auth:message.generic.name_address', {
@@ -390,8 +391,10 @@ export const BlockedUsersModal = () => {
               display: 'flex',
               flexDirection: 'column',
               gap: 1.25,
-              maxHeight: addressKeys.length + nameKeys.length > 6 ? 280 : 'none',
-              overflowY: addressKeys.length + nameKeys.length > 6 ? 'auto' : 'visible',
+              maxHeight:
+                addressKeys.length + nameKeys.length > 6 ? 280 : 'none',
+              overflowY:
+                addressKeys.length + nameKeys.length > 6 ? 'auto' : 'visible',
               pr: addressKeys.length + nameKeys.length > 6 ? 0.5 : 0,
             }}
           >
@@ -425,16 +428,17 @@ export const BlockedUsersModal = () => {
                   })}
                 </Button>
 
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.85 }}>
+                <Box
+                  sx={{ display: 'flex', flexDirection: 'column', gap: 0.85 }}
+                >
                   {addressKeys.map((key) => (
                     <Box key={key} sx={blockedListRowSx(theme)}>
                       <Box sx={{ flex: '1 1 auto', minWidth: 0, pt: '3px' }}>
                         <Typography
                           sx={{
-                            fontFamily:
-                              addressesWithNames[key]
-                                ? 'inherit'
-                                : 'ui-monospace, monospace',
+                            fontFamily: addressesWithNames[key]
+                              ? 'inherit'
+                              : 'ui-monospace, monospace',
                             fontSize: addressesWithNames[key]
                               ? '0.93rem'
                               : '0.78rem',
@@ -501,7 +505,9 @@ export const BlockedUsersModal = () => {
                   })}
                 </Typography>
 
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.85 }}>
+                <Box
+                  sx={{ display: 'flex', flexDirection: 'column', gap: 0.85 }}
+                >
                   {nameKeys.map((key) => (
                     <Box key={key} sx={blockedListRowSx(theme)}>
                       <Typography

@@ -30,7 +30,7 @@ export function useDashboardNodeMenu() {
   const setNodeInfos = useSetAtom(nodeInfosAtom);
   const { getBalanceFunc, handleSaveNodeInfo } = useAuth();
   const { refreshBlockedUsers } = useBlockedAddresses(true);
-  const { t } = useTranslation(['core', 'group', 'tutorial', 'auth']);
+  const { t } = useTranslation(['core', 'group', 'auth']);
   const td = useCallback(
     (
       key: string,
@@ -186,7 +186,10 @@ export function useDashboardNodeMenu() {
         setNodeInfos({});
         await getBalanceFunc();
         refreshBlockedUsers().catch((error) => {
-          console.error('Unable to refresh blocked users after node switch.', error);
+          console.error(
+            'Unable to refresh blocked users after node switch.',
+            error
+          );
         });
         setNodeMenuAnchorEl(null);
       } catch (error) {

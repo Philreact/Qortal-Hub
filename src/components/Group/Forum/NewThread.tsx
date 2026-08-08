@@ -145,13 +145,7 @@ export const NewThread = ({
 }: NewMessageProps) => {
   const userInfo = useAtomValue(userInfoAtom);
   const myName = userInfo?.name;
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [value, setValue] = useState('');

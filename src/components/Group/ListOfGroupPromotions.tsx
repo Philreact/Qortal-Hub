@@ -123,13 +123,7 @@ export const ListOfGroupPromotions = ({
     textTransform: 'none',
     ...getBlueTier1ButtonSx(),
   } as const;
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const listRef = useRef(null);
   const rowVirtualizer = useVirtualizer({
     count: promotions.length,
@@ -722,9 +716,15 @@ export const ListOfGroupPromotions = ({
                                   loadingPosition="start"
                                   variant="contained"
                                   onClick={() =>
-                                    handleJoinGroup(promotion, promotion?.isOpen)
+                                    handleJoinGroup(
+                                      promotion,
+                                      promotion?.isOpen
+                                    )
                                   }
-                                  sx={{ textTransform: 'none', fontWeight: 600 }}
+                                  sx={{
+                                    textTransform: 'none',
+                                    fontWeight: 600,
+                                  }}
                                 >
                                   {t('core:action.join', {
                                     postProcess: 'capitalizeFirstChar',
@@ -807,34 +807,34 @@ export const ListOfGroupPromotions = ({
                               flexShrink: 0,
                             }}
                           >
-<Box
-                            sx={{
-                              px: 1,
-                              py: 0.35,
-                              borderRadius: '6px',
-                              bgcolor: promotion?.isOpen
-                                ? `${theme.palette.other.danger}18`
-                                : `${theme.palette.other.positive}18`,
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 0.4,
-                            }}
-                          >
-                            {promotion?.isOpen === true ? (
-                              <NoEncryptionGmailerrorredIcon
-                                sx={{
-                                  fontSize: 14,
-                                  color: theme.palette.other.danger,
-                                }}
-                              />
-                            ) : (
-                              <LockIcon
-                                sx={{
-                                  fontSize: 14,
-                                  color: theme.palette.other.positive,
-                                }}
-                              />
-                            )}
+                            <Box
+                              sx={{
+                                px: 1,
+                                py: 0.35,
+                                borderRadius: '6px',
+                                bgcolor: promotion?.isOpen
+                                  ? `${theme.palette.other.danger}18`
+                                  : `${theme.palette.other.positive}18`,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.4,
+                              }}
+                            >
+                              {promotion?.isOpen === true ? (
+                                <NoEncryptionGmailerrorredIcon
+                                  sx={{
+                                    fontSize: 14,
+                                    color: theme.palette.other.danger,
+                                  }}
+                                />
+                              ) : (
+                                <LockIcon
+                                  sx={{
+                                    fontSize: 14,
+                                    color: theme.palette.other.positive,
+                                  }}
+                                />
+                              )}
                               <Typography
                                 variant="caption"
                                 fontWeight={600}
@@ -930,7 +930,9 @@ export const ListOfGroupPromotions = ({
         height: hasFixedCompactViewport ? compactViewportHeightCss : undefined,
         justifyContent: compact ? 'flex-start' : 'center',
         marginTop: compact ? '0' : '20px',
-        minHeight: hasFixedCompactViewport ? compactViewportHeightCss : undefined,
+        minHeight: hasFixedCompactViewport
+          ? compactViewportHeightCss
+          : undefined,
         width: '100%',
       }}
     >

@@ -1,68 +1,131 @@
 {
-  "setup": {
-    "title": "Configuração local: Hub e Core executam no mesmo sistema",
-    "advancedOptions": "opções avançadas",
-    "pickPath": "escolha um caminho de instalação personalizado do Qortal se o seu Core estiver instalado em um local não padrão.",
-    "removePath": "remover caminho personalizado do Qortal"
+  "actions": {
+    "continue": "continuar",
+    "continueLocal": "continuar com Local",
+    "continuePublic": "continuar com nó público",
+    "finished": "concluído",
+    "goToDownloads": "ir para downloads",
+    "install": "instalar e iniciar o Qortal Core",
+    "openSetup": "abrir configuração local",
+    "resetKey": "redefinir chave API",
+    "start": "iniciar Qortal Core"
+  },
+  "bootstrap": "inicializar",
+  "bootstrapChainHelp": {
+    "body": "Uma única ação: bootstrap por snapshot enquanto o Core estiver ativo, ou apagar o BD da cadeia local e iniciar o Core de novo quando o bootstrap não for possível. A carteira fica guardada separadamente.",
+    "title": "Bootstrap da cadeia"
+  },
+  "confirmations": {
+    "bootstrap": "tem certeza de que deseja inicializar?",
+    "bootstrapOrClearChain": "Executa o bootstrap a partir do snapshot quando o Core está em execução localmente. Se isso não for possível ou falhar, o banco de dados da cadeia local pode ser removido e o Core reiniciado; os arquivos da carteira ficam intactos. Continuar?",
+    "delete": "tem certeza de que deseja excluir o banco de dados?",
+    "stop": "tem certeza de que deseja parar o Core?"
+  },
+  "coreSetupDialog": {
+    "actionDone": "Concluído",
+    "actionDownload": "Transferir Core",
+    "actionStart": "Iniciar Core",
+    "advancedSubtitle": "Ferramentas e opções avançadas para o Core.",
+    "advancedTitle": "Avançado",
+    "cancel": "Cancelar",
+    "change": "Alterar",
+    "choose": "Escolher",
+    "clear": "Limpar",
+    "confirmTitle": "Confirmar ação",
+    "folderCopied": "Pasta do Core copiada",
+    "helpers": {
+      "downloadActive": "A transferir e preparar Qortal Core.",
+      "downloadDone": "Os ficheiros do Core estão instalados e prontos.",
+      "downloadIdle": "Transfira Qortal Core para executar o seu próprio nó.",
+      "runningBlocked": "Disponível após transferir o Core.",
+      "runningDone": "O Core está a correr localmente.",
+      "runningDoneSyncing": "O Core está a correr e a sincronizar dados da blockchain.",
+      "runningWaiting": "O Core iniciará e sincronizará em segundo plano."
+    },
+    "introSubtitle": "Pode usar um nó público enquanto o Core inicia e sincroniza.",
+    "introTitle": "Execute seu próprio nó localmente.",
+    "locationCustom": "O Qortal Core será executado a partir desta pasta.",
+    "locationDefault": "O Qortal Core usará a pasta predefinida deste sistema.",
+    "locationPathDefault": "Localização predefinida do Qortal Core",
+    "locationTitle": "Localização do Core",
+    "maintenanceUnavailable": "Ferramentas de manutenção do Core não estão disponíveis enquanto o Core inicia ou sincroniza.",
+    "nextStepPill": "Próximo passo",
+    "progressAriaLabel": "Progresso de {{label}}",
+    "publicNodeUnavailable": "Os nós públicos estão indisponíveis no momento. Mantenha este ecrã aberto enquanto o Core local inicia e sincroniza.",
+    "readyToDownload": "Pronto para transferir",
+    "readyToStart": "Pronto para iniciar",
+    "steps": {
+      "downloadActive": "A transferir Core",
+      "downloadDone": "Core transferido",
+      "downloadIdle": "Transferir Core",
+      "runningActive": "A iniciar Core",
+      "runningDone": "Core em execução",
+      "runningIdle": "Iniciar Core"
+    },
+    "stopButton": "Parar",
+    "stopCoreBody": "Para o processo local do Core.",
+    "stopCoreTitle": "Parar Core",
+    "syncing": "A sincronizar",
+    "title": "Configurar Qortal Core"
+  },
+  "coreStatusNotice": {
+    "actions": {
+      "ignore": "Ignorar",
+      "later": "Mais tarde",
+      "openSetup": "Abrir configuração",
+      "start": "Iniciar",
+      "starting": "Iniciando...",
+      "switchToLocal": "Mudar para local"
+    },
+    "installedPrompt": {
+      "description": "Você já tem um nó local instalado. Deseja iniciá-lo enquanto usa o nó público?",
+      "title": "Nó local instalado"
+    },
+    "installing": {
+      "description": "Baixando e instalando o Qortal Core.",
+      "title": "Instalando o Qortal Core"
+    },
+    "localReady": {
+      "description": "O Qortal Core está sincronizado. Agora você pode mudar do nó público para o seu nó local.",
+      "title": "Nó local pronto"
+    },
+    "needsAttention": {
+      "description": "O Core precisa de atenção. Abra a configuração para revisar o problema.",
+      "title": "A configuração do Core precisa de atenção"
+    },
+    "starting": {
+      "description": "Iniciando o Qortal Core.",
+      "preparing": "O Core está iniciando e preparando os dados da blockchain.",
+      "title": "Iniciando o Core local"
+    },
+    "syncing": {
+      "checking": "O Core está em execução. Verificando o progresso da sincronização da blockchain.",
+      "description": "Seu nó local está se atualizando em segundo plano.",
+      "title": "Sincronizando blockchain"
+    }
+  },
+  "delete": "excluir banco de dados",
+  "enableAuthWhenSyncing": "ativar autenticação ao sincronizar",
+  "error": {
+    "failed_bootstrap": "não foi possível inicializar",
+    "failed_bootstrap_or_clear": "não foi possível inicializar, limpar dados da cadeia ou iniciar o Core",
+    "failed_delete": "não foi possível excluir o banco de dados",
+    "failed_stop": "não foi possível parar o Core",
+    "invalidKey": "chave API inválida",
+    "noJar": "o diretório escolhido não contém um qortal.jar"
   },
   "introSetup": {
-    "paragraph1": "Qortal é uma plataforma descentralizada que lhe dá controle total sobre seus dados, aplicativos e finanças. Para começar, recomendamos instalar o <strong>Qortal Core</strong>, que alimenta a rede e habilita todos os recursos do Qortal.",
-    "paragraph2": "Este assistente de configuração o guiará na instalação e configuração do Qortal Core em seu dispositivo. Clique em <strong>Próximo</strong> para continuar a instalação.",
+    "advanced": "se você estiver usando um nó remoto, feche este assistente de configuração e clique em \"Escolher nó personalizado\"",
     "note": "nota para usuários avançados",
-    "advanced": "se você estiver usando um nó remoto, feche este assistente de configuração e clique em \"Escolher nó personalizado\""
-  },
-  "sync": {
-    "behind": "Você está {{count}} blocos atrasado.",
-    "waiting": "Por favor, aguarde até estar sincronizado.",
-    "not_synchronized": "não sincronizado",
-    "synchronized": "sincronizado",
-    "synchronized_desc": "você agora está sincronizado. pode continuar.",
-    "description": "Se você não quiser esperar até que seu Local Node esteja sincronizado, continue com public por enquanto. (Se você sabe que seu node está atrasado/desligado, pode continuar com local mesmo assim ou mudar para um public node.)"
-  },
-  "steps": {
-    "java": "tem Java",
-    "downloaded": "Core baixado",
-    "running": "core em execução"
-  },
-  "actions": {
-    "finished": "concluído",
-    "start": "iniciar Qortal Core",
-    "install": "instalar e iniciar o Qortal Core",
-    "continuePublic": "continuar com nó público",
-    "openSetup": "abrir configuração local",
-    "goToDownloads": "ir para downloads",
-    "resetKey": "redefinir chave API",
-    "continue": "continuar",
-    "continueLocal": "continuar com Local"
-  },
-  "error": {
-    "noJar": "o diretório escolhido não contém um qortal.jar",
-    "invalidKey": "chave API inválida",
-    "failed_stop": "não foi possível parar o Core",
-    "failed_bootstrap": "não foi possível inicializar",
-    "failed_delete": "não foi possível excluir o banco de dados",
-    "failed_bootstrap_or_clear": "não foi possível inicializar, limpar dados da cadeia ou iniciar o Core"
-  },
-  "status": {
-    "complete": "completo",
-    "inProgress": "em andamento",
-    "pending": "pendente",
-    "error": "erro"
-  },
-  "recommendation": {
-    "title": "usando seu nó local",
-    "description": "Você pode prosseguir com o public node se desejar, mas recomendamos fortemente usar seu local node para a melhor experiência. (Se você estiver tentando acessar sem conectividade, pode continuar com public sem conexão.)",
-    "subTitle": "vantagens de usar um nó local:",
-    "point1": "acesso totalmente descentralizado",
-    "point2": "downloads mais rápidos",
-    "point3": "dados controlados pelo usuário",
-    "publicExplanation": "O nó público ao qual você se conecta é, na verdade, um nó privado disponibilizado publicamente. Embora seja conveniente, possui certas limitações em comparação com executar o seu próprio."
+    "paragraph1": "Qortal é uma plataforma descentralizada que lhe dá controle total sobre seus dados, aplicativos e finanças. Para começar, recomendamos instalar o <strong>Qortal Core</strong>, que alimenta a rede e habilita todos os recursos do Qortal.",
+    "paragraph2": "Este assistente de configuração o guiará na instalação e configuração do Qortal Core em seu dispositivo. Clique em <strong>Próximo</strong> para continuar a instalação."
   },
   "invalidKey": {
-    "title": "chave API inválida",
     "description": "Sua chave API é inválida. Por favor, insira uma chave válida.",
-    "resetDescription": "Sua chave API é inválida. Clique em redefinir para continuar."
+    "resetDescription": "Sua chave API é inválida. Clique em redefinir para continuar.",
+    "title": "chave API inválida"
   },
+  "less": "menos opções",
   "messages": {
     "001": "iniciando o core... por favor, aguarde.",
     "002": "erro: não foi possível iniciar o repositório",
@@ -75,113 +138,50 @@
     "009": "baixando o Qortal Core... por favor, aguarde.",
     "010": "erro: não foi possível baixar ou instalar o core"
   },
-  "url": {
-    "title": "URL inválido",
-    "description": "URL incorreta ou nó não está em execução"
+  "more": "mais opções",
+  "NotFullyStarted": {
+    "descNotReady": "Qortal Core ainda não foi totalmente iniciado. Por favor, aguarde.",
+    "descReady": "Tudo pronto para continuar",
+    "titleNotReady": "Core não foi totalmente iniciado",
+    "titleReady": "Qortal Core está pronto"
   },
-  "confirmations": {
-    "stop": "tem certeza de que deseja parar o Core?",
-    "bootstrap": "tem certeza de que deseja inicializar?",
-    "delete": "tem certeza de que deseja excluir o banco de dados?",
-    "bootstrapOrClearChain": "Executa o bootstrap a partir do snapshot quando o Core está em execução localmente. Se isso não for possível ou falhar, o banco de dados da cadeia local pode ser removido e o Core reiniciado; os arquivos da carteira ficam intactos. Continuar?"
+  "recommendation": {
+    "description": "Você pode prosseguir com o public node se desejar, mas recomendamos fortemente usar seu local node para a melhor experiência. (Se você estiver tentando acessar sem conectividade, pode continuar com public sem conexão.)",
+    "point1": "acesso totalmente descentralizado",
+    "point2": "downloads mais rápidos",
+    "point3": "dados controlados pelo usuário",
+    "publicExplanation": "O nó público ao qual você se conecta é, na verdade, um nó privado disponibilizado publicamente. Embora seja conveniente, possui certas limitações em comparação com executar o seu próprio.",
+    "subTitle": "vantagens de usar um nó local:",
+    "title": "usando seu nó local"
   },
-  "bootstrapChainHelp": {
-    "title": "Bootstrap da cadeia",
-    "body": "Uma única ação: bootstrap por snapshot enquanto o Core estiver ativo, ou apagar o BD da cadeia local e iniciar o Core de novo quando o bootstrap não for possível. A carteira fica guardada separadamente."
+  "setup": {
+    "advancedOptions": "opções avançadas",
+    "pickPath": "escolha um caminho de instalação personalizado do Qortal se o seu Core estiver instalado em um local não padrão.",
+    "removePath": "remover caminho personalizado do Qortal",
+    "title": "Configuração local: Hub e Core executam no mesmo sistema"
+  },
+  "status": {
+    "complete": "completo",
+    "error": "erro",
+    "inProgress": "em andamento",
+    "pending": "pendente"
+  },
+  "steps": {
+    "downloaded": "Core baixado",
+    "java": "tem Java",
+    "running": "core em execução"
   },
   "stop": "parar Core",
-  "bootstrap": "inicializar",
-  "delete": "excluir banco de dados",
-  "more": "mais opções",
-  "less": "menos opções",
-  "enableAuthWhenSyncing": "ativar autenticação ao sincronizar",
-  "coreSetupDialog": {
-    "title": "Configurar Qortal Core",
-    "introTitle": "Execute seu próprio nó localmente.",
-    "introSubtitle": "Pode usar um nó público enquanto o Core inicia e sincroniza.",
-    "publicNodeUnavailable": "Os nós públicos estão indisponíveis no momento. Mantenha este ecrã aberto enquanto o Core local inicia e sincroniza.",
-    "steps": {
-      "downloadDone": "Core transferido",
-      "downloadActive": "A transferir Core",
-      "downloadIdle": "Transferir Core",
-      "runningDone": "Core em execução",
-      "runningActive": "A iniciar Core",
-      "runningIdle": "Iniciar Core"
-    },
-    "readyToDownload": "Pronto para transferir",
-    "readyToStart": "Pronto para iniciar",
-    "syncing": "A sincronizar",
-    "helpers": {
-      "downloadDone": "Os ficheiros do Core estão instalados e prontos.",
-      "downloadActive": "A transferir e preparar Qortal Core.",
-      "downloadIdle": "Transfira Qortal Core para executar o seu próprio nó.",
-      "runningDoneSyncing": "O Core está a correr e a sincronizar dados da blockchain.",
-      "runningDone": "O Core está a correr localmente.",
-      "runningWaiting": "O Core iniciará e sincronizará em segundo plano.",
-      "runningBlocked": "Disponível após transferir o Core."
-    },
-    "nextStepPill": "Próximo passo",
-    "locationTitle": "Localização do Core",
-    "locationCustom": "O Qortal Core será executado a partir desta pasta.",
-    "locationDefault": "O Qortal Core usará a pasta predefinida deste sistema.",
-    "locationPathDefault": "Localização predefinida do Qortal Core",
-    "change": "Alterar",
-    "choose": "Escolher",
-    "clear": "Limpar",
-    "advancedTitle": "Avançado",
-    "advancedSubtitle": "Ferramentas e opções avançadas para o Core.",
-    "maintenanceUnavailable": "Ferramentas de manutenção do Core não estão disponíveis enquanto o Core inicia ou sincroniza.",
-    "stopCoreTitle": "Parar Core",
-    "stopCoreBody": "Para o processo local do Core.",
-    "stopButton": "Parar",
-    "cancel": "Cancelar",
-    "actionDownload": "Transferir Core",
-    "actionStart": "Iniciar Core",
-    "actionDone": "Concluído",
-    "confirmTitle": "Confirmar ação",
-    "folderCopied": "Pasta do Core copiada",
-    "progressAriaLabel": "Progresso de {{label}}"
+  "sync": {
+    "behind": "Você está {{count}} blocos atrasado.",
+    "description": "Se você não quiser esperar até que seu Local Node esteja sincronizado, continue com public por enquanto. (Se você sabe que seu node está atrasado/desligado, pode continuar com local mesmo assim ou mudar para um public node.)",
+    "not_synchronized": "não sincronizado",
+    "synchronized": "sincronizado",
+    "synchronized_desc": "você agora está sincronizado. pode continuar.",
+    "waiting": "Por favor, aguarde até estar sincronizado."
   },
-  "NotFullyStarted": {
-    "titleNotReady": "Core não foi totalmente iniciado",
-    "descNotReady": "Qortal Core ainda não foi totalmente iniciado. Por favor, aguarde.",
-    "titleReady": "Qortal Core está pronto",
-    "descReady": "Tudo pronto para continuar"
-  },
-  "coreStatusNotice": {
-    "installedPrompt": {
-      "title": "Nó local instalado",
-      "description": "Você já tem um nó local instalado. Deseja iniciá-lo enquanto usa o nó público?"
-    },
-    "localReady": {
-      "title": "Nó local pronto",
-      "description": "O Qortal Core está sincronizado. Agora você pode mudar do nó público para o seu nó local."
-    },
-    "installing": {
-      "title": "Instalando o Qortal Core",
-      "description": "Baixando e instalando o Qortal Core."
-    },
-    "starting": {
-      "title": "Iniciando o Core local",
-      "description": "Iniciando o Qortal Core.",
-      "preparing": "O Core está iniciando e preparando os dados da blockchain."
-    },
-    "syncing": {
-      "title": "Sincronizando blockchain",
-      "description": "Seu nó local está se atualizando em segundo plano.",
-      "checking": "O Core está em execução. Verificando o progresso da sincronização da blockchain."
-    },
-    "needsAttention": {
-      "title": "A configuração do Core precisa de atenção",
-      "description": "O Core precisa de atenção. Abra a configuração para revisar o problema."
-    },
-    "actions": {
-      "ignore": "Ignorar",
-      "start": "Iniciar",
-      "starting": "Iniciando...",
-      "later": "Mais tarde",
-      "switchToLocal": "Mudar para local",
-      "openSetup": "Abrir configuração"
-    }
+  "url": {
+    "description": "URL incorreta ou nó não está em execução",
+    "title": "URL inválido"
   }
 }

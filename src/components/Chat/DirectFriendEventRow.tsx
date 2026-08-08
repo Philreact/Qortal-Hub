@@ -1,10 +1,11 @@
 import { alpha, Box, Typography, useTheme } from '@mui/material';
 import GroupRoundedIcon from '@mui/icons-material/GroupRounded';
 import { useTranslation } from 'react-i18next';
+import i18n from '../../i18n/i18n';
 
 const compactIdentity = (value: unknown) => {
   const text = String(value || '').trim();
-  if (text.length <= 18) return text || 'This user';
+  if (text.length <= 18) return text || i18n.t('core:this_user');
   return `${text.slice(0, 7)}...${text.slice(-5)}`;
 };
 

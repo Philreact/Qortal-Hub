@@ -73,13 +73,7 @@ export const AppInfo = ({ app, myName }) => {
   } | null>(null);
 
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   // Use centralized rating store
   const { rating, refresh } = useAppRating(app?.name, app?.service);

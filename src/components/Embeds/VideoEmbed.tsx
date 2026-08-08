@@ -28,13 +28,7 @@ export const VideoCard = ({
   external,
 }: VideoCardProps) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   return (
     <Card sx={{ backgroundColor: theme.palette.background.default }}>

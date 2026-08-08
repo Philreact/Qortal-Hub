@@ -1,35 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ButtonBase, Tooltip, useTheme } from '@mui/material';
 import ChatRoundedIcon from '@mui/icons-material/ChatRounded';
 import SportsEsportsRoundedIcon from '@mui/icons-material/SportsEsportsRounded';
 
+/** The surface the pill switches *to*, not the one currently shown. */
+type ReticulumModePillTarget = 'chat' | 'qortal_land';
+
 type ReticulumModePillProps = {
-  label: 'Chat' | 'Qortal Land';
+  target: ReticulumModePillTarget;
   onClick: () => void;
 };
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
 let hasPlayedQortalLandSweep = false;
 
-export function ReticulumModePill({
-  label,
-  onClick,
-}: ReticulumModePillProps) {
+export function ReticulumModePill({ target, onClick }: ReticulumModePillProps) {
+  const { t } = useTranslation(['group']);
   const theme = useTheme();
-  const isQortalLandTarget = label === 'Qortal Land';
+  const isQortalLandTarget = target === 'qortal_land';
   const [playSweep, setPlaySweep] = useState(false);
   const hoveredRef = useRef(false);
   const actionLabel = isQortalLandTarget
-    ? 'Enter Qortal Land'
-    : 'Return to Chat';
-  const compactLabel = isQortalLandTarget ? 'Qortal Land' : 'Chat';
+    ? t('group:reticulum.mode_pill.enter_qortal_land')
+    : t('group:reticulum.mode_pill.return_to_chat');
+  const compactLabel = isQortalLandTarget
+    ? t('group:chat_group.qortal_land')
+    : t('group:reticulum.mode_pill.chat');
 
   useEffect(() => {
     if (!isQortalLandTarget || hasPlayedQortalLandSweep) return;
 
-    const reducedMotion = window.matchMedia(
-      '(prefers-reduced-motion: reduce)',
-    );
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
     const settleTimer = window.setTimeout(() => {
       const hasOpenModal = Boolean(document.querySelector('[role="dialog"]'));
       if (
@@ -155,7 +157,7 @@ export function ReticulumModePill({
         }}
       >
         <span
-          key={label}
+          key={target}
           className="reticulum-mode-pill-content"
           style={{
             alignItems: 'center',

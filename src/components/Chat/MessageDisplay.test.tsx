@@ -120,10 +120,7 @@ describe('Reticulum privileged mention rendering', () => {
 
   it('preserves mention styling after local authorization', () => {
     const { container } = render(
-      <MessageDisplay
-        htmlContent={everyoneHtml}
-        privilegedMentionAuthorized
-      />
+      <MessageDisplay htmlContent={everyoneHtml} privilegedMentionAuthorized />
     );
 
     expect(container.querySelector('.mention')?.textContent).toBe('everyone');

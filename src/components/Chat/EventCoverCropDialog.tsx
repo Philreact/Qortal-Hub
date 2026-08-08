@@ -69,9 +69,12 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
     [file, open]
   );
 
-  useEffect(() => () => {
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
-  }, [objectUrl]);
+  useEffect(
+    () => () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    },
+    [objectUrl]
+  );
 
   useEffect(() => {
     compressionOperationRef.current += 1;
@@ -97,7 +100,10 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
         stage.clientWidth / naturalSize.width,
         stage.clientHeight / naturalSize.height
       ) * nextZoom;
-    const maxX = Math.max(0, (naturalSize.width * scale - stage.clientWidth) / 2);
+    const maxX = Math.max(
+      0,
+      (naturalSize.width * scale - stage.clientWidth) / 2
+    );
     const maxY = Math.max(
       0,
       (naturalSize.height * scale - stage.clientHeight) / 2
@@ -148,7 +154,8 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
       canvas.width = OUTPUT_WIDTH;
       canvas.height = OUTPUT_HEIGHT;
       const context = canvas.getContext('2d', { alpha: false });
-      if (!context) throw new Error('Image processing is unavailable');
+      if (!context)
+        throw new Error(t('core:calendar.imageProcessingUnavailable'));
       context.imageSmoothingEnabled = true;
       context.imageSmoothingQuality = 'high';
       context.drawImage(
@@ -171,20 +178,21 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
         const dataUrl = canvas.toDataURL('image/webp', quality);
         const prefix = 'data:image/webp;base64,';
         if (!dataUrl.startsWith(prefix)) {
-          throw new Error('The cover image could not be compressed');
+          throw new Error(t('core:calendar.coverCompressFailed'));
         }
         compressedBase64 = dataUrl.slice(prefix.length);
         compressedSize = base64ByteLength(compressedBase64);
         if (compressedSize <= TARGET_BYTES) break;
       }
       if (!compressedBase64) {
-        throw new Error('The cover image could not be compressed');
+        throw new Error(t('core:calendar.coverCompressFailed'));
       }
       if (compressedSize > 600 * 1024) {
-        throw new Error('The cover image could not be compressed enough');
+        throw new Error(t('core:calendar.coverCompressTooLarge'));
       }
       if (compressionOperationRef.current !== operationId) return;
-      const baseName = file.name.replace(/\.[^.]+$/, '').trim() || 'event-cover';
+      const baseName =
+        file.name.replace(/\.[^.]+$/, '').trim() || 'event-cover';
       onApply({
         base64: compressedBase64,
         fileName: `${baseName}.webp`,
@@ -229,7 +237,7 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
     >
       <DialogTitle sx={{ alignItems: 'center', display: 'flex', px: 3, py: 2 }}>
         <Typography fontSize={20} fontWeight={700} sx={{ flex: 1 }}>
-          {t('calendar.editCover', 'Edit cover')}
+          {t('core:calendar.editCover')}
         </Typography>
         <IconButton onClick={close} size="small">
           <CloseRoundedIcon />
@@ -280,7 +288,7 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
         >
           {objectUrl && (
             <Box
-              alt="Event cover crop"
+              alt={t('core:calendar.coverCropLabel')}
               component="img"
               draggable={false}
               onLoad={(event) => {
@@ -319,7 +327,7 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
         <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.5, mt: 2.5 }}>
           <ImageOutlinedIcon color="disabled" fontSize="small" />
           <Slider
-            aria-label={t('calendar.coverZoom', 'Cover zoom')}
+            aria-label={t('core:calendar.coverZoom')}
             disabled={!naturalSize.width || working}
             max={3}
             min={1}
@@ -352,7 +360,7 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
             },
           }}
         >
-          {t('calendar.resetCover', 'Reset')}
+          {t('core:calendar.resetCover')}
         </Button>
         <Box sx={{ display: 'flex', gap: 1 }}>
           <Button
@@ -372,7 +380,7 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
               },
             }}
           >
-            {t('common.cancel', 'Cancel')}
+            {t('core:action.cancel', 'Cancel')}
           </Button>
           <Button
             disabled={working || !naturalSize.width}
@@ -397,8 +405,8 @@ export function EventCoverCropDialog({ file, open, onApply, onClose }: Props) {
             }}
           >
             {working
-              ? t('calendar.compressingCover', 'Compressing…')
-              : t('calendar.applyCover', 'Apply')}
+              ? t('core:calendar.compressingCover')
+              : t('core:calendar.applyCover')}
           </Button>
         </Box>
       </DialogActions>

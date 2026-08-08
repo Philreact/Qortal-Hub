@@ -272,13 +272,7 @@ export const AppsDesktop = ({
       },
     })
   );
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const myApp = useMemo(() => {
     return availableQapps.find(

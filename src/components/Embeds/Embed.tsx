@@ -75,13 +75,7 @@ export const Embed = ({ embedLink }) => {
   const [parsedData, setParsedData] = useState(null);
   const setBlobs = useSetAtom(blobControllerAtom);
   const [selectedGroupId] = useAtom(selectedGroupIdAtom);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const resourceData = useMemo(() => {
     if (!safeEmbedLink) return null;
     const parsedDataOnTheFly = parseQortalLink(safeEmbedLink);

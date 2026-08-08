@@ -54,7 +54,7 @@ export function SubscriptionsIcon({
     : (controlColor ?? theme.palette.text.secondary);
 
   const tooltipLabel = hasActions
-    ? `${t('group:subscription.subscriptions', { postProcess: 'capitalizeFirstChar' })} · ${t('group:subscription.actions_needed', { count: totalActions })}`
+    ? `${t('group:subscription.subscriptions', { postProcess: 'capitalizeFirstChar' })} · ${t('group:subscription.actions_badge', { count: totalActions })}`
     : t('group:subscription.subscriptions', {
         postProcess: 'capitalizeFirstChar',
         defaultValue: 'Subscriptions',
@@ -64,7 +64,11 @@ export function SubscriptionsIcon({
     <Tooltip
       title={
         <span
-          style={{ fontSize: '14px', fontWeight: 700, textTransform: 'uppercase' }}
+          style={{
+            fontSize: '14px',
+            fontWeight: 700,
+            textTransform: 'uppercase',
+          }}
         >
           {tooltipLabel}
         </span>
