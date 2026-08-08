@@ -60,6 +60,16 @@ const CALL_RTC_MAX_CANDIDATES_PER_GENERATION = 96;
 /** If the bridge is briefly not `ready`, retry before dropping (bursty GC / transport flaps). */
 const CALL_SEND_MAX_ATTEMPTS = 40;
 const CALL_SEND_RETRY_MS = 50;
+// A call request can reach a recipient through an existing overlay neighbour
+// before the recipient has a pinned Link back to the exact calling device.
+// Opening that Link commonly takes several seconds. Keep pinned delivery alive
+// long enough for it to establish, while retaining a hard time/attempt bound
+// so a dead route cannot retry forever. Retries are additionally guarded by
+// shouldSendPinnedCallWire(), so acceptance and negotiation data cannot
+// outlive their call.
+const CALL_PINNED_SEND_MAX_ATTEMPTS = 120;
+const CALL_PINNED_SEND_RETRY_MS = 250;
+const CALL_PINNED_SEND_TIMEOUT_MS = 30_000;
 const CALL_ACCEPT_REPEAT_ATTEMPTS = 5;
 const CALL_ACCEPT_REPEAT_MS = 350;
 let retainedCallLocalAddresses: string[] = [];
@@ -1487,9 +1497,14 @@ export class CallManager extends EventEmitter {
     signature: string,
     publicKey: string,
     timestamp: number
-  ): void {
+  ): boolean {
     const call = this.activeCalls.get(callId);
-    if (!call || call.direction !== 'inbound') return;
+    if (!call || call.direction !== 'inbound' || call.state !== 'pending') {
+      loggerWarn(
+        `[Call] Refused accept for unknown or non-ringing call ${callId.slice(0, 8)}…`
+      );
+      return false;
+    }
     if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
     call.state = 'active';
     this.emitDirectCallHistory(call, 'answered', timestamp);
@@ -1508,7 +1523,15 @@ export class CallManager extends EventEmitter {
       CALL_ACCEPT_REPEAT_ATTEMPTS,
       CALL_ACCEPT_REPEAT_MS
     );
+    // The request may have reached this device through a relay before a direct
+    // overlay Link back to the caller is admitted. Preserve the exact accepting
+    // device in `r`, but also send this small wallet-signed control envelope
+    // through the same targeted overlay used by CALL_REQUEST. The caller still
+    // accepts only an invited endpoint. WebRTC SDP/ICE and media keys never use
+    // this fallback and remain pinned to the authenticated direct Link.
+    this.sendEnvelope(call.remoteAddress, env);
     loggerLog(`[Call] Accepted call ${callId.slice(0, 8)}…`);
+    return true;
   }
 
   rejectCall(
@@ -2197,15 +2220,18 @@ export class CallManager extends EventEmitter {
   private sendPinnedCallWireWhenReady(
     peerDestinationHash: string,
     wire: Record<string, unknown>,
-    attempt: number
+    attempt: number,
+    deadlineAt = Date.now() + CALL_PINNED_SEND_TIMEOUT_MS
   ): void {
     if (!this.started) return;
-    if (!this.shouldSendPinnedRtcWire(peerDestinationHash, wire)) return;
+    if (!this.shouldSendPinnedCallWire(peerDestinationHash, wire)) return;
+    const exhausted =
+      attempt >= CALL_PINNED_SEND_MAX_ATTEMPTS || Date.now() >= deadlineAt;
     const bridge = this.reticulumBridge;
     if (!bridge || bridge.getState() !== 'ready') {
-      if (attempt >= CALL_SEND_MAX_ATTEMPTS) {
+      if (exhausted) {
         loggerWarn(
-          `[Call] Abandoned pinned send after retries peer=${peerDestinationHash.slice(0, 16)}`
+          `[Call] Abandoned pinned send after bounded retries type=${String(wire.t ?? 'unknown')} peer=${peerDestinationHash.slice(0, 16)} reason=bridge-not-ready`
         );
         return;
       }
@@ -2214,9 +2240,10 @@ export class CallManager extends EventEmitter {
           this.sendPinnedCallWireWhenReady(
             peerDestinationHash,
             wire,
-            attempt + 1
+            attempt + 1,
+            deadlineAt
           ),
-        CALL_SEND_RETRY_MS
+        CALL_PINNED_SEND_RETRY_MS
       );
       timer.unref?.();
       return;
@@ -2224,28 +2251,47 @@ export class CallManager extends EventEmitter {
     void bridge
       .sendCallDetailed(peerDestinationHash, wire)
       .then((result) => {
-        if (result.ok === true || attempt >= CALL_SEND_MAX_ATTEMPTS) return;
+        if (result.ok === true) return;
+        if (
+          attempt >= CALL_PINNED_SEND_MAX_ATTEMPTS ||
+          Date.now() >= deadlineAt
+        ) {
+          loggerWarn(
+            `[Call] Abandoned pinned send after bounded retries type=${String(wire.t ?? 'unknown')} peer=${peerDestinationHash.slice(0, 16)} reason=${result.reason}${result.error ? `:${result.error}` : ''}`
+          );
+          return;
+        }
         const timer = setTimeout(
           () =>
             this.sendPinnedCallWireWhenReady(
               peerDestinationHash,
               wire,
-              attempt + 1
+              attempt + 1,
+              deadlineAt
             ),
-          CALL_SEND_RETRY_MS
+          CALL_PINNED_SEND_RETRY_MS
         );
         timer.unref?.();
       })
       .catch(() => {
-        if (attempt >= CALL_SEND_MAX_ATTEMPTS) return;
+        if (
+          attempt >= CALL_PINNED_SEND_MAX_ATTEMPTS ||
+          Date.now() >= deadlineAt
+        ) {
+          loggerWarn(
+            `[Call] Abandoned pinned send after bounded retries type=${String(wire.t ?? 'unknown')} peer=${peerDestinationHash.slice(0, 16)} reason=send-command-failed`
+          );
+          return;
+        }
         const timer = setTimeout(
           () =>
             this.sendPinnedCallWireWhenReady(
               peerDestinationHash,
               wire,
-              attempt + 1
+              attempt + 1,
+              deadlineAt
             ),
-          CALL_SEND_RETRY_MS
+          CALL_PINNED_SEND_RETRY_MS
         );
         timer.unref?.();
       });
@@ -2256,11 +2302,22 @@ export class CallManager extends EventEmitter {
    * or an acknowledgement completes the signal. Revalidate every retry so SDP
    * and ICE material cannot leak past that lifecycle boundary.
    */
-  private shouldSendPinnedRtcWire(
+  private shouldSendPinnedCallWire(
     peerDestinationHash: string,
     wire: Record<string, unknown>
   ): boolean {
     const type = wire.t;
+    if (type === CALL_WIRE_ACCEPT) {
+      const callId = typeof wire.c === 'string' ? wire.c : '';
+      const call = this.activeCalls.get(callId);
+      return Boolean(
+        call &&
+        call.state === 'active' &&
+        call.direction === 'inbound' &&
+        call.reticulumPeerPresenceHash.trim().toLowerCase() ===
+          peerDestinationHash.trim().toLowerCase()
+      );
+    }
     if (
       type !== CALL_WIRE_RTC_START &&
       type !== CALL_WIRE_RTC_AUTH &&

@@ -365,8 +365,74 @@ describe('Reticulum manager late bridge binding', () => {
       'peer-hash',
       expect.objectContaining({ t: 'CA', c: 'call-accept-repeat' })
     );
+    expect(bridge.fanoutCallDetailed).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          t: 'CA',
+          c: 'call-accept-repeat',
+          U: 'Q-peer',
+          L: 4,
+        }),
+      ],
+      []
+    );
     await vi.advanceTimersByTimeAsync(350 * 4);
     expect(bridge.sendCallDetailed).toHaveBeenCalledTimes(5);
+    manager.stop();
+  });
+
+  it('keeps CALL_ACCEPT delivery alive while the pinned return link opens', async () => {
+    vi.useFakeTimers();
+    const bridge = new CallBridgeStub();
+    const routeReadyAt = Date.now() + 5_000;
+    bridge.sendCallDetailed.mockImplementation(async () =>
+      Date.now() >= routeReadyAt
+        ? { ok: true as const }
+        : {
+            ok: false as const,
+            reason: 'send-command-failed' as const,
+            error: 'Packet send returned False',
+          }
+    );
+    const manager = new CallManager(presenceStub() as any, bridge as any);
+
+    manager.start();
+    (manager as any).activeCalls.set('call-link-opening', {
+      callId: 'call-link-opening',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: 'peer-hash',
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'inbound',
+      state: 'pending',
+      startedAt: Date.now(),
+    });
+
+    expect(
+      manager.acceptCall('call-link-opening', 'sig', 'pub', Date.now())
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(5_100);
+
+    expect(bridge.sendCallDetailed).toHaveBeenCalledWith(
+      'peer-hash',
+      expect.objectContaining({ t: 'CA', c: 'call-link-opening' })
+    );
+    const latestSend = bridge.sendCallDetailed.mock.results.at(-1);
+    expect(latestSend?.type).toBe('return');
+    await expect(latestSend?.value).resolves.toEqual({ ok: true });
+    manager.stop();
+  });
+
+  it('refuses to report acceptance for a call that is no longer ringing', () => {
+    const manager = new CallManager(
+      presenceStub() as any,
+      new CallBridgeStub() as any
+    );
+    manager.start();
+
+    expect(manager.acceptCall('missing-call', 'sig', 'pub', Date.now())).toBe(
+      false
+    );
     manager.stop();
   });
 
@@ -409,7 +475,17 @@ describe('Reticulum manager late bridge binding', () => {
       'other-laptop',
       expect.anything()
     );
-    expect(bridge.fanoutCallDetailed).not.toHaveBeenCalled();
+    expect(bridge.fanoutCallDetailed).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          t: 'CA',
+          c: 'call-source-device',
+          U: 'Q-peer',
+          L: 4,
+        }),
+      ],
+      []
+    );
     manager.stop();
   });
 
@@ -527,7 +603,7 @@ describe('Reticulum manager late bridge binding', () => {
     await Promise.resolve();
     expect(bridge.sendCallDetailed).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(250);
     expect(bridge.sendCallDetailed).toHaveBeenCalledTimes(2);
     expect(bridge.sendCallDetailed).toHaveBeenLastCalledWith(
       'peer-b',

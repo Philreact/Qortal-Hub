@@ -6409,8 +6409,9 @@ ipcMain.handle(
   ) => {
     const mgr = getCallManager();
     if (!mgr) return { success: false, error: 'Call manager not running' };
-    mgr.acceptCall(callId, signature, publicKey, timestamp);
-    return { success: true };
+    return mgr.acceptCall(callId, signature, publicKey, timestamp)
+      ? { success: true }
+      : { success: false, error: 'Call is no longer ringing' };
   }
 );
 
