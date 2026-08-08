@@ -108,7 +108,16 @@
     "full_screen": "full screen",
     "open_in_new": "open in new window",
     "restore": "restore",
-    "next": "next"
+    "next": "next",
+    "delete": "delete",
+    "react": "react",
+    "reject": "reject",
+    "reply": "reply",
+    "unblock": "unblock",
+    "add_attachment": "add attachment",
+    "copy_code": "copy code",
+    "formatting": "formatting",
+    "copied": "copied!"
   },
   "address_your": "your address",
   "admin": "admin",
@@ -871,7 +880,15 @@
     "viewGroup": "View Group",
     "openEvent": "Open event {{title}}",
     "pending": "Pending",
-    "request": "Request"
+    "request": "Request",
+    "coverSaveFailed": "The compressed cover image could not be saved.",
+    "coverInvalid": "The saved cover image is invalid.",
+    "nextMonth": "Next month",
+    "previousMonth": "Previous month",
+    "coverCropLabel": "Event cover crop",
+    "coverCompressFailed": "The cover image could not be compressed",
+    "coverCompressTooLarge": "The cover image could not be compressed enough",
+    "imageProcessingUnavailable": "Image processing is unavailable"
   },
   "bookmarks": {
     "title": "Bookmarks",
@@ -909,5 +926,8 @@
   "call_audio_list_error": "could not list devices",
   "call_audio_microphone": "microphone",
   "call_audio_settings": "call audio settings",
-  "call_audio_speaker": "speaker"
+  "call_audio_speaker": "speaker",
+  "call_audio_system_microphone": "System microphone",
+  "call_audio_system_speaker": "System speaker",
+  "this_user": "This user"
 }

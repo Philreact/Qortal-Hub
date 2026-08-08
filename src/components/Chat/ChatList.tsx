@@ -757,8 +757,7 @@ export const ChatList = ({
         reticulumReadingPositionLockedRef.current = false;
         reticulumReaderGestureRef.current = false;
       }
-      const isPinned =
-        distanceFromBottom <= RETICULUM_BOTTOM_PIN_THRESHOLD_PX;
+      const isPinned = distanceFromBottom <= RETICULUM_BOTTOM_PIN_THRESHOLD_PX;
       const previousMetrics = lastScrollMetricsRef.current;
       const contentSizeChanged =
         previousMetrics.scrollHeight !== 0 &&
@@ -1940,7 +1939,9 @@ export const ChatList = ({
           >
             {hasNewerMessages
               ? t('group:action.jump_latest', {
-                  defaultValue: 'Jump to latest',
+                  defaultValue: t('group:action.jump_latest', {
+                    postProcess: 'capitalizeFirstChar',
+                  }),
                   postProcess: 'capitalizeFirstChar',
                 })
               : t('group:action.scroll_unread_messages', {

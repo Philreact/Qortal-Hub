@@ -529,32 +529,29 @@ export const MessageItemComponent = ({
     }
   }, [deferredMessage?.messageText, deferredMessage?.editTimestamp]);
 
-  const reticulumInviteSource = useMemo(
-    () => {
-      const candidates = reticulumChatEnabled
-        ? [
-            deferredMessage?.messageText,
-            deferredMessage?.text,
-            message?.decryptedData?.data?.message,
-          ]
-        : [
-            deferredMessage?.text,
-            message?.decryptedData?.data?.message,
-            deferredMessage?.messageText,
-          ];
-      for (const candidate of candidates) {
-        const normalized = normalizeMessageHtmlContent(candidate);
-        if (normalized) return normalized;
-      }
-      return '';
-    },
-    [
-      deferredMessage?.messageText,
-      deferredMessage?.text,
-      message?.decryptedData?.data?.message,
-      reticulumChatEnabled,
-    ]
-  );
+  const reticulumInviteSource = useMemo(() => {
+    const candidates = reticulumChatEnabled
+      ? [
+          deferredMessage?.messageText,
+          deferredMessage?.text,
+          message?.decryptedData?.data?.message,
+        ]
+      : [
+          deferredMessage?.text,
+          message?.decryptedData?.data?.message,
+          deferredMessage?.messageText,
+        ];
+    for (const candidate of candidates) {
+      const normalized = normalizeMessageHtmlContent(candidate);
+      if (normalized) return normalized;
+    }
+    return '';
+  }, [
+    deferredMessage?.messageText,
+    deferredMessage?.text,
+    message?.decryptedData?.data?.message,
+    reticulumChatEnabled,
+  ]);
   const reticulumQAppPreviewLinks = useMemo(
     () =>
       reticulumChatEnabled
@@ -604,7 +601,8 @@ export const MessageItemComponent = ({
       officialGroupSystem?.groupId
     ) {
       return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(
-        reticulumGroupAvatarOwnerName || officialGroupSystem.groupAvatarOwnerName
+        reticulumGroupAvatarOwnerName ||
+          officialGroupSystem.groupAvatarOwnerName
       )}/qortal_group_avatar_${officialGroupSystem.groupId}?async=true`;
     }
     return message?.senderName
@@ -2012,8 +2010,8 @@ export const MessageItemComponent = ({
   const hasReticulumExpiry = Boolean(reticulumExpiryMs);
   const isReticulumExpiringSoon = Boolean(
     reticulumExpiryMs &&
-      reticulumExpiryMs > expiryClockMs &&
-      reticulumExpiryMs - expiryClockMs < RETICULUM_EXPIRING_SOON_MS
+    reticulumExpiryMs > expiryClockMs &&
+    reticulumExpiryMs - expiryClockMs < RETICULUM_EXPIRING_SOON_MS
   );
   const reticulumExpiringSoonLabel = isReticulumExpiringSoon ? (
     <Tooltip title={`Message Expiry: ${reticulumExpiryText}`}>
@@ -2238,7 +2236,7 @@ export const MessageItemComponent = ({
                             : theme.palette.common.black,
                           theme.palette.mode === 'dark' ? 0.045 : 0.04
                         )
-                    : alpha(theme.palette.text.primary, 0.035)
+                      : alpha(theme.palette.text.primary, 0.035)
                   : undefined,
               },
               '&:hover .message-item-toolbar': {
@@ -3801,32 +3799,32 @@ export const MessageItemComponent = ({
             {(isUpdating || isTemp) &&
               (!reticulumChatEnabled ||
                 message?.status === 'failed-permanent') && (
-              <Typography
-                sx={{
-                  color: theme.palette.text.secondary,
-                  fontFamily: 'Inter',
-                  fontSize: '12px',
-                  fontStyle: 'italic',
-                  marginTop: '2px',
-                }}
-              >
-                {!isTemp
-                  ? message?.status === 'failed-permanent'
-                    ? t('core:message.error.update_failed', {
-                        postProcess: 'capitalizeFirstChar',
-                      })
-                    : t('core:message.generic.updating', {
-                        postProcess: 'capitalizeFirstChar',
-                      })
-                  : message?.status === 'failed-permanent'
-                    ? t('core:message.error.send_failed', {
-                        postProcess: 'capitalizeFirstChar',
-                      })
-                    : t('core:message.generic.sending', {
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-              </Typography>
-            )}
+                <Typography
+                  sx={{
+                    color: theme.palette.text.secondary,
+                    fontFamily: 'Inter',
+                    fontSize: '12px',
+                    fontStyle: 'italic',
+                    marginTop: '2px',
+                  }}
+                >
+                  {!isTemp
+                    ? message?.status === 'failed-permanent'
+                      ? t('core:message.error.update_failed', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
+                      : t('core:message.generic.updating', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
+                    : message?.status === 'failed-permanent'
+                      ? t('core:message.error.send_failed', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
+                      : t('core:message.generic.sending', {
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                </Typography>
+              )}
 
             {/* Reactions row */}
             {reactions &&
@@ -3976,115 +3974,115 @@ export const MessageItemComponent = ({
                     setSelectedReaction(null);
                   }}
                 >
-                <Box
-                  sx={{
-                    backgroundColor:
-                      theme.palette.mode === 'dark'
-                        ? '#1e2027'
-                        : theme.palette.background.paper,
-                    backgroundImage: 'none',
-                    border: '1px solid',
-                    borderColor:
-                      theme.palette.mode === 'dark'
-                        ? '#3a414d'
-                        : theme.palette.divider,
-                    borderRadius: '10px',
-                    boxShadow:
-                      theme.palette.mode === 'dark'
-                        ? '0 14px 32px rgba(0, 0, 0, 0.42)'
-                        : theme.shadows[8],
-                    maxWidth: '320px',
-                    minWidth: '260px',
-                    padding: '16px 16px 12px',
-                  }}
-                >
                   <Box
                     sx={{
-                      alignItems: 'center',
-                      display: 'flex',
-                      gap: '8px',
-                      marginBottom: '12px',
+                      backgroundColor:
+                        theme.palette.mode === 'dark'
+                          ? '#1e2027'
+                          : theme.palette.background.paper,
+                      backgroundImage: 'none',
+                      border: '1px solid',
+                      borderColor:
+                        theme.palette.mode === 'dark'
+                          ? '#3a414d'
+                          : theme.palette.divider,
+                      borderRadius: '10px',
+                      boxShadow:
+                        theme.palette.mode === 'dark'
+                          ? '0 14px 32px rgba(0, 0, 0, 0.42)'
+                          : theme.shadows[8],
+                      maxWidth: '320px',
+                      minWidth: '260px',
+                      padding: '16px 16px 12px',
                     }}
                   >
                     <Box
                       sx={{
                         alignItems: 'center',
-                        backgroundColor: theme.palette.action.hover,
-                        borderRadius: '8px',
                         display: 'flex',
-                        fontSize: '18px',
-                        height: '36px',
-                        justifyContent: 'center',
-                        width: '36px',
+                        gap: '8px',
+                        marginBottom: '12px',
                       }}
                     >
-                      {selectedReaction}
+                      <Box
+                        sx={{
+                          alignItems: 'center',
+                          backgroundColor: theme.palette.action.hover,
+                          borderRadius: '8px',
+                          display: 'flex',
+                          fontSize: '18px',
+                          height: '36px',
+                          justifyContent: 'center',
+                          width: '36px',
+                        }}
+                      >
+                        {selectedReaction}
+                      </Box>
+                      <Typography
+                        sx={{
+                          fontSize: '14px',
+                          fontWeight: 600,
+                          color: theme.palette.text.primary,
+                        }}
+                      >
+                        {t('core:message.generic.people_reaction', {
+                          reaction: selectedReaction,
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                      </Typography>
                     </Box>
-                    <Typography
+
+                    <List
+                      disablePadding
                       sx={{
-                        fontSize: '14px',
-                        fontWeight: 600,
-                        color: theme.palette.text.primary,
+                        maxHeight: '240px',
+                        overflow: 'auto',
                       }}
                     >
-                      {t('core:message.generic.people_reaction', {
-                        reaction: selectedReaction,
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-                    </Typography>
-                  </Box>
+                      {reactions[selectedReaction]?.map((reactionItem) => {
+                        const hasUnsafeReactionName = Boolean(
+                          reactionItem.senderName &&
+                          hasInvisibleCharacters(reactionItem.senderName)
+                        );
 
-                  <List
-                    disablePadding
-                    sx={{
-                      maxHeight: '240px',
-                      overflow: 'auto',
-                    }}
-                  >
-                    {reactions[selectedReaction]?.map((reactionItem) => {
-                      const hasUnsafeReactionName = Boolean(
-                        reactionItem.senderName &&
-                        hasInvisibleCharacters(reactionItem.senderName)
-                      );
-
-                      return (
-                        <ListItem
-                          key={reactionItem.sender}
-                          disablePadding
-                          sx={{
-                            borderRadius: '8px',
-                            marginBottom: '2px',
-                            '&:last-of-type': { marginBottom: 0 },
-                            '&:hover': {
-                              backgroundColor: theme.palette.action.hover,
-                            },
-                          }}
-                        >
-                          <ListItemText
-                            primary={
-                              reactionItem.senderName || reactionItem.sender
-                            }
-                            primaryTypographyProps={{
-                              sx: {
-                                fontSize: '14px',
-                                fontWeight: 500,
-                                ...(hasUnsafeReactionName
-                                  ? {
-                                      textDecorationLine: 'line-through',
-                                      textDecorationThickness: '2px',
-                                      textDecorationColor:
-                                        theme.palette.error.main,
-                                    }
-                                  : {}),
+                        return (
+                          <ListItem
+                            key={reactionItem.sender}
+                            disablePadding
+                            sx={{
+                              borderRadius: '8px',
+                              marginBottom: '2px',
+                              '&:last-of-type': { marginBottom: 0 },
+                              '&:hover': {
+                                backgroundColor: theme.palette.action.hover,
                               },
                             }}
-                            sx={{ py: '8px', px: '12px' }}
-                          />
-                        </ListItem>
-                      );
-                    })}
-                  </List>
-                </Box>
+                          >
+                            <ListItemText
+                              primary={
+                                reactionItem.senderName || reactionItem.sender
+                              }
+                              primaryTypographyProps={{
+                                sx: {
+                                  fontSize: '14px',
+                                  fontWeight: 500,
+                                  ...(hasUnsafeReactionName
+                                    ? {
+                                        textDecorationLine: 'line-through',
+                                        textDecorationThickness: '2px',
+                                        textDecorationColor:
+                                          theme.palette.error.main,
+                                      }
+                                    : {}),
+                                },
+                              }}
+                              sx={{ py: '8px', px: '12px' }}
+                            />
+                          </ListItem>
+                        );
+                      })}
+                    </List>
+                  </Box>
                 </ClickAwayListener>
               </Popper>
             )}

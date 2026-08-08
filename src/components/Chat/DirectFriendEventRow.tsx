@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 const compactIdentity = (value: unknown) => {
   const text = String(value || '').trim();
-  if (text.length <= 18) return text || 'This user';
+  if (text.length <= 18) return text || t('core:this_user');
   return `${text.slice(0, 7)}...${text.slice(-5)}`;
 };
 

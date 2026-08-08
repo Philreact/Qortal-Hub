@@ -68,9 +68,7 @@ export const MessageSizeLimitLip = ({
             animation: 'none',
           },
           animation:
-            shakeKey > 0
-              ? 'qchatMessageLimitShake 280ms ease-in-out'
-              : 'none',
+            shakeKey > 0 ? 'qchatMessageLimitShake 280ms ease-in-out' : 'none',
           fontSize: 12,
           fontWeight: 650,
           lineHeight: 1.35,

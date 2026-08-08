@@ -323,7 +323,10 @@ export const AdminSpaceInner = ({
         .catch((error) => {
           console.error(
             'Failed to encrypt and publish symmetric key for group chat:',
-            error?.message || 'An error occurred'
+            error?.message ||
+              t('core:message.error.generic', {
+                postProcess: 'capitalizeFirstChar',
+              })
           );
           setInfoSnackCustom({
             type: 'error',
@@ -378,7 +381,9 @@ export const AdminSpaceInner = ({
 
       <Box
         sx={{
-          border: compact ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid gray',
+          border: compact
+            ? '1px solid rgba(255, 255, 255, 0.1)'
+            : '1px solid gray',
           borderRadius: compact ? '8px' : '6px',
           display: 'flex',
           flexDirection: 'column',
@@ -389,12 +394,25 @@ export const AdminSpaceInner = ({
         }}
       >
         {compact && (
-          <Typography sx={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.01em' }}>
+          <Typography
+            sx={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.01em' }}
+          >
             Group Secret Key (GSK)
           </Typography>
         )}
         {isFetchingGroupSecretKey && (
-          <Typography sx={compact ? { color: 'text.secondary', fontSize: 12, fontWeight: 500, lineHeight: 1.4 } : undefined}>
+          <Typography
+            sx={
+              compact
+                ? {
+                    color: 'text.secondary',
+                    fontSize: 12,
+                    fontWeight: 500,
+                    lineHeight: 1.4,
+                  }
+                : undefined
+            }
+          >
             {t('auth:message.generic.fetching_group_secret_key', {
               postProcess: 'capitalizeFirstChar',
             })}
@@ -403,7 +421,18 @@ export const AdminSpaceInner = ({
 
         {!isFetchingGroupSecretKey &&
           groupSecretKeyPublishDetails === false && (
-            <Typography sx={compact ? { color: 'text.secondary', fontSize: 12, fontWeight: 500, lineHeight: 1.4 } : undefined}>
+            <Typography
+              sx={
+                compact
+                  ? {
+                      color: 'text.secondary',
+                      fontSize: 12,
+                      fontWeight: 500,
+                      lineHeight: 1.4,
+                    }
+                  : undefined
+              }
+            >
               {t('auth:message.generic.no_secret_key_published', {
                 postProcess: 'capitalizeFirstChar',
               })}
@@ -411,7 +440,18 @@ export const AdminSpaceInner = ({
           )}
 
         {groupSecretKeyPublishDetails && (
-          <Typography sx={compact ? { color: 'text.secondary', fontSize: 12, fontWeight: 500, lineHeight: 1.4 } : undefined}>
+          <Typography
+            sx={
+              compact
+                ? {
+                    color: 'text.secondary',
+                    fontSize: 12,
+                    fontWeight: 500,
+                    lineHeight: 1.4,
+                  }
+                : undefined
+            }
+          >
             {t('auth:message.generic.last_encryption_date', {
               date: formatTimestampForum(
                 groupSecretKeyPublishDetails?.updated ||
@@ -423,10 +463,16 @@ export const AdminSpaceInner = ({
           </Typography>
         )}
 
-        <Button onClick={openGroupKeyPublishSelect} size={compact ? 'small' : 'medium'} variant="contained">
-          {compact ? 'Publish GSK' : t('auth:action.publish_group_secret_key', {
-            postProcess: 'capitalizeFirstChar',
-          })}
+        <Button
+          onClick={openGroupKeyPublishSelect}
+          size={compact ? 'small' : 'medium'}
+          variant="contained"
+        >
+          {compact
+            ? t('group:admin_space.publish_gsk')
+            : t('auth:action.publish_group_secret_key', {
+                postProcess: 'capitalizeFirstChar',
+              })}
         </Button>
 
         <Dialog
@@ -559,7 +605,7 @@ export const AdminSpaceInner = ({
           }}
         >
           {compact
-            ? 'This key encrypts group content visible to all group members. It is currently the only key used in this UI.'
+            ? t('group:admin_space.gsk_description_compact')
             : t('auth:tips.key_encrypt_group', {
                 postProcess: 'capitalizeFirstChar',
               })}
@@ -570,7 +616,9 @@ export const AdminSpaceInner = ({
 
       <Box
         sx={{
-          border: compact ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid gray',
+          border: compact
+            ? '1px solid rgba(255, 255, 255, 0.1)'
+            : '1px solid gray',
           borderRadius: compact ? '8px' : '6px',
           display: 'flex',
           flexDirection: 'column',
@@ -581,12 +629,25 @@ export const AdminSpaceInner = ({
         }}
       >
         {compact && (
-          <Typography sx={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.01em' }}>
+          <Typography
+            sx={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.01em' }}
+          >
             Admin Secret Key (ASK)
           </Typography>
         )}
         {isFetchingAdminGroupSecretKey && (
-          <Typography sx={compact ? { color: 'text.secondary', fontSize: 12, fontWeight: 500, lineHeight: 1.4 } : undefined}>
+          <Typography
+            sx={
+              compact
+                ? {
+                    color: 'text.secondary',
+                    fontSize: 12,
+                    fontWeight: 500,
+                    lineHeight: 1.4,
+                  }
+                : undefined
+            }
+          >
             {t('auth:message.generic.fetching_admin_secret_key', {
               postProcess: 'capitalizeFirstChar',
             })}
@@ -594,7 +655,18 @@ export const AdminSpaceInner = ({
         )}
 
         {!isFetchingAdminGroupSecretKey && !adminGroupSecretKey && (
-          <Typography sx={compact ? { color: 'text.secondary', fontSize: 12, fontWeight: 500, lineHeight: 1.4 } : undefined}>
+          <Typography
+            sx={
+              compact
+                ? {
+                    color: 'text.secondary',
+                    fontSize: 12,
+                    fontWeight: 500,
+                    lineHeight: 1.4,
+                  }
+                : undefined
+            }
+          >
             {t('auth:message.generic.no_secret_key_published', {
               postProcess: 'capitalizeFirstChar',
             })}
@@ -602,7 +674,18 @@ export const AdminSpaceInner = ({
         )}
 
         {adminGroupSecretKeyPublishDetails && (
-          <Typography sx={compact ? { color: 'text.secondary', fontSize: 12, fontWeight: 500, lineHeight: 1.4 } : undefined}>
+          <Typography
+            sx={
+              compact
+                ? {
+                    color: 'text.secondary',
+                    fontSize: 12,
+                    fontWeight: 500,
+                    lineHeight: 1.4,
+                  }
+                : undefined
+            }
+          >
             {t('auth:message.generic.last_encryption_date', {
               date: formatTimestampForum(
                 adminGroupSecretKeyPublishDetails?.updated ||
@@ -620,9 +703,11 @@ export const AdminSpaceInner = ({
           size={compact ? 'small' : 'medium'}
           variant="contained"
         >
-          {compact ? 'Publish ASK' : t('auth:action.publish_admin_secret_key', {
-            postProcess: 'capitalizeFirstChar',
-          })}
+          {compact
+            ? t('group:admin_space.publish_ask')
+            : t('auth:action.publish_admin_secret_key', {
+                postProcess: 'capitalizeFirstChar',
+              })}
         </Button>
 
         {!compact && <Spacer height="20px" />}
@@ -635,7 +720,7 @@ export const AdminSpaceInner = ({
           }}
         >
           {compact
-            ? 'This key encrypts content visible only to admins.'
+            ? t('group:admin_space.ask_description')
             : t('auth:tips.key_encrypt_admin', {
                 postProcess: 'capitalizeFirstChar',
               })}
@@ -651,10 +736,10 @@ export const AdminSpaceInner = ({
             pt: 0,
           }}
         >
-          Reminder: After publishing the key, please allow a few minutes for it to appear.
+          Reminder: After publishing the key, please allow a few minutes for it
+          to appear.
         </Typography>
       )}
-
     </Box>
   );
 };

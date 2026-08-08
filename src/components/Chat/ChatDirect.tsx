@@ -3640,10 +3640,9 @@ export const ChatDirect = ({
             }}
           >
             <Typography sx={{ color: 'inherit', flex: 1, fontSize: 12.5 }}>
-              <strong>DMs expire after 1 month by default</strong> to
-              reduce local storage use. You can change
-              this setting, but only for new messages. Existing messages will
-              keep their current expiry period.
+              <strong>DMs expire after 1 month by default</strong> to reduce
+              local storage use. You can change this setting, but only for new
+              messages. Existing messages will keep their current expiry period.
             </Typography>
             <IconButton
               aria-label="Dismiss direct message expiry notice"

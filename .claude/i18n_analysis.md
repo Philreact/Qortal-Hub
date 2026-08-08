@@ -42,51 +42,63 @@ settings.
 **Missing slots dropped 1,171 → 106.** No key is missing from all 11 locales any
 more.
 
-### Current state
+### ✅ Untranslated pass done — 358 translations
 
-| lang | missing | untranslated | total | key coverage |
-| ---- | ------- | ------------ | ----- | ------------ |
-| `zh` | 5       | 72           | 77    | 99.8%        |
-| `ru` | 5       | 71           | 76    | 99.8%        |
-| `ja` | 5       | 71           | 76    | 99.8%        |
-| `et` | 1       | 73           | 74    | 100.0%       |
-| `ar` | 3       | 71           | 74    | 99.9%        |
-| `fi` | **61**  | 8            | 69    | 97.0%        |
-| `fr` | 6       | 25           | 31    | 99.7%        |
-| `de` | 6       | 18           | 24    | 99.7%        |
-| `it` | 5       | 18           | 23    | 99.8%        |
-| `es` | 5       | 13           | 18    | 99.8%        |
-| `pt` | 4       | 12           | 16    | 99.8%        |
+The values that were present but still English have been translated. The bulk was
+one feature: **68 `core:qortino_workspace.*` keys** — the QORTINO workspace,
+EarBump music player and hotkeys panel — untranslated in five languages.
 
-**106 missing slots** and **452 untranslated values** remain.
+**Untranslated slots dropped 452 → 11.** Only `(key, language)` pairs actually
+flagged were emitted, so existing reviewed translations in `de`/`it`/`pt` were
+not overwritten.
 
-`fi` holds 61 of the 106 missing — one locale translated thoroughly but from an
-older `en` snapshot. The other ten have 1–6 stragglers each (45 total).
+The 11 survivors are correct as they stand: `Q-App DevNet-Testing` (×8),
+`Q-Tube Tutorial`, the `qortal://APP/Name/path` URL example, and Italian
+`{{ amount }} sats per KB`.
 
-The 452 untranslated collapse to roughly **106 unique keys**, so this is one
-translation pass, not 452 decisions. Note the raw audit reports ~600: it counts
-strings that _should_ stay English — product names (`Q-Mail`, `Q-Manager`,
-`Q-Chat`), URLs, and true cognates (`port`, `admin`; `message`, `microphone`,
-`Participants`, `mention` in French; `level` in German). Do not "fix" those.
+### ✅ Backfill complete — 100% key coverage
+
+`fi`'s 61 missing keys (essentially the whole `core:message.*` subtree, from an
+older `en` snapshot) and the last 45 stragglers are done: **106 translations**.
+
+### Current state — item 4 closed
+
+| lang                    | missing | key coverage |
+| ----------------------- | ------- | ------------ |
+| all 11 non-`en` locales | **0**   | **100.00%**  |
+
+**Missing slots: 1,171 → 0.** **Untranslated: 452 → 11.**
+
+The 11 remaining are correct as they stand — product names and format examples,
+not defects: `Q-App DevNet-Testing` (×8), `Q-Tube Tutorial`, the
+`qortal://APP/Name/path` URL example, and Italian `{{ amount }} sats per KB`.
+
+**Placeholder mismatches repo-wide: 1** — the intentional Arabic singular that
+omits `{{count}}`.
+
+Note the raw audit still reports ~270 "untranslated": it counts strings that
+_should_ stay English — product names (`Q-Mail`, `Q-Manager`, `Q-Chat`), URLs,
+and true cognates (`Description`, `Notifications`, `options`, `Modules` in
+French; `Wallets`, `Peers`, `Seedphrase` in German; `thread`, `directory` in
+Italian). Do not "fix" those.
 
 ---
 
-## 2. Files not aligned with the `en` baseline
+## 2. Files not aligned with the `en` baseline — ✅ resolved
 
-All 72 locale files exist — no locale is missing a namespace file. Alignment by
-namespace, counting locales with **zero** missing keys:
+All 72 locale files exist, and **every namespace is now aligned in every
+locale**. Locales with zero missing keys:
 
 | namespace  | before  | now            |
 | ---------- | ------- | -------------- |
 | `node`     | 11 / 11 | **11 / 11** ✅ |
 | `question` | 11 / 11 | **11 / 11** ✅ |
 | `tutorial` | 0 / 11  | **11 / 11** ✅ |
-| `auth`     | 0 / 11  | 2 / 11         |
-| `group`    | 0 / 11  | 1 / 11         |
-| `core`     | 0 / 11  | 0 / 11         |
+| `auth`     | 0 / 11  | **11 / 11** ✅ |
+| `group`    | 0 / 11  | **11 / 11** ✅ |
+| `core`     | 0 / 11  | **11 / 11** ✅ |
 
-`tutorial` is now fully aligned in every locale. The remaining gap is almost
-entirely `core`, and within that mostly `fi`.
+44 of the 66 non-English files were out of parity; none are now.
 
 ### Not a defect
 
@@ -134,23 +146,45 @@ is misspelled (should be `decrypt_`), and its sibling
 `group:message.generic.descrypt_wallet` too. Renaming means touching 12 locale
 files plus 2 call sites — deferred, not urgent.
 
-### ⚠️ CORRECTION — the 3 "placeholder defects" were false positives
+### ⚠️ CORRECTION, then ✅ FIXED — placeholder integrity
 
-The original finding was wrong; the audit regex `{{(\w+)}}` did not tolerate
-inner whitespace.
+**The three originally reported defects were false positives.** The audit regex
+`{{(\w+)}}` did not tolerate inner whitespace.
 
 - `ar` / `fi` `group:last_message_date` were **correct**. `en` held
   `last message: {{date }}` — asymmetric spacing the regex failed to match, so
-  English looked like it had no placeholder. i18next trims, so nothing was
-  actually broken.
+  English looked like it had no placeholder. i18next trims, so nothing broke.
 - `ar` `wallet_activity_relative_minutes_ago_one` = `منذ دقيقة` ("a minute ago")
   omits `{{count}}` **deliberately**. Arabic singular does not repeat the
-  numeral, and the `_other` form does carry `{{count}}`. Correct localisation.
+  numeral, and `_other` does carry `{{count}}`. Correct localisation, and the one
+  remaining "mismatch" repo-wide.
 
-What was real: **11 asymmetric placeholders** (`{{date }}`, `{{ quantity}}`,
-`{{maximum }}`) across 11 files, now normalised. The two house styles — `{{x}}`
-(1,660 uses) and `{{ x }}` (1,313 uses) — were left alone; both work, and
-unifying them would be a 3,000-line diff for no functional gain.
+**But a later repo-wide sweep found 7 genuine ones, now fixed.** The original
+check only covered specific keys; scanning every key against `en` surfaced real
+breakage:
+
+| key                                               | locales                       | problem                                                     |
+| ------------------------------------------------- | ----------------------------- | ----------------------------------------------------------- |
+| `core:message.question.rate_app`                  | `de` `es` `fr` `ja` `ru` `zh` | referenced `{{ days }}`, absent from `en`                   |
+| `question:message.error.synchronization_attempts` | `de`                          | used `{{ quantity }}` where `en` and the caller use `count` |
+
+Both call sites of `rate_app` — `AppRating.tsx` and `AppInfo.tsx` — pass only
+`rate`, so six languages rendered a literal `{{ days }}` in the app-rating
+confirmation dialog. Those translations had been written against an older English
+string ("N days until your next rating") that has since become "It will create a
+POLL tx."; all six were rewritten to match current English. `get.ts` passes
+`count`, so German rendered a literal `{{ quantity }}`.
+
+**Repo-wide placeholder mismatches: 8 → 1** (the intentional Arabic one).
+
+Also real, and fixed earlier: **11 asymmetric placeholders** (`{{date }}`,
+`{{ quantity}}`, `{{maximum }}`) across 11 files, now normalised. The two house
+styles — `{{x}}` (1,660 uses) and `{{ x }}` (1,313) — were left alone; both work,
+and unifying them would be a 3,000-line diff for no functional gain.
+
+**Lesson:** audit placeholders across every key, not just the ones being touched.
+`scripts/i18n_apply_translations.py` now enforces this on write, so new
+translations cannot reintroduce it — but pre-existing data needs the sweep.
 
 ### ✅ RESOLVED — casing convention
 
@@ -205,32 +239,43 @@ file (it crashed the audit script until guarded).
 
 ## Progress
 
-| #   | item                                   | status                                                                  |
-| --- | -------------------------------------- | ----------------------------------------------------------------------- |
-| 1   | 32 broken key references               | ✅ done — all `t()` calls resolve                                       |
-| 2   | placeholder defects                    | ✅ done — 3 were false positives, 11 asymmetric placeholders normalised |
-| 3   | casing convention                      | ✅ decided — both cases allowed; doc, skill and script aligned          |
-| 4   | backfill missing + untranslated keys   | 🔄 in progress — common 107 done (1,177 translations)                   |
-| 5   | component migration (Chat, QortalLand) | ⬜ not started — 617 hardcoded strings                                  |
+| #   | item                                   | status                                                         |
+| --- | -------------------------------------- | -------------------------------------------------------------- |
+| 1   | 32 broken key references               | ✅ done — all `t()` calls resolve                              |
+| 2   | placeholder integrity                  | ✅ done — 3 false positives, 7 real bugs fixed, 11 normalised  |
+| 3   | casing convention                      | ✅ decided — both cases allowed; doc, skill and script aligned |
+| 4   | backfill missing + untranslated keys   | ✅ done — 100% key coverage, 1,648 translations                |
+| 5   | component migration (Chat, QortalLand) | ⬜ not started — 617 hardcoded strings                         |
 
-### Remaining work on item 4
+### Item 4 — closed
 
-1. **`fi`'s 61 missing keys** — the single biggest chunk; would put every locale
-   above 99.5%.
-2. **~45 stragglers** across the other ten locales (1–6 each).
-3. **452 untranslated values** (~106 unique keys) — one translation pass.
+| sub-item                             | result                                    |
+| ------------------------------------ | ----------------------------------------- |
+| 107 keys missing from all 11 locales | ✅ 1,177 translations                     |
+| 452 untranslated values              | ✅ 358 translations, 11 correct survivors |
+| `fi`'s 61 missing keys               | ✅ included in the final 106              |
+| ~45 stragglers across the other ten  | ✅ included in the final 106              |
 
-Use `scripts/i18n_add_keys.py` then `scripts/i18n_apply_translations.py`; the
-latter validates placeholders and refuses to write on mismatch. Finish with
-`--audit`.
+**1,648 translations applied in total.** Every locale is at 100% key coverage
+with one intentional placeholder exception.
 
-### Then item 5
+### Next: item 5
 
-The Chat and QortalLand migration will generate new keys of its own. Per the
-`i18n` skill, migrate first and translate in one batch at the end — so if that
-work is imminent, it may be cheaper to do item 5 before finishing item 4's
-untranslated pass.
+The only substantial i18n work left is the component migration — **617 hardcoded
+strings**, 347 in `src/components/Chat/` and 270 in `src/components/QortalLand/`.
+Per the `i18n` skill: migrate to `t()` first, then translate the new keys in one
+batch at the end.
 
-Worth doing before either: collapse the **16 duplicated English values**, since
-that removes strings from the backfill set rather than translating the same
-phrase four times.
+Worth doing first: collapse the **16 duplicated English values**, so the same
+phrase is not translated four times.
+
+### Method notes
+
+- Emit only `(key, language)` pairs that are actually missing or untranslated.
+  Applying a whole key set to every locale silently overwrites reviewed work.
+- Batch by feature, not alphabetically — the `qortino_workspace` subtree
+  translated as one unit keeps its terminology consistent.
+- Audit placeholders across **every** key, not just the ones in flight; that is
+  how the 7 real defects surfaced.
+- `scripts/i18n_apply_translations.py` validates placeholders and refuses to
+  write on mismatch; finish every pass with `--audit`.

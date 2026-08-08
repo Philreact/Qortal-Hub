@@ -17,6 +17,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAtom, useAtomValue } from 'jotai';
 import { useMessageReadObserver } from '../../hooks/useMessageReadObserver';
 import { supportChatOpenAtom, userInfoAtom } from '../../atoms/global';
@@ -63,7 +64,18 @@ import { CallAudioSettingsButton } from './CallAudioDeviceSelectors';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const QUICK_REACTIONS = ['👍', '✅', '❤️', '🙏', '🤔', '😮', '😅', '😂', '👀', '🔥'] as const;
+const QUICK_REACTIONS = [
+  '👍',
+  '✅',
+  '❤️',
+  '🙏',
+  '🤔',
+  '😮',
+  '😅',
+  '😂',
+  '👀',
+  '🔥',
+] as const;
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
@@ -196,13 +208,16 @@ function ReplyQuoteBar({
   findMessage: (id: string) => RenderedMessage | undefined;
   isMine: boolean;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   const parent = findMessage(parentId);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
-  const authorColor = parent ? addrColor(parent.authorAddress, isDark) : '#78909c';
+  const authorColor = parent
+    ? addrColor(parent.authorAddress, isDark)
+    : '#78909c';
   const preview = parent
     ? parent.isDeleted
-      ? 'Message deleted'
+      ? t('group:support.message_deleted')
       : parent.content.length > 120
         ? `${parent.content.slice(0, 120)}…`
         : parent.content
@@ -216,9 +231,7 @@ function ReplyQuoteBar({
         py: 0.5,
         borderRadius: 1.5,
         borderLeft: `3px solid ${authorColor}`,
-        backgroundColor: isMine
-          ? 'rgba(0,0,0,0.2)'
-          : `${authorColor}22`,
+        backgroundColor: isMine ? 'rgba(0,0,0,0.2)' : `${authorColor}22`,
         maxWidth: '100%',
       }}
     >
@@ -243,7 +256,12 @@ function ReplyQuoteBar({
           </Box>
           <Typography
             variant="caption"
-            sx={{ color: authorColor, fontWeight: 600, fontSize: 11, lineHeight: 1 }}
+            sx={{
+              color: authorColor,
+              fontWeight: 600,
+              fontSize: 11,
+              lineHeight: 1,
+            }}
           >
             {shortAddr(parent.authorAddress)}
           </Typography>
@@ -325,9 +343,13 @@ function ReactionChips({
                 backdropFilter: 'blur(8px)',
                 backgroundColor: iReacted
                   ? alpha(primaryColor, 0.85)
-                  : isDark ? 'rgba(40,44,52,0.88)' : 'rgba(255,255,255,0.88)',
-                border: `1px solid ${iReacted ? primaryColor : (isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)')}`,
-                color: iReacted ? theme.palette.primary.contrastText : theme.palette.text.primary,
+                  : isDark
+                    ? 'rgba(40,44,52,0.88)'
+                    : 'rgba(255,255,255,0.88)',
+                border: `1px solid ${iReacted ? primaryColor : isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.1)'}`,
+                color: iReacted
+                  ? theme.palette.primary.contrastText
+                  : theme.palette.text.primary,
                 boxShadow: '0 1px 4px rgba(0,0,0,0.18)',
                 transition: 'transform 0.1s ease, box-shadow 0.1s ease',
                 '&:hover': {
@@ -337,7 +359,10 @@ function ReactionChips({
               }}
             >
               <span style={{ fontSize: 14, lineHeight: 1 }}>{emoji}</span>
-              <Typography component="span" sx={{ fontSize: 11, lineHeight: 1, fontWeight: 600 }}>
+              <Typography
+                component="span"
+                sx={{ fontSize: 11, lineHeight: 1, fontWeight: 600 }}
+              >
                 {addresses.length}
               </Typography>
             </Box>
@@ -372,7 +397,10 @@ function EmojiPicker({
         {QUICK_REACTIONS.map((emoji) => (
           <Box
             key={emoji}
-            onClick={() => { onPick(emoji); onClose(); }}
+            onClick={() => {
+              onPick(emoji);
+              onClose();
+            }}
             sx={{
               cursor: 'pointer',
               fontSize: 20,
@@ -410,6 +438,7 @@ function AttachmentImage({
   height?: number;
   decryptCache: React.MutableRefObject<Map<string, string>>;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   const [dataUri, setDataUri] = useState<string | null>(
     decryptCache.current.get(eventId) ?? null
   );
@@ -427,12 +456,23 @@ function AttachmentImage({
 
     (async () => {
       try {
-        const raw = attachmentData ?? (await window.chat?.getAttachment(eventId)) ?? null;
-        if (!raw || cancelled) { setLoading(false); return; }
+        const raw =
+          attachmentData ?? (await window.chat?.getAttachment(eventId)) ?? null;
+        if (!raw || cancelled) {
+          setLoading(false);
+          return;
+        }
 
         // isAgent=true: agent decrypts messages sent by users
-        const decrypted = await decryptAttachmentFromSupport(raw, senderPublicKey, true);
-        if (!decrypted || cancelled) { setLoading(false); return; }
+        const decrypted = await decryptAttachmentFromSupport(
+          raw,
+          senderPublicKey,
+          true
+        );
+        if (!decrypted || cancelled) {
+          setLoading(false);
+          return;
+        }
 
         const uri = `data:${mimeType};base64,${decrypted}`;
         decryptCache.current.set(eventId, uri);
@@ -444,8 +484,10 @@ function AttachmentImage({
       }
     })();
 
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
 
   const aspectRatio = width && height ? `${width} / ${height}` : undefined;
@@ -477,7 +519,7 @@ function AttachmentImage({
       <Box
         component="img"
         src={dataUri}
-        alt="attachment"
+        alt={t('group:support.attachment')}
         sx={{
           display: 'block',
           maxWidth: 240,
@@ -523,8 +565,13 @@ function AttachmentImage({
           <Box
             component="img"
             src={dataUri}
-            alt="attachment"
-            sx={{ display: 'block', maxWidth: '90vw', maxHeight: '90vh', objectFit: 'contain' }}
+            alt={t('group:support.attachment')}
+            sx={{
+              display: 'block',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              objectFit: 'contain',
+            }}
           />
         </Box>
       </Dialog>
@@ -544,7 +591,9 @@ function DateSeparator({ timestamp }: { timestamp: number }) {
     day: 'numeric',
   });
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, px: 2, py: 1.5 }}>
+    <Box
+      sx={{ display: 'flex', alignItems: 'center', gap: 1.5, px: 2, py: 1.5 }}
+    >
       <Box sx={{ flex: 1, height: '1px', backgroundColor: borderColor }} />
       <Typography
         variant="caption"
@@ -596,6 +645,7 @@ function MessageBubble({
   decryptCache: React.MutableRefObject<Map<string, string>>;
   isGrouped?: boolean;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const color = addrColor(msg.authorAddress, isDark);
@@ -663,7 +713,14 @@ function MessageBubble({
         {!isMine && !isGrouped && (
           <Typography
             variant="caption"
-            sx={{ fontFamily: 'monospace', color, mb: 0.3, ml: 0.5, fontSize: 11, fontWeight: 600 }}
+            sx={{
+              fontFamily: 'monospace',
+              color,
+              mb: 0.3,
+              ml: 0.5,
+              fontSize: 11,
+              fontWeight: 600,
+            }}
           >
             {shortAddr(msg.authorAddress)}
           </Typography>
@@ -680,7 +737,9 @@ function MessageBubble({
               : undefined,
             backgroundColor: isMine
               ? undefined
-              : isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.055)',
+              : isDark
+                ? 'rgba(255,255,255,0.1)'
+                : 'rgba(0,0,0,0.055)',
             border: isMine
               ? undefined
               : `1px solid ${isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.08)'}`,
@@ -703,9 +762,19 @@ function MessageBubble({
           )}
 
           {msg.isDeleted ? (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, opacity: isMine ? 0.55 : 0.45 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 0.75,
+                opacity: isMine ? 0.55 : 0.45,
+              }}
+            >
               <RemoveCircleOutlineRoundedIcon sx={{ fontSize: 15 }} />
-              <Typography variant="body2" sx={{ fontStyle: 'italic', fontSize: 13 }}>
+              <Typography
+                variant="body2"
+                sx={{ fontStyle: 'italic', fontSize: 13 }}
+              >
                 This message was deleted
               </Typography>
             </Box>
@@ -758,7 +827,9 @@ function MessageBubble({
               {fmtTime(msg.timestamp)}
             </Typography>
             {isMine && (
-              <Tooltip title={seenByUser ? 'Seen by user' : 'Sent'}>
+              <Tooltip
+                title={seenByUser ? t('group:support.seen_by_user') : 'Sent'}
+              >
                 <DoneAllRoundedIcon
                   sx={{
                     fontSize: 14,
@@ -804,7 +875,9 @@ function MessageBubble({
           py: 0.5,
         }}
       >
-        <Tooltip title="Reply">
+        <Tooltip
+          title={t('core:action.reply', { postProcess: 'capitalizeFirstChar' })}
+        >
           <IconButton
             size="small"
             sx={{
@@ -821,7 +894,9 @@ function MessageBubble({
           </IconButton>
         </Tooltip>
 
-        <Tooltip title="React">
+        <Tooltip
+          title={t('core:action.react', { postProcess: 'capitalizeFirstChar' })}
+        >
           <IconButton
             size="small"
             sx={{
@@ -840,8 +915,19 @@ function MessageBubble({
 
         {isMine && !msg.isDeleted && (
           <>
-            <Box sx={{ width: '1px', height: 18, backgroundColor: borderColor, mx: 0.25 }} />
-            <Tooltip title="Edit">
+            <Box
+              sx={{
+                width: '1px',
+                height: 18,
+                backgroundColor: borderColor,
+                mx: 0.25,
+              }}
+            />
+            <Tooltip
+              title={t('core:action.edit', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            >
               <IconButton
                 size="small"
                 sx={{
@@ -857,14 +943,20 @@ function MessageBubble({
                 <DriveFileRenameOutlineRoundedIcon sx={{ fontSize: 17 }} />
               </IconButton>
             </Tooltip>
-            <Tooltip title="Delete">
+            <Tooltip
+              title={t('core:action.delete', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            >
               <IconButton
                 size="small"
                 sx={{
                   borderRadius: '50%',
                   p: 0.6,
                   color: 'error.main',
-                  '&:hover': { backgroundColor: alpha(theme.palette.error.main, 0.12) },
+                  '&:hover': {
+                    backgroundColor: alpha(theme.palette.error.main, 0.12),
+                  },
                 }}
                 onClick={() => onDelete(msg.id)}
               >
@@ -908,6 +1000,7 @@ function TypingRow({ addresses }: { addresses: Set<string> }) {
 // ── AgentSupportDashboard ─────────────────────────────────────────────────────
 
 export function AgentSupportDashboard() {
+  const { t } = useTranslation(['core', 'group']);
   const userInfo = useAtomValue(userInfoAtom);
   const myAddress: string = userInfo?.address ?? '';
   const [isOpen, setIsOpen] = useAtom(supportChatOpenAtom);
@@ -934,7 +1027,8 @@ export function AgentSupportDashboard() {
     unblockUser,
   } = useAgentSupportChat();
 
-  const activeTicket = tickets.find((t) => t.chatId === activeTicketChatId) ?? null;
+  const activeTicket =
+    tickets.find((t) => t.chatId === activeTicketChatId) ?? null;
 
   // ── Voice call ─────────────────────────────────────────────────────────────
 
@@ -955,14 +1049,20 @@ export function AgentSupportDashboard() {
     if (callState === 'ringing' && incomingCall) {
       return incomingCall.chatId.startsWith('support:');
     }
-    if (callState === 'calling' || callState === 'connected' || callState === 'ended') {
+    if (
+      callState === 'calling' ||
+      callState === 'connected' ||
+      callState === 'ended'
+    ) {
       return activeCallChatId?.startsWith('support:') ?? false;
     }
     return true;
   }, [callState, incomingCall, activeCallChatId]);
 
   const fmtDuration = (secs: number): string => {
-    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const m = Math.floor(secs / 60)
+      .toString()
+      .padStart(2, '0');
     const s = (secs % 60).toString().padStart(2, '0');
     return `${m}:${s}`;
   };
@@ -996,12 +1096,13 @@ export function AgentSupportDashboard() {
 
   // Intersection-based read receipts: mark messages as read only when they
   // actually enter the visible scroll area (true "eyes-on" confirmation).
-  const { register: registerRead, unregister: unregisterRead } = useMessageReadObserver(
-    myAddress,
-    readReceipts,
-    markMessagesRead,
-    scrollContainerRef
-  );
+  const { register: registerRead, unregister: unregisterRead } =
+    useMessageReadObserver(
+      myAddress,
+      readReceipts,
+      markMessagesRead,
+      scrollContainerRef
+    );
 
   // ── Compose helpers ───────────────────────────────────────────────────────
 
@@ -1044,15 +1145,27 @@ export function AgentSupportDashboard() {
     } else {
       await sendMessage(text);
     }
-  }, [inputText, isSending, editTarget, replyTarget, sendMessage, sendEdit, sendReply]);
+  }, [
+    inputText,
+    isSending,
+    editTarget,
+    replyTarget,
+    sendMessage,
+    sendEdit,
+    sendReply,
+  ]);
 
   const handleDelete = useCallback(
-    async (targetId: string) => { await sendDelete(targetId); },
+    async (targetId: string) => {
+      await sendDelete(targetId);
+    },
     [sendDelete]
   );
 
   const handleReaction = useCallback(
-    async (targetId: string, emoji: string) => { await sendReaction(targetId, emoji); },
+    async (targetId: string, emoji: string) => {
+      await sendReaction(targetId, emoji);
+    },
     [sendReaction]
   );
 
@@ -1158,8 +1271,18 @@ export function AgentSupportDashboard() {
           }}
         >
           <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.5 }}>
-            <HeadsetMicRoundedIcon sx={{ fontSize: 16, color: 'text.secondary', mr: 0.5 }} />
-            <Typography variant="caption" sx={{ fontWeight: 700, letterSpacing: 0.2, flex: 1, fontSize: 12 }}>
+            <HeadsetMicRoundedIcon
+              sx={{ fontSize: 16, color: 'text.secondary', mr: 0.5 }}
+            />
+            <Typography
+              variant="caption"
+              sx={{
+                fontWeight: 700,
+                letterSpacing: 0.2,
+                flex: 1,
+                fontSize: 12,
+              }}
+            >
               Support
             </Typography>
             <IconButton
@@ -1171,7 +1294,15 @@ export function AgentSupportDashboard() {
             </IconButton>
           </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <Typography variant="caption" sx={{ fontWeight: 700, opacity: 0.55, letterSpacing: 0.4, fontSize: 10 }}>
+            <Typography
+              variant="caption"
+              sx={{
+                fontWeight: 700,
+                opacity: 0.55,
+                letterSpacing: 0.4,
+                fontSize: 10,
+              }}
+            >
               QUEUE
             </Typography>
             {tickets.filter((t) => !t.isBlocked).length > 0 && (
@@ -1199,19 +1330,27 @@ export function AgentSupportDashboard() {
           {tickets.filter((t) => !t.isBlocked).length === 0 && (
             <Typography
               variant="caption"
-              sx={{ display: 'block', px: 1.5, pt: 1.5, opacity: 0.35, textAlign: 'center' }}
+              sx={{
+                display: 'block',
+                px: 1.5,
+                pt: 1.5,
+                opacity: 0.35,
+                textAlign: 'center',
+              }}
             >
               No requests yet
             </Typography>
           )}
-          {tickets.filter((t) => !t.isBlocked).map((ticket) => (
-            <TicketRow
-              key={ticket.chatId}
-              ticket={ticket}
-              isActive={ticket.chatId === activeTicketChatId}
-              onClick={() => handleSelectTicket(ticket.chatId)}
-            />
-          ))}
+          {tickets
+            .filter((t) => !t.isBlocked)
+            .map((ticket) => (
+              <TicketRow
+                key={ticket.chatId}
+                ticket={ticket}
+                isActive={ticket.chatId === activeTicketChatId}
+                onClick={() => handleSelectTicket(ticket.chatId)}
+              />
+            ))}
         </Box>
 
         {/* Blocked users section */}
@@ -1226,12 +1365,22 @@ export function AgentSupportDashboard() {
                 display: 'flex',
                 alignItems: 'center',
                 gap: 0.5,
-                '&:hover': { backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)' },
+                '&:hover': {
+                  backgroundColor: isDark
+                    ? 'rgba(255,255,255,0.05)'
+                    : 'rgba(0,0,0,0.04)',
+                },
               }}
             >
               <Typography
                 variant="caption"
-                sx={{ fontWeight: 700, opacity: 0.55, letterSpacing: 0.4, fontSize: 9, flex: 1 }}
+                sx={{
+                  fontWeight: 700,
+                  opacity: 0.55,
+                  letterSpacing: 0.4,
+                  fontSize: 9,
+                  flex: 1,
+                }}
               >
                 BLOCKED ({blockedAddresses.size})
               </Typography>
@@ -1271,7 +1420,11 @@ export function AgentSupportDashboard() {
                     >
                       {shortAddr(addr)}
                     </Typography>
-                    <Tooltip title="Unblock">
+                    <Tooltip
+                      title={t('core:action.unblock', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                    >
                       <IconButton
                         size="small"
                         onClick={() => unblockUser(addr)}
@@ -1289,8 +1442,9 @@ export function AgentSupportDashboard() {
       </Box>
 
       {/* ── Right: conversation ────────────────────────────────────────────── */}
-      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-
+      <Box
+        sx={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}
+      >
         {/* Conversation header */}
         <Box
           sx={{
@@ -1305,7 +1459,15 @@ export function AgentSupportDashboard() {
         >
           {/* User avatar + info */}
           {activeTicket ? (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, minWidth: 0 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                flex: 1,
+                minWidth: 0,
+              }}
+            >
               <Box sx={{ position: 'relative', flexShrink: 0 }}>
                 <Avatar
                   sx={{
@@ -1313,7 +1475,10 @@ export function AgentSupportDashboard() {
                     height: 32,
                     fontSize: 13,
                     fontWeight: 700,
-                    backgroundColor: addrColor(activeTicket.userAddress, isDark),
+                    backgroundColor: addrColor(
+                      activeTicket.userAddress,
+                      isDark
+                    ),
                   }}
                 >
                   {activeTicket.userAddress[0]}
@@ -1348,7 +1513,11 @@ export function AgentSupportDashboard() {
                     {shortAddr(activeTicket.userAddress)}
                   </Typography>
                   <Tooltip
-                    title={addrCopied ? 'Copied!' : 'Copy full address'}
+                    title={
+                      addrCopied
+                        ? 'Copied!'
+                        : t('group:support.copy_full_address')
+                    }
                     placement="top"
                     arrow
                   >
@@ -1366,14 +1535,21 @@ export function AgentSupportDashboard() {
                         p: 0.4,
                       }}
                     >
-                      {addrCopied
-                        ? <CheckCircleOutlineRoundedIcon sx={{ fontSize: 15 }} />
-                        : <ContentCopyRoundedIcon sx={{ fontSize: 15 }} />}
+                      {addrCopied ? (
+                        <CheckCircleOutlineRoundedIcon sx={{ fontSize: 15 }} />
+                      ) : (
+                        <ContentCopyRoundedIcon sx={{ fontSize: 15 }} />
+                      )}
                     </IconButton>
                   </Tooltip>
                 </Box>
-                <Typography variant="caption" sx={{ opacity: 0.5, display: 'block', fontSize: 10 }}>
-                  {activeTicket.isResolved ? 'Resolved' : 'Active session'}
+                <Typography
+                  variant="caption"
+                  sx={{ opacity: 0.5, display: 'block', fontSize: 10 }}
+                >
+                  {activeTicket.isResolved
+                    ? 'Resolved'
+                    : t('group:support.active_session')}
                 </Typography>
               </Box>
             </Box>
@@ -1410,7 +1586,7 @@ export function AgentSupportDashboard() {
 
           {/* Resolve button */}
           {hasActiveTicket && !activeTicket?.isResolved && (
-            <Tooltip title="Resolve this ticket">
+            <Tooltip title={t('group:support.resolve_ticket')}>
               <IconButton
                 size="small"
                 onClick={handleResolve}
@@ -1428,7 +1604,7 @@ export function AgentSupportDashboard() {
 
           {/* Block button */}
           {hasActiveTicket && (
-            <Tooltip title="Block this user">
+            <Tooltip title={t('group:support.block_user')}>
               <IconButton
                 size="small"
                 onClick={handleBlock}
@@ -1471,31 +1647,57 @@ export function AgentSupportDashboard() {
               px: 2,
               py: 1,
               borderBottom: `1px solid ${borderColor}`,
-              backgroundColor: isDark ? 'rgba(34,197,94,0.12)' : 'rgba(34,197,94,0.10)',
+              backgroundColor: isDark
+                ? 'rgba(34,197,94,0.12)'
+                : 'rgba(34,197,94,0.10)',
               display: 'flex',
               alignItems: 'center',
               gap: 1,
               flexShrink: 0,
             }}
           >
-            <CallRoundedIcon sx={{ fontSize: 18, color: 'success.main', flexShrink: 0 }} />
-            <Typography variant="body2" sx={{ flex: 1, fontWeight: 600, color: 'success.main' }}>
-              Incoming call from {incomingCall.fromAddress.slice(0, 6)}…{incomingCall.fromAddress.slice(-4)}
+            <CallRoundedIcon
+              sx={{ fontSize: 18, color: 'success.main', flexShrink: 0 }}
+            />
+            <Typography
+              variant="body2"
+              sx={{ flex: 1, fontWeight: 600, color: 'success.main' }}
+            >
+              Incoming call from {incomingCall.fromAddress.slice(0, 6)}…
+              {incomingCall.fromAddress.slice(-4)}
             </Typography>
-            <Tooltip title="Accept">
+            <Tooltip
+              title={t('core:action.accept', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            >
               <IconButton
                 size="small"
                 onClick={acceptCall}
-                sx={{ color: '#fff', backgroundColor: 'success.main', '&:hover': { backgroundColor: 'success.dark' }, p: 0.75 }}
+                sx={{
+                  color: '#fff',
+                  backgroundColor: 'success.main',
+                  '&:hover': { backgroundColor: 'success.dark' },
+                  p: 0.75,
+                }}
               >
                 <CallRoundedIcon sx={{ fontSize: 16 }} />
               </IconButton>
             </Tooltip>
-            <Tooltip title="Reject">
+            <Tooltip
+              title={t('core:action.reject', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            >
               <IconButton
                 size="small"
                 onClick={rejectCall}
-                sx={{ color: '#fff', backgroundColor: 'error.main', '&:hover': { backgroundColor: 'error.dark' }, p: 0.75 }}
+                sx={{
+                  color: '#fff',
+                  backgroundColor: 'error.main',
+                  '&:hover': { backgroundColor: 'error.dark' },
+                  p: 0.75,
+                }}
               >
                 <CallEndRoundedIcon sx={{ fontSize: 16 }} />
               </IconButton>
@@ -1532,7 +1734,9 @@ export function AgentSupportDashboard() {
                 textAlign: 'center',
               }}
             >
-              <Typography variant="body2">Select a ticket from the queue</Typography>
+              <Typography variant="body2">
+                Select a ticket from the queue
+              </Typography>
             </Box>
           )}
 
@@ -1546,7 +1750,9 @@ export function AgentSupportDashboard() {
                 opacity: 0.3,
               }}
             >
-              <Typography variant="body2">No messages yet</Typography>
+              <Typography variant="body2">
+                {t('group:support.no_messages_yet')}
+              </Typography>
             </Box>
           )}
 
@@ -1584,9 +1790,12 @@ export function AgentSupportDashboard() {
 
           {messages.map((msg, idx) => {
             const prev = idx > 0 ? messages[idx - 1] : null;
-            const isGrouped = prev !== null && prev.authorAddress === msg.authorAddress;
-            const showDateSep = prev !== null &&
-              new Date(msg.timestamp).toDateString() !== new Date(prev.timestamp).toDateString();
+            const isGrouped =
+              prev !== null && prev.authorAddress === msg.authorAddress;
+            const showDateSep =
+              prev !== null &&
+              new Date(msg.timestamp).toDateString() !==
+                new Date(prev.timestamp).toDateString();
             return (
               <React.Fragment key={msg.id}>
                 {showDateSep && <DateSeparator timestamp={msg.timestamp} />}
@@ -1642,7 +1851,7 @@ export function AgentSupportDashboard() {
                 sx={{ fontWeight: 600, display: 'block', lineHeight: 1.4 }}
               >
                 {editTarget
-                  ? 'Editing message'
+                  ? t('group:support.editing_message')
                   : `Replying to ${shortAddr(replyTarget!.authorAddress)}`}
               </Typography>
               {replyTarget && (
@@ -1663,7 +1872,7 @@ export function AgentSupportDashboard() {
                 </Typography>
               )}
             </Box>
-            <Tooltip title="Cancel (Esc)">
+            <Tooltip title={t('group:support.cancel_esc')}>
               <IconButton
                 size="small"
                 onClick={handleCancelCompose}
@@ -1682,7 +1891,9 @@ export function AgentSupportDashboard() {
               px: 1.5,
               py: 0.75,
               borderTop: `1px solid ${borderColor}`,
-              backgroundColor: isDark ? 'rgba(99,102,241,0.12)' : 'rgba(99,102,241,0.08)',
+              backgroundColor: isDark
+                ? 'rgba(99,102,241,0.12)'
+                : 'rgba(99,102,241,0.08)',
               display: 'flex',
               alignItems: 'center',
               flexWrap: 'wrap',
@@ -1690,8 +1901,13 @@ export function AgentSupportDashboard() {
               flexShrink: 0,
             }}
           >
-            <CallRoundedIcon sx={{ fontSize: 15, color: 'primary.main', flexShrink: 0 }} />
-            <Typography variant="caption" sx={{ flex: 1, fontWeight: 600, color: 'primary.main' }}>
+            <CallRoundedIcon
+              sx={{ fontSize: 15, color: 'primary.main', flexShrink: 0 }}
+            />
+            <Typography
+              variant="caption"
+              sx={{ flex: 1, fontWeight: 600, color: 'primary.main' }}
+            >
               {fmtDuration(callDuration)}
             </Typography>
             <Typography
@@ -1700,7 +1916,9 @@ export function AgentSupportDashboard() {
                 px: 0.75,
                 py: 0.15,
                 borderRadius: 1,
-                backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+                backgroundColor: isDark
+                  ? 'rgba(255,255,255,0.08)'
+                  : 'rgba(0,0,0,0.06)',
                 fontWeight: 600,
                 fontSize: 10,
                 letterSpacing: 0.4,
@@ -1712,16 +1930,25 @@ export function AgentSupportDashboard() {
             <CallAudioSettingsButton />
             <Tooltip title={isMuted ? 'Unmute' : 'Mute'}>
               <IconButton size="small" onClick={toggleMute} sx={{ p: 0.5 }}>
-                {isMuted
-                  ? <MicOffRoundedIcon sx={{ fontSize: 16, color: 'error.main' }} />
-                  : <MicRoundedIcon sx={{ fontSize: 16 }} />}
+                {isMuted ? (
+                  <MicOffRoundedIcon
+                    sx={{ fontSize: 16, color: 'error.main' }}
+                  />
+                ) : (
+                  <MicRoundedIcon sx={{ fontSize: 16 }} />
+                )}
               </IconButton>
             </Tooltip>
-            <Tooltip title="Hang up">
+            <Tooltip title={t('group:support.hang_up')}>
               <IconButton
                 size="small"
                 onClick={hangUp}
-                sx={{ color: '#fff', backgroundColor: 'error.main', '&:hover': { backgroundColor: 'error.dark' }, p: 0.5 }}
+                sx={{
+                  color: '#fff',
+                  backgroundColor: 'error.main',
+                  '&:hover': { backgroundColor: 'error.dark' },
+                  p: 0.5,
+                }}
               >
                 <CallEndRoundedIcon sx={{ fontSize: 16 }} />
               </IconButton>
@@ -1776,15 +2003,17 @@ export function AgentSupportDashboard() {
           <IconButton
             size="medium"
             onClick={handleSend}
-            disabled={!hasActiveTicket || !isReady || !inputText.trim() || isSending || !window.chat}
+            disabled={
+              !hasActiveTicket ||
+              !isReady ||
+              !inputText.trim() ||
+              isSending ||
+              !window.chat
+            }
             color={editTarget ? 'warning' : 'primary'}
             sx={{ mb: 0.25, '&:disabled': { opacity: 0.35 } }}
           >
-            {isSending ? (
-              <CircularProgress size={20} />
-            ) : (
-              <SendRoundedIcon />
-            )}
+            {isSending ? <CircularProgress size={20} /> : <SendRoundedIcon />}
           </IconButton>
         </Box>
       </Box>

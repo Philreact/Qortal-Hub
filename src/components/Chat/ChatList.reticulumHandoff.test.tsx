@@ -54,8 +54,9 @@ vi.mock('@tanstack/react-virtual', () => ({
   }) => {
     const start = Math.max(0, range.startIndex - range.overscan);
     const end = Math.min(range.count - 1, range.endIndex + range.overscan);
-    return Array.from({ length: Math.max(0, end - start + 1) }, (_, offset) =>
-      start + offset
+    return Array.from(
+      { length: Math.max(0, end - start + 1) },
+      (_, offset) => start + offset
     );
   },
   useVirtualizer: (options: {
@@ -687,9 +688,7 @@ describe('Reticulum ChatList channel handoff', () => {
       overscan: 5,
       count: historyWindow.length,
     });
-    expect(extracted).toEqual([
-      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 80,
-    ]);
+    expect(extracted).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 80]);
   });
 
   it('keeps a same-channel search request pending until its converted row arrives', async () => {

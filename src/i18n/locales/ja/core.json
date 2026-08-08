@@ -108,7 +108,16 @@
     "open_in_new": "新しいウィンドウで開く",
     "restore": "元に戻す",
     "resize": "サイズ変更",
-    "next": "next"
+    "next": "next",
+    "delete": "delete",
+    "react": "react",
+    "reject": "reject",
+    "reply": "reply",
+    "unblock": "unblock",
+    "add_attachment": "add attachment",
+    "copy_code": "copy code",
+    "formatting": "formatting",
+    "copied": "copied!"
   },
   "address_your": "あなたの住所",
   "admin": "管理者",
@@ -820,7 +829,15 @@
     "viewGroup": "View Group",
     "openEvent": "Open event {{title}}",
     "pending": "Pending",
-    "request": "Request"
+    "request": "Request",
+    "coverSaveFailed": "The compressed cover image could not be saved.",
+    "coverInvalid": "The saved cover image is invalid.",
+    "nextMonth": "Next month",
+    "previousMonth": "Previous month",
+    "coverCropLabel": "Event cover crop",
+    "coverCompressFailed": "The cover image could not be compressed",
+    "coverCompressTooLarge": "The cover image could not be compressed enough",
+    "imageProcessingUnavailable": "Image processing is unavailable"
   },
   "bookmarks": {
     "title": "ブックマーク",
@@ -909,5 +926,8 @@
     "peer_offline_hint": "ネットワーク上にいません — 音声通話を利用できません",
     "peer_online_hint": "ネットワーク上にいます — 音声通話を利用できます"
   },
-  "opened_apps": "開いているアプリ"
+  "opened_apps": "開いているアプリ",
+  "call_audio_system_microphone": "System microphone",
+  "call_audio_system_speaker": "System speaker",
+  "this_user": "This user"
 }

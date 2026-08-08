@@ -108,7 +108,16 @@
     "open_in_new": "открыть в новом окне",
     "restore": "восстановить",
     "resize": "изменить размер",
-    "next": "next"
+    "next": "next",
+    "delete": "delete",
+    "react": "react",
+    "reject": "reject",
+    "reply": "reply",
+    "unblock": "unblock",
+    "add_attachment": "add attachment",
+    "copy_code": "copy code",
+    "formatting": "formatting",
+    "copied": "copied!"
   },
   "address_your": "Ваш адрес",
   "admin": "администратор",
@@ -822,7 +831,15 @@
     "viewGroup": "View Group",
     "openEvent": "Open event {{title}}",
     "pending": "Pending",
-    "request": "Request"
+    "request": "Request",
+    "coverSaveFailed": "The compressed cover image could not be saved.",
+    "coverInvalid": "The saved cover image is invalid.",
+    "nextMonth": "Next month",
+    "previousMonth": "Previous month",
+    "coverCropLabel": "Event cover crop",
+    "coverCompressFailed": "The cover image could not be compressed",
+    "coverCompressTooLarge": "The cover image could not be compressed enough",
+    "imageProcessingUnavailable": "Image processing is unavailable"
   },
   "bookmarks": {
     "title": "Закладки",
@@ -911,5 +928,8 @@
     "peer_offline_hint": "Нет в сети — голосовой вызов недоступен",
     "peer_online_hint": "В сети — голосовой вызов доступен"
   },
-  "opened_apps": "открытые приложения"
+  "opened_apps": "открытые приложения",
+  "call_audio_system_microphone": "System microphone",
+  "call_audio_system_speaker": "System speaker",
+  "this_user": "This user"
 }

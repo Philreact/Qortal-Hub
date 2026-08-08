@@ -108,7 +108,16 @@
     "open_in_new": "apri in una nuova finestra",
     "restore": "ripristina",
     "resize": "ridimensiona",
-    "next": "next"
+    "next": "next",
+    "delete": "delete",
+    "react": "react",
+    "reject": "reject",
+    "reply": "reply",
+    "unblock": "unblock",
+    "add_attachment": "add attachment",
+    "copy_code": "copy code",
+    "formatting": "formatting",
+    "copied": "copied!"
   },
   "address_your": "il tuo indirizzo",
   "admin": "amministratore",
@@ -821,7 +830,15 @@
     "viewGroup": "View Group",
     "openEvent": "Open event {{title}}",
     "pending": "Pending",
-    "request": "Request"
+    "request": "Request",
+    "coverSaveFailed": "The compressed cover image could not be saved.",
+    "coverInvalid": "The saved cover image is invalid.",
+    "nextMonth": "Next month",
+    "previousMonth": "Previous month",
+    "coverCropLabel": "Event cover crop",
+    "coverCompressFailed": "The cover image could not be compressed",
+    "coverCompressTooLarge": "The cover image could not be compressed enough",
+    "imageProcessingUnavailable": "Image processing is unavailable"
   },
   "bookmarks": {
     "title": "Segnalibri",
@@ -909,5 +926,8 @@
     "online": "Online",
     "peer_offline_hint": "Non è in rete — chiamata vocale non disponibile",
     "peer_online_hint": "In rete — chiamata vocale disponibile"
-  }
+  },
+  "call_audio_system_microphone": "System microphone",
+  "call_audio_system_speaker": "System speaker",
+  "this_user": "This user"
 }

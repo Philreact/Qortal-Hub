@@ -165,7 +165,10 @@ export const ChatOptions = ({
         .catch((error) => {
           console.error(
             'Failed to add timestamp:',
-            error.message || 'An error occurred'
+            error.message ||
+              t('core:message.error.generic', {
+                postProcess: 'capitalizeFirstChar',
+              })
           );
         });
     }
@@ -620,19 +623,21 @@ export const ChatOptions = ({
             )}
           </Box>
 
-          {debouncedValue && searchedList?.length === 0 && !reticulumSearchLoading && (
-            <Typography
-              sx={{
-                fontSize: '11px',
-                fontWeight: 400,
-                color: theme.palette.text.secondary,
-              }}
-            >
-              {t('core:message.generic.no_results', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Typography>
-          )}
+          {debouncedValue &&
+            searchedList?.length === 0 &&
+            !reticulumSearchLoading && (
+              <Typography
+                sx={{
+                  fontSize: '11px',
+                  fontWeight: 400,
+                  color: theme.palette.text.secondary,
+                }}
+              >
+                {t('core:message.generic.no_results', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              </Typography>
+            )}
 
           {reticulumSearchLoading && (
             <Typography

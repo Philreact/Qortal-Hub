@@ -245,12 +245,12 @@ export function CallAudioSettingsButton({
   }, [prefs.outputDeviceId, outputs]);
 
   const defaultInputLabel = useMemo(
-    () => defaultDeviceLabel(inputs, 'System microphone'),
+    () => defaultDeviceLabel(inputs, t('core:call_audio_system_microphone')),
     [inputs]
   );
 
   const defaultOutputLabel = useMemo(
-    () => defaultDeviceLabel(outputs, 'System speaker'),
+    () => defaultDeviceLabel(outputs, t('core:call_audio_system_speaker')),
     [outputs]
   );
 

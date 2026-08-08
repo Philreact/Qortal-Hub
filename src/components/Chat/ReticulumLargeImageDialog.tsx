@@ -32,9 +32,7 @@ export const ReticulumLargeImageDialog = ({
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const surfaceColor = isDark ? '#171a22' : theme.palette.background.paper;
-  const borderColor = isDark
-    ? alpha('#91a4bf', 0.28)
-    : theme.palette.divider;
+  const borderColor = isDark ? alpha('#91a4bf', 0.28) : theme.palette.divider;
   const mutedColor = isDark
     ? alpha('#d9e2ef', 0.66)
     : theme.palette.text.secondary;
@@ -249,11 +247,7 @@ export const ReticulumLargeImageDialog = ({
           >
             {loading ? (
               <>
-                <CircularProgress
-                  color="inherit"
-                  size={15}
-                  sx={{ mr: 1 }}
-                />
+                <CircularProgress color="inherit" size={15} sx={{ mr: 1 }} />
                 Compressing
               </>
             ) : (

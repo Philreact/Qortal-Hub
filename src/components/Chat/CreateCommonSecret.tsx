@@ -211,7 +211,10 @@ export const CreateCommonSecret = ({
         .catch((error) => {
           console.error(
             'Failed to encrypt and publish symmetric key for group chat:',
-            error.message || 'An error occurred'
+            error.message ||
+              t('core:message.error.generic', {
+                postProcess: 'capitalizeFirstChar',
+              })
           );
           setIsLoading(false);
         });

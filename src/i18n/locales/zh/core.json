@@ -108,7 +108,16 @@
     "open_in_new": "在新窗口中打开",
     "restore": "还原",
     "resize": "调整大小",
-    "next": "next"
+    "next": "next",
+    "delete": "delete",
+    "react": "react",
+    "reject": "reject",
+    "reply": "reply",
+    "unblock": "unblock",
+    "add_attachment": "add attachment",
+    "copy_code": "copy code",
+    "formatting": "formatting",
+    "copied": "copied!"
   },
   "address_your": "您的地址",
   "admin": "行政",
@@ -820,7 +829,15 @@
     "viewGroup": "View Group",
     "openEvent": "Open event {{title}}",
     "pending": "Pending",
-    "request": "Request"
+    "request": "Request",
+    "coverSaveFailed": "The compressed cover image could not be saved.",
+    "coverInvalid": "The saved cover image is invalid.",
+    "nextMonth": "Next month",
+    "previousMonth": "Previous month",
+    "coverCropLabel": "Event cover crop",
+    "coverCompressFailed": "The cover image could not be compressed",
+    "coverCompressTooLarge": "The cover image could not be compressed enough",
+    "imageProcessingUnavailable": "Image processing is unavailable"
   },
   "bookmarks": {
     "title": "书签",
@@ -909,5 +926,8 @@
     "peer_offline_hint": "不在网络中 — 无法进行语音通话",
     "peer_online_hint": "在网络中 — 可进行语音通话"
   },
-  "opened_apps": "已打开的应用"
+  "opened_apps": "已打开的应用",
+  "call_audio_system_microphone": "System microphone",
+  "call_audio_system_speaker": "System speaker",
+  "this_user": "This user"
 }

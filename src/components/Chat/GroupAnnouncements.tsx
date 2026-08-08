@@ -65,7 +65,12 @@ export const saveTempPublish = async ({ data, key }: any) => {
         rej(response.error);
       })
       .catch((error) => {
-        rej(error.message || 'An error occurred');
+        rej(
+          error.message ||
+            t('core:message.error.generic', {
+              postProcess: 'capitalizeFirstChar',
+            })
+        );
       });
   });
 };
@@ -82,7 +87,12 @@ export const getTempPublish = async () => {
         rej(response.error);
       })
       .catch((error) => {
-        rej(error.message || 'An error occurred');
+        rej(
+          error.message ||
+            t('core:message.error.generic', {
+              postProcess: 'capitalizeFirstChar',
+            })
+        );
       });
   });
 };
@@ -708,7 +718,7 @@ export const GroupAnnouncements = ({
               onEnter={publishAnnouncement}
               disableEnter
               compactChat
-              placeholder="Write an announcement..."
+              placeholder={t('group:announcement_placeholder')}
               maxHeightOffset={40}
               isFocusedParent={isFocusedParent}
               setIsFocusedParent={setIsFocusedParent}

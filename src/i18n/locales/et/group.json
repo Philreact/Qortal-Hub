@@ -641,5 +641,47 @@
       "joined": "joined",
       "pending": "pending"
     }
-  }
+  },
+  "support": {
+    "active_session": "Active session",
+    "agents_online": "Agents online",
+    "attachment": "attachment",
+    "block_user": "Block this user",
+    "cancel_esc": "Cancel (Esc)",
+    "copy_full_address": "Copy full address",
+    "editing_message": "Editing message",
+    "group_call_dashboard": "Group Call Dashboard",
+    "group_support_call": "Group Support Call",
+    "hang_up": "Hang up",
+    "in_call": "In call",
+    "join_group_call": "Join Group Call",
+    "message_deleted": "Message deleted",
+    "no_agents_online": "No agents online",
+    "no_agents_online_hint": "No agents are currently online. Please try again later.",
+    "no_messages_yet": "No messages yet",
+    "preview": "preview",
+    "reply_group_placeholder": "Reply to group…",
+    "reply_placeholder": "Message…",
+    "resolve_ticket": "Resolve this ticket",
+    "resolved": "This chat was resolved.",
+    "say_hello": "Say hello to start the conversation.",
+    "seen_by_agent": "Seen by agent",
+    "seen_by_user": "Seen by user",
+    "select_ticket": "Select a ticket from the queue",
+    "send_image": "Send image",
+    "send_to_reopen": "Send a message to re-open.",
+    "start_voice_call": "Start voice call",
+    "forwarder_cluster": "Cluster Forwarder",
+    "forwarder_root": "Root Forwarder",
+    "forwarder_standby": "Standby",
+    "role_participant": "Participant"
+  },
+  "admin_space": {
+    "ask_description": "This key encrypts content visible only to admins.",
+    "gsk_description": "This key encrypts group content visible to all group members. It is currently the only key used for group chat and shared data.",
+    "publish_ask": "Publish ASK",
+    "publish_gsk": "Publish GSK",
+    "gsk_description_compact": "This key encrypts group content visible to all group members. It is currently the only key used in this UI."
+  },
+  "announcement_placeholder": "Write an announcement..."
 }
