@@ -686,14 +686,14 @@
   "name": "имя",
   "name_app": "имя/приложение",
   "navbar": {
-    "search_placeholder": "Search Q-Apps or enter qortal://",
+    "search_placeholder": "Поиск Q-Apps или ввод qortal://",
     "session": {
-      "lock_description": "Keep chats and calls connected",
-      "lock_title": "Lock",
-      "logout_description": "End this signed-in session",
-      "logout_title": "Log out",
-      "menu_aria": "Session options",
-      "tooltip": "Lock or log out"
+      "lock_description": "Сохранять чаты и звонки подключёнными",
+      "lock_title": "Заблокировать",
+      "logout_description": "Завершить этот сеанс",
+      "logout_title": "Выйти",
+      "menu_aria": "Параметры сеанса",
+      "tooltip": "Заблокировать или выйти"
     }
   },
   "new_post_in": "новые сообщения в {{ title }}",

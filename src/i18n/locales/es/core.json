@@ -684,14 +684,14 @@
   "name": "nombre",
   "name_app": "nombre/aplicación",
   "navbar": {
-    "search_placeholder": "Search Q-Apps or enter qortal://",
+    "search_placeholder": "Buscar Q-Apps o introducir qortal://",
     "session": {
-      "lock_description": "Keep chats and calls connected",
-      "lock_title": "Lock",
-      "logout_description": "End this signed-in session",
-      "logout_title": "Log out",
-      "menu_aria": "Session options",
-      "tooltip": "Lock or log out"
+      "lock_description": "Mantener los chats y las llamadas conectados",
+      "lock_title": "Bloquear",
+      "logout_description": "Finalizar esta sesión iniciada",
+      "logout_title": "Cerrar sesión",
+      "menu_aria": "Opciones de sesión",
+      "tooltip": "Bloquear o cerrar sesión"
     }
   },
   "new_post_in": "nueva publicación en {{ title }}",

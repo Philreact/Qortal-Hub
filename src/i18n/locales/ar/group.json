@@ -34,26 +34,26 @@
     "visit_q_mintership": "روح ل Q-Mintership"
   },
   "add_group": {
-    "access_closed_description": "Members join by invitation.",
-    "access_closed_label": "Closed",
-    "access_label": "Group access",
-    "access_open_description": "Anyone can find and join.",
-    "access_open_label": "Open",
-    "advanced_note": "These settings affect group transactions and cannot be changed after creation.",
-    "approval_none": "None",
-    "approval_single": "One",
-    "approval_threshold_description": "Percentage of admins required to approve group decisions.",
-    "approval_threshold_label": "Approval threshold",
-    "creating": "Creating...",
-    "description_create": "Choose a name, describe your group, and get started.",
-    "description_invites": "Review the invitations you have received.",
-    "description_placeholder": "What is this group about?",
-    "description_too_long": "Description must be {{max}} characters or fewer",
-    "max_delay_label": "Maximum approval delay",
-    "min_delay_label": "Minimum approval delay",
-    "modes_aria": "Group management modes",
-    "name_hint": "Use a clear, recognizable name.",
-    "name_placeholder": "e.g. Qortal developers"
+    "access_closed_description": "ينضم الأعضاء عبر الدعوة.",
+    "access_closed_label": "مغلقة",
+    "access_label": "الوصول إلى المجموعة",
+    "access_open_description": "يمكن لأي شخص العثور عليها والانضمام إليها.",
+    "access_open_label": "مفتوحة",
+    "advanced_note": "تؤثر هذه الإعدادات على معاملات المجموعة ولا يمكن تغييرها بعد الإنشاء.",
+    "approval_none": "لا شيء",
+    "approval_single": "واحد",
+    "approval_threshold_description": "نسبة المشرفين المطلوبة للموافقة على قرارات المجموعة.",
+    "approval_threshold_label": "عتبة الموافقة",
+    "creating": "جارٍ الإنشاء...",
+    "description_create": "اختر اسمًا، وصف مجموعتك، وابدأ.",
+    "description_invites": "راجع الدعوات التي تلقيتها.",
+    "description_placeholder": "عن ماذا تدور هذه المجموعة؟",
+    "description_too_long": "يجب ألا يتجاوز الوصف {{max}} حرفًا",
+    "max_delay_label": "الحد الأقصى لتأخير الموافقة",
+    "min_delay_label": "الحد الأدنى لتأخير الموافقة",
+    "modes_aria": "أوضاع إدارة المجموعة",
+    "name_hint": "استخدم اسمًا واضحًا وسهل التمييز.",
+    "name_placeholder": "مثال: مطورو Qortal"
   },
   "admin_space": {
     "ask_description": "This key encrypts content visible only to admins.",
@@ -73,6 +73,7 @@
     "minimum": "أقل وقت بين البلوكات"
   },
   "chat_group": {
+    "admins_area_only": "هذه المنطقة متاحة لمشرفي المجموعة.",
     "admins_only_access": "يمكن للمشرفين ومالك المجموعة فقط الوصول.",
     "admins_only_post": "يمكن للمشرفين فقط النشر. ويمكن للجميع القراءة.",
     "admins_only_write": "يمكن لمشرفي المجموعة فقط الكتابة في هذه القناة",
@@ -88,49 +89,81 @@
     "cancel_reply": "إلغاء الرد",
     "category_exists": "الفئة موجودة بالفعل",
     "category_name_confirmed": "تم تأكيد اسم الفئة",
+    "category_name_label": "اسم الفئة",
     "category_name_placeholder": "مثال SUPPORT",
     "category_placeholder": "أدخل اسم فئة",
+    "category_settings_hint": "حدّث اسم هذه الفئة.",
+    "category_settings_menu": "إعدادات الفئة",
+    "category_settings_title": "إعدادات الفئة",
     "channel_exists": "القناة موجودة بالفعل",
+    "channel_expiry_hint": "ينطبق على الرسائل الحالية والمستقبلية. يمكن لأي رسالة اختيار مدة انتهاء أقصر.",
+    "channel_expiry_label": "انتهاء صلاحية القناة",
     "channel_name_confirmed": "تم تأكيد اسم القناة",
+    "channel_name_label": "اسم القناة",
     "channel_name_placeholder": "مثال support-chat",
     "channel_placeholder": "أدخل اسم قناة",
+    "channel_settings_hint": "حدّث اسم هذه القناة وأذوناتها.",
+    "channel_settings_menu": "إعدادات القناة",
+    "channel_settings_title": "إعدادات القناة",
     "channel_type_admin": "مشرف",
+    "channel_type_label": "نوع القناة",
     "channel_type_open": "مفتوحة",
     "channel_type_open_desc": "يمكن للجميع\nالقراءة والكتابة.",
     "channel_type_readonly": "للقراءة فقط",
     "channels": "القنوات",
+    "clear": "مسح",
+    "clear_dates": "مسح التواريخ",
     "close_hidden_members": "إغلاق الأعضاء المخفيين",
     "confirm_delete_category": "اكتب delete لتأكيد حذف الفئة",
     "confirm_delete_channel": "اكتب delete لتأكيد حذف القناة",
+    "create_category_hint": "اختر اسمًا لفئتك.",
+    "create_category_menu": "إنشاء فئة",
+    "create_category_title": "إنشاء فئة",
     "create_channel": "إنشاء قناة",
     "create_channel_action": "إنشاء قناة",
+    "create_channel_hint": "اختر اسمًا وحدّد من يمكنه عرض هذه القناة أو النشر فيها.",
+    "create_text_channel": "إنشاء قناة نصية",
     "default_channels_in_category": "القنوات الافتراضية داخل الفئة",
     "delete_category": "حذف الفئة",
     "delete_category_failed": "تعذّر حذف الفئة",
+    "delete_category_warning": "لا يمكن التراجع عن هذا الإجراء. اكتب delete أدناه لإزالة هذه الفئة نهائيًا.",
     "delete_channel": "حذف القناة",
     "delete_channel_failed": "تعذّر حذف القناة",
+    "delete_channel_warning": "لا يمكن التراجع عن هذا الإجراء. اكتب delete أدناه لإزالة هذه القناة نهائيًا.",
     "delete_confirm_word": "delete",
     "delete_image": "حذف الصورة",
     "details": "التفاصيل",
     "discussion_reply_failed": "تعذّر إرسال رد المناقشة",
+    "done": "تم",
+    "drop_to_attach": "أفلِت للإرفاق",
     "event_begun_html": "<p><strong>بدأ حدث {{creator}}!</strong><br><strong>التفاصيل</strong><br>العنوان: {{title}}<br>الوصف: {{description}}</p>",
     "event_soon_html": "<p><strong>سيبدأ حدث {{creator}} خلال 10 دقائق.</strong><br><strong>التفاصيل</strong><br>العنوان: {{title}}<br>الوصف: {{description}}</p>",
     "expiry_locked_editing": "لا يمكن تغيير مدة الانتهاء أثناء التحرير",
+    "filter_anyone": "أي شخص",
+    "filter_by": "تصفية حسب",
+    "filter_current_channel": "القناة الحالية",
     "group_call": "مكالمة جماعية",
-    "hidden_members": "Hidden Members",
+    "hidden_members": "الأعضاء المخفيون",
+    "hidden_users_hint": "يبقى الأشخاص المخفيون في {{group}} خارج محادثة Reticulum لهذه المجموعة حتى تلغي إخفاءهم.",
     "hide_members": "إخفاء الأعضاء",
     "image_unavailable": "ملف صورة Reticulum غير متاح",
     "leave_call": "مغادرة المكالمة",
     "load_channels_failed": "تعذّر إكمال تحميل قنوات دردشة Reticulum",
     "message_placeholder": "رسالة إلى القناة...",
+    "no_results": "لا توجد نتائج",
+    "no_users_hidden": "لا يوجد مستخدمون مخفيون",
     "not_specified": "غير محدد",
     "notify_all": "إشعار جميع الأعضاء في هذه المساحة",
     "notify_online": "إشعار الأعضاء المتصلين حاليًا",
     "open_group": "مجموعة مفتوحة",
     "open_group_chat": "فتح دردشة المجموعة",
-    "open_hidden_members": "Open hidden members",
+    "open_hidden_members": "فتح الأعضاء المخفيين",
     "private_encrypted_group": "مجموعة خاصة مشفّرة",
     "qortal_land": "Qortal Land",
+    "remove_category_button": "إزالة الفئة",
+    "remove_category_menu": "إزالة الفئة",
+    "remove_channel_button": "إزالة القناة",
+    "remove_channel_menu": "إزالة القناة",
     "remove_file": "إزالة الملف",
     "remove_image": "إزالة الصورة",
     "resize_channel_list": "تغيير حجم قائمة القنوات",
@@ -142,9 +175,14 @@
     "reticulum_reserve_seq_failed": "تعذّر حجز تسلسل أحداث دردشة Reticulum",
     "reticulum_sign_failed": "تعذّر توقيع حدث دردشة Reticulum",
     "reticulum_welcome_failed": "فشل نشر ترحيب Reticulum",
+    "save_changes": "حفظ التغييرات",
     "search_chat": "البحث في الدردشة",
     "search_failed": "فشل البحث",
+    "search_hint": "اكتب حرفين على الأقل أو اختر عامل تصفية.",
     "search_result_failed": "تعذّر تحميل نتيجة البحث",
+    "search_results": "نتائج البحث",
+    "this_group": "هذه المجموعة",
+    "type_delete_to_confirm": "اكتب delete للتأكيد",
     "unread_mention": "إشارة غير مقروءة",
     "unread_messages": "رسائل غير مقروءة",
     "unread_reply": "رد غير مقروء",
@@ -351,7 +389,7 @@
     "add_friend_before_calling": "أضف هذا المستخدم كصديق قبل الاتصال",
     "attach_select_chat": "اختر دردشة مباشرة قبل إرفاق الملفات",
     "direct_message": "رسالة مباشرة",
-    "direct_messages": "Direct Messages",
+    "direct_messages": "الرسائل المباشرة",
     "dismiss_expiry_notice": "تجاهل إشعار انتهاء الرسائل المباشرة",
     "expires_in_hours": "تنتهي خلال (ساعات)",
     "expiry_locked_editing": "لا يمكن تغيير مدة الانتهاء أثناء التحرير",
@@ -379,9 +417,9 @@
     "transfer_unavailable": "نقل ملفات Reticulum غير متاح"
   },
   "find_groups": {
-    "close": "Close Find groups",
-    "subtitle": "Discover groups that are available to join.",
-    "title": "Find groups"
+    "close": "إغلاق البحث عن المجموعات",
+    "subtitle": "اكتشف المجموعات المتاحة للانضمام.",
+    "title": "البحث عن مجموعات"
   },
   "group": {
     "approval_threshold": "حد الموافقة في الجروب",
@@ -772,9 +810,9 @@
       "suggestions": "اقتراحات الإشارة"
     },
     "mode_pill": {
-      "chat": "Chat",
-      "enter_qortal_land": "Enter Qortal Land",
-      "return_to_chat": "Return to Chat"
+      "chat": "المحادثة",
+      "enter_qortal_land": "ادخل إلى Qortal Land",
+      "return_to_chat": "العودة إلى المحادثة"
     },
     "qapp_preview": {
       "check_again": "check again",
@@ -791,62 +829,62 @@
       "watch_on_qtube": "watch this video on Q-Tube."
     },
     "rail": {
-      "find_groups": "Find Groups",
-      "group_settings": "Group Settings",
-      "whats_new": "Open What's New"
+      "find_groups": "البحث عن مجموعات",
+      "group_settings": "إعدادات المجموعة",
+      "whats_new": "فتح ما الجديد"
     },
     "settings": {
       "category": {
-        "accessibility": "Accessibility",
-        "legacy": "Legacy"
+        "accessibility": "إمكانية الوصول",
+        "legacy": "الإصدار السابق"
       },
       "legacy": {
-        "description": "Show the legacy Threads and Admin controls in the Q-Chat header.",
+        "description": "إظهار عناصر Threads وAdmin القديمة في ترويسة Q-Chat.",
         "title": "Threads",
         "toggle": {
-          "aria": "Show legacy Threads",
-          "description": "Display the legacy Threads and Admin icons.",
+          "aria": "إظهار Threads القديمة",
+          "description": "يعرض أيقونتَي Threads وAdmin القديمتين.",
           "label": "Threads"
         },
-        "warning": "Threads will be removed in the upcoming release. Move any important thread information to a safe place or to a new channel in Q-Chat before updating."
+        "warning": "ستتم إزالة Threads في الإصدار القادم. انقل أي معلومات مهمة من المواضيع إلى مكان آمن أو إلى قناة جديدة في Q-Chat قبل التحديث."
       },
       "messages": {
-        "description": "Adjust how your own messages appear in Reticulum Q-Chat.",
+        "description": "اضبط طريقة ظهور رسائلك في Reticulum Q-Chat.",
         "highlight_own": {
-          "description": "Add a faint background to messages you send.",
-          "label": "Highlight my messages"
+          "description": "يضيف خلفية خفيفة للرسائل التي ترسلها.",
+          "label": "إبراز رسائلي"
         },
-        "title": "Messages"
+        "title": "الرسائل"
       },
       "nav": {
-        "mentions": "Mentions",
-        "messages": "Messages",
-        "text_size": "Text size",
+        "mentions": "الإشارات",
+        "messages": "الرسائل",
+        "text_size": "حجم النص",
         "threads": "Threads"
       },
       "notifications": {
-        "description": "Show Reticulum Q-Chat mentions in the Hub notification panel. Regular unread messages will not create Hub notifications.",
+        "description": "إظهار إشارات Reticulum Q-Chat في لوحة إشعارات Hub. الرسائل غير المقروءة العادية لا تنشئ إشعارات في Hub.",
         "mentions": {
-          "description": "Alert me when someone mentions me in a channel.",
-          "label": "Mention notifications"
+          "description": "نبّهني عندما يشير إليّ أحد في قناة.",
+          "label": "إشعارات الإشارات"
         },
-        "title": "Notifications"
+        "title": "الإشعارات"
       },
       "text_size": {
         "default": {
-          "detail": "Current chat text size",
-          "label": "Default"
+          "detail": "حجم نص المحادثة الحالي",
+          "label": "افتراضي"
         },
-        "description": "Choose a reading size for Reticulum messages, channel labels and the members list. Invitation previews keep their fixed layout.",
+        "description": "اختر حجم قراءة لرسائل Reticulum وتسميات القنوات وقائمة الأعضاء. تحتفظ معاينات الدعوات بتخطيطها الثابت.",
         "high": {
-          "detail": "Largest readable chat text",
-          "label": "High"
+          "detail": "أكبر نص محادثة يبقى مقروءًا",
+          "label": "كبير"
         },
         "medium": {
-          "detail": "A comfortable increase",
-          "label": "Medium"
+          "detail": "زيادة مريحة",
+          "label": "متوسط"
         },
-        "title": "Text size"
+        "title": "حجم النص"
       }
     },
     "user_card": {
@@ -949,75 +987,75 @@
   },
   "thread_posts": "بُوستات جديدة في الموضوع",
   "whats_new": {
-    "close": "Close What's New",
-    "closing_note": "This is the beginning of the new Q-Chat. More social experiences, community tools, and refinements are already on the way.",
+    "close": "إغلاق ما الجديد",
+    "closing_note": "هذه بداية Q-Chat الجديد. المزيد من التجارب الاجتماعية وأدوات المجتمع والتحسينات في الطريق بالفعل.",
     "comparison": {
-      "aria_label": "Legacy and Reticulum Q-Chat comparison",
-      "body": "Legacy Q-Chat established decentralized social communication inside Qortal. The Reticulum edition builds on that achievement with a network and interface designed for faster, more interactive daily conversation.",
-      "column_area": "Area",
-      "column_legacy": "Legacy Q-Chat",
+      "aria_label": "مقارنة بين Q-Chat السابق وReticulum Q-Chat",
+      "body": "أرسى Q-Chat السابق التواصل الاجتماعي اللامركزي داخل Qortal. ويبني إصدار Reticulum على هذا الإنجاز بشبكة وواجهة مصمَّمتين لمحادثات يومية أسرع وأكثر تفاعلًا.",
+      "column_area": "المجال",
+      "column_legacy": "Q-Chat السابق",
       "column_reticulum": "Reticulum Q-Chat",
       "discovery": {
-        "area": "Community discovery",
-        "legacy": "Member count and established group information",
-        "reticulum": "Search, practical filters, previews, and Group Score"
+        "area": "اكتشاف المجتمعات",
+        "legacy": "عدد الأعضاء ومعلومات المجموعة المعروفة",
+        "reticulum": "البحث وعوامل التصفية العملية والمعاينات وGroup Score"
       },
       "live": {
-        "area": "Live communication",
-        "legacy": "Focused on durable text chat",
-        "reticulum": "Text, mentions, direct chat, calls, and proximity voice"
+        "area": "التواصل المباشر",
+        "legacy": "يركّز على محادثة نصية دائمة",
+        "reticulum": "نص وإشارات ومحادثة مباشرة ومكالمات وصوت قريب"
       },
       "organization": {
-        "area": "Organization",
-        "legacy": "A group generally centered on one conversation",
-        "reticulum": "Channels and categories inside the same group"
+        "area": "التنظيم",
+        "legacy": "مجموعة تتمحور غالبًا حول محادثة واحدة",
+        "reticulum": "قنوات وفئات داخل المجموعة نفسها"
       },
-      "title": "From legacy Q-Chat to Reticulum Q-Chat",
+      "title": "من Q-Chat السابق إلى Reticulum Q-Chat",
       "transport": {
-        "area": "Message transport",
-        "legacy": "Chat messages recorded through Qortal transactions",
-        "reticulum": "Fast, real-time Reticulum conversations"
+        "area": "نقل الرسائل",
+        "legacy": "رسائل محادثة مسجَّلة عبر معاملات Qortal",
+        "reticulum": "محادثات Reticulum سريعة وفورية"
       }
     },
     "gallery": {
-      "legacy_caption": "Legacy Q-Chat (2022)",
-      "legacy_heart_aria": "Celebrating Legacy Q-Chat",
-      "legacy_placeholder_aria": "Legacy Q-Chat image placeholder",
-      "legacy_placeholder_text": "Legacy interface image coming soon",
-      "reticulum_alt": "Reticulum Q-Chat interface in 2026",
-      "reticulum_caption": "Reticulum Q-Chat (2026)",
-      "reticulum_star_aria": "Celebrating Reticulum Q-Chat"
+      "legacy_caption": "‏Q-Chat السابق (2022)",
+      "legacy_heart_aria": "احتفاءً بـ Q-Chat السابق",
+      "legacy_placeholder_aria": "عنصر نائب لصورة Q-Chat السابق",
+      "legacy_placeholder_text": "صورة الواجهة السابقة قريبًا",
+      "reticulum_alt": "واجهة Reticulum Q-Chat في 2026",
+      "reticulum_caption": "‏Reticulum Q-Chat (2026)",
+      "reticulum_star_aria": "احتفاءً بـ Reticulum Q-Chat"
     },
     "highlights": {
       "calls": {
-        "description": "Start one-to-one and group calls without leaving Q-Chat. Group calls support up to seven people and begin in a compact view that can be expanded whenever you need it.",
-        "title": "Calls that stay out of the way"
+        "description": "ابدأ مكالمات فردية وجماعية دون مغادرة Q-Chat. تدعم المكالمات الجماعية حتى سبعة أشخاص وتبدأ بعرض مُصغَّر يمكن توسيعه وقتما تشاء.",
+        "title": "مكالمات لا تعترض طريقك"
       },
       "channels": {
-        "description": "Groups can organize discussion into channels and categories. There is no longer a need to create a separate group for every subject.",
-        "title": "One community, many conversations"
+        "description": "يمكن للمجموعات تنظيم النقاش في قنوات وفئات. لم تعد هناك حاجة لإنشاء مجموعة منفصلة لكل موضوع.",
+        "title": "مجتمع واحد ومحادثات كثيرة"
       },
       "discovery": {
-        "description": "The new Group Score brings holdings, activity, history, and community size into one clear 0–100 score, helping active public groups stand out in Find Groups and invitations.",
-        "title": "Discover communities with context"
+        "description": "يجمع Group Score الجديد الحيازات والنشاط والسجل وحجم المجتمع في درجة واضحة من 0 إلى 100، مما يساعد المجموعات العامة النشطة على التميّز في البحث عن المجموعات وفي الدعوات.",
+        "title": "اكتشف المجتمعات ضمن سياقها"
       },
       "expiry": {
-        "description": "Choose how long messages should remain, from 24 hours to one week, or keep them with no expiry. Replies, mentions, attachments, editing, and richer message tools make everyday chat easier.",
-        "title": "Messages on your terms"
+        "description": "اختر مدة بقاء الرسائل، من 24 ساعة إلى أسبوع، أو احتفظ بها بلا انتهاء. الردود والإشارات والمرفقات والتحرير وأدوات الرسائل الأغنى تجعل المحادثة اليومية أسهل.",
+        "title": "رسائل وفق شروطك"
       },
       "network": {
-        "description": "Q-Chat now uses Reticulum for its real-time conversations while keeping Qortal identities and group membership at the center. Messages feel immediate, dependable, and at home inside the Hub.",
-        "title": "A faster chat network"
+        "description": "يستخدم Q-Chat الآن Reticulum لمحادثاته الفورية مع إبقاء هويات Qortal وعضوية المجموعات في المركز. تبدو الرسائل فورية وموثوقة ومنسجمة داخل Hub.",
+        "title": "شبكة محادثة أسرع"
       },
       "qortalland": {
-        "description": "Enter a new shared social space where you can meet other members, use moods and proximity voice, and challenge people to Chess, Checkers, or Qonnect Four, all from inside your community.",
-        "title": "Introducing QortalLand"
+        "description": "ادخل مساحة اجتماعية مشتركة جديدة حيث يمكنك لقاء أعضاء آخرين واستخدام الحالات المزاجية والصوت القريب وتحدّي الآخرين في الشطرنج أو الداما أو Qonnect Four، كل ذلك من داخل مجتمعك.",
+        "title": "نقدّم لكم QortalLand"
       }
     },
-    "highlights_title": "Highlights",
-    "intro_body": "This release combines Qortal's community identity with the speed of Reticulum. It is a substantial evolution of Q-Chat: quicker to use, easier to organize, and built for richer ways to spend time together.",
-    "intro_title": "A new foundation for Qortal conversations",
-    "title": "What's new in Q-Chat",
-    "version": "Version {{version}}"
+    "highlights_title": "أبرز المزايا",
+    "intro_body": "يجمع هذا الإصدار بين هوية مجتمع Qortal وسرعة Reticulum. إنه تطور جوهري لـ Q-Chat: أسرع في الاستخدام وأسهل في التنظيم ومبني لطرق أغنى لقضاء الوقت معًا.",
+    "intro_title": "أساس جديد لمحادثات Qortal",
+    "title": "ما الجديد في Q-Chat",
+    "version": "الإصدار {{version}}"
   }
 }

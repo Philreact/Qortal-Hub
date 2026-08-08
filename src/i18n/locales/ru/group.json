@@ -34,26 +34,26 @@
     "visit_q_mintership": "посетить Q-Mintership"
   },
   "add_group": {
-    "access_closed_description": "Members join by invitation.",
-    "access_closed_label": "Closed",
-    "access_label": "Group access",
-    "access_open_description": "Anyone can find and join.",
-    "access_open_label": "Open",
-    "advanced_note": "These settings affect group transactions and cannot be changed after creation.",
-    "approval_none": "None",
-    "approval_single": "One",
-    "approval_threshold_description": "Percentage of admins required to approve group decisions.",
-    "approval_threshold_label": "Approval threshold",
-    "creating": "Creating...",
-    "description_create": "Choose a name, describe your group, and get started.",
-    "description_invites": "Review the invitations you have received.",
-    "description_placeholder": "What is this group about?",
-    "description_too_long": "Description must be {{max}} characters or fewer",
-    "max_delay_label": "Maximum approval delay",
-    "min_delay_label": "Minimum approval delay",
-    "modes_aria": "Group management modes",
-    "name_hint": "Use a clear, recognizable name.",
-    "name_placeholder": "e.g. Qortal developers"
+    "access_closed_description": "Участники вступают по приглашению.",
+    "access_closed_label": "Закрытая",
+    "access_label": "Доступ к группе",
+    "access_open_description": "Любой может найти группу и вступить в неё.",
+    "access_open_label": "Открытая",
+    "advanced_note": "Эти настройки влияют на транзакции группы и не могут быть изменены после создания.",
+    "approval_none": "Нет",
+    "approval_single": "Один",
+    "approval_threshold_description": "Процент администраторов, необходимый для одобрения решений группы.",
+    "approval_threshold_label": "Порог одобрения",
+    "creating": "Создание...",
+    "description_create": "Выберите название, опишите свою группу и начните.",
+    "description_invites": "Просмотрите полученные приглашения.",
+    "description_placeholder": "О чём эта группа?",
+    "description_too_long": "Описание не должно превышать {{max}} символов",
+    "max_delay_label": "Максимальная задержка одобрения",
+    "min_delay_label": "Минимальная задержка одобрения",
+    "modes_aria": "Режимы управления группой",
+    "name_hint": "Используйте понятное, узнаваемое название.",
+    "name_placeholder": "напр. разработчики Qortal"
   },
   "admin_space": {
     "ask_description": "This key encrypts content visible only to admins.",
@@ -73,6 +73,7 @@
     "minimum": "минимальная задержка блока"
   },
   "chat_group": {
+    "admins_area_only": "Этот раздел доступен администраторам группы.",
     "admins_only_access": "Доступ есть только у администраторов и владельца группы.",
     "admins_only_post": "Публиковать могут только администраторы. Читать могут все.",
     "admins_only_write": "Писать в этом канале могут только администраторы группы",
@@ -88,49 +89,81 @@
     "cancel_reply": "Отменить ответ",
     "category_exists": "Категория уже существует",
     "category_name_confirmed": "Название категории подтверждено",
+    "category_name_label": "Название категории",
     "category_name_placeholder": "например SUPPORT",
     "category_placeholder": "Введите название категории",
+    "category_settings_hint": "Измените название этой категории.",
+    "category_settings_menu": "Настройки категории",
+    "category_settings_title": "Настройки категории",
     "channel_exists": "Канал уже существует",
+    "channel_expiry_hint": "Применяется к существующим и будущим сообщениям. Для сообщения можно выбрать более короткий срок хранения.",
+    "channel_expiry_label": "Срок хранения в канале",
     "channel_name_confirmed": "Название канала подтверждено",
+    "channel_name_label": "Название канала",
     "channel_name_placeholder": "например support-chat",
     "channel_placeholder": "Введите название канала",
+    "channel_settings_hint": "Измените название и права доступа этого канала.",
+    "channel_settings_menu": "Настройки канала",
+    "channel_settings_title": "Настройки канала",
     "channel_type_admin": "Администратор",
+    "channel_type_label": "Тип канала",
     "channel_type_open": "Открытый",
     "channel_type_open_desc": "Все могут\nчитать и писать.",
     "channel_type_readonly": "Только чтение",
     "channels": "Каналы",
+    "clear": "Очистить",
+    "clear_dates": "Очистить даты",
     "close_hidden_members": "Закрыть скрытых участников",
     "confirm_delete_category": "Введите delete, чтобы подтвердить удаление категории",
     "confirm_delete_channel": "Введите delete, чтобы подтвердить удаление канала",
+    "create_category_hint": "Выберите название для своей категории.",
+    "create_category_menu": "Создать категорию",
+    "create_category_title": "Создать категорию",
     "create_channel": "Создать канал",
     "create_channel_action": "Создать канал",
+    "create_channel_hint": "Выберите название и решите, кто может просматривать канал и писать в нём.",
+    "create_text_channel": "Создать текстовый канал",
     "default_channels_in_category": "Каналы по умолчанию в категории",
     "delete_category": "Удалить категорию",
     "delete_category_failed": "Не удалось удалить категорию",
+    "delete_category_warning": "Это действие нельзя отменить. Введите ниже delete, чтобы навсегда удалить эту категорию.",
     "delete_channel": "Удалить канал",
     "delete_channel_failed": "Не удалось удалить канал",
+    "delete_channel_warning": "Это действие нельзя отменить. Введите ниже delete, чтобы навсегда удалить этот канал.",
     "delete_confirm_word": "delete",
     "delete_image": "Удалить изображение",
     "details": "Подробности",
     "discussion_reply_failed": "Не удалось отправить ответ в обсуждение",
+    "done": "Готово",
+    "drop_to_attach": "Отпустите, чтобы прикрепить",
     "event_begun_html": "<p><strong>Событие пользователя {{creator}} началось!</strong><br><strong>Подробности</strong><br>Название: {{title}}<br>Описание: {{description}}</p>",
     "event_soon_html": "<p><strong>Событие пользователя {{creator}} начнётся через 10 минут.</strong><br><strong>Подробности</strong><br>Название: {{title}}<br>Описание: {{description}}</p>",
     "expiry_locked_editing": "Срок хранения нельзя изменить во время редактирования",
+    "filter_anyone": "Любой",
+    "filter_by": "Фильтровать по",
+    "filter_current_channel": "Текущий канал",
     "group_call": "Групповой вызов",
-    "hidden_members": "Hidden Members",
+    "hidden_members": "Скрытые участники",
+    "hidden_users_hint": "Люди, скрытые в группе {{group}}, останутся вне чата Reticulum этой группы, пока вы снова их не покажете.",
     "hide_members": "Скрыть участников",
     "image_unavailable": "Файл изображения Reticulum недоступен",
     "leave_call": "Покинуть вызов",
     "load_channels_failed": "Не удалось полностью загрузить каналы чата Reticulum",
     "message_placeholder": "Сообщение в канал...",
+    "no_results": "Нет результатов",
+    "no_users_hidden": "Нет скрытых пользователей",
     "not_specified": "Не указано",
     "notify_all": "Уведомить всех участников этого пространства",
     "notify_online": "Уведомить участников, которые сейчас в сети",
     "open_group": "Открытая группа",
     "open_group_chat": "Открыть групповой чат",
-    "open_hidden_members": "Open hidden members",
+    "open_hidden_members": "Открыть скрытых участников",
     "private_encrypted_group": "Приватная зашифрованная группа",
     "qortal_land": "Qortal Land",
+    "remove_category_button": "Удалить категорию",
+    "remove_category_menu": "Удалить категорию",
+    "remove_channel_button": "Удалить канал",
+    "remove_channel_menu": "Удалить канал",
     "remove_file": "Удалить файл",
     "remove_image": "Удалить изображение",
     "resize_channel_list": "Изменить размер списка каналов",
@@ -142,9 +175,14 @@
     "reticulum_reserve_seq_failed": "Не удалось зарезервировать последовательность событий чата Reticulum",
     "reticulum_sign_failed": "Не удалось подписать событие чата Reticulum",
     "reticulum_welcome_failed": "Не удалось опубликовать приветствие Reticulum",
+    "save_changes": "Сохранить изменения",
     "search_chat": "Поиск в чате",
     "search_failed": "Поиск не удался",
+    "search_hint": "Введите не менее 2 символов или выберите фильтр.",
     "search_result_failed": "Не удалось загрузить результат поиска",
+    "search_results": "Результаты поиска",
+    "this_group": "этой группе",
+    "type_delete_to_confirm": "Введите delete для подтверждения",
     "unread_mention": "Непрочитанное упоминание",
     "unread_messages": "Непрочитанные сообщения",
     "unread_reply": "Непрочитанный ответ",
@@ -351,7 +389,7 @@
     "add_friend_before_calling": "Добавьте этого пользователя в друзья перед звонком",
     "attach_select_chat": "Выберите личный чат перед прикреплением файлов",
     "direct_message": "Личное сообщение",
-    "direct_messages": "Direct Messages",
+    "direct_messages": "Личные сообщения",
     "dismiss_expiry_notice": "Скрыть уведомление о сроке хранения личных сообщений",
     "expires_in_hours": "Истекает через (часы)",
     "expiry_locked_editing": "Срок хранения нельзя изменить во время редактирования",
@@ -379,9 +417,9 @@
     "transfer_unavailable": "Передача файлов Reticulum недоступна"
   },
   "find_groups": {
-    "close": "Close Find groups",
-    "subtitle": "Discover groups that are available to join.",
-    "title": "Find groups"
+    "close": "Закрыть поиск групп",
+    "subtitle": "Найдите группы, к которым можно присоединиться.",
+    "title": "Поиск групп"
   },
   "group": {
     "approval_threshold": "порог одобрения группы",
@@ -772,9 +810,9 @@
       "suggestions": "подсказки упоминаний"
     },
     "mode_pill": {
-      "chat": "Chat",
-      "enter_qortal_land": "Enter Qortal Land",
-      "return_to_chat": "Return to Chat"
+      "chat": "Чат",
+      "enter_qortal_land": "Войти в Qortal Land",
+      "return_to_chat": "Вернуться в чат"
     },
     "qapp_preview": {
       "check_again": "check again",
@@ -791,62 +829,62 @@
       "watch_on_qtube": "watch this video on Q-Tube."
     },
     "rail": {
-      "find_groups": "Find Groups",
-      "group_settings": "Group Settings",
-      "whats_new": "Open What's New"
+      "find_groups": "Поиск групп",
+      "group_settings": "Настройки группы",
+      "whats_new": "Открыть новинки"
     },
     "settings": {
       "category": {
-        "accessibility": "Accessibility",
-        "legacy": "Legacy"
+        "accessibility": "Доступность",
+        "legacy": "Прежняя версия"
       },
       "legacy": {
-        "description": "Show the legacy Threads and Admin controls in the Q-Chat header.",
+        "description": "Показывать прежние элементы Threads и Admin в заголовке Q-Chat.",
         "title": "Threads",
         "toggle": {
-          "aria": "Show legacy Threads",
-          "description": "Display the legacy Threads and Admin icons.",
+          "aria": "Показывать прежние Threads",
+          "description": "Отображает прежние значки Threads и Admin.",
           "label": "Threads"
         },
-        "warning": "Threads will be removed in the upcoming release. Move any important thread information to a safe place or to a new channel in Q-Chat before updating."
+        "warning": "Threads будут удалены в следующем выпуске. Перед обновлением перенесите важную информацию из тем в надёжное место или в новый канал Q-Chat."
       },
       "messages": {
-        "description": "Adjust how your own messages appear in Reticulum Q-Chat.",
+        "description": "Настройте вид ваших собственных сообщений в Reticulum Q-Chat.",
         "highlight_own": {
-          "description": "Add a faint background to messages you send.",
-          "label": "Highlight my messages"
+          "description": "Добавляет слабый фон к отправленным вами сообщениям.",
+          "label": "Выделять мои сообщения"
         },
-        "title": "Messages"
+        "title": "Сообщения"
       },
       "nav": {
-        "mentions": "Mentions",
-        "messages": "Messages",
-        "text_size": "Text size",
+        "mentions": "Упоминания",
+        "messages": "Сообщения",
+        "text_size": "Размер текста",
         "threads": "Threads"
       },
       "notifications": {
-        "description": "Show Reticulum Q-Chat mentions in the Hub notification panel. Regular unread messages will not create Hub notifications.",
+        "description": "Показывать упоминания из Reticulum Q-Chat на панели уведомлений Hub. Обычные непрочитанные сообщения не создают уведомлений Hub.",
         "mentions": {
-          "description": "Alert me when someone mentions me in a channel.",
-          "label": "Mention notifications"
+          "description": "Уведомлять меня, когда кто-то упоминает меня в канале.",
+          "label": "Уведомления об упоминаниях"
         },
-        "title": "Notifications"
+        "title": "Уведомления"
       },
       "text_size": {
         "default": {
-          "detail": "Current chat text size",
-          "label": "Default"
+          "detail": "Текущий размер текста чата",
+          "label": "По умолчанию"
         },
-        "description": "Choose a reading size for Reticulum messages, channel labels and the members list. Invitation previews keep their fixed layout.",
+        "description": "Выберите размер для чтения сообщений Reticulum, названий каналов и списка участников. Предпросмотр приглашений сохраняет фиксированную вёрстку.",
         "high": {
-          "detail": "Largest readable chat text",
-          "label": "High"
+          "detail": "Самый крупный читаемый текст чата",
+          "label": "Крупный"
         },
         "medium": {
-          "detail": "A comfortable increase",
-          "label": "Medium"
+          "detail": "Комфортное увеличение",
+          "label": "Средний"
         },
-        "title": "Text size"
+        "title": "Размер текста"
       }
     },
     "user_card": {
@@ -949,75 +987,75 @@
   },
   "thread_posts": "новые сообщения темы",
   "whats_new": {
-    "close": "Close What's New",
-    "closing_note": "This is the beginning of the new Q-Chat. More social experiences, community tools, and refinements are already on the way.",
+    "close": "Закрыть новинки",
+    "closing_note": "Это только начало нового Q-Chat. Новые социальные возможности, инструменты сообщества и улучшения уже в пути.",
     "comparison": {
-      "aria_label": "Legacy and Reticulum Q-Chat comparison",
-      "body": "Legacy Q-Chat established decentralized social communication inside Qortal. The Reticulum edition builds on that achievement with a network and interface designed for faster, more interactive daily conversation.",
-      "column_area": "Area",
-      "column_legacy": "Legacy Q-Chat",
+      "aria_label": "Сравнение прежнего Q-Chat и Reticulum Q-Chat",
+      "body": "Прежний Q-Chat заложил основу децентрализованного социального общения внутри Qortal. Издание Reticulum развивает это достижение с помощью сети и интерфейса, созданных для более быстрого и живого повседневного общения.",
+      "column_area": "Область",
+      "column_legacy": "Прежний Q-Chat",
       "column_reticulum": "Reticulum Q-Chat",
       "discovery": {
-        "area": "Community discovery",
-        "legacy": "Member count and established group information",
-        "reticulum": "Search, practical filters, previews, and Group Score"
+        "area": "Поиск сообществ",
+        "legacy": "Количество участников и основные сведения о группе",
+        "reticulum": "Поиск, удобные фильтры, предпросмотр и Group Score"
       },
       "live": {
-        "area": "Live communication",
-        "legacy": "Focused on durable text chat",
-        "reticulum": "Text, mentions, direct chat, calls, and proximity voice"
+        "area": "Живое общение",
+        "legacy": "Ориентирован на долговременный текстовый чат",
+        "reticulum": "Текст, упоминания, личный чат, звонки и голос по близости"
       },
       "organization": {
-        "area": "Organization",
-        "legacy": "A group generally centered on one conversation",
-        "reticulum": "Channels and categories inside the same group"
+        "area": "Организация",
+        "legacy": "Группа, обычно сосредоточенная на одном разговоре",
+        "reticulum": "Каналы и категории внутри одной группы"
       },
-      "title": "From legacy Q-Chat to Reticulum Q-Chat",
+      "title": "От прежнего Q-Chat к Reticulum Q-Chat",
       "transport": {
-        "area": "Message transport",
-        "legacy": "Chat messages recorded through Qortal transactions",
-        "reticulum": "Fast, real-time Reticulum conversations"
+        "area": "Передача сообщений",
+        "legacy": "Сообщения чата, записываемые через транзакции Qortal",
+        "reticulum": "Быстрые разговоры Reticulum в реальном времени"
       }
     },
     "gallery": {
-      "legacy_caption": "Legacy Q-Chat (2022)",
-      "legacy_heart_aria": "Celebrating Legacy Q-Chat",
-      "legacy_placeholder_aria": "Legacy Q-Chat image placeholder",
-      "legacy_placeholder_text": "Legacy interface image coming soon",
-      "reticulum_alt": "Reticulum Q-Chat interface in 2026",
+      "legacy_caption": "Прежний Q-Chat (2022)",
+      "legacy_heart_aria": "Чествуем прежний Q-Chat",
+      "legacy_placeholder_aria": "Заполнитель изображения прежнего Q-Chat",
+      "legacy_placeholder_text": "Изображение прежнего интерфейса скоро появится",
+      "reticulum_alt": "Интерфейс Reticulum Q-Chat в 2026 году",
       "reticulum_caption": "Reticulum Q-Chat (2026)",
-      "reticulum_star_aria": "Celebrating Reticulum Q-Chat"
+      "reticulum_star_aria": "Чествуем Reticulum Q-Chat"
     },
     "highlights": {
       "calls": {
-        "description": "Start one-to-one and group calls without leaving Q-Chat. Group calls support up to seven people and begin in a compact view that can be expanded whenever you need it.",
-        "title": "Calls that stay out of the way"
+        "description": "Начинайте личные и групповые звонки, не покидая Q-Chat. Групповые звонки поддерживают до семи человек и начинаются в компактном виде, который можно развернуть в любой момент.",
+        "title": "Звонки, которые не мешают"
       },
       "channels": {
-        "description": "Groups can organize discussion into channels and categories. There is no longer a need to create a separate group for every subject.",
-        "title": "One community, many conversations"
+        "description": "Группы могут распределять обсуждение по каналам и категориям. Больше не нужно создавать отдельную группу для каждой темы.",
+        "title": "Одно сообщество, множество разговоров"
       },
       "discovery": {
-        "description": "The new Group Score brings holdings, activity, history, and community size into one clear 0–100 score, helping active public groups stand out in Find Groups and invitations.",
-        "title": "Discover communities with context"
+        "description": "Новый Group Score объединяет активы, активность, историю и размер сообщества в одну понятную оценку от 0 до 100, помогая активным публичным группам выделяться в поиске групп и приглашениях.",
+        "title": "Находите сообщества с контекстом"
       },
       "expiry": {
-        "description": "Choose how long messages should remain, from 24 hours to one week, or keep them with no expiry. Replies, mentions, attachments, editing, and richer message tools make everyday chat easier.",
-        "title": "Messages on your terms"
+        "description": "Выберите, как долго хранятся сообщения — от 24 часов до недели — или оставьте их без срока хранения. Ответы, упоминания, вложения, редактирование и расширенные инструменты сообщений делают повседневное общение удобнее.",
+        "title": "Сообщения на ваших условиях"
       },
       "network": {
-        "description": "Q-Chat now uses Reticulum for its real-time conversations while keeping Qortal identities and group membership at the center. Messages feel immediate, dependable, and at home inside the Hub.",
-        "title": "A faster chat network"
+        "description": "Q-Chat теперь использует Reticulum для общения в реальном времени, сохраняя в центре идентичности Qortal и членство в группах. Сообщения ощущаются мгновенными, надёжными и естественными внутри Hub.",
+        "title": "Более быстрая сеть чата"
       },
       "qortalland": {
-        "description": "Enter a new shared social space where you can meet other members, use moods and proximity voice, and challenge people to Chess, Checkers, or Qonnect Four, all from inside your community.",
-        "title": "Introducing QortalLand"
+        "description": "Войдите в новое общее социальное пространство, где можно встречать других участников, использовать настроения и голос по близости, а также вызывать людей на партию в шахматы, шашки или Qonnect Four — всё изнутри вашего сообщества.",
+        "title": "Представляем QortalLand"
       }
     },
-    "highlights_title": "Highlights",
-    "intro_body": "This release combines Qortal's community identity with the speed of Reticulum. It is a substantial evolution of Q-Chat: quicker to use, easier to organize, and built for richer ways to spend time together.",
-    "intro_title": "A new foundation for Qortal conversations",
-    "title": "What's new in Q-Chat",
-    "version": "Version {{version}}"
+    "highlights_title": "Главное",
+    "intro_body": "Этот выпуск объединяет общественную идентичность Qortal со скоростью Reticulum. Это существенное развитие Q-Chat: быстрее в работе, проще в организации и создан для более насыщенного совместного времени.",
+    "intro_title": "Новая основа для разговоров в Qortal",
+    "title": "Что нового в Q-Chat",
+    "version": "Версия {{version}}"
   }
 }

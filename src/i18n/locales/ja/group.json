@@ -34,26 +34,26 @@
     "visit_q_mintership": "Q-Mintership を訪問"
   },
   "add_group": {
-    "access_closed_description": "Members join by invitation.",
-    "access_closed_label": "Closed",
-    "access_label": "Group access",
-    "access_open_description": "Anyone can find and join.",
-    "access_open_label": "Open",
-    "advanced_note": "These settings affect group transactions and cannot be changed after creation.",
-    "approval_none": "None",
-    "approval_single": "One",
-    "approval_threshold_description": "Percentage of admins required to approve group decisions.",
-    "approval_threshold_label": "Approval threshold",
-    "creating": "Creating...",
-    "description_create": "Choose a name, describe your group, and get started.",
-    "description_invites": "Review the invitations you have received.",
-    "description_placeholder": "What is this group about?",
-    "description_too_long": "Description must be {{max}} characters or fewer",
-    "max_delay_label": "Maximum approval delay",
-    "min_delay_label": "Minimum approval delay",
-    "modes_aria": "Group management modes",
-    "name_hint": "Use a clear, recognizable name.",
-    "name_placeholder": "e.g. Qortal developers"
+    "access_closed_description": "メンバーは招待によって参加します。",
+    "access_closed_label": "非公開",
+    "access_label": "グループへのアクセス",
+    "access_open_description": "誰でも見つけて参加できます。",
+    "access_open_label": "公開",
+    "advanced_note": "これらの設定はグループのトランザクションに影響し、作成後は変更できません。",
+    "approval_none": "なし",
+    "approval_single": "1人",
+    "approval_threshold_description": "グループの決定を承認するために必要な管理者の割合です。",
+    "approval_threshold_label": "承認しきい値",
+    "creating": "作成中...",
+    "description_create": "名前を選び、グループを説明して始めましょう。",
+    "description_invites": "受け取った招待を確認しましょう。",
+    "description_placeholder": "このグループはどのようなグループですか？",
+    "description_too_long": "説明は{{max}}文字以内にしてください",
+    "max_delay_label": "承認の最大待ち時間",
+    "min_delay_label": "承認の最小待ち時間",
+    "modes_aria": "グループ管理モード",
+    "name_hint": "分かりやすく覚えやすい名前を使いましょう。",
+    "name_placeholder": "例: Qortal開発者"
   },
   "admin_space": {
     "ask_description": "This key encrypts content visible only to admins.",
@@ -73,6 +73,7 @@
     "minimum": "最小ブロック遅延"
   },
   "chat_group": {
+    "admins_area_only": "この領域はグループ管理者が利用できます。",
     "admins_only_access": "管理者とグループ所有者のみがアクセスできます。",
     "admins_only_post": "管理者のみが投稿できます。閲覧は全員可能です。",
     "admins_only_write": "このチャンネルに書き込めるのはグループ管理者のみです",
@@ -88,49 +89,81 @@
     "cancel_reply": "返信をキャンセル",
     "category_exists": "カテゴリは既に存在します",
     "category_name_confirmed": "カテゴリ名を確認しました",
+    "category_name_label": "カテゴリー名",
     "category_name_placeholder": "例: SUPPORT",
     "category_placeholder": "カテゴリ名を入力してください",
+    "category_settings_hint": "このカテゴリーの名前を更新します。",
+    "category_settings_menu": "カテゴリー設定",
+    "category_settings_title": "カテゴリー設定",
     "channel_exists": "チャンネルは既に存在します",
+    "channel_expiry_hint": "既存および今後のメッセージに適用されます。メッセージごとにより短い有効期限を選ぶこともできます。",
+    "channel_expiry_label": "チャンネルの有効期限",
     "channel_name_confirmed": "チャンネル名を確認しました",
+    "channel_name_label": "チャンネル名",
     "channel_name_placeholder": "例: support-chat",
     "channel_placeholder": "チャンネル名を入力してください",
+    "channel_settings_hint": "このチャンネルの名前と権限を更新します。",
+    "channel_settings_menu": "チャンネル設定",
+    "channel_settings_title": "チャンネル設定",
     "channel_type_admin": "管理者",
+    "channel_type_label": "チャンネルの種類",
     "channel_type_open": "公開",
     "channel_type_open_desc": "全員が\n読み書きできます。",
     "channel_type_readonly": "読み取り専用",
     "channels": "チャンネル",
+    "clear": "クリア",
+    "clear_dates": "日付をクリア",
     "close_hidden_members": "非表示のメンバーを閉じる",
     "confirm_delete_category": "カテゴリを削除するには delete と入力してください",
     "confirm_delete_channel": "チャンネルを削除するには delete と入力してください",
+    "create_category_hint": "カテゴリーの名前を選んでください。",
+    "create_category_menu": "カテゴリーを作成",
+    "create_category_title": "カテゴリーを作成",
     "create_channel": "チャンネルを作成",
     "create_channel_action": "チャンネルを作成",
+    "create_channel_hint": "名前を選び、このチャンネルを閲覧・投稿できる相手を決めてください。",
+    "create_text_channel": "テキストチャンネルを作成",
     "default_channels_in_category": "カテゴリ内の既定チャンネル",
     "delete_category": "カテゴリを削除",
     "delete_category_failed": "カテゴリを削除できませんでした",
+    "delete_category_warning": "この操作は取り消せません。このカテゴリーを完全に削除するには、下に delete と入力してください。",
     "delete_channel": "チャンネルを削除",
     "delete_channel_failed": "チャンネルを削除できませんでした",
+    "delete_channel_warning": "この操作は取り消せません。このチャンネルを完全に削除するには、下に delete と入力してください。",
     "delete_confirm_word": "delete",
     "delete_image": "画像を削除",
     "details": "詳細",
     "discussion_reply_failed": "ディスカッションへの返信を送信できませんでした",
+    "done": "完了",
+    "drop_to_attach": "ドロップして添付",
     "event_begun_html": "<p><strong>{{creator}} のイベントが始まりました！</strong><br><strong>詳細</strong><br>タイトル: {{title}}<br>説明: {{description}}</p>",
     "event_soon_html": "<p><strong>{{creator}} のイベントは 10 分後に始まります。</strong><br><strong>詳細</strong><br>タイトル: {{title}}<br>説明: {{description}}</p>",
     "expiry_locked_editing": "編集中は有効期限を変更できません",
+    "filter_anyone": "全員",
+    "filter_by": "絞り込み",
+    "filter_current_channel": "現在のチャンネル",
     "group_call": "グループ通話",
-    "hidden_members": "Hidden Members",
+    "hidden_members": "非表示のメンバー",
+    "hidden_users_hint": "{{group}}で非表示にした人は、再表示するまでこのグループのReticulumチャットに現れません。",
     "hide_members": "メンバーを非表示",
     "image_unavailable": "Reticulum の画像ファイルを利用できません",
     "leave_call": "通話から退出",
     "load_channels_failed": "Reticulum チャットチャンネルの読み込みを完了できませんでした",
     "message_placeholder": "チャンネルにメッセージ...",
+    "no_results": "結果がありません",
+    "no_users_hidden": "非表示のユーザーはいません",
     "not_specified": "未指定",
     "notify_all": "このスペースのすべてのメンバーに通知",
     "notify_online": "現在オンラインのメンバーに通知",
     "open_group": "オープングループ",
     "open_group_chat": "グループチャットを開く",
-    "open_hidden_members": "Open hidden members",
+    "open_hidden_members": "非表示のメンバーを開く",
     "private_encrypted_group": "プライベート暗号化グループ",
     "qortal_land": "Qortal Land",
+    "remove_category_button": "カテゴリーを削除",
+    "remove_category_menu": "カテゴリーを削除",
+    "remove_channel_button": "チャンネルを削除",
+    "remove_channel_menu": "チャンネルを削除",
     "remove_file": "ファイルを削除",
     "remove_image": "画像を削除",
     "resize_channel_list": "チャンネル一覧のサイズを変更",
@@ -142,9 +175,14 @@
     "reticulum_reserve_seq_failed": "Reticulum チャットのイベントシーケンスを予約できませんでした",
     "reticulum_sign_failed": "Reticulum チャットのイベントに署名できませんでした",
     "reticulum_welcome_failed": "Reticulum のウェルカム公開に失敗しました",
+    "save_changes": "変更を保存",
     "search_chat": "チャットを検索",
     "search_failed": "検索に失敗しました",
+    "search_hint": "2文字以上入力するか、フィルターを選んでください。",
     "search_result_failed": "検索結果を読み込めませんでした",
+    "search_results": "検索結果",
+    "this_group": "このグループ",
+    "type_delete_to_confirm": "確認のため delete と入力",
     "unread_mention": "未読のメンション",
     "unread_messages": "未読メッセージ",
     "unread_reply": "未読の返信",
@@ -351,7 +389,7 @@
     "add_friend_before_calling": "通話する前にこのユーザーを友だちに追加してください",
     "attach_select_chat": "ファイルを添付する前にダイレクトチャットを選択してください",
     "direct_message": "ダイレクトメッセージ",
-    "direct_messages": "Direct Messages",
+    "direct_messages": "ダイレクトメッセージ",
     "dismiss_expiry_notice": "ダイレクトメッセージの有効期限の通知を閉じる",
     "expires_in_hours": "有効期限（時間）",
     "expiry_locked_editing": "編集中は有効期限を変更できません",
@@ -379,9 +417,9 @@
     "transfer_unavailable": "Reticulum のファイル転送を利用できません"
   },
   "find_groups": {
-    "close": "Close Find groups",
-    "subtitle": "Discover groups that are available to join.",
-    "title": "Find groups"
+    "close": "グループ検索を閉じる",
+    "subtitle": "参加できるグループを見つけましょう。",
+    "title": "グループを探す"
   },
   "group": {
     "approval_threshold": "グループの承認閾値",
@@ -772,9 +810,9 @@
       "suggestions": "メンションの候補"
     },
     "mode_pill": {
-      "chat": "Chat",
-      "enter_qortal_land": "Enter Qortal Land",
-      "return_to_chat": "Return to Chat"
+      "chat": "チャット",
+      "enter_qortal_land": "Qortal Landに入る",
+      "return_to_chat": "チャットに戻る"
     },
     "qapp_preview": {
       "check_again": "check again",
@@ -791,62 +829,62 @@
       "watch_on_qtube": "watch this video on Q-Tube."
     },
     "rail": {
-      "find_groups": "Find Groups",
-      "group_settings": "Group Settings",
-      "whats_new": "Open What's New"
+      "find_groups": "グループを探す",
+      "group_settings": "グループ設定",
+      "whats_new": "新着情報を開く"
     },
     "settings": {
       "category": {
-        "accessibility": "Accessibility",
-        "legacy": "Legacy"
+        "accessibility": "アクセシビリティ",
+        "legacy": "旧バージョン"
       },
       "legacy": {
-        "description": "Show the legacy Threads and Admin controls in the Q-Chat header.",
+        "description": "Q-Chatのヘッダーに旧来のThreadsとAdminのコントロールを表示します。",
         "title": "Threads",
         "toggle": {
-          "aria": "Show legacy Threads",
-          "description": "Display the legacy Threads and Admin icons.",
+          "aria": "旧来のThreadsを表示",
+          "description": "旧来のThreadsとAdminのアイコンを表示します。",
           "label": "Threads"
         },
-        "warning": "Threads will be removed in the upcoming release. Move any important thread information to a safe place or to a new channel in Q-Chat before updating."
+        "warning": "Threadsは次回のリリースで削除されます。更新する前に、重要なスレッドの情報を安全な場所かQ-Chatの新しいチャンネルに移してください。"
       },
       "messages": {
-        "description": "Adjust how your own messages appear in Reticulum Q-Chat.",
+        "description": "Reticulum Q-Chatでの自分のメッセージの表示を調整します。",
         "highlight_own": {
-          "description": "Add a faint background to messages you send.",
-          "label": "Highlight my messages"
+          "description": "自分が送信したメッセージに薄い背景を付けます。",
+          "label": "自分のメッセージを強調表示"
         },
-        "title": "Messages"
+        "title": "メッセージ"
       },
       "nav": {
-        "mentions": "Mentions",
-        "messages": "Messages",
-        "text_size": "Text size",
+        "mentions": "メンション",
+        "messages": "メッセージ",
+        "text_size": "文字サイズ",
         "threads": "Threads"
       },
       "notifications": {
-        "description": "Show Reticulum Q-Chat mentions in the Hub notification panel. Regular unread messages will not create Hub notifications.",
+        "description": "Reticulum Q-ChatのメンションをHubの通知パネルに表示します。通常の未読メッセージではHubの通知は作成されません。",
         "mentions": {
-          "description": "Alert me when someone mentions me in a channel.",
-          "label": "Mention notifications"
+          "description": "チャンネルで誰かが自分をメンションしたときに知らせます。",
+          "label": "メンションの通知"
         },
-        "title": "Notifications"
+        "title": "通知"
       },
       "text_size": {
         "default": {
-          "detail": "Current chat text size",
-          "label": "Default"
+          "detail": "現在のチャットの文字サイズ",
+          "label": "標準"
         },
-        "description": "Choose a reading size for Reticulum messages, channel labels and the members list. Invitation previews keep their fixed layout.",
+        "description": "Reticulumのメッセージ、チャンネル名、メンバー一覧の文字サイズを選びます。招待のプレビューは固定のレイアウトのままです。",
         "high": {
-          "detail": "Largest readable chat text",
-          "label": "High"
+          "detail": "読みやすい範囲で最大のチャット文字",
+          "label": "大"
         },
         "medium": {
-          "detail": "A comfortable increase",
-          "label": "Medium"
+          "detail": "ほどよく大きめ",
+          "label": "中"
         },
-        "title": "Text size"
+        "title": "文字サイズ"
       }
     },
     "user_card": {
@@ -949,75 +987,75 @@
   },
   "thread_posts": "新しいスレッド投稿",
   "whats_new": {
-    "close": "Close What's New",
-    "closing_note": "This is the beginning of the new Q-Chat. More social experiences, community tools, and refinements are already on the way.",
+    "close": "新着情報を閉じる",
+    "closing_note": "これは新しいQ-Chatの始まりです。さらなるソーシャル体験、コミュニティ向けツール、改善がすでに進行中です。",
     "comparison": {
-      "aria_label": "Legacy and Reticulum Q-Chat comparison",
-      "body": "Legacy Q-Chat established decentralized social communication inside Qortal. The Reticulum edition builds on that achievement with a network and interface designed for faster, more interactive daily conversation.",
-      "column_area": "Area",
-      "column_legacy": "Legacy Q-Chat",
+      "aria_label": "旧Q-ChatとReticulum Q-Chatの比較",
+      "body": "旧Q-ChatはQortal内で分散型のソーシャルコミュニケーションを確立しました。Reticulum版はその成果の上に、より速く対話的な日常の会話のために設計されたネットワークとインターフェースを築いています。",
+      "column_area": "項目",
+      "column_legacy": "旧Q-Chat",
       "column_reticulum": "Reticulum Q-Chat",
       "discovery": {
-        "area": "Community discovery",
-        "legacy": "Member count and established group information",
-        "reticulum": "Search, practical filters, previews, and Group Score"
+        "area": "コミュニティの発見",
+        "legacy": "メンバー数と確立されたグループ情報",
+        "reticulum": "検索、実用的なフィルター、プレビュー、Group Score"
       },
       "live": {
-        "area": "Live communication",
-        "legacy": "Focused on durable text chat",
-        "reticulum": "Text, mentions, direct chat, calls, and proximity voice"
+        "area": "リアルタイムのやり取り",
+        "legacy": "永続的なテキストチャットが中心",
+        "reticulum": "テキスト、メンション、ダイレクトチャット、通話、近接ボイス"
       },
       "organization": {
-        "area": "Organization",
-        "legacy": "A group generally centered on one conversation",
-        "reticulum": "Channels and categories inside the same group"
+        "area": "構成",
+        "legacy": "1つの会話を中心とすることが多いグループ",
+        "reticulum": "同じグループ内のチャンネルとカテゴリー"
       },
-      "title": "From legacy Q-Chat to Reticulum Q-Chat",
+      "title": "旧Q-ChatからReticulum Q-Chatへ",
       "transport": {
-        "area": "Message transport",
-        "legacy": "Chat messages recorded through Qortal transactions",
-        "reticulum": "Fast, real-time Reticulum conversations"
+        "area": "メッセージの伝送",
+        "legacy": "Qortalのトランザクションを通じて記録されるチャットメッセージ",
+        "reticulum": "高速でリアルタイムなReticulumの会話"
       }
     },
     "gallery": {
-      "legacy_caption": "Legacy Q-Chat (2022)",
-      "legacy_heart_aria": "Celebrating Legacy Q-Chat",
-      "legacy_placeholder_aria": "Legacy Q-Chat image placeholder",
-      "legacy_placeholder_text": "Legacy interface image coming soon",
-      "reticulum_alt": "Reticulum Q-Chat interface in 2026",
-      "reticulum_caption": "Reticulum Q-Chat (2026)",
-      "reticulum_star_aria": "Celebrating Reticulum Q-Chat"
+      "legacy_caption": "旧Q-Chat（2022年）",
+      "legacy_heart_aria": "旧Q-Chatを称えて",
+      "legacy_placeholder_aria": "旧Q-Chat画像のプレースホルダー",
+      "legacy_placeholder_text": "旧インターフェースの画像は近日公開",
+      "reticulum_alt": "2026年のReticulum Q-Chatのインターフェース",
+      "reticulum_caption": "Reticulum Q-Chat（2026年）",
+      "reticulum_star_aria": "Reticulum Q-Chatを称えて"
     },
     "highlights": {
       "calls": {
-        "description": "Start one-to-one and group calls without leaving Q-Chat. Group calls support up to seven people and begin in a compact view that can be expanded whenever you need it.",
-        "title": "Calls that stay out of the way"
+        "description": "Q-Chatを離れずに1対1通話やグループ通話を始められます。グループ通話は最大7人まで対応し、必要に応じて広げられるコンパクトな表示で始まります。",
+        "title": "邪魔にならない通話"
       },
       "channels": {
-        "description": "Groups can organize discussion into channels and categories. There is no longer a need to create a separate group for every subject.",
-        "title": "One community, many conversations"
+        "description": "グループは議論をチャンネルとカテゴリーに整理できます。話題ごとに別のグループを作る必要はもうありません。",
+        "title": "1つのコミュニティに、たくさんの会話"
       },
       "discovery": {
-        "description": "The new Group Score brings holdings, activity, history, and community size into one clear 0–100 score, helping active public groups stand out in Find Groups and invitations.",
-        "title": "Discover communities with context"
+        "description": "新しいGroup Scoreは、保有量、活動、履歴、コミュニティの規模を0〜100の分かりやすいスコアにまとめ、活発な公開グループがグループ検索や招待で目立つようにします。",
+        "title": "背景の分かるコミュニティ探し"
       },
       "expiry": {
-        "description": "Choose how long messages should remain, from 24 hours to one week, or keep them with no expiry. Replies, mentions, attachments, editing, and richer message tools make everyday chat easier.",
-        "title": "Messages on your terms"
+        "description": "メッセージを残す期間を24時間から1週間まで選ぶか、有効期限なしで保持できます。返信、メンション、添付、編集、より充実したメッセージ機能で毎日のチャットが快適になります。",
+        "title": "自分の条件で扱えるメッセージ"
       },
       "network": {
-        "description": "Q-Chat now uses Reticulum for its real-time conversations while keeping Qortal identities and group membership at the center. Messages feel immediate, dependable, and at home inside the Hub.",
-        "title": "A faster chat network"
+        "description": "Q-ChatはリアルタイムのやりとりにReticulumを使いながら、Qortalのアイデンティティとグループメンバーシップを中心に据えています。メッセージは即時で信頼でき、Hubの中に自然に馴染みます。",
+        "title": "より速いチャットネットワーク"
       },
       "qortalland": {
-        "description": "Enter a new shared social space where you can meet other members, use moods and proximity voice, and challenge people to Chess, Checkers, or Qonnect Four, all from inside your community.",
-        "title": "Introducing QortalLand"
+        "description": "新しい共有ソーシャル空間に入り、他のメンバーと出会い、ムードや近接ボイスを使い、チェス、チェッカー、Qonnect Fourで勝負を挑めます。すべてコミュニティの中から行えます。",
+        "title": "QortalLandのご紹介"
       }
     },
-    "highlights_title": "Highlights",
-    "intro_body": "This release combines Qortal's community identity with the speed of Reticulum. It is a substantial evolution of Q-Chat: quicker to use, easier to organize, and built for richer ways to spend time together.",
-    "intro_title": "A new foundation for Qortal conversations",
-    "title": "What's new in Q-Chat",
-    "version": "Version {{version}}"
+    "highlights_title": "ハイライト",
+    "intro_body": "このリリースはQortalのコミュニティとしてのアイデンティティとReticulumの速さを組み合わせています。Q-Chatの大きな進化であり、使うのが速く、整理しやすく、より豊かな時間の過ごし方のために作られています。",
+    "intro_title": "Qortalでの会話の新しい基盤",
+    "title": "Q-Chatの新着情報",
+    "version": "バージョン {{version}}"
   }
 }

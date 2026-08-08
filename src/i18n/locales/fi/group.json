@@ -34,26 +34,26 @@
     "visit_q_mintership": "vieraile Q-Mintershipissä"
   },
   "add_group": {
-    "access_closed_description": "Members join by invitation.",
-    "access_closed_label": "Closed",
-    "access_label": "Group access",
-    "access_open_description": "Anyone can find and join.",
-    "access_open_label": "Open",
-    "advanced_note": "These settings affect group transactions and cannot be changed after creation.",
-    "approval_none": "None",
-    "approval_single": "One",
-    "approval_threshold_description": "Percentage of admins required to approve group decisions.",
-    "approval_threshold_label": "Approval threshold",
-    "creating": "Creating...",
-    "description_create": "Choose a name, describe your group, and get started.",
-    "description_invites": "Review the invitations you have received.",
-    "description_placeholder": "What is this group about?",
-    "description_too_long": "Description must be {{max}} characters or fewer",
-    "max_delay_label": "Maximum approval delay",
-    "min_delay_label": "Minimum approval delay",
-    "modes_aria": "Group management modes",
-    "name_hint": "Use a clear, recognizable name.",
-    "name_placeholder": "e.g. Qortal developers"
+    "access_closed_description": "Jäsenet liittyvät kutsulla.",
+    "access_closed_label": "Suljettu",
+    "access_label": "Ryhmän käyttöoikeus",
+    "access_open_description": "Kuka tahansa voi löytää ryhmän ja liittyä siihen.",
+    "access_open_label": "Avoin",
+    "advanced_note": "Nämä asetukset vaikuttavat ryhmän tapahtumiin, eikä niitä voi muuttaa luomisen jälkeen.",
+    "approval_none": "Ei yhtään",
+    "approval_single": "Yksi",
+    "approval_threshold_description": "Ryhmän päätösten hyväksymiseen vaadittava ylläpitäjien osuus.",
+    "approval_threshold_label": "Hyväksynnän kynnys",
+    "creating": "Luodaan...",
+    "description_create": "Valitse nimi, kuvaile ryhmäsi ja aloita.",
+    "description_invites": "Tarkastele saamiasi kutsuja.",
+    "description_placeholder": "Mistä tämä ryhmä kertoo?",
+    "description_too_long": "Kuvaus saa olla enintään {{max}} merkkiä",
+    "max_delay_label": "Suurin hyväksynnän viive",
+    "min_delay_label": "Pienin hyväksynnän viive",
+    "modes_aria": "Ryhmän hallintatilat",
+    "name_hint": "Käytä selkeää ja tunnistettavaa nimeä.",
+    "name_placeholder": "esim. Qortal-kehittäjät"
   },
   "admin_space": {
     "ask_description": "This key encrypts content visible only to admins.",
@@ -73,6 +73,7 @@
     "minimum": "vähimmäislohkon viive"
   },
   "chat_group": {
+    "admins_area_only": "Tämä alue on ryhmän ylläpitäjien käytettävissä.",
     "admins_only_access": "Vain ylläpitäjillä ja ryhmän omistajalla on pääsy.",
     "admins_only_post": "Vain ylläpitäjät voivat julkaista. Kaikki voivat lukea.",
     "admins_only_write": "Vain ryhmän ylläpitäjät voivat kirjoittaa tähän kanavaan",
@@ -88,49 +89,81 @@
     "cancel_reply": "Peruuta vastaus",
     "category_exists": "Luokka on jo olemassa",
     "category_name_confirmed": "Luokan nimi vahvistettu",
+    "category_name_label": "Kategorian nimi",
     "category_name_placeholder": "esim. SUPPORT",
     "category_placeholder": "Anna luokan nimi",
+    "category_settings_hint": "Päivitä tämän kategorian nimi.",
+    "category_settings_menu": "Kategorian asetukset",
+    "category_settings_title": "Kategorian asetukset",
     "channel_exists": "Kanava on jo olemassa",
+    "channel_expiry_hint": "Koskee nykyisiä ja tulevia viestejä. Yksittäiselle viestille voi valita lyhyemmän vanhenemisajan.",
+    "channel_expiry_label": "Kanavan vanheneminen",
     "channel_name_confirmed": "Kanavan nimi vahvistettu",
+    "channel_name_label": "Kanavan nimi",
     "channel_name_placeholder": "esim. support-chat",
     "channel_placeholder": "Anna kanavan nimi",
+    "channel_settings_hint": "Päivitä tämän kanavan nimi ja käyttöoikeudet.",
+    "channel_settings_menu": "Kanavan asetukset",
+    "channel_settings_title": "Kanavan asetukset",
     "channel_type_admin": "Ylläpitäjä",
+    "channel_type_label": "Kanavan tyyppi",
     "channel_type_open": "Avoin",
     "channel_type_open_desc": "Kaikki voivat\nlukea ja kirjoittaa.",
     "channel_type_readonly": "Vain luku",
     "channels": "Kanavat",
+    "clear": "Tyhjennä",
+    "clear_dates": "Tyhjennä päivämäärät",
     "close_hidden_members": "Sulje piilotetut jäsenet",
     "confirm_delete_category": "Kirjoita delete vahvistaaksesi luokan poistamisen",
     "confirm_delete_channel": "Kirjoita delete vahvistaaksesi kanavan poistamisen",
+    "create_category_hint": "Valitse kategoriallesi nimi.",
+    "create_category_menu": "Luo kategoria",
+    "create_category_title": "Luo kategoria",
     "create_channel": "Luo kanava",
     "create_channel_action": "Luo kanava",
+    "create_channel_hint": "Valitse nimi ja päätä, kuka voi katsella tätä kanavaa tai kirjoittaa siihen.",
+    "create_text_channel": "Luo tekstikanava",
     "default_channels_in_category": "Luokan oletuskanavat",
     "delete_category": "Poista luokka",
     "delete_category_failed": "Luokkaa ei voitu poistaa",
+    "delete_category_warning": "Tätä toimintoa ei voi perua. Kirjoita alle delete poistaaksesi tämän kategorian pysyvästi.",
     "delete_channel": "Poista kanava",
     "delete_channel_failed": "Kanavaa ei voitu poistaa",
+    "delete_channel_warning": "Tätä toimintoa ei voi perua. Kirjoita alle delete poistaaksesi tämän kanavan pysyvästi.",
     "delete_confirm_word": "delete",
     "delete_image": "Poista kuva",
     "details": "Tiedot",
     "discussion_reply_failed": "Keskusteluvastausta ei voitu lähettää",
+    "done": "Valmis",
+    "drop_to_attach": "Pudota liittääksesi",
     "event_begun_html": "<p><strong>Käyttäjän {{creator}} tapahtuma on alkanut!</strong><br><strong>Tiedot</strong><br>Otsikko: {{title}}<br>Kuvaus: {{description}}</p>",
     "event_soon_html": "<p><strong>Käyttäjän {{creator}} tapahtuma alkaa 10 minuutin kuluttua.</strong><br><strong>Tiedot</strong><br>Otsikko: {{title}}<br>Kuvaus: {{description}}</p>",
     "expiry_locked_editing": "Vanhenemista ei voi muuttaa muokkauksen aikana",
+    "filter_anyone": "Kuka tahansa",
+    "filter_by": "Suodata",
+    "filter_current_channel": "Nykyinen kanava",
     "group_call": "Ryhmäpuhelu",
-    "hidden_members": "Hidden Members",
+    "hidden_members": "Piilotetut jäsenet",
+    "hidden_users_hint": "Ryhmässä {{group}} piilotetut henkilöt pysyvät poissa tämän ryhmän Reticulum-keskustelusta, kunnes tuot heidät takaisin näkyviin.",
     "hide_members": "Piilota jäsenet",
     "image_unavailable": "Reticulum-kuvatiedosto ei ole saatavilla",
     "leave_call": "Poistu puhelusta",
     "load_channels_failed": "Reticulum-keskustelukanavien lataamista ei voitu viimeistellä",
     "message_placeholder": "Viesti kanavalle...",
+    "no_results": "Ei tuloksia",
+    "no_users_hidden": "Ei piilotettuja käyttäjiä",
     "not_specified": "Ei määritetty",
     "notify_all": "Ilmoita kaikille tämän tilan jäsenille",
     "notify_online": "Ilmoita tällä hetkellä paikalla oleville jäsenille",
     "open_group": "Avoin ryhmä",
     "open_group_chat": "Avaa ryhmäkeskustelu",
-    "open_hidden_members": "Open hidden members",
+    "open_hidden_members": "Avaa piilotetut jäsenet",
     "private_encrypted_group": "Yksityinen salattu ryhmä",
     "qortal_land": "Qortal Land",
+    "remove_category_button": "Poista kategoria",
+    "remove_category_menu": "Poista kategoria",
+    "remove_channel_button": "Poista kanava",
+    "remove_channel_menu": "Poista kanava",
     "remove_file": "Poista tiedosto",
     "remove_image": "Poista kuva",
     "resize_channel_list": "Muuta kanavaluettelon kokoa",
@@ -142,9 +175,14 @@
     "reticulum_reserve_seq_failed": "Reticulum-keskustelun tapahtumasarjaa ei voitu varata",
     "reticulum_sign_failed": "Reticulum-keskustelutapahtumaa ei voitu allekirjoittaa",
     "reticulum_welcome_failed": "Reticulum-tervetuloviestin julkaisu epäonnistui",
+    "save_changes": "Tallenna muutokset",
     "search_chat": "Hae keskustelusta",
     "search_failed": "Haku epäonnistui",
+    "search_hint": "Kirjoita vähintään 2 merkkiä tai valitse suodatin.",
     "search_result_failed": "Hakutulosta ei voitu ladata",
+    "search_results": "Hakutulokset",
+    "this_group": "tämä ryhmä",
+    "type_delete_to_confirm": "Vahvista kirjoittamalla delete",
     "unread_mention": "Lukematon maininta",
     "unread_messages": "Lukemattomat viestit",
     "unread_reply": "Lukematon vastaus",
@@ -351,7 +389,7 @@
     "add_friend_before_calling": "Lisää tämä käyttäjä kaveriksi ennen soittamista",
     "attach_select_chat": "Valitse yksityiskeskustelu ennen tiedostojen liittämistä",
     "direct_message": "Yksityisviesti",
-    "direct_messages": "Direct Messages",
+    "direct_messages": "Yksityisviestit",
     "dismiss_expiry_notice": "Ohita yksityisviestien vanhenemisilmoitus",
     "expires_in_hours": "Vanhenee (tuntia)",
     "expiry_locked_editing": "Vanhenemista ei voi muuttaa muokkauksen aikana",
@@ -379,9 +417,9 @@
     "transfer_unavailable": "Reticulum-tiedostonsiirto ei ole käytettävissä"
   },
   "find_groups": {
-    "close": "Close Find groups",
-    "subtitle": "Discover groups that are available to join.",
-    "title": "Find groups"
+    "close": "Sulje ryhmien haku",
+    "subtitle": "Löydä ryhmiä, joihin voit liittyä.",
+    "title": "Etsi ryhmiä"
   },
   "group": {
     "approval_threshold": "ryhmän hyväksymisraja",
@@ -772,9 +810,9 @@
       "suggestions": "mainintaehdotukset"
     },
     "mode_pill": {
-      "chat": "Chat",
-      "enter_qortal_land": "Enter Qortal Land",
-      "return_to_chat": "Return to Chat"
+      "chat": "Keskustelu",
+      "enter_qortal_land": "Siirry Qortal Landiin",
+      "return_to_chat": "Palaa keskusteluun"
     },
     "qapp_preview": {
       "check_again": "check again",
@@ -791,62 +829,62 @@
       "watch_on_qtube": "watch this video on Q-Tube."
     },
     "rail": {
-      "find_groups": "Find Groups",
-      "group_settings": "Group Settings",
-      "whats_new": "Open What's New"
+      "find_groups": "Etsi ryhmiä",
+      "group_settings": "Ryhmän asetukset",
+      "whats_new": "Avaa uutuudet"
     },
     "settings": {
       "category": {
-        "accessibility": "Accessibility",
-        "legacy": "Legacy"
+        "accessibility": "Saavutettavuus",
+        "legacy": "Vanha versio"
       },
       "legacy": {
-        "description": "Show the legacy Threads and Admin controls in the Q-Chat header.",
+        "description": "Näytä vanhat Threads- ja Admin-painikkeet Q-Chatin yläpalkissa.",
         "title": "Threads",
         "toggle": {
-          "aria": "Show legacy Threads",
-          "description": "Display the legacy Threads and Admin icons.",
+          "aria": "Näytä vanhat Threads",
+          "description": "Näyttää vanhat Threads- ja Admin-kuvakkeet.",
           "label": "Threads"
         },
-        "warning": "Threads will be removed in the upcoming release. Move any important thread information to a safe place or to a new channel in Q-Chat before updating."
+        "warning": "Threads poistetaan tulevassa julkaisussa. Siirrä tärkeät ketjujen tiedot turvalliseen paikkaan tai uudelle Q-Chat-kanavalle ennen päivitystä."
       },
       "messages": {
-        "description": "Adjust how your own messages appear in Reticulum Q-Chat.",
+        "description": "Säädä, miten omat viestisi näkyvät Reticulum Q-Chatissa.",
         "highlight_own": {
-          "description": "Add a faint background to messages you send.",
-          "label": "Highlight my messages"
+          "description": "Lisää lähettämiisi viesteihin hillityn taustan.",
+          "label": "Korosta omat viestini"
         },
-        "title": "Messages"
+        "title": "Viestit"
       },
       "nav": {
-        "mentions": "Mentions",
-        "messages": "Messages",
-        "text_size": "Text size",
+        "mentions": "Maininnat",
+        "messages": "Viestit",
+        "text_size": "Tekstin koko",
         "threads": "Threads"
       },
       "notifications": {
-        "description": "Show Reticulum Q-Chat mentions in the Hub notification panel. Regular unread messages will not create Hub notifications.",
+        "description": "Näytä Reticulum Q-Chatin maininnat Hubin ilmoituspaneelissa. Tavalliset lukemattomat viestit eivät luo Hub-ilmoituksia.",
         "mentions": {
-          "description": "Alert me when someone mentions me in a channel.",
-          "label": "Mention notifications"
+          "description": "Ilmoita minulle, kun joku mainitsee minut kanavalla.",
+          "label": "Mainintojen ilmoitukset"
         },
-        "title": "Notifications"
+        "title": "Ilmoitukset"
       },
       "text_size": {
         "default": {
-          "detail": "Current chat text size",
-          "label": "Default"
+          "detail": "Nykyinen keskustelun tekstikoko",
+          "label": "Oletus"
         },
-        "description": "Choose a reading size for Reticulum messages, channel labels and the members list. Invitation previews keep their fixed layout.",
+        "description": "Valitse lukukoko Reticulum-viesteille, kanavien nimille ja jäsenlistalle. Kutsujen esikatselut säilyttävät kiinteän asettelunsa.",
         "high": {
-          "detail": "Largest readable chat text",
-          "label": "High"
+          "detail": "Suurin luettava keskustelun teksti",
+          "label": "Suuri"
         },
         "medium": {
-          "detail": "A comfortable increase",
-          "label": "Medium"
+          "detail": "Miellyttävä suurennus",
+          "label": "Keskikokoinen"
         },
-        "title": "Text size"
+        "title": "Tekstin koko"
       }
     },
     "user_card": {
@@ -949,75 +987,75 @@
   },
   "thread_posts": "uudet ketjun julkaisut",
   "whats_new": {
-    "close": "Close What's New",
-    "closing_note": "This is the beginning of the new Q-Chat. More social experiences, community tools, and refinements are already on the way.",
+    "close": "Sulje uutuudet",
+    "closing_note": "Tämä on uuden Q-Chatin alku. Lisää sosiaalisia kokemuksia, yhteisötyökaluja ja parannuksia on jo tulossa.",
     "comparison": {
-      "aria_label": "Legacy and Reticulum Q-Chat comparison",
-      "body": "Legacy Q-Chat established decentralized social communication inside Qortal. The Reticulum edition builds on that achievement with a network and interface designed for faster, more interactive daily conversation.",
-      "column_area": "Area",
-      "column_legacy": "Legacy Q-Chat",
+      "aria_label": "Vanhan Q-Chatin ja Reticulum Q-Chatin vertailu",
+      "body": "Vanha Q-Chat loi hajautetun sosiaalisen viestinnän Qortalin sisälle. Reticulum-versio rakentaa tuon saavutuksen päälle verkon ja käyttöliittymän, jotka on suunniteltu nopeampaan ja vuorovaikutteisempaan päivittäiseen keskusteluun.",
+      "column_area": "Osa-alue",
+      "column_legacy": "Vanha Q-Chat",
       "column_reticulum": "Reticulum Q-Chat",
       "discovery": {
-        "area": "Community discovery",
-        "legacy": "Member count and established group information",
-        "reticulum": "Search, practical filters, previews, and Group Score"
+        "area": "Yhteisöjen löytäminen",
+        "legacy": "Jäsenmäärä ja vakiintuneet ryhmätiedot",
+        "reticulum": "Haku, käytännölliset suodattimet, esikatselut ja Group Score"
       },
       "live": {
-        "area": "Live communication",
-        "legacy": "Focused on durable text chat",
-        "reticulum": "Text, mentions, direct chat, calls, and proximity voice"
+        "area": "Reaaliaikainen viestintä",
+        "legacy": "Keskittyy pysyvään tekstikeskusteluun",
+        "reticulum": "Teksti, maininnat, yksityiskeskustelu, puhelut ja lähiääni"
       },
       "organization": {
-        "area": "Organization",
-        "legacy": "A group generally centered on one conversation",
-        "reticulum": "Channels and categories inside the same group"
+        "area": "Organisointi",
+        "legacy": "Ryhmä, joka keskittyy yleensä yhteen keskusteluun",
+        "reticulum": "Kanavat ja kategoriat saman ryhmän sisällä"
       },
-      "title": "From legacy Q-Chat to Reticulum Q-Chat",
+      "title": "Vanhasta Q-Chatista Reticulum Q-Chatiin",
       "transport": {
-        "area": "Message transport",
-        "legacy": "Chat messages recorded through Qortal transactions",
-        "reticulum": "Fast, real-time Reticulum conversations"
+        "area": "Viestien välitys",
+        "legacy": "Qortal-tapahtumien kautta tallennetut keskusteluviestit",
+        "reticulum": "Nopeat, reaaliaikaiset Reticulum-keskustelut"
       }
     },
     "gallery": {
-      "legacy_caption": "Legacy Q-Chat (2022)",
-      "legacy_heart_aria": "Celebrating Legacy Q-Chat",
-      "legacy_placeholder_aria": "Legacy Q-Chat image placeholder",
-      "legacy_placeholder_text": "Legacy interface image coming soon",
-      "reticulum_alt": "Reticulum Q-Chat interface in 2026",
+      "legacy_caption": "Vanha Q-Chat (2022)",
+      "legacy_heart_aria": "Vanhan Q-Chatin juhlistaminen",
+      "legacy_placeholder_aria": "Vanhan Q-Chatin kuvan paikkamerkki",
+      "legacy_placeholder_text": "Vanhan käyttöliittymän kuva tulossa pian",
+      "reticulum_alt": "Reticulum Q-Chatin käyttöliittymä vuonna 2026",
       "reticulum_caption": "Reticulum Q-Chat (2026)",
-      "reticulum_star_aria": "Celebrating Reticulum Q-Chat"
+      "reticulum_star_aria": "Reticulum Q-Chatin juhlistaminen"
     },
     "highlights": {
       "calls": {
-        "description": "Start one-to-one and group calls without leaving Q-Chat. Group calls support up to seven people and begin in a compact view that can be expanded whenever you need it.",
-        "title": "Calls that stay out of the way"
+        "description": "Aloita kahdenkeskisiä ja ryhmäpuheluita poistumatta Q-Chatista. Ryhmäpuheluihin mahtuu jopa seitsemän henkilöä, ja ne alkavat kompaktissa näkymässä, jonka voi laajentaa milloin tahansa.",
+        "title": "Puhelut, jotka eivät ole tiellä"
       },
       "channels": {
-        "description": "Groups can organize discussion into channels and categories. There is no longer a need to create a separate group for every subject.",
-        "title": "One community, many conversations"
+        "description": "Ryhmät voivat jäsentää keskustelun kanaviin ja kategorioihin. Jokaiselle aiheelle ei enää tarvitse luoda omaa ryhmää.",
+        "title": "Yksi yhteisö, monta keskustelua"
       },
       "discovery": {
-        "description": "The new Group Score brings holdings, activity, history, and community size into one clear 0–100 score, helping active public groups stand out in Find Groups and invitations.",
-        "title": "Discover communities with context"
+        "description": "Uusi Group Score kokoaa omistukset, aktiivisuuden, historian ja yhteisön koon yhdeksi selkeäksi pistemääräksi välillä 0–100 ja auttaa aktiivisia julkisia ryhmiä erottumaan ryhmähaussa ja kutsuissa.",
+        "title": "Löydä yhteisöt taustatietojen kanssa"
       },
       "expiry": {
-        "description": "Choose how long messages should remain, from 24 hours to one week, or keep them with no expiry. Replies, mentions, attachments, editing, and richer message tools make everyday chat easier.",
-        "title": "Messages on your terms"
+        "description": "Valitse, kuinka kauan viestit säilyvät, 24 tunnista viikkoon, tai säilytä ne ilman vanhenemista. Vastaukset, maininnat, liitteet, muokkaus ja monipuolisemmat viestityökalut helpottavat arjen keskustelua.",
+        "title": "Viestit sinun ehdoillasi"
       },
       "network": {
-        "description": "Q-Chat now uses Reticulum for its real-time conversations while keeping Qortal identities and group membership at the center. Messages feel immediate, dependable, and at home inside the Hub.",
-        "title": "A faster chat network"
+        "description": "Q-Chat käyttää nyt Reticulumia reaaliaikaisiin keskusteluihin pitäen Qortal-identiteetit ja ryhmäjäsenyyden keskiössä. Viestit tuntuvat välittömiltä, luotettavilta ja Hubiin kuuluvilta.",
+        "title": "Nopeampi keskusteluverkko"
       },
       "qortalland": {
-        "description": "Enter a new shared social space where you can meet other members, use moods and proximity voice, and challenge people to Chess, Checkers, or Qonnect Four, all from inside your community.",
-        "title": "Introducing QortalLand"
+        "description": "Astu uuteen jaettuun sosiaaliseen tilaan, jossa voit tavata muita jäseniä, käyttää tunnelmia ja lähiääntä sekä haastaa muita shakkiin, tammeen tai Qonnect Fouriin, kaiken oman yhteisösi sisältä.",
+        "title": "Esittelyssä QortalLand"
       }
     },
-    "highlights_title": "Highlights",
-    "intro_body": "This release combines Qortal's community identity with the speed of Reticulum. It is a substantial evolution of Q-Chat: quicker to use, easier to organize, and built for richer ways to spend time together.",
-    "intro_title": "A new foundation for Qortal conversations",
-    "title": "What's new in Q-Chat",
-    "version": "Version {{version}}"
+    "highlights_title": "Kohokohdat",
+    "intro_body": "Tämä julkaisu yhdistää Qortalin yhteisöidentiteetin Reticulumin nopeuteen. Se on merkittävä kehitysaskel Q-Chatille: nopeampi käyttää, helpompi järjestää ja rakennettu monipuolisempaan yhdessäoloon.",
+    "intro_title": "Uusi perusta Qortal-keskusteluille",
+    "title": "Mitä uutta Q-Chatissa",
+    "version": "Versio {{version}}"
   }
 }

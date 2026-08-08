@@ -34,26 +34,26 @@
     "visit_q_mintership": "访问 Q-Mintership"
   },
   "add_group": {
-    "access_closed_description": "Members join by invitation.",
-    "access_closed_label": "Closed",
-    "access_label": "Group access",
-    "access_open_description": "Anyone can find and join.",
-    "access_open_label": "Open",
-    "advanced_note": "These settings affect group transactions and cannot be changed after creation.",
-    "approval_none": "None",
-    "approval_single": "One",
-    "approval_threshold_description": "Percentage of admins required to approve group decisions.",
-    "approval_threshold_label": "Approval threshold",
-    "creating": "Creating...",
-    "description_create": "Choose a name, describe your group, and get started.",
-    "description_invites": "Review the invitations you have received.",
-    "description_placeholder": "What is this group about?",
-    "description_too_long": "Description must be {{max}} characters or fewer",
-    "max_delay_label": "Maximum approval delay",
-    "min_delay_label": "Minimum approval delay",
-    "modes_aria": "Group management modes",
-    "name_hint": "Use a clear, recognizable name.",
-    "name_placeholder": "e.g. Qortal developers"
+    "access_closed_description": "成员通过邀请加入。",
+    "access_closed_label": "封闭",
+    "access_label": "群组访问权限",
+    "access_open_description": "任何人都可以找到并加入。",
+    "access_open_label": "开放",
+    "advanced_note": "这些设置会影响群组交易，创建后无法更改。",
+    "approval_none": "无",
+    "approval_single": "一位",
+    "approval_threshold_description": "批准群组决定所需的管理员比例。",
+    "approval_threshold_label": "批准阈值",
+    "creating": "正在创建...",
+    "description_create": "取个名字，描述你的群组，然后开始吧。",
+    "description_invites": "查看你收到的邀请。",
+    "description_placeholder": "这个群组是关于什么的？",
+    "description_too_long": "描述不能超过 {{max}} 个字符",
+    "max_delay_label": "最长批准延迟",
+    "min_delay_label": "最短批准延迟",
+    "modes_aria": "群组管理模式",
+    "name_hint": "使用清晰、易于识别的名称。",
+    "name_placeholder": "例如：Qortal 开发者"
   },
   "admin_space": {
     "ask_description": "This key encrypts content visible only to admins.",
@@ -73,6 +73,7 @@
     "minimum": "最小区块延迟"
   },
   "chat_group": {
+    "admins_area_only": "此区域供群组管理员使用。",
     "admins_only_access": "只有管理员和群组所有者可以访问。",
     "admins_only_post": "只有管理员可以发布。所有人都可以阅读。",
     "admins_only_write": "只有群组管理员可以在此频道发言",
@@ -88,49 +89,81 @@
     "cancel_reply": "取消回复",
     "category_exists": "分类已存在",
     "category_name_confirmed": "分类名称已确认",
+    "category_name_label": "分类名称",
     "category_name_placeholder": "例如 SUPPORT",
     "category_placeholder": "请输入分类名称",
+    "category_settings_hint": "更新此分类的名称。",
+    "category_settings_menu": "分类设置",
+    "category_settings_title": "分类设置",
     "channel_exists": "频道已存在",
+    "channel_expiry_hint": "适用于现有和今后的消息。单条消息可以选择更短的有效期。",
+    "channel_expiry_label": "频道有效期",
     "channel_name_confirmed": "频道名称已确认",
+    "channel_name_label": "频道名称",
     "channel_name_placeholder": "例如 support-chat",
     "channel_placeholder": "请输入频道名称",
+    "channel_settings_hint": "更新此频道的名称和权限。",
+    "channel_settings_menu": "频道设置",
+    "channel_settings_title": "频道设置",
     "channel_type_admin": "管理员",
+    "channel_type_label": "频道类型",
     "channel_type_open": "公开",
     "channel_type_open_desc": "所有人都可以\n阅读和发言。",
     "channel_type_readonly": "只读",
     "channels": "频道",
+    "clear": "清除",
+    "clear_dates": "清除日期",
     "close_hidden_members": "关闭隐藏的成员",
     "confirm_delete_category": "输入 delete 以确认删除分类",
     "confirm_delete_channel": "输入 delete 以确认删除频道",
+    "create_category_hint": "为你的分类取个名称。",
+    "create_category_menu": "创建分类",
+    "create_category_title": "创建分类",
     "create_channel": "创建频道",
     "create_channel_action": "创建频道",
+    "create_channel_hint": "取个名称，并决定谁可以查看或在此频道发言。",
+    "create_text_channel": "创建文字频道",
     "default_channels_in_category": "分类中的默认频道",
     "delete_category": "删除分类",
     "delete_category_failed": "无法删除分类",
+    "delete_category_warning": "此操作无法撤销。请在下方输入 delete 以永久删除此分类。",
     "delete_channel": "删除频道",
     "delete_channel_failed": "无法删除频道",
+    "delete_channel_warning": "此操作无法撤销。请在下方输入 delete 以永久删除此频道。",
     "delete_confirm_word": "delete",
     "delete_image": "删除图片",
     "details": "详情",
     "discussion_reply_failed": "无法发送讨论回复",
+    "done": "完成",
+    "drop_to_attach": "拖放以添加附件",
     "event_begun_html": "<p><strong>{{creator}} 的活动已开始！</strong><br><strong>详情</strong><br>标题：{{title}}<br>描述：{{description}}</p>",
     "event_soon_html": "<p><strong>{{creator}} 的活动将在 10 分钟后开始。</strong><br><strong>详情</strong><br>标题：{{title}}<br>描述：{{description}}</p>",
     "expiry_locked_editing": "编辑时无法更改过期时间",
+    "filter_anyone": "任何人",
+    "filter_by": "筛选条件",
+    "filter_current_channel": "当前频道",
     "group_call": "群组通话",
-    "hidden_members": "Hidden Members",
+    "hidden_members": "已隐藏的成员",
+    "hidden_users_hint": "在{{group}}中被隐藏的人不会出现在该群组的 Reticulum 聊天中，直到你取消隐藏。",
     "hide_members": "隐藏成员",
     "image_unavailable": "Reticulum 图片文件不可用",
     "leave_call": "离开通话",
     "load_channels_failed": "无法完成加载 Reticulum 聊天频道",
     "message_placeholder": "向频道发送消息...",
+    "no_results": "没有结果",
+    "no_users_hidden": "没有隐藏的用户",
     "not_specified": "未指定",
     "notify_all": "通知此空间的所有成员",
     "notify_online": "通知当前在线的成员",
     "open_group": "公开群组",
     "open_group_chat": "打开群组聊天",
-    "open_hidden_members": "Open hidden members",
+    "open_hidden_members": "打开已隐藏的成员",
     "private_encrypted_group": "私密加密群组",
     "qortal_land": "Qortal Land",
+    "remove_category_button": "删除分类",
+    "remove_category_menu": "删除分类",
+    "remove_channel_button": "删除频道",
+    "remove_channel_menu": "删除频道",
     "remove_file": "移除文件",
     "remove_image": "移除图片",
     "resize_channel_list": "调整频道列表大小",
@@ -142,9 +175,14 @@
     "reticulum_reserve_seq_failed": "无法预留 Reticulum 聊天事件序列",
     "reticulum_sign_failed": "无法签名 Reticulum 聊天事件",
     "reticulum_welcome_failed": "Reticulum 欢迎消息发布失败",
+    "save_changes": "保存更改",
     "search_chat": "搜索聊天",
     "search_failed": "搜索失败",
+    "search_hint": "请至少输入 2 个字符或选择一个筛选条件。",
     "search_result_failed": "无法加载搜索结果",
+    "search_results": "搜索结果",
+    "this_group": "此群组",
+    "type_delete_to_confirm": "输入 delete 以确认",
     "unread_mention": "未读提及",
     "unread_messages": "未读消息",
     "unread_reply": "未读回复",
@@ -351,7 +389,7 @@
     "add_friend_before_calling": "通话前请先将此用户加为好友",
     "attach_select_chat": "附加文件前请先选择一个私聊",
     "direct_message": "私信",
-    "direct_messages": "Direct Messages",
+    "direct_messages": "私信",
     "dismiss_expiry_notice": "忽略私信过期提示",
     "expires_in_hours": "过期时间（小时）",
     "expiry_locked_editing": "编辑时无法更改过期时间",
@@ -379,9 +417,9 @@
     "transfer_unavailable": "Reticulum 文件传输不可用"
   },
   "find_groups": {
-    "close": "Close Find groups",
-    "subtitle": "Discover groups that are available to join.",
-    "title": "Find groups"
+    "close": "关闭群组查找",
+    "subtitle": "发现你可以加入的群组。",
+    "title": "查找群组"
   },
   "group": {
     "approval_threshold": "群组批准阈值",
@@ -772,9 +810,9 @@
       "suggestions": "提及建议"
     },
     "mode_pill": {
-      "chat": "Chat",
-      "enter_qortal_land": "Enter Qortal Land",
-      "return_to_chat": "Return to Chat"
+      "chat": "聊天",
+      "enter_qortal_land": "进入 Qortal Land",
+      "return_to_chat": "返回聊天"
     },
     "qapp_preview": {
       "check_again": "check again",
@@ -791,62 +829,62 @@
       "watch_on_qtube": "watch this video on Q-Tube."
     },
     "rail": {
-      "find_groups": "Find Groups",
-      "group_settings": "Group Settings",
-      "whats_new": "Open What's New"
+      "find_groups": "查找群组",
+      "group_settings": "群组设置",
+      "whats_new": "打开新功能介绍"
     },
     "settings": {
       "category": {
-        "accessibility": "Accessibility",
-        "legacy": "Legacy"
+        "accessibility": "无障碍",
+        "legacy": "旧版"
       },
       "legacy": {
-        "description": "Show the legacy Threads and Admin controls in the Q-Chat header.",
+        "description": "在 Q-Chat 顶栏显示旧版的 Threads 和 Admin 控件。",
         "title": "Threads",
         "toggle": {
-          "aria": "Show legacy Threads",
-          "description": "Display the legacy Threads and Admin icons.",
+          "aria": "显示旧版 Threads",
+          "description": "显示旧版的 Threads 和 Admin 图标。",
           "label": "Threads"
         },
-        "warning": "Threads will be removed in the upcoming release. Move any important thread information to a safe place or to a new channel in Q-Chat before updating."
+        "warning": "Threads 将在下一个版本中移除。更新前请把重要的主题信息转移到安全的位置或 Q-Chat 的新频道。"
       },
       "messages": {
-        "description": "Adjust how your own messages appear in Reticulum Q-Chat.",
+        "description": "调整你自己的消息在 Reticulum Q-Chat 中的显示方式。",
         "highlight_own": {
-          "description": "Add a faint background to messages you send.",
-          "label": "Highlight my messages"
+          "description": "为你发送的消息添加淡淡的背景。",
+          "label": "突出显示我的消息"
         },
-        "title": "Messages"
+        "title": "消息"
       },
       "nav": {
-        "mentions": "Mentions",
-        "messages": "Messages",
-        "text_size": "Text size",
+        "mentions": "提及",
+        "messages": "消息",
+        "text_size": "文字大小",
         "threads": "Threads"
       },
       "notifications": {
-        "description": "Show Reticulum Q-Chat mentions in the Hub notification panel. Regular unread messages will not create Hub notifications.",
+        "description": "在 Hub 通知面板中显示 Reticulum Q-Chat 的提及。普通未读消息不会产生 Hub 通知。",
         "mentions": {
-          "description": "Alert me when someone mentions me in a channel.",
-          "label": "Mention notifications"
+          "description": "当有人在频道中提及我时通知我。",
+          "label": "提及通知"
         },
-        "title": "Notifications"
+        "title": "通知"
       },
       "text_size": {
         "default": {
-          "detail": "Current chat text size",
-          "label": "Default"
+          "detail": "当前的聊天文字大小",
+          "label": "默认"
         },
-        "description": "Choose a reading size for Reticulum messages, channel labels and the members list. Invitation previews keep their fixed layout.",
+        "description": "为 Reticulum 消息、频道标签和成员列表选择阅读大小。邀请预览保持其固定布局。",
         "high": {
-          "detail": "Largest readable chat text",
-          "label": "High"
+          "detail": "在保持易读的前提下最大的聊天文字",
+          "label": "大"
         },
         "medium": {
-          "detail": "A comfortable increase",
-          "label": "Medium"
+          "detail": "适度放大",
+          "label": "中"
         },
-        "title": "Text size"
+        "title": "文字大小"
       }
     },
     "user_card": {
@@ -949,75 +987,75 @@
   },
   "thread_posts": "新主题消息",
   "whats_new": {
-    "close": "Close What's New",
-    "closing_note": "This is the beginning of the new Q-Chat. More social experiences, community tools, and refinements are already on the way.",
+    "close": "关闭新功能介绍",
+    "closing_note": "这只是新 Q-Chat 的开始。更多社交体验、社区工具和优化已经在路上。",
     "comparison": {
-      "aria_label": "Legacy and Reticulum Q-Chat comparison",
-      "body": "Legacy Q-Chat established decentralized social communication inside Qortal. The Reticulum edition builds on that achievement with a network and interface designed for faster, more interactive daily conversation.",
-      "column_area": "Area",
-      "column_legacy": "Legacy Q-Chat",
+      "aria_label": "旧版 Q-Chat 与 Reticulum Q-Chat 的对比",
+      "body": "旧版 Q-Chat 在 Qortal 内部确立了去中心化的社交沟通。Reticulum 版本在此成就之上，构建了为更快速、更具互动性的日常交流而设计的网络与界面。",
+      "column_area": "方面",
+      "column_legacy": "旧版 Q-Chat",
       "column_reticulum": "Reticulum Q-Chat",
       "discovery": {
-        "area": "Community discovery",
-        "legacy": "Member count and established group information",
-        "reticulum": "Search, practical filters, previews, and Group Score"
+        "area": "社区发现",
+        "legacy": "成员数量和既有的群组信息",
+        "reticulum": "搜索、实用筛选、预览和 Group Score"
       },
       "live": {
-        "area": "Live communication",
-        "legacy": "Focused on durable text chat",
-        "reticulum": "Text, mentions, direct chat, calls, and proximity voice"
+        "area": "实时沟通",
+        "legacy": "以持久的文字聊天为主",
+        "reticulum": "文字、提及、私聊、通话和近距离语音"
       },
       "organization": {
-        "area": "Organization",
-        "legacy": "A group generally centered on one conversation",
-        "reticulum": "Channels and categories inside the same group"
+        "area": "组织方式",
+        "legacy": "一个群组通常围绕一段对话",
+        "reticulum": "同一群组内的频道和分类"
       },
-      "title": "From legacy Q-Chat to Reticulum Q-Chat",
+      "title": "从旧版 Q-Chat 到 Reticulum Q-Chat",
       "transport": {
-        "area": "Message transport",
-        "legacy": "Chat messages recorded through Qortal transactions",
-        "reticulum": "Fast, real-time Reticulum conversations"
+        "area": "消息传输",
+        "legacy": "通过 Qortal 交易记录的聊天消息",
+        "reticulum": "快速、实时的 Reticulum 对话"
       }
     },
     "gallery": {
-      "legacy_caption": "Legacy Q-Chat (2022)",
-      "legacy_heart_aria": "Celebrating Legacy Q-Chat",
-      "legacy_placeholder_aria": "Legacy Q-Chat image placeholder",
-      "legacy_placeholder_text": "Legacy interface image coming soon",
-      "reticulum_alt": "Reticulum Q-Chat interface in 2026",
-      "reticulum_caption": "Reticulum Q-Chat (2026)",
-      "reticulum_star_aria": "Celebrating Reticulum Q-Chat"
+      "legacy_caption": "旧版 Q-Chat（2022 年）",
+      "legacy_heart_aria": "致敬旧版 Q-Chat",
+      "legacy_placeholder_aria": "旧版 Q-Chat 图片占位符",
+      "legacy_placeholder_text": "旧界面图片即将推出",
+      "reticulum_alt": "2026 年的 Reticulum Q-Chat 界面",
+      "reticulum_caption": "Reticulum Q-Chat（2026 年）",
+      "reticulum_star_aria": "致敬 Reticulum Q-Chat"
     },
     "highlights": {
       "calls": {
-        "description": "Start one-to-one and group calls without leaving Q-Chat. Group calls support up to seven people and begin in a compact view that can be expanded whenever you need it.",
-        "title": "Calls that stay out of the way"
+        "description": "无需离开 Q-Chat 即可发起一对一通话和群组通话。群组通话最多支持七人，并以紧凑视图开始，随时可以展开。",
+        "title": "不打扰的通话"
       },
       "channels": {
-        "description": "Groups can organize discussion into channels and categories. There is no longer a need to create a separate group for every subject.",
-        "title": "One community, many conversations"
+        "description": "群组可以把讨论整理成频道和分类，不必再为每个主题单独创建群组。",
+        "title": "一个社区，多种对话"
       },
       "discovery": {
-        "description": "The new Group Score brings holdings, activity, history, and community size into one clear 0–100 score, helping active public groups stand out in Find Groups and invitations.",
-        "title": "Discover communities with context"
+        "description": "全新的 Group Score 把持有量、活跃度、历史和社区规模汇总为一个清晰的 0–100 分数，帮助活跃的公开群组在群组查找和邀请中脱颖而出。",
+        "title": "带着背景发现社区"
       },
       "expiry": {
-        "description": "Choose how long messages should remain, from 24 hours to one week, or keep them with no expiry. Replies, mentions, attachments, editing, and richer message tools make everyday chat easier.",
-        "title": "Messages on your terms"
+        "description": "选择消息保留的时长，从 24 小时到一周，或让它们永不过期。回复、提及、附件、编辑以及更丰富的消息工具让日常聊天更轻松。",
+        "title": "由你决定的消息"
       },
       "network": {
-        "description": "Q-Chat now uses Reticulum for its real-time conversations while keeping Qortal identities and group membership at the center. Messages feel immediate, dependable, and at home inside the Hub.",
-        "title": "A faster chat network"
+        "description": "Q-Chat 现在使用 Reticulum 进行实时对话，同时把 Qortal 身份和群组成员身份放在核心位置。消息即时、可靠，并与 Hub 融为一体。",
+        "title": "更快的聊天网络"
       },
       "qortalland": {
-        "description": "Enter a new shared social space where you can meet other members, use moods and proximity voice, and challenge people to Chess, Checkers, or Qonnect Four, all from inside your community.",
-        "title": "Introducing QortalLand"
+        "description": "进入一个全新的共享社交空间，在这里你可以结识其他成员、使用心情和近距离语音，并邀请他人来一局国际象棋、跳棋或 Qonnect Four，一切都在你的社区内完成。",
+        "title": "隆重推出 QortalLand"
       }
     },
-    "highlights_title": "Highlights",
-    "intro_body": "This release combines Qortal's community identity with the speed of Reticulum. It is a substantial evolution of Q-Chat: quicker to use, easier to organize, and built for richer ways to spend time together.",
-    "intro_title": "A new foundation for Qortal conversations",
-    "title": "What's new in Q-Chat",
-    "version": "Version {{version}}"
+    "highlights_title": "亮点",
+    "intro_body": "此版本将 Qortal 的社区身份与 Reticulum 的速度结合起来。它是 Q-Chat 的一次重大演进：使用更快、组织更方便，并为更丰富的相处方式而打造。",
+    "intro_title": "Qortal 对话的全新基础",
+    "title": "Q-Chat 新功能",
+    "version": "版本 {{version}}"
   }
 }

@@ -684,14 +684,14 @@
   "name": "nimi",
   "name_app": "nimi/sovellus",
   "navbar": {
-    "search_placeholder": "Search Q-Apps or enter qortal://",
+    "search_placeholder": "Hae Q-Appeja tai kirjoita qortal://",
     "session": {
-      "lock_description": "Keep chats and calls connected",
-      "lock_title": "Lock",
-      "logout_description": "End this signed-in session",
-      "logout_title": "Log out",
-      "menu_aria": "Session options",
-      "tooltip": "Lock or log out"
+      "lock_description": "Pidä keskustelut ja puhelut yhdistettyinä",
+      "lock_title": "Lukitse",
+      "logout_description": "Päätä tämä kirjautunut istunto",
+      "logout_title": "Kirjaudu ulos",
+      "menu_aria": "Istunnon asetukset",
+      "tooltip": "Lukitse tai kirjaudu ulos"
     }
   },
   "new_post_in": "uusi julkaisu kohteessa {{ title }}",

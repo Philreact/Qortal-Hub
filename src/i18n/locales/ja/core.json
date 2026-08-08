@@ -684,14 +684,14 @@
   "name": "名前",
   "name_app": "名前/アプリ",
   "navbar": {
-    "search_placeholder": "Search Q-Apps or enter qortal://",
+    "search_placeholder": "Q-Appsを検索、または qortal:// を入力",
     "session": {
-      "lock_description": "Keep chats and calls connected",
-      "lock_title": "Lock",
-      "logout_description": "End this signed-in session",
-      "logout_title": "Log out",
-      "menu_aria": "Session options",
-      "tooltip": "Lock or log out"
+      "lock_description": "チャットと通話の接続を維持します",
+      "lock_title": "ロック",
+      "logout_description": "このサインイン中のセッションを終了します",
+      "logout_title": "ログアウト",
+      "menu_aria": "セッションのオプション",
+      "tooltip": "ロックまたはログアウト"
     }
   },
   "new_post_in": "{{ title }} の新しい投稿",
