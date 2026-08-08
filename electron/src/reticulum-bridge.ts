@@ -1077,6 +1077,8 @@ function waitForBridgeChildExit(
   child: ChildProcess,
   timeoutMs: number
 ): Promise<boolean> {
+  const hasExited = () =>
+    typeof child.exitCode === 'number' || typeof child.signalCode === 'string';
   return new Promise((resolve) => {
     let settled = false;
     const finish = (exited: boolean) => {
@@ -1088,12 +1090,17 @@ function waitForBridgeChildExit(
       resolve(exited);
     };
     const onExit = () => finish(true);
-    const onError = () => finish(true);
+    // ChildProcess can emit `error` when kill() itself fails. That is not
+    // evidence the process exited, so keep waiting unless Node also reports an
+    // exit status.
+    const onError = () => {
+      if (hasExited()) finish(true);
+    };
     const timer = setTimeout(() => finish(false), Math.max(0, timeoutMs));
     timer.unref?.();
     child.once('exit', onExit);
     child.once('error', onError);
-    if (child.exitCode !== null || child.signalCode !== null) {
+    if (hasExited()) {
       finish(true);
     }
   });
@@ -1369,6 +1376,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private overlayStalePruneTimer: ReturnType<typeof setInterval> | null = null;
   private statePromise: Promise<void> | null = null;
+  private lifecycleRestartPromise: Promise<void> | null = null;
+  private retired = false;
+  private unconfirmedStoppedChild: ChildProcess | null = null;
   private launchConfigDir: string | null = null;
   private lastHeartbeatSentAt = 0;
   private lastHeartbeatSemanticKey: string | null = null;
@@ -1441,6 +1451,31 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   }
 
   async start(): Promise<void> {
+    if (this.retired) {
+      throw new Error('Reticulum bridge instance is retired');
+    }
+    if (this.lifecycleRestartPromise) {
+      return this.lifecycleRestartPromise;
+    }
+    return this.startInternal();
+  }
+
+  private async startInternal(): Promise<void> {
+    if (this.retired) {
+      throw new Error('Reticulum bridge instance is retired');
+    }
+    if (this.unconfirmedStoppedChild) {
+      if (
+        typeof this.unconfirmedStoppedChild.exitCode === 'number' ||
+        typeof this.unconfirmedStoppedChild.signalCode === 'string'
+      ) {
+        this.unconfirmedStoppedChild = null;
+      } else {
+        throw new Error(
+          'Previous Reticulum bridge process has not confirmed exit'
+        );
+      }
+    }
     this.desiredRunning = true;
     const configDir = getReticulumConfigDir();
     if (
@@ -1452,7 +1487,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         `[ReticulumBridge] Config changed from ${this.launchConfigDir} to ${configDir}; restarting bridge for current app instance`
       );
       const previousStart = this.statePromise;
-      this.stop();
+      await this.stopAndWait();
       if (previousStart) {
         try {
           await previousStart;
@@ -1481,6 +1516,39 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       this.statePromise = null;
     });
     return this.statePromise;
+  }
+
+  /**
+   * Restart only this wrapper's Python child. Consumers retain the wrapper, so
+   * their subscriptions cannot revive a stale bridge while a replacement is
+   * being created. Calls to start() during the restart join the same promise.
+   */
+  async restartAndWait(): Promise<void> {
+    if (this.retired) {
+      throw new Error('Reticulum bridge instance is retired');
+    }
+    if (this.lifecycleRestartPromise) {
+      return this.lifecycleRestartPromise;
+    }
+
+    const previousStart = this.statePromise;
+    const restart = (async () => {
+      await this.stopAndWait();
+      if (previousStart) {
+        await previousStart.catch(() => {});
+      }
+      if (this.retired) {
+        throw new Error('Reticulum bridge restart was superseded');
+      }
+      await this.startInternal();
+    })();
+    const trackedRestart = restart.finally(() => {
+      if (this.lifecycleRestartPromise === trackedRestart) {
+        this.lifecycleRestartPromise = null;
+      }
+    });
+    this.lifecycleRestartPromise = trackedRestart;
+    return trackedRestart;
   }
 
   private prepareStop(): ChildProcess | null {
@@ -1538,10 +1606,31 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     }
   }
 
+  /** Permanently prevent stale consumers from starting this wrapper again. */
+  retire(): void {
+    this.retired = true;
+    this.stop();
+  }
+
+  async retireAndWait(): Promise<void> {
+    this.retired = true;
+    const activeRestart = this.lifecycleRestartPromise;
+    // Stop immediately: waiting for an in-progress restart first could allow
+    // its newly spawned child to finish a long handshake during app shutdown.
+    await this.stopAndWait();
+    if (activeRestart) {
+      await activeRestart.catch(() => {});
+    }
+    // If the restart had already crossed into startInternal(), ensure the
+    // child it was starting is also gone before retirement completes.
+    await this.stopAndWait();
+  }
+
   async stopAndWait(
     gracefulTimeoutMs = BRIDGE_GRACEFUL_STOP_TIMEOUT_MS
   ): Promise<void> {
-    const child = this.prepareStop();
+    const preparedChild = this.prepareStop();
+    const child = preparedChild ?? this.unconfirmedStoppedChild;
     if (!child) return;
 
     if (typeof child.pid === 'number') {
@@ -1551,6 +1640,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     }
 
     if (await waitForBridgeChildExit(child, gracefulTimeoutMs)) {
+      if (this.unconfirmedStoppedChild === child) {
+        this.unconfirmedStoppedChild = null;
+      }
       return;
     }
 
@@ -1563,11 +1655,21 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     } else {
       child.kill('SIGKILL');
     }
-    if (!(await waitForBridgeChildExit(child, BRIDGE_FORCE_STOP_TIMEOUT_MS))) {
-      loggerError(
-        `[ReticulumBridge] Bridge child pid=${pid ?? 'unknown'} did not exit after force stop`
-      );
+    if (await waitForBridgeChildExit(child, BRIDGE_FORCE_STOP_TIMEOUT_MS)) {
+      if (this.unconfirmedStoppedChild === child) {
+        this.unconfirmedStoppedChild = null;
+      }
+      return;
     }
+    this.unconfirmedStoppedChild = child;
+    child.once('exit', () => {
+      if (this.unconfirmedStoppedChild === child) {
+        this.unconfirmedStoppedChild = null;
+      }
+    });
+    const message = `Bridge child pid=${pid ?? 'unknown'} did not exit after force stop`;
+    loggerError(`[ReticulumBridge] ${message}`);
+    throw new Error(message);
   }
 
   /**
@@ -1653,15 +1755,16 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     logicalResourceType?: string;
   }): Promise<ReticulumSendResult> {
     const peerPresenceHash = payload.peerPresenceHash.trim().toLowerCase();
+    const logicalResourceType = payload.logicalResourceType ?? '';
     const lane =
-      ![
+      logicalResourceType === 'reticulum_chat_dm_page' ||
+      (![
         'reticulum_chat_history_page',
-        'reticulum_chat_dm_page',
         'reticulum_chat_metadata_snapshot',
         'reticulum_chat_event_page',
         'reticulum_chat_calendar',
-      ].includes(payload.logicalResourceType ?? '') &&
-      payload.resourceType === 'reticulum_chat_event'
+      ].includes(logicalResourceType) &&
+        payload.resourceType === 'reticulum_chat_event')
         ? 'fast'
         : 'bulk';
     if (!peerPresenceHash) {
@@ -1710,6 +1813,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return new Promise<ReticulumSendResult>((resolve) => {
       let settled = false;
       let expectedLinkId = '';
+      let expectedLane: 'fast' | 'bulk' = payload.lane;
       const pendingSessionStates: Array<{
         status?: string;
         peerPresenceHash?: string;
@@ -1735,8 +1839,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       }) => {
         if (
           state.peerPresenceHash?.trim().toLowerCase() !==
-            payload.peerPresenceHash ||
-          state.lane !== payload.lane
+          payload.peerPresenceHash
         ) {
           return;
         }
@@ -1744,6 +1847,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           pendingSessionStates.push(state);
           return;
         }
+        if (state.lane !== expectedLane) return;
         if (state.linkId && state.linkId !== expectedLinkId) return;
         if (state.status === 'ready') {
           finish({ ok: true });
@@ -1802,6 +1906,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
             return;
           }
           expectedLinkId = String(resp.payload?.linkId ?? '');
+          if (resp.payload?.lane === 'fast' || resp.payload?.lane === 'bulk') {
+            expectedLane = resp.payload.lane;
+          }
           if (resp.payload?.status === 'ready') {
             finish({ ok: true });
             return;
@@ -5520,24 +5627,62 @@ export async function startReticulumBridge(): Promise<ReticulumBridge> {
   return bridge;
 }
 
+/**
+ * Restart the current per-Electron bridge process without replacing its
+ * EventEmitter wrapper. This keeps all manager references and listeners bound
+ * to the single authoritative bridge across sleep/wake recovery.
+ */
+export async function restartReticulumBridge(): Promise<ReticulumBridge> {
+  if (bridgeStopPromise) {
+    await bridgeStopPromise;
+  }
+  if (!isReticulumRuntimeEnabled()) {
+    throw new Error('Reticulum is disabled');
+  }
+  const bridge = bridgeInstance;
+  if (!bridge) {
+    return startReticulumBridge();
+  }
+  await bridge.restartAndWait();
+  if (!isReticulumRuntimeEnabled() || bridgeInstance !== bridge) {
+    throw new Error('Reticulum bridge restart was superseded');
+  }
+  return bridge;
+}
+
+function beginReticulumBridgeStop(): Promise<void> {
+  if (bridgeStopPromise) {
+    return bridgeStopPromise;
+  }
+  const bridge = bridgeInstance;
+  if (!bridge) {
+    return Promise.resolve();
+  }
+  const stopPromise = bridge.retireAndWait();
+  const trackedStopPromise = stopPromise
+    .then(() => {
+      if (bridgeInstance === bridge) {
+        bridgeInstance = null;
+      }
+    })
+    .finally(() => {
+      if (bridgeStopPromise === trackedStopPromise) {
+        bridgeStopPromise = null;
+      }
+    });
+  bridgeStopPromise = trackedStopPromise;
+  return trackedStopPromise;
+}
+
 export function stopReticulumBridge(): void {
-  bridgeInstance?.stop();
-  bridgeInstance = null;
+  // Preserve the retiring wrapper as authoritative until its child confirms
+  // exit. A caller that immediately starts again will join bridgeStopPromise
+  // instead of spawning alongside a process that is still shutting down.
+  void beginReticulumBridgeStop().catch((error) => {
+    loggerError('[ReticulumBridge] Asynchronous bridge stop failed:', error);
+  });
 }
 
 export async function stopReticulumBridgeAndWait(): Promise<void> {
-  const bridge = bridgeInstance;
-  if (!bridge) {
-    await bridgeStopPromise;
-    return;
-  }
-  bridgeInstance = null;
-  const stopPromise = bridge.stopAndWait();
-  const trackedStopPromise = stopPromise.finally(() => {
-    if (bridgeStopPromise === trackedStopPromise) {
-      bridgeStopPromise = null;
-    }
-  });
-  bridgeStopPromise = trackedStopPromise;
-  await trackedStopPromise;
+  await beginReticulumBridgeStop();
 }

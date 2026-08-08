@@ -9,6 +9,7 @@ import {
   RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS,
   RETICULUM_RESOURCE_TRANSFER_QUEUE_TIMEOUT_MS,
   RETICULUM_RESOURCE_TRANSFER_REQUEST_START_TIMEOUT_MS,
+  RETICULUM_RESOURCE_TRANSFER_SESSION_BUSY_RETRY_MS,
   RETICULUM_RESOURCE_TRANSFER_TTL_MS,
   type ReticulumResourceTransferProgress,
   ReticulumResourceTransferManager,
@@ -21,6 +22,37 @@ describe('reticulum resource transfer storage protection', () => {
   afterEach(() => {
     while (transfers.length) transfers.pop()?.close();
     while (stores.length) stores.pop()?.close();
+  });
+
+  it('does not touch resource storage after the transfer manager closes', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+    });
+    stores.push(store);
+    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+      resourceStore: store,
+      buildRequestPayloads: async () => [],
+    });
+    transfers.push(transfer);
+    const completedBytes = vi.spyOn(store, 'getCompletedBytes');
+    const state = {
+      contextId: 716,
+      manifest: {
+        fileHash: 'f'.repeat(64),
+        sizeBytes: 128,
+      },
+      sourcePeerHashes: new Set<string>(),
+    };
+
+    transfer.close();
+    expect(() => (transfer as any).emitProgress(state)).not.toThrow();
+    expect(completedBytes).not.toHaveBeenCalled();
+    expect(transfer.getDownloadStatus('f'.repeat(64)).active).toBe(false);
+    expect(completedBytes).not.toHaveBeenCalled();
+    expect(transfer.addCandidatePeers('f'.repeat(64), ['peer-a'])).toBe(false);
+    await expect(transfer.cancelResource('f'.repeat(64))).resolves.toBe(false);
   });
 
   it('recreates expired leases and reservations when a provider appears later', async () => {
@@ -405,6 +437,64 @@ describe('reticulum resource transfer storage protection', () => {
     expect(state.peerBulkThrottleUntil.get(firstPeer)).toBeGreaterThan(now);
     expect(state.peerHashes.has(secondPeer)).toBe(true);
     expect(acceptedPeers).toEqual([firstPeer, secondPeer]);
+  });
+
+  it('briefly throttles a provider when a reused session is still releasing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const now = 100_000;
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => now,
+    });
+    stores.push(store);
+    const contents = Buffer.from('session release race');
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      ownerId: '716:sender',
+      fileName: 'session-race.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: contents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(contents).digest('hex'),
+      encrypted: false,
+      createdAt: now,
+      metadata: { groupId: 716 },
+    };
+    const peer = 'a'.repeat(32);
+    store.storeManifest(manifest, { provenance: 'remote_downloaded' });
+    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+      bridge: {
+        getLocalDestinationHash: () => 'c'.repeat(32),
+        ensureReticulumResourceSessionDetailed: vi.fn(async () => ({ ok: true })),
+        acceptReticulumResourceDetailed: vi.fn(async () => ({ ok: true })),
+        cancelReticulumResourceDetailed: vi.fn(async () => ({ ok: true })),
+      } as any,
+      resourceStore: store,
+      now: () => now,
+      buildRequestPayloads: async () => [{}],
+    });
+    transfers.push(transfer);
+
+    const state = (transfer as any).upsertDownload(
+      716,
+      manifest,
+      'event-with-image',
+      [peer]
+    );
+    (transfer as any).ensureStorageProtection(state);
+    store.ensurePartialFile(manifest.fileHash);
+    await (transfer as any).dispatchRequests(state);
+    const [transferId] = Array.from((transfer as any).activeAccepts) as string[];
+
+    transfer.handleResourceEvent({
+      status: 'failed',
+      transferId,
+      reason: 'resource_session_busy',
+    });
+
+    expect(state.peerBulkThrottleUntil.get(peer)).toBe(
+      now + RETICULUM_RESOURCE_TRANSFER_SESSION_BUSY_RETRY_MS
+    );
   });
 
   it('retries a timed-out range against the same sole provider after backoff', async () => {

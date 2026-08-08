@@ -40,7 +40,13 @@ import { persistReticulumSharedTransportState } from './reticulum-daemon';
 import { error as loggerError } from './logger';
 import { base58Decode, getPresenceManager } from './presence';
 import type { PresenceEnvelope } from './presence';
-import { ReticulumBridge } from './reticulum-bridge';
+import {
+  ReticulumBridge,
+  restartReticulumBridge,
+  startReticulumBridge,
+  stopReticulumBridge,
+  stopReticulumBridgeAndWait,
+} from './reticulum-bridge';
 
 describe('ReticulumBridge presence subscriptions', () => {
   it('logs structured Python bridge error diagnostics', () => {
@@ -191,6 +197,91 @@ describe('ReticulumBridge presence subscriptions', () => {
     unsubscribe();
 
     expect(onReady).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ReticulumBridge singleton lifecycle', () => {
+  it('keeps the authoritative wrapper when restarting its Python child', async () => {
+    const start = vi
+      .spyOn(ReticulumBridge.prototype, 'start')
+      .mockResolvedValue(undefined);
+    const bridge = await startReticulumBridge();
+    const restart = vi
+      .spyOn(bridge, 'restartAndWait')
+      .mockResolvedValue(undefined);
+
+    const restarted = await restartReticulumBridge();
+
+    expect(restarted).toBe(bridge);
+    expect(restart).toHaveBeenCalledTimes(1);
+    stopReticulumBridge();
+    await stopReticulumBridgeAndWait();
+    start.mockRestore();
+  });
+
+  it('does not replace the singleton until a synchronous stop confirms exit', async () => {
+    const start = vi
+      .spyOn(ReticulumBridge.prototype, 'start')
+      .mockResolvedValue(undefined);
+    const bridge = await startReticulumBridge();
+    let releaseStop: (() => void) | undefined;
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    vi.spyOn(bridge, 'retireAndWait').mockImplementation(async () => stopGate);
+
+    stopReticulumBridge();
+    const startingAgain = startReticulumBridge();
+    await Promise.resolve();
+
+    expect(start).toHaveBeenCalledTimes(1);
+
+    releaseStop?.();
+    const replacement = await startingAgain;
+
+    expect(replacement).not.toBe(bridge);
+    expect(start).toHaveBeenCalledTimes(2);
+    stopReticulumBridge();
+    await stopReticulumBridgeAndWait();
+    start.mockRestore();
+  });
+
+  it('does not spawn after a previous child fails to confirm exit', async () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new ReticulumBridge();
+      const internal = bridge as any;
+      const child = Object.assign(new EventEmitter(), {
+        exitCode: null as number | null,
+        signalCode: null as NodeJS.Signals | null,
+        killed: false,
+        kill: vi.fn(),
+      });
+      internal.child = child;
+      internal.state = 'ready';
+
+      const stopping = bridge.stopAndWait(10).then(
+        () => null,
+        (error: unknown) => error
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      const stopError = await stopping;
+      expect(stopError).toBeInstanceOf(Error);
+      expect((stopError as Error).message).toContain(
+        'did not exit after force stop'
+      );
+      await expect(bridge.start()).rejects.toThrow(
+        'Previous Reticulum bridge process has not confirmed exit'
+      );
+
+      child.exitCode = 0;
+      child.emit('exit', 0, null);
+      expect(internal.unconfirmedStoppedChild).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -541,6 +632,45 @@ describe('ReticulumBridge group audio support', () => {
     expect(() => controlPipe.emit('error', epipe)).not.toThrow();
     expect(() => audioPipe.emit('error', epipe)).not.toThrow();
     expect(internal.state).toBe('stopped');
+  });
+
+  it('makes concurrent starts join one in-place lifecycle restart', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    let releaseStop: (() => void) | undefined;
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const stopAndWait = vi
+      .spyOn(bridge, 'stopAndWait')
+      .mockImplementation(async () => stopGate);
+    const startInternal = vi
+      .spyOn(internal, 'startInternal')
+      .mockResolvedValue(undefined);
+
+    const recovery = bridge.restartAndWait();
+    const backgroundManagerStart = bridge.start();
+    await Promise.resolve();
+
+    expect(stopAndWait).toHaveBeenCalledTimes(1);
+    expect(startInternal).not.toHaveBeenCalled();
+
+    releaseStop?.();
+    await Promise.all([recovery, backgroundManagerStart]);
+
+    expect(startInternal).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not allow a retired bridge wrapper to be revived', async () => {
+    const bridge = new ReticulumBridge();
+    bridge.retire();
+
+    await expect(bridge.start()).rejects.toThrow(
+      'Reticulum bridge instance is retired'
+    );
+    await expect(bridge.restartAndWait()).rejects.toThrow(
+      'Reticulum bridge instance is retired'
+    );
   });
 
   it('enqueueGroupAudio returns not-ready when bridge is down', () => {
@@ -1712,6 +1842,104 @@ describe('ReticulumBridge chat forwarding support', () => {
       reason: 'bridge-not-ready',
       error: 'Reticulum bridge stopped',
     });
+  });
+
+  it('prepares DM pages on the same fast lane used by the Python bridge', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.start = vi.fn(async () => {});
+    internal.sendCommand = vi.fn(async () => ({
+      type: 'resp',
+      id: 'prepare-dm-page',
+      ok: true,
+      payload: {
+        status: 'pending',
+        linkId: 'dm-page-fast-link',
+        lane: 'fast',
+      },
+    }));
+
+    const preparation = bridge.ensureReticulumResourceSessionDetailed({
+      peerPresenceHash: 'c'.repeat(32),
+      reticulumIdentityPublicKeyBase64: 'identity',
+      resourceType: 'reticulum_chat_event',
+      logicalResourceType: 'reticulum_chat_dm_page',
+    });
+    await vi.waitFor(() => {
+      expect(internal.sendCommand).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      internal.resourceSessionPreparations.has(`${'c'.repeat(32)}:fast`)
+    ).toBe(true);
+    internal.handleFrame({
+      type: 'event',
+      event: 'reticulum_resource_session',
+      payload: {
+        status: 'ready',
+        peerPresenceHash: 'c'.repeat(32),
+        lane: 'fast',
+        linkId: 'dm-page-fast-link',
+      },
+    });
+    await expect(preparation).resolves.toEqual({ ok: true });
+
+    expect(internal.sendCommand).toHaveBeenCalledWith(
+      'prepare_reticulum_resource_session',
+      expect.objectContaining({
+        peerPresenceHash: 'c'.repeat(32),
+        logicalResourceType: 'reticulum_chat_dm_page',
+      })
+    );
+    expect(internal.resourceSessionPreparations.size).toBe(0);
+  });
+
+  it('uses the bridge-reported lane when resolving session preparation', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.start = vi.fn(async () => {});
+    let resolveCommand: ((value: Record<string, unknown>) => void) | undefined;
+    internal.sendCommand = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveCommand = resolve;
+        })
+    );
+
+    const preparation = bridge.ensureReticulumResourceSessionDetailed({
+      peerPresenceHash: 'd'.repeat(32),
+      reticulumIdentityPublicKeyBase64: 'identity',
+      resourceType: 'reticulum_chat_event',
+      logicalResourceType: 'reticulum_chat_dm_page',
+    });
+    await vi.waitFor(() => {
+      expect(internal.sendCommand).toHaveBeenCalledTimes(1);
+    });
+
+    internal.handleFrame({
+      type: 'event',
+      event: 'reticulum_resource_session',
+      payload: {
+        status: 'ready',
+        peerPresenceHash: 'd'.repeat(32),
+        lane: 'bulk',
+        linkId: 'bridge-selected-link',
+      },
+    });
+    resolveCommand?.({
+      type: 'resp',
+      id: 'prepare-bridge-selected-lane',
+      ok: true,
+      payload: {
+        status: 'pending',
+        linkId: 'bridge-selected-link',
+        lane: 'bulk',
+      },
+    });
+
+    await expect(preparation).resolves.toEqual({ ok: true });
+    expect(internal.resourceSessionPreparations.size).toBe(0);
   });
 
   it('emits the Land forwarding revision with a fast-forwarded state', () => {

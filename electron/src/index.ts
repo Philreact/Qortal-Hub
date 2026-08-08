@@ -69,7 +69,7 @@ import { startReticulumForAppLaunch } from './reticulum-launch';
 import { runDevReticulumEnsureIfNeeded } from './reticulum-dev-ensure-loader';
 import {
   getReticulumBridge,
-  startReticulumBridge,
+  restartReticulumBridge,
   stopReticulumBridgeAndWait,
 } from './reticulum-bridge';
 import { getPresenceManager } from './presence';
@@ -253,16 +253,13 @@ async function restartReticulumBridgeAndWaitReady(
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown = null;
 
-  await stopReticulumBridgeAndWait();
-
   while (Date.now() <= deadline) {
     try {
-      await startReticulumBridge();
+      await restartReticulumBridge();
       await waitForReticulumBridgeReady(Math.max(1, deadline - Date.now()));
       return;
     } catch (error) {
       lastError = error;
-      await stopReticulumBridgeAndWait();
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) {
         break;

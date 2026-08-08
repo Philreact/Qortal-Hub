@@ -424,6 +424,57 @@ describe('Reticulum ChatList channel handoff', () => {
     expect(scrollTop).toBe(520);
   });
 
+  it('does not reclaim a tiny upward reader scroll inside the bottom tolerance', async () => {
+    const initialWindow = [message('message-1'), message('message-2')];
+    const { container, rerender } = render(
+      <ChatList
+        {...baseProps}
+        chatId="group-1:tiny-reader-scroll"
+        initialMessages={initialWindow}
+      />
+    );
+    const viewport = container.querySelector(
+      '[data-reticulum-chat-scroll-viewport="true"]'
+    ) as HTMLDivElement;
+    let scrollHeight = 1_000;
+    let scrollTop = 0;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, get: () => 300 },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = Math.max(0, Math.min(value, scrollHeight - 300));
+        },
+      },
+    });
+
+    await flushPositioning();
+    expect(scrollTop).toBe(700);
+
+    fireEvent.wheel(viewport, { deltaY: -8 });
+    scrollTop = 692;
+    fireEvent.scroll(viewport);
+    expect(scrollTop).toBe(692);
+
+    // Reaching the real end naturally restores following for subsequent
+    // messages and row-height changes.
+    fireEvent.wheel(viewport, { deltaY: 8 });
+    scrollTop = 700;
+    fireEvent.scroll(viewport);
+    scrollHeight = 1_100;
+    rerender(
+      <ChatList
+        {...baseProps}
+        chatId="group-1:tiny-reader-scroll"
+        initialMessages={[...initialWindow, message('message-3')]}
+      />
+    );
+    await flushPositioning();
+    expect(scrollTop).toBe(800);
+  });
+
   it('reveals an all-read channel on the first positioning frame', async () => {
     const { container } = render(
       <ChatList

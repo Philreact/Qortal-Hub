@@ -28,6 +28,7 @@ import {
   isHubBeingViewed,
   shouldNotifyForReticulumDm,
 } from '../../utils/reticulumDmNotifications';
+import { getReticulumNotificationChannelLabel } from '../../utils/reticulumNotificationChannel';
 
 const isQChatMentionNotification = (notification: any) =>
   notification?.appName === QCHAT_MENTION_NOTIFICATION_APP_NAME &&
@@ -422,6 +423,21 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
       const groupName =
         String(detail?.groupName || '').trim() || `Group ${groupId}`;
       const channelId = String(detail?.channelId || 'general');
+      let channelName = getReticulumNotificationChannelLabel(channelId, null);
+      if (!isUnreadCountSync || Number(detail?.mentionCount || 0) > 0) {
+        try {
+          const channels = await window.reticulumChat?.getChannels?.(
+            groupId,
+            true
+          );
+          channelName = getReticulumNotificationChannelLabel(
+            channelId,
+            channels
+          );
+        } catch {
+          // The stable ID remains a useful fallback while metadata is syncing.
+        }
+      }
       setPaymentNotifications((previous) => {
         const trimmed = trimNotificationsToLast3Days(previous);
         const existing = trimmed.find(
@@ -445,6 +461,7 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
             appService: 'INTERNAL',
             data: {
               channelId,
+              channelName,
               created: timestamp,
               eventId: existing?.data?.eventId || '',
               eventIds: existing?.data?.eventIds || [],
@@ -489,6 +506,7 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
           appService: 'INTERNAL',
           data: {
             channelId,
+            channelName,
             created: timestamp,
             eventId,
             eventIds: nextEventIds,
@@ -542,7 +560,7 @@ export const WebSocketNotifications = ({ myAddress, userName }) => {
             event: QCHAT_MENTION_NOTIFICATION_EVENT,
           },
           `Mention in ${groupName}`,
-          `You were mentioned in #${channelId}`,
+          `You were mentioned in #${channelName}`,
           LogoSelected,
           undefined,
           {

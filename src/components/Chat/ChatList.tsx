@@ -6,7 +6,10 @@ import {
   useRef,
   useMemo,
 } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
+import type {
+  PointerEvent as ReactPointerEvent,
+  WheelEvent as ReactWheelEvent,
+} from 'react';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { MessageItem } from './MessageItem';
 import { DirectCallHistoryRow } from './DirectCallHistoryRow';
@@ -28,6 +31,8 @@ type ReactionItem = {
 export type ReactionsMap = {
   [reactionType: string]: ReactionItem[];
 };
+
+const RETICULUM_BOTTOM_PIN_THRESHOLD_PX = 16;
 
 const getReactionLayoutSignature = (reactions: ReactionsMap | null) => {
   if (!reactions) return '';
@@ -218,6 +223,7 @@ export const ChatList = ({
   const reticulumPinnedToBottomRef = useRef(false);
   const reticulumFollowBottomRef = useRef(false);
   const reticulumReadingPositionLockedRef = useRef(false);
+  const reticulumReaderGestureRef = useRef(false);
   const reticulumReactionLayoutRef = useRef<{
     chatIdentity: string;
     signatures: Map<string, string>;
@@ -480,6 +486,7 @@ export const ChatList = ({
     reticulumPinnedToBottomRef.current = false;
     reticulumFollowBottomRef.current = false;
     reticulumReadingPositionLockedRef.current = false;
+    reticulumReaderGestureRef.current = false;
     pendingInitialReticulumBottomRef.current = false;
     pendingInitialReticulumUnreadIndexRef.current = null;
     lastScrollMetricsRef.current = {
@@ -639,6 +646,7 @@ export const ChatList = ({
     reticulumPinnedToBottomRef.current = false;
     reticulumFollowBottomRef.current = false;
     reticulumReadingPositionLockedRef.current = false;
+    reticulumReaderGestureRef.current = false;
     lastScrollMetricsRef.current = {
       clientHeight: 0,
       scrollHeight: 0,
@@ -730,11 +738,27 @@ export const ChatList = ({
     const scrollElement = parentRef.current as HTMLDivElement | null;
     if (!scrollElement) return;
     if (reticulumChatEnabled) {
-      const isPinned =
+      const distanceFromBottom =
         scrollElement.scrollHeight -
-          scrollElement.scrollTop -
-          scrollElement.clientHeight <=
-        1;
+        scrollElement.scrollTop -
+        scrollElement.clientHeight;
+      const physicallyAtBottom = distanceFromBottom <= 1;
+      // An explicit reader gesture owns the viewport as soon as it starts,
+      // even while it is still inside the normal near-bottom tolerance. Give
+      // bottom-follow back only after that gesture actually reaches the end.
+      // Programmatic search/history positioning also uses the reading lock,
+      // but does not set the gesture flag, so a clamped target cannot
+      // accidentally start forward pagination.
+      if (
+        reticulumReadingPositionLockedRef.current &&
+        reticulumReaderGestureRef.current &&
+        physicallyAtBottom
+      ) {
+        reticulumReadingPositionLockedRef.current = false;
+        reticulumReaderGestureRef.current = false;
+      }
+      const isPinned =
+        distanceFromBottom <= RETICULUM_BOTTOM_PIN_THRESHOLD_PX;
       const previousMetrics = lastScrollMetricsRef.current;
       const contentSizeChanged =
         previousMetrics.scrollHeight !== 0 &&
@@ -817,13 +841,39 @@ export const ChatList = ({
     clearScrollRetries();
   }, [clearScrollRetries, reticulumChatEnabled]);
 
-  const releaseReticulumBottomFollow = useCallback(() => {
-    reticulumReadingPositionLockedRef.current = false;
+  const beginReticulumReaderScroll = useCallback(() => {
+    reticulumReadingPositionLockedRef.current = true;
+    reticulumReaderGestureRef.current = true;
     reticulumFollowBottomRef.current = false;
     reticulumPinnedToBottomRef.current = false;
     pendingInitialReticulumBottomRef.current = false;
     cancelReticulumScrollRetries();
   }, [cancelReticulumScrollRetries]);
+
+  const handleReticulumWheel = useCallback(
+    (event: ReactWheelEvent<HTMLDivElement>) => {
+      if (event.deltaY === 0) return;
+      const scrollElement = event.currentTarget;
+      const distanceFromBottom =
+        scrollElement.scrollHeight -
+        scrollElement.scrollTop -
+        scrollElement.clientHeight;
+      // A downward wheel while already at the end cannot move the viewport
+      // and should not disable following future messages. The exception is a
+      // deliberate gesture against an anchored search/history window: mark it
+      // as reader-owned so the following scroll event can release that lock
+      // and resume forward pagination.
+      if (
+        event.deltaY > 0 &&
+        distanceFromBottom <= 1 &&
+        !reticulumReadingPositionLockedRef.current
+      ) {
+        return;
+      }
+      beginReticulumReaderScroll();
+    },
+    [beginReticulumReaderScroll]
+  );
 
   const handleReticulumPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -835,13 +885,10 @@ export const ChatList = ({
       );
       const bounds = scrollElement.getBoundingClientRect();
       if (event.clientX >= bounds.right - scrollbarWidth - 2) {
-        reticulumReadingPositionLockedRef.current = false;
-        reticulumFollowBottomRef.current = false;
-        reticulumPinnedToBottomRef.current = false;
-        pendingInitialReticulumBottomRef.current = false;
+        beginReticulumReaderScroll();
       }
     },
-    [cancelReticulumScrollRetries]
+    [beginReticulumReaderScroll, cancelReticulumScrollRetries]
   );
 
   useEffect(() => {
@@ -1229,6 +1276,7 @@ export const ChatList = ({
     if (reticulumChatEnabled && divideIndex === undefined) {
       clearScrollRetries();
       reticulumReadingPositionLockedRef.current = false;
+      reticulumReaderGestureRef.current = false;
       const pinToBottom = () => {
         const scrollElement = parentRef.current as HTMLDivElement | null;
         if (!scrollElement) return;
@@ -1333,6 +1381,7 @@ export const ChatList = ({
         // the ensuing scroll event can interpret the jump as a virtual-row
         // correction and immediately snap the viewport back to the bottom.
         reticulumReadingPositionLockedRef.current = true;
+        reticulumReaderGestureRef.current = false;
         reticulumFollowBottomRef.current = false;
         reticulumPinnedToBottomRef.current = false;
         pendingInitialReticulumBottomRef.current = false;
@@ -1623,9 +1672,9 @@ export const ChatList = ({
           }
           ref={parentRef}
           onScroll={handleScroll}
-          onWheel={releaseReticulumBottomFollow}
+          onWheel={handleReticulumWheel}
           onTouchStart={cancelReticulumScrollRetries}
-          onTouchMove={releaseReticulumBottomFollow}
+          onTouchMove={beginReticulumReaderScroll}
           onPointerDown={handleReticulumPointerDown}
           style={{
             display: 'flex',

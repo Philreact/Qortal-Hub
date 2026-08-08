@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isReticulumDmEventForConversation,
   projectReticulumDmEvents,
   reticulumDmEventToChatMessage,
   type ReticulumDmEvent,
@@ -161,5 +162,64 @@ describe('Reticulum DM event projection', () => {
     const projected = projectReticulumDmEvents([message, authorizedDelete]);
     expect(projected.messages).toHaveLength(0);
     expect(projected.chatReferences[message.eventId].deleted).toBe(true);
+  });
+});
+
+describe('Reticulum DM live conversation filtering', () => {
+  it('does not place an unrelated DM event in Saved Messages', () => {
+    expect(
+      isReticulumDmEventForConversation(
+        {
+          conversationId: 'alice-and-bob',
+          senderAddress: 'alice',
+          recipientAddress: 'bob',
+        },
+        'alice-saved',
+        'alice',
+        'alice'
+      )
+    ).toBe(false);
+  });
+
+  it('accepts only exact self-to-self events in Saved Messages', () => {
+    expect(
+      isReticulumDmEventForConversation(
+        {
+          conversationId: 'alice-saved',
+          senderAddress: 'alice',
+          recipientAddress: 'alice',
+        },
+        'alice-saved',
+        'alice',
+        'alice'
+      )
+    ).toBe(true);
+  });
+
+  it('requires both the conversation ID and normal DM participant pair', () => {
+    expect(
+      isReticulumDmEventForConversation(
+        {
+          conversationId: 'alice-and-bob',
+          senderAddress: 'bob',
+          recipientAddress: 'alice',
+        },
+        'alice-and-bob',
+        'alice',
+        'bob'
+      )
+    ).toBe(true);
+    expect(
+      isReticulumDmEventForConversation(
+        {
+          conversationId: 'alice-and-bob',
+          senderAddress: 'mallory',
+          recipientAddress: 'alice',
+        },
+        'alice-and-bob',
+        'alice',
+        'bob'
+      )
+    ).toBe(false);
   });
 });
