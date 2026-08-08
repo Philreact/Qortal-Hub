@@ -35,6 +35,9 @@ type DirectScreenShareWebRtcTransportOptions = {
 const SCREEN_DISCONNECT_GRACE_MS = 3_000;
 const SCREEN_NEGOTIATION_TIMEOUT_MS = 20_000;
 const SCREEN_ICE_SERVER_LOOKUP_TIMEOUT_MS = 3_000;
+const SCREEN_ICE_RESTART_DELAY_MS = 1_500;
+const SCREEN_ICE_RESTART_TIMEOUT_MS = 12_000;
+const SCREEN_ICE_RESTART_MAX_ATTEMPTS = 2;
 const MAX_PENDING_CANDIDATES = 128;
 
 /**
@@ -49,6 +52,8 @@ export class DirectScreenShareWebRtcTransport {
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private negotiationTimer: ReturnType<typeof setTimeout> | null = null;
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private restartAttempts = 0;
   private remoteVideoTrackSeen = false;
   private closed = false;
 
@@ -95,6 +100,8 @@ export class DirectScreenShareWebRtcTransport {
     if (signal.kind === 'screen-description') {
       if (signal.description.type === 'offer') {
         if (this.options.sender) return;
+        this.clearDisconnectTimer();
+        this.clearNegotiationTimer();
         await pc.setRemoteDescription(signal.description);
         await this.flushCandidates();
         const answer = await pc.createAnswer();
@@ -108,6 +115,7 @@ export class DirectScreenShareWebRtcTransport {
         if (sent === false && !this.closed) {
           throw new Error('screen-share-answer-send-failed');
         }
+        this.armNegotiationTimer(SCREEN_ICE_RESTART_TIMEOUT_MS);
         return;
       }
       if (
@@ -127,7 +135,7 @@ export class DirectScreenShareWebRtcTransport {
       this.pendingCandidates.push(signal.candidate);
       return;
     }
-    await pc.addIceCandidate(signal.candidate);
+    await this.addIceCandidateSafely(pc, signal.candidate);
   }
 
   close(): void {
@@ -135,6 +143,7 @@ export class DirectScreenShareWebRtcTransport {
     this.closed = true;
     this.clearDisconnectTimer();
     this.clearNegotiationTimer();
+    this.clearRestartTimer();
     this.pendingCandidates = [];
     const pc = this.pc;
     this.pc = null;
@@ -154,32 +163,12 @@ export class DirectScreenShareWebRtcTransport {
   private async createPeerConnection(): Promise<RTCPeerConnection> {
     if (this.pc) return this.pc;
     if (this.closed) throw new Error('screen-share-transport-closed');
-    let iceServers: RTCIceServer[] = [];
-    let iceLookupTimer: ReturnType<typeof setTimeout> | null = null;
-    try {
-      iceServers = await Promise.race([
-        this.options.getIceServers(),
-        new Promise<RTCIceServer[]>((resolve) => {
-          iceLookupTimer = setTimeout(
-            () => resolve([]),
-            SCREEN_ICE_SERVER_LOOKUP_TIMEOUT_MS
-          );
-        }),
-      ]);
-    } catch {
-      // Host candidates still support LAN sharing. Voice remains unaffected.
-    } finally {
-      if (iceLookupTimer) clearTimeout(iceLookupTimer);
-    }
+    const iceServers = await this.lookupIceServers();
     if (this.closed) throw new Error('screen-share-transport-closed');
     const pc = new RTCPeerConnection({ iceServers });
     this.pc = pc;
     this.options.onState('connecting');
-    this.negotiationTimer = setTimeout(() => {
-      this.negotiationTimer = null;
-      if (this.closed || this.pc?.connectionState === 'connected') return;
-      this.options.onState('failed');
-    }, SCREEN_NEGOTIATION_TIMEOUT_MS);
+    this.armNegotiationTimer(SCREEN_NEGOTIATION_TIMEOUT_MS);
     pc.onicecandidate = (event) => {
       if (!event.candidate || this.closed) return;
       void Promise.resolve(
@@ -206,22 +195,18 @@ export class DirectScreenShareWebRtcTransport {
   private handleConnectionState(): void {
     const state = this.pc?.connectionState;
     if (state === 'connected') {
+      this.restartAttempts = 0;
       this.clearDisconnectTimer();
       this.clearNegotiationTimer();
+      this.clearRestartTimer();
       if (this.options.sender || this.remoteVideoTrackSeen) {
         this.options.onState('open');
       }
       return;
     }
     if (state !== 'failed' && state !== 'disconnected') return;
-    if (this.disconnectTimer) return;
-    this.disconnectTimer = setTimeout(
-      () => {
-        this.disconnectTimer = null;
-        if (this.closed || this.pc?.connectionState === 'connected') return;
-        this.options.onState('failed');
-      },
-      state === 'failed' ? 0 : SCREEN_DISCONNECT_GRACE_MS
+    this.scheduleRecovery(
+      state === 'failed' ? SCREEN_ICE_RESTART_DELAY_MS : SCREEN_DISCONNECT_GRACE_MS
     );
   }
 
@@ -230,13 +215,127 @@ export class DirectScreenShareWebRtcTransport {
     if (!pc?.remoteDescription) return;
     const candidates = this.pendingCandidates.splice(0);
     for (const candidate of candidates) {
+      await this.addIceCandidateSafely(pc, candidate);
+    }
+  }
+
+  private scheduleRecovery(delayMs: number): void {
+    if (this.closed || this.restartTimer || this.disconnectTimer) return;
+    const timer = setTimeout(() => {
+      if (this.restartTimer === timer) this.restartTimer = null;
+      if (this.disconnectTimer === timer) this.disconnectTimer = null;
+      if (this.closed || this.pc?.connectionState === 'connected') return;
+      if (!this.options.sender) {
+        // The sender owns ICE restarts. Keep the receiver alive long enough to
+        // accept its replacement offer instead of racing it with teardown.
+        this.armReceiverRecoveryDeadline();
+        return;
+      }
+      void this.restartSenderIce();
+    }, delayMs);
+    if (delayMs === SCREEN_DISCONNECT_GRACE_MS) {
+      this.disconnectTimer = timer;
+    } else {
+      this.restartTimer = timer;
+    }
+  }
+
+  private armReceiverRecoveryDeadline(): void {
+    if (this.closed || this.disconnectTimer) return;
+    this.disconnectTimer = setTimeout(() => {
+      this.disconnectTimer = null;
+      if (this.closed || this.pc?.connectionState === 'connected') return;
+      this.options.onState('failed');
+    }, SCREEN_ICE_RESTART_TIMEOUT_MS);
+  }
+
+  private async restartSenderIce(): Promise<void> {
+    const pc = this.pc;
+    if (this.closed || !this.options.sender || !pc) return;
+    if (pc.connectionState === 'connected') return;
+    if (this.restartAttempts >= SCREEN_ICE_RESTART_MAX_ATTEMPTS) {
+      this.options.onState('failed');
+      return;
+    }
+    this.restartAttempts += 1;
+    this.options.onState('connecting');
+    try {
+      const iceServers = await this.lookupIceServers();
+      if (this.closed || this.pc !== pc) return;
+      try {
+        pc.setConfiguration({ iceServers });
+      } catch {
+        // An ICE restart can still succeed with the existing configuration.
+      }
+      const offer = await pc.createOffer({ iceRestart: true });
+      if (this.closed || this.pc !== pc) return;
+      await pc.setLocalDescription(offer);
+      if (!pc.localDescription || this.closed || this.pc !== pc) return;
+      const sent = await this.options.onSignal({
+        kind: 'screen-description',
+        generation: this.options.generation,
+        description: pc.localDescription.toJSON(),
+      });
+      if (sent === false) throw new Error('screen-share-restart-send-failed');
+      this.armNegotiationTimer(SCREEN_ICE_RESTART_TIMEOUT_MS);
+    } catch {
+      if (this.closed || this.pc !== pc) return;
+      this.scheduleRecovery(SCREEN_ICE_RESTART_DELAY_MS);
+    }
+  }
+
+  private armNegotiationTimer(timeoutMs: number): void {
+    this.clearNegotiationTimer();
+    this.negotiationTimer = setTimeout(() => {
+      this.negotiationTimer = null;
+      if (this.closed || this.pc?.connectionState === 'connected') return;
+      if (this.options.sender) {
+        this.scheduleRecovery(SCREEN_ICE_RESTART_DELAY_MS);
+      } else {
+        this.armReceiverRecoveryDeadline();
+      }
+    }, timeoutMs);
+  }
+
+  private async lookupIceServers(): Promise<RTCIceServer[]> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      return await Promise.race([
+        this.options.getIceServers(),
+        new Promise<RTCIceServer[]>((resolve) => {
+          timer = setTimeout(
+            () => resolve([]),
+            SCREEN_ICE_SERVER_LOOKUP_TIMEOUT_MS
+          );
+        }),
+      ]);
+    } catch {
+      return [];
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private async addIceCandidateSafely(
+    pc: RTCPeerConnection,
+    candidate: RTCIceCandidateInit
+  ): Promise<void> {
+    try {
       await pc.addIceCandidate(candidate);
+    } catch {
+      // Candidates can arrive after an ICE restart and carry the previous
+      // username fragment. They are unusable, but must not end the share.
     }
   }
 
   private clearDisconnectTimer(): void {
     if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
     this.disconnectTimer = null;
+  }
+
+  private clearRestartTimer(): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = null;
   }
 
   private clearNegotiationTimer(): void {

@@ -15,6 +15,9 @@ class FakePeerConnection {
   ontrack: ((event: RTCTrackEvent) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
   addedTracks: MediaStreamTrack[] = [];
+  offerOptions: RTCOfferOptions[] = [];
+  configuredIceServers: RTCIceServer[][] = [];
+  rejectCandidates = false;
 
   constructor() {
     FakePeerConnection.latest = this;
@@ -25,7 +28,8 @@ class FakePeerConnection {
     return {} as RTCRtpSender;
   }
 
-  async createOffer(): Promise<RTCSessionDescriptionInit> {
+  async createOffer(options: RTCOfferOptions = {}): Promise<RTCSessionDescriptionInit> {
+    this.offerOptions.push(options);
     return { type: 'offer', sdp: 'screen-offer' };
   }
 
@@ -48,7 +52,13 @@ class FakePeerConnection {
       value.type === 'offer' ? 'have-remote-offer' : 'stable';
   }
 
-  async addIceCandidate(): Promise<void> {}
+  async addIceCandidate(): Promise<void> {
+    if (this.rejectCandidates) throw new Error('stale-candidate');
+  }
+
+  setConfiguration(configuration: RTCConfiguration): void {
+    this.configuredIceServers.push(configuration.iceServers ?? []);
+  }
 
   close(): void {
     this.connectionState = 'closed';
@@ -58,6 +68,7 @@ class FakePeerConnection {
 const originalPeerConnection = globalThis.RTCPeerConnection;
 
 afterEach(() => {
+  vi.useRealTimers();
   globalThis.RTCPeerConnection = originalPeerConnection;
   FakePeerConnection.latest = null;
   vi.restoreAllMocks();
@@ -146,5 +157,73 @@ describe('DirectScreenShareWebRtcTransport', () => {
     });
 
     expect(FakePeerConnection.latest).toBeNull();
+  });
+
+  it('restarts sender ICE after a transient connection failure', async () => {
+    vi.useFakeTimers();
+    globalThis.RTCPeerConnection =
+      FakePeerConnection as unknown as typeof RTCPeerConnection;
+    const track = { kind: 'video' } as MediaStreamTrack;
+    const stream = { getVideoTracks: () => [track] } as unknown as MediaStream;
+    const signals: DirectScreenShareRtcSignal[] = [];
+    const states: string[] = [];
+    const transport = new DirectScreenShareWebRtcTransport({
+      generation: 'screen_generation',
+      sender: true,
+      localStream: stream,
+      getIceServers: async () => [{ urls: 'stun:example.test:3478' }],
+      onSignal: (signal) => {
+        signals.push(signal);
+      },
+      onRemoteStream: vi.fn(),
+      onState: (state) => states.push(state),
+    });
+
+    await transport.startSender();
+    const pc = FakePeerConnection.latest!;
+    pc.connectionState = 'failed';
+    pc.onconnectionstatechange?.();
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(pc.offerOptions).toEqual([{}, { iceRestart: true }]);
+    expect(
+      signals.filter((signal) => signal.kind === 'screen-description')
+    ).toHaveLength(2);
+    expect(states).not.toContain('failed');
+
+    pc.connectionState = 'connected';
+    pc.onconnectionstatechange?.();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(states).not.toContain('failed');
+    transport.close();
+  });
+
+  it('ignores an unusable stale ICE candidate instead of ending the share', async () => {
+    globalThis.RTCPeerConnection =
+      FakePeerConnection as unknown as typeof RTCPeerConnection;
+    const transport = new DirectScreenShareWebRtcTransport({
+      generation: 'screen_generation',
+      sender: false,
+      getIceServers: async () => [],
+      onSignal: vi.fn(),
+      onRemoteStream: vi.fn(),
+      onState: vi.fn(),
+    });
+
+    await transport.handleSignal({
+      kind: 'screen-description',
+      generation: 'screen_generation',
+      description: { type: 'offer', sdp: 'screen-offer' },
+    });
+    FakePeerConnection.latest!.rejectCandidates = true;
+
+    await expect(
+      transport.handleSignal({
+        kind: 'screen-ice',
+        generation: 'screen_generation',
+        candidate: { candidate: 'stale-candidate' },
+      })
+    ).resolves.toBeUndefined();
+    transport.close();
   });
 });
