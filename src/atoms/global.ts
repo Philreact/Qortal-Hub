@@ -55,6 +55,7 @@ export type ReticulumChatSummaryAtomEntry = {
   mentionCount?: number;
   hasUnreadMention?: boolean;
   updatedAt?: number;
+  readThroughTimestamp?: number;
   channels?: ReticulumChatSummaryAtomEntry[];
 };
 export const reticulumChatSummariesAtom = atomWithReset<

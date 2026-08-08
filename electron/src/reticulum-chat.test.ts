@@ -26,6 +26,7 @@ import {
   buildReticulumLandSessionRouteSignedFields,
   buildReticulumLandStateSignedFields,
   buildReticulumDmSignedFields,
+  buildReticulumDmNotifyAckSignedFields,
   buildReticulumDmNotifySignedFields,
   buildReticulumDmProbeSignedFields,
   buildReticulumDmRequestSignedFields,
@@ -5217,6 +5218,57 @@ describe('reticulum chat database', () => {
     expect(deletedSummary?.hasUnreadMention ?? false).toBe(false);
   });
 
+  it('exposes an edit-aware read boundary so edited mentions can be cleared', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const mentionedAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const mentionHash = hashReticulumChatMentionAddress(mentionedAddress);
+    const original = signedEvent({
+      eventId: 'event-edited-mention-read-original',
+      groupId: 269,
+      authorAddress: 'Qauthor',
+      authorSeq: 1,
+      timestamp: Date.now(),
+      mentionAddressHashes: [],
+    });
+    const edit = signedEvent({
+      eventId: 'event-edited-mention-read-edit',
+      groupId: 269,
+      authorAddress: 'Qauthor',
+      authorSeq: 2,
+      timestamp: original.timestamp + 10_000,
+      eventType: 'edit',
+      targetEventId: original.eventId,
+      mentionAddressHashes: [mentionHash],
+    });
+    db.insertEvent(original, true);
+    db.insertEvent(edit, true);
+    db.replaceMentionsForEvent(original.eventId, [mentionedAddress]);
+
+    const unreadSummary = db
+      .getChatSummaries(mentionedAddress)
+      .find((summary) => summary.groupId === 269)?.channels[0];
+    expect(unreadSummary).toMatchObject({
+      mentionCount: 1,
+      updatedAt: original.timestamp,
+      readThroughTimestamp: edit.timestamp,
+    });
+
+    db.markRead(
+      269,
+      'general',
+      unreadSummary?.readThroughTimestamp ?? 0,
+      mentionedAddress
+    );
+    expect(
+      db
+        .getChatSummaries(mentionedAddress)
+        .find((summary) => summary.groupId === 269)
+    ).toMatchObject({ mentionCount: 0, hasUnreadMention: false });
+  });
+
   it('does not let renderer mention rows replace signed mention metadata', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
@@ -6226,7 +6278,7 @@ describe('reticulum chat manager', () => {
         wire.k === 'dm_probe'
     );
     expect(probes).toHaveLength(1);
-    expect(probes[0].q.q).toHaveLength(8);
+    expect(probes[0].q.q).toHaveLength(16);
     expect(verifyReticulumDmProbe(probes[0].q, Date.now())).toBe(true);
 
     manager.handleWire(
@@ -6904,6 +6956,7 @@ describe('reticulum chat manager', () => {
     const fanouts: Array<{
       messages: ReticulumChatWire[];
       exclude?: string[];
+      options?: { maxPeerCount?: number; selectionKey?: string };
     }> = [];
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -6928,9 +6981,10 @@ describe('reticulum chat manager', () => {
         },
         fanoutReticulumChatDetailed: async (
           messages: ReticulumChatWire[],
-          exclude?: string[]
+          exclude?: string[],
+          options?: { maxPeerCount?: number; selectionKey?: string }
         ) => {
-          fanouts.push({ messages, exclude });
+          fanouts.push({ messages, exclude, options });
           return { ok: true as const };
         },
       } as any,
@@ -6957,7 +7011,152 @@ describe('reticulum chat manager', () => {
     expect(notifyFanout).toBeTruthy();
     expect(notifyFanout?.exclude ?? []).not.toContain(recipientPeerHash);
     expect(notifyFanout?.exclude ?? []).toContain('a'.repeat(32));
+    expect(notifyFanout?.options).toMatchObject({ maxPeerCount: 4 });
     manager.close();
+  });
+
+  it('does not fanout a direct DM notify after the destination acknowledges it', async () => {
+    vi.useFakeTimers();
+    try {
+      const sender = createDmIdentity();
+      const recipient = createDmIdentity();
+      const senderPeerHash = 'a'.repeat(32);
+      const recipientPeerHash = 'b'.repeat(32);
+      const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+      const fanout: ReticulumChatWire[] = [];
+      const manager = new ReticulumChatManager({
+        dbPath: tempDbPath(),
+        signLocalFields: createDmSigner(sender),
+        getVerifiedReticulumPeers: () => [
+          {
+            destinationHash: recipientPeerHash,
+            address: recipient.address,
+            lastSeenAt: Date.now(),
+          },
+        ],
+        bridge: {
+          on: () => undefined,
+          off: () => undefined,
+          getLocalDestinationHash: () => senderPeerHash,
+          sendReticulumChatDetailed: async (
+            peer: string,
+            wire: ReticulumChatWire
+          ) => {
+            sent.push({ peer, wire });
+            return { ok: true as const };
+          },
+          fanoutReticulumChatDetailed: async (
+            messages: ReticulumChatWire[]
+          ) => {
+            fanout.push(...messages);
+            return { ok: true as const };
+          },
+        } as any,
+      });
+      manager.setLocalDmAddresses([sender.address]);
+      await flushAsyncWork();
+      fanout.length = 0;
+
+      const event = signedDmEvent({
+        sender,
+        recipient,
+        eventId: 'dm-notify-ack-event',
+        senderSeq: Date.now() * 1000,
+        timestamp: Date.now(),
+        payload: 'hello',
+      });
+      await manager.publishDirectEvent(event);
+      const notify = sent.find(
+        ({ peer, wire }) =>
+          peer === recipientPeerHash && wire.k === 'dm_notify'
+      )?.wire as Extract<ReticulumChatWire, { k: 'dm_notify' }> | undefined;
+      expect(notify).toBeDefined();
+
+      const timestamp = Date.now();
+      const signedFields = buildReticulumDmNotifyAckSignedFields({
+        notifyRequestId: notify!.d.q,
+        latestCursor: notify!.d.lc,
+        peerAddress: sender.address,
+        sourcePeerHash: recipientPeerHash,
+        authorAddress: recipient.address,
+        authorPublicKey: recipient.publicKey,
+        timestamp,
+      });
+      manager.handleWire(
+        {
+          t: 'RCHAT',
+          k: 'dm_notify_ack',
+          d: {
+            q: notify!.d.q,
+            lc: notify!.d.lc,
+            b: sender.address,
+            sp: recipientPeerHash,
+            p: recipient.publicKey,
+            n: timestamp,
+            z: base58Encode(
+              nacl.sign.detached(
+                new Uint8Array(canonicalizeForSigning(signedFields)),
+                recipient.secretKey
+              )
+            ),
+          },
+        },
+        recipientPeerHash
+      );
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(fanout.some((wire) => wire.k === 'dm_notify')).toBe(false);
+      manager.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a locally stored DM valid when discovery bridge calls throw', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const recipientPeerHash = 'b'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(sender),
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: recipientPeerHash,
+          address: recipient.address,
+          lastSeenAt: Date.now(),
+        },
+      ],
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async () => {
+          throw new Error('simulated direct bridge failure');
+        },
+        fanoutReticulumChatDetailed: async () => {
+          throw new Error('simulated fanout bridge failure');
+        },
+      } as any,
+    });
+    manager.setLocalDmAddresses([sender.address]);
+    await flushAsyncWork();
+    const event = signedDmEvent({
+      sender,
+      recipient,
+      eventId: 'dm-discovery-bridge-throws',
+      senderSeq: Date.now() * 1000,
+      timestamp: Date.now(),
+      payload: 'hello',
+    });
+
+    await expect(manager.publishDirectEvent(event)).resolves.toEqual({
+      ok: true,
+    });
+    expect((manager as any).db.hasDirectEvent(event.eventId)).toBe(true);
+    expect((manager as any).pendingDmNotifyDeliveries.size).toBe(1);
+
+    manager.close();
+    expect((manager as any).pendingDmNotifyDeliveries.size).toBe(0);
   });
 
   it('requests direct DM pages from the notified sender cursor instead of the conversation latest', async () => {
@@ -7054,7 +7253,7 @@ describe('reticulum chat manager', () => {
       expect(fanout.some((wire) => wire.k === 'dm_probe')).toBe(true);
 
       fanout.length = 0;
-      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
       expect(fanout.some((wire) => wire.k === 'dm_probe')).toBe(true);
       manager.close();
     } finally {
@@ -7062,8 +7261,9 @@ describe('reticulum chat manager', () => {
     }
   });
 
-  it('keeps DM probes fast without rebroadcasting every summary each cycle', async () => {
+  it('keeps periodic DM discovery sparse while refreshing summaries', async () => {
     vi.useFakeTimers();
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
     try {
       const local = createDmIdentity();
       const manager = new ReticulumChatManager({
@@ -7088,10 +7288,11 @@ describe('reticulum chat manager', () => {
       await vi.advanceTimersByTimeAsync(30_000);
       expect(broadcastSummaries).toHaveBeenCalledTimes(1);
 
-      await vi.advanceTimersByTimeAsync(90_000);
+      await vi.advanceTimersByTimeAsync(16 * 60_000);
       expect(broadcastSummaries).toHaveBeenCalledTimes(2);
       manager.close();
     } finally {
+      randomSpy.mockRestore();
       vi.useRealTimers();
     }
   });
@@ -7394,7 +7595,7 @@ describe('reticulum chat manager', () => {
         l: 50,
       },
     });
-    fs.rmSync(pagePath, { force: true });
+    expect(fs.existsSync(pagePath)).toBe(false);
     receiver.close();
   });
 
@@ -9530,7 +9731,7 @@ describe('reticulum chat manager', () => {
     );
 
     direct.length = 0;
-    now += 2 * 60_000 + 1;
+    now += 15 * 60_000 + 1;
     manager.handleWire(
       { t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' },
       'peer-a'
@@ -9600,7 +9801,7 @@ describe('reticulum chat manager', () => {
       direct.filter((item) => item.wire.k === 'group_state_digest_v3')
     ).toHaveLength(1);
 
-    now += 2 * 60_000 + 1;
+    now += 15 * 60_000 + 1;
     manager.handleWire(summary, 'peer-a');
     await flushQueuedWork();
 
@@ -12461,6 +12662,7 @@ describe('reticulum chat manager', () => {
     direct.length = 0;
     (manager as any).landStateForwardingRevision = 4;
     (manager as any).landStateForwardingAppliedRevision = 4;
+    (manager as any).landStateForwardingSnapshotDirty = false;
 
     manager.handleWire(
       signer.landStateWire({
@@ -12479,6 +12681,106 @@ describe('reticulum chat manager', () => {
     await vi.waitFor(() => expect(emitted).toHaveLength(1));
 
     expect(direct.some(({ wire }) => wire.k === 'land_state')).toBe(false);
+    manager.close();
+  });
+
+  it('relays a fast-forwarded Land state only to routes added during a pending refresh', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const signer = createLandAuthSigner();
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 100_000,
+      validateGroupMember: async (_groupId, address) =>
+        address === signer.address,
+    });
+
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    (manager as any).noteGroupInterestRoute(73, 'origin-a', 'peer-a', 1);
+    (manager as any).noteGroupInterestRoute(73, 'origin-b', 'peer-b', 1);
+    manager.handleWire(
+      signer.landAuthWire(73, 'session-refresh', 100_000),
+      'peer-c'
+    );
+    await flushQueuedWork();
+    direct.length = 0;
+    (manager as any).landStateForwardingAppliedRevision = 4;
+    (manager as any).landStateForwardingAppliedTargets = new Map([
+      [73, new Map([['peer-a', 200_000]])],
+    ]);
+    (manager as any).landStateForwardingSnapshotDirty = true;
+
+    manager.handleWire(
+      signer.landStateWire({
+        groupId: 73,
+        sessionId: 'session-refresh',
+        sequence: 1,
+        x: 50,
+        y: 60,
+        timestamp: 100_000,
+      }),
+      'peer-c',
+      '',
+      true,
+      4
+    );
+
+    await vi.waitFor(() =>
+      expect(direct.filter(({ wire }) => wire.k === 'land_state')).toHaveLength(
+        1
+      )
+    );
+    expect(
+      direct.find(({ wire }) => wire.k === 'land_state')?.peer
+    ).toBe('peer-b');
+
+    // A target whose bridge lease has expired must return to the JavaScript
+    // fallback even if another target made the native fast-forward successful.
+    direct.length = 0;
+    (manager as any).landStateForwardingAppliedTargets = new Map([
+      [
+        73,
+        new Map([
+          ['peer-a', 99_999],
+          ['peer-b', 200_000],
+        ]),
+      ],
+    ]);
+    manager.handleWire(
+      signer.landStateWire({
+        groupId: 73,
+        sessionId: 'session-refresh',
+        sequence: 2,
+        x: 51,
+        y: 61,
+        timestamp: 100_000,
+      }),
+      'peer-c',
+      '',
+      true,
+      4
+    );
+    await vi.waitFor(() =>
+      expect(direct.filter(({ wire }) => wire.k === 'land_state')).toHaveLength(
+        1
+      )
+    );
+    expect(
+      direct.find(({ wire }) => wire.k === 'land_state')?.peer
+    ).toBe('peer-a');
     manager.close();
   });
 
@@ -12506,12 +12808,152 @@ describe('reticulum chat manager', () => {
     }
     expect((manager as any).landStateForwardingRevision).toBe(initialRevision);
 
-    now += 150_001;
+    now += 7 * 60_000 + 30_001;
     (manager as any).noteGroupInterestRoute(73, 'peer-c', 'peer-a', 1);
     expect((manager as any).landStateForwardingRevision).toBe(
       initialRevision + 1
     );
     manager.close();
+  });
+
+  it('does not resend an unchanged Land forwarding snapshot', async () => {
+    const configureLandStateForwarding = vi
+      .fn()
+      .mockResolvedValue({ ok: true as const });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getState: () => 'ready',
+        configureLandStateForwarding,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 100_000,
+    });
+
+    clearTimeout((manager as any).landStateForwardingSyncTimer);
+    (manager as any).landStateForwardingSyncTimer = null;
+    (manager as any).noteGroupInterestRoute(73, 'peer-c', 'peer-a', 1);
+    clearTimeout((manager as any).landStateForwardingSyncTimer);
+    (manager as any).landStateForwardingSyncTimer = null;
+    await (manager as any).applyLandStateForwardingSnapshot();
+    expect(configureLandStateForwarding).toHaveBeenCalledTimes(1);
+    const appliedRevision = (manager as any).landStateForwardingAppliedRevision;
+
+    (manager as any).scheduleLandStateForwardingSync();
+    clearTimeout((manager as any).landStateForwardingSyncTimer);
+    (manager as any).landStateForwardingSyncTimer = null;
+    await (manager as any).applyLandStateForwardingSnapshot();
+
+    expect(configureLandStateForwarding).toHaveBeenCalledTimes(1);
+    expect((manager as any).landStateForwardingAppliedRevision).toBe(
+      appliedRevision
+    );
+    expect((manager as any).landStateForwardingSnapshotDirty).toBe(false);
+    manager.close();
+  });
+
+  it('coalesces a burst of Land route changes into one bridge snapshot', async () => {
+    vi.useFakeTimers();
+    try {
+      const configureLandStateForwarding = vi
+        .fn()
+        .mockResolvedValue({ ok: true as const });
+      const manager = new ReticulumChatManager({
+        dbPath: tempDbPath(),
+        bridge: {
+          on: () => undefined,
+          off: () => undefined,
+          getState: () => 'ready',
+          configureLandStateForwarding,
+          fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+          sendReticulumChatDetailed: async () => ({ ok: true as const }),
+          getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+        } as any,
+        now: () => 100_000,
+      });
+
+      clearTimeout((manager as any).landStateForwardingSyncTimer);
+      (manager as any).landStateForwardingSyncTimer = null;
+      for (let index = 0; index < 40; index += 1) {
+        (manager as any).noteGroupInterestRoute(
+          73,
+          `peer-origin-${index}`,
+          `peer-hop-${index % 4}`,
+          1
+        );
+      }
+
+      await vi.advanceTimersByTimeAsync(249);
+      expect(configureLandStateForwarding).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(configureLandStateForwarding).toHaveBeenCalledTimes(1);
+      expect(configureLandStateForwarding.mock.calls[0]?.[0]).toHaveLength(1);
+      expect(
+        configureLandStateForwarding.mock.calls[0]?.[0]?.[0]?.targets
+      ).toHaveLength(4);
+      manager.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('coalesces Land route changes that arrive during a bridge snapshot', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveFirstSnapshot: ((result: { ok: true }) => void) | null = null;
+      const configureLandStateForwarding = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<{ ok: true }>((resolve) => {
+              resolveFirstSnapshot = resolve;
+            })
+        )
+        .mockResolvedValue({ ok: true as const });
+      const manager = new ReticulumChatManager({
+        dbPath: tempDbPath(),
+        bridge: {
+          on: () => undefined,
+          off: () => undefined,
+          getState: () => 'ready',
+          configureLandStateForwarding,
+          fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+          sendReticulumChatDetailed: async () => ({ ok: true as const }),
+          getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+        } as any,
+        now: () => 100_000,
+      });
+
+      clearTimeout((manager as any).landStateForwardingSyncTimer);
+      (manager as any).landStateForwardingSyncTimer = null;
+      (manager as any).noteGroupInterestRoute(73, 'peer-origin-a', 'peer-a', 1);
+      clearTimeout((manager as any).landStateForwardingSyncTimer);
+      (manager as any).landStateForwardingSyncTimer = null;
+      const firstApply = (manager as any).applyLandStateForwardingSnapshot();
+      await Promise.resolve();
+      expect(configureLandStateForwarding).toHaveBeenCalledTimes(1);
+
+      (manager as any).noteGroupInterestRoute(73, 'peer-origin-b', 'peer-b', 1);
+      expect((manager as any).landStateForwardingSnapshotDirty).toBe(true);
+      resolveFirstSnapshot?.({ ok: true });
+      await firstApply;
+
+      await vi.advanceTimersByTimeAsync(249);
+      expect(configureLandStateForwarding).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(configureLandStateForwarding).toHaveBeenCalledTimes(2);
+      expect(
+        configureLandStateForwarding.mock.calls[1]?.[0]?.[0]?.targets
+      ).toHaveLength(2);
+      expect((manager as any).landStateForwardingSnapshotDirty).toBe(false);
+      manager.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps an equal-cost group route stable until it fails', () => {
@@ -12637,6 +13079,7 @@ describe('reticulum chat manager', () => {
     direct.length = 0;
     (manager as any).landStateForwardingRevision = 5;
     (manager as any).landStateForwardingAppliedRevision = 5;
+    (manager as any).landStateForwardingSnapshotDirty = false;
 
     manager.handleWire(
       signer.landStateWire({
@@ -12651,6 +13094,27 @@ describe('reticulum chat manager', () => {
       '',
       true,
       4
+    );
+
+    await vi.waitFor(() => {
+      expect(direct.some(({ wire }) => wire.k === 'land_state')).toBe(true);
+    });
+
+    direct.length = 0;
+    (manager as any).landStateForwardingSnapshotDirty = true;
+    manager.handleWire(
+      signer.landStateWire({
+        groupId: 73,
+        sessionId: 'session-stale',
+        sequence: 2,
+        x: 51,
+        y: 61,
+        timestamp: 100_000,
+      }),
+      'peer-c',
+      '',
+      true,
+      5
     );
 
     await vi.waitFor(() => {
@@ -15709,6 +16173,7 @@ describe('reticulum chat manager', () => {
     expect(manager.getHistory(72, 10).map((item) => item.eventId)).toContain(
       event.eventId
     );
+    expect(fs.existsSync(resourcePath)).toBe(false);
     manager.close();
   });
 
@@ -15804,6 +16269,7 @@ describe('reticulum chat manager', () => {
       'event-page-resource-1',
       'event-page-resource-2',
     ]);
+    expect(fs.existsSync(resourcePath)).toBe(false);
     manager.close();
   });
 
@@ -18570,12 +19036,12 @@ describe('reticulum chat manager', () => {
     expect(
       (sent.find((wire) => wire.k === 'hello_v3')?.f as string[]) ?? []
     ).not.toContain('public_activity_v1');
-    expect(sent).toContainEqual({
+    expect(sent).toContainEqual(expect.objectContaining({
       t: 'RCHAT',
       k: 'group_sub',
       groups: [48],
       mode: 'summary',
-    });
+    }));
     expect(sent).toContainEqual(
       expect.objectContaining({
         t: 'RCHAT',
@@ -18955,12 +19421,12 @@ describe('reticulum chat manager', () => {
       manager.subscribeGroup(58);
       await flushQueuedWork();
       expect(manager.getSubscriptions()).toEqual([58]);
-      expect(fanout).toContainEqual({
+      expect(fanout).toContainEqual(expect.objectContaining({
         t: 'RCHAT',
         k: 'group_sub',
         groups: [58],
         mode: 'summary',
-      });
+      }));
 
       direct.length = 0;
       manager.handleWire(
@@ -19054,12 +19520,12 @@ describe('reticulum chat manager', () => {
     manager.setLocalGroupMemberships([58]);
     await flushQueuedWork();
     expect(manager.getSubscriptions()).toEqual([58]);
-    expect(fanout).toContainEqual({
+    expect(fanout).toContainEqual(expect.objectContaining({
       t: 'RCHAT',
       k: 'group_sub',
       groups: [58],
       mode: 'summary',
-    });
+    }));
     manager.close();
   });
 
@@ -19340,12 +19806,12 @@ describe('reticulum chat manager', () => {
       manager.subscribeChannel(716, 'general');
       await flushQueuedWork();
 
-      expect(sent).toContainEqual({
+      expect(sent).toContainEqual(expect.objectContaining({
         t: 'RCHAT',
         k: 'group_sub',
         groups: [716],
         mode: 'active',
-      });
+      }));
       expect(sent).toContainEqual(
         expect.objectContaining({
           t: 'RCHAT',
@@ -21199,6 +21665,123 @@ describe('reticulum chat manager', () => {
     const offer = direct.find((wire) => wire.k === 'event_page_offer');
     expect(offer).toBeTruthy();
     expect(wireFitsReticulumChat(offer!)).toBe(true);
+    manager.close();
+  });
+
+  it('releases an event page provider blob when the bridge reports completion', async () => {
+    let resourceFilePath = '';
+    let transferId = '';
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatResourceDetailed: async (payload: any) => {
+          resourceFilePath = payload.filePath;
+          transferId = payload.transferId;
+          return { ok: true as const };
+        },
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+    });
+    manager.setLocalGroupMemberships([50]);
+    const event = signedEvent({
+      eventId: 'event-page-temp-cleanup',
+      groupId: 50,
+      channelId: 'general',
+      timestamp: 20_500,
+    });
+
+    const result = await (manager as any).offerEventPageResource(
+      'peer-temp-cleanup',
+      50,
+      'general',
+      [event],
+      false,
+      'before'
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(transferId).not.toBe('');
+    expect(fs.existsSync(resourceFilePath)).toBe(true);
+
+    manager.handleResourceEvent({
+      status: 'sent',
+      transferId,
+      resourceType: 'reticulum_chat_event_page',
+    });
+
+    expect(fs.existsSync(resourceFilePath)).toBe(false);
+    expect((manager as any).outboundEventPageResources.has(transferId)).toBe(
+      false
+    );
+    expect((manager as any).tempEventBlobs.has(transferId)).toBe(false);
+    manager.close();
+  });
+
+  it('reports a full temp volume as a retryable page-offer failure', async () => {
+    const registerResource = vi.fn(async () => ({ ok: true as const }));
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatResourceDetailed: registerResource,
+      } as any,
+    });
+    manager.setLocalGroupMemberships([50]);
+    const diskError = Object.assign(new Error('no space left on device'), {
+      code: 'ENOSPC',
+    });
+    vi.spyOn(manager as any, 'writeTempEventBlob').mockImplementation(() => {
+      throw diskError;
+    });
+    const event = signedEvent({
+      eventId: 'event-page-temp-volume-full',
+      groupId: 50,
+      channelId: 'general',
+      timestamp: 20_750,
+    });
+
+    const result = await (manager as any).offerEventPageResource(
+      'peer-temp-volume-full',
+      50,
+      'general',
+      [event],
+      false,
+      'before'
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'send-command-failed',
+      error: 'Temporary event page write failed (ENOSPC)',
+    });
+    expect(registerResource).not.toHaveBeenCalled();
+    manager.close();
+  });
+
+  it('sweeps abandoned receive blobs without touching a recent transfer', async () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    const suffix = nodeCrypto.randomBytes(8).toString('hex');
+    const stalePath = (manager as any).tempEventBlobPath(
+      `${suffix}.page.recv`
+    );
+    const recentPath = (manager as any).tempEventBlobPath(
+      `${suffix}-recent.page.recv`
+    );
+    fs.writeFileSync(stalePath, 'stale');
+    fs.writeFileSync(recentPath, 'recent');
+    const staleTime = new Date(Date.now() - 31 * 60_000);
+    fs.utimesSync(stalePath, staleTime, staleTime);
+
+    await (manager as any).sweepStaleTempEventBlobs();
+
+    expect(fs.existsSync(stalePath)).toBe(false);
+    expect(fs.existsSync(recentPath)).toBe(true);
+    fs.unlinkSync(recentPath);
     manager.close();
   });
 
@@ -29737,6 +30320,7 @@ describe('reticulum chat manager', () => {
 
   it('refuses downloaded event resources when Core membership validation rejects the event author', async () => {
     const acceptedTransfers: unknown[] = [];
+    const dbPath = tempDbPath();
     const blockedKp = nacl.sign.keyPair();
     const blockedPublicKey = base58Encode(blockedKp.publicKey);
     const blockedAddress = deriveAddressFromPublicKey(blockedPublicKey);
@@ -29749,7 +30333,7 @@ describe('reticulum chat manager', () => {
       },
     };
     const manager = new ReticulumChatManager({
-      dbPath: tempDbPath(),
+      dbPath,
       bridge: bridge as any,
       now: () => 100_000,
       signLocalFields: createReticulumChatTestSigner(),
@@ -29815,6 +30399,304 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(manager.getHistory(75, 10)).toEqual([]);
+    expect(
+      (manager as any).db.getRejectedEventMarker(75, event.eventId)
+    ).toEqual(
+      expect.objectContaining({
+        groupId: 75,
+        eventId: event.eventId,
+        authorAddress: blockedAddress,
+        revalidationAttempts: 1,
+      })
+    );
+    expect(
+      (manager as any).rejectedEventMarkerMatches({
+        ...event,
+        encryptedPayload: `${event.encryptedPayload}-equivocation`,
+        payloadHash: 'f'.repeat(64),
+        signature: 'different-signed-payload',
+      })
+    ).toBe('suppressed');
+    expect((manager as any).pendingEventPulls.size).toBe(0);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_offer',
+        g: 75,
+        o: {
+          x: 'transfer-inbound-non-member-author-repeat',
+          id: event.eventId,
+          ph: event.payloadHash,
+          wh: wireHash,
+          s: Buffer.byteLength(blob, 'utf8'),
+        },
+      },
+      'other-peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(acceptedTransfers).toHaveLength(1);
+    manager.close();
+
+    const reopened = new ReticulumChatManager({
+      dbPath,
+      bridge: bridge as any,
+      now: () => 100_001,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    reopened.setLocalGroupMemberships([75]);
+    reopened.subscribeGroup(75);
+    reopened.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_offer',
+        g: 75,
+        o: {
+          x: 'transfer-inbound-non-member-author-after-restart',
+          id: event.eventId,
+          ph: event.payloadHash,
+          wh: wireHash,
+          s: Buffer.byteLength(blob, 'utf8'),
+        },
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(acceptedTransfers).toHaveLength(1);
+    reopened.close();
+
+    // Joining later must not legitimize this exact event, because it was
+    // authoritatively rejected while the author lacked current membership.
+    const recovered = new ReticulumChatManager({
+      dbPath,
+      bridge: bridge as any,
+      now: () => 1_000_001,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    recovered.setLocalGroupMemberships([75]);
+    recovered.subscribeGroup(75);
+    recovered.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_offer',
+        g: 75,
+        o: {
+          x: 'transfer-inbound-non-member-author-revalidated',
+          id: event.eventId,
+          ph: event.payloadHash,
+          wh: wireHash,
+          s: Buffer.byteLength(blob, 'utf8'),
+        },
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(acceptedTransfers).toHaveLength(1);
+    expect(
+      (recovered as any).db.getRejectedEventMarker(75, event.eventId)
+    ).toEqual(expect.objectContaining({ eventId: event.eventId }));
+    // A distinct event created after joining is not covered by the old
+    // event's marker and remains eligible for normal validation.
+    expect(
+      (recovered as any).rejectedEventMarkerMatches({
+        ...event,
+        eventId: 'event-created-after-joining',
+        authorSeq: event.authorSeq + 1,
+        timestamp: 1_000_001,
+      })
+    ).toBe('none');
+    recovered.close();
+  });
+
+  it('defers an event without blaming its provider when membership validation is unavailable', async () => {
+    const acceptedTransfers: unknown[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        acceptReticulumChatResourceDetailed: async (payload: unknown) => {
+          acceptedTransfers.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => null,
+    });
+    manager.setLocalGroupMemberships([75]);
+    manager.subscribeGroup(75);
+    const event = signedEvent({
+      eventId: 'event-membership-temporarily-unavailable',
+      groupId: 75,
+      timestamp: 100_000,
+    });
+    const blob = serializeReticulumChatEvent(event);
+    const wireHash = nodeCrypto
+      .createHash('sha256')
+      .update(blob, 'utf8')
+      .digest('hex');
+    const resourcePath = path.join(
+      path.dirname(tempDbPath()),
+      'event-membership-unavailable.json'
+    );
+    fs.writeFileSync(resourcePath, blob, 'utf8');
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_offer',
+        g: 75,
+        o: {
+          x: 'transfer-membership-unavailable',
+          id: event.eventId,
+          ph: event.payloadHash,
+          wh: wireHash,
+          s: Buffer.byteLength(blob, 'utf8'),
+        },
+      },
+      'peer'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(acceptedTransfers).toHaveLength(1);
+
+    manager.handleResourceEvent({
+      status: 'received',
+      transferId: 'transfer-membership-unavailable',
+      peerPresenceHash: 'peer',
+      path: resourcePath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      (manager as any).db.getRejectedEventMarker(75, event.eventId)
+    ).toBeNull();
+    expect(
+      (manager as any).pendingEventPulls.get(`75:${event.eventId}`)
+    ).toEqual(
+      expect.objectContaining({
+        attempts: 0,
+        nextAttemptAt: 110_000,
+        peerHashes: new Set(['peer']),
+      })
+    );
+    manager.close();
+  });
+
+  it('permanently suppresses rejected events across digests and author-gap repair', () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+    });
+    const event = signedEvent({
+      eventId: 'event-rejected-digest-fingerprint',
+      groupId: 75,
+      authorSeq: 2,
+      timestamp: now,
+    });
+    const rejectedDigest = 'a'.repeat(64);
+    const changedDigest = 'b'.repeat(64);
+
+    (manager as any).db.upsertMissingRange(
+      75,
+      event.authorAddress,
+      event.authorStreamId,
+      1,
+      3,
+      'peer-a',
+      now
+    );
+    (manager as any).markAuthoritativeRejectedEvent(event, rejectedDigest);
+
+    expect(
+      (manager as any).isRejectedDigestRepairSuppressed(75, rejectedDigest)
+    ).toBe(true);
+    expect(
+      (manager as any).isRejectedDigestRepairSuppressed(75, changedDigest)
+    ).toBe(false);
+    (manager as any).rememberRejectedEventDigest(event, changedDigest);
+    expect(
+      (manager as any).isRejectedDigestRepairSuppressed(75, changedDigest)
+    ).toBe(true);
+    // A concurrent copy from another provider must not rewrite or duplicate
+    // the permanent decision.
+    (manager as any).markAuthoritativeRejectedEvent(event, rejectedDigest);
+    expect(
+      (manager as any).db.getRejectedEventMarker(75, event.eventId)
+    ).toEqual(
+      expect.objectContaining({
+        authorStreamId: event.authorStreamId,
+        authorSeq: 2,
+        revalidationAttempts: 1,
+      })
+    );
+    // Upgrade an intermediate short-lived marker to the complete period in
+    // which the event could still pass the protocol's age validation.
+    const storedMarker = (manager as any).db.getRejectedEventMarker(
+      75,
+      event.eventId
+    );
+    (manager as any).db.upsertRejectedEventMarker({
+      ...storedMarker,
+      nextRevalidateAt: now + 1_000,
+    });
+    (manager as any).db.upsertRejectedDigestMarker(
+      { ...storedMarker, nextRevalidateAt: now + 1_000 },
+      rejectedDigest
+    );
+    (manager as any).db.maintainRejectedEventMarkers(
+      now,
+      30 * 24 * 60 * 60_000 + 5 * 60_000 + 1
+    );
+    expect(
+      (manager as any).db.getRejectedEventMarker(75, event.eventId)
+        .nextRevalidateAt
+    ).toBeGreaterThan(now + 30 * 24 * 60 * 60_000);
+    expect(
+      (manager as any).db.getMissingRangeOverlaps(
+        75,
+        event.authorAddress,
+        event.authorStreamId,
+        1,
+        3
+      )
+    ).toEqual([
+      expect.objectContaining({ fromSeq: 1, toSeq: 1 }),
+      expect.objectContaining({ fromSeq: 3, toSeq: 3 }),
+    ]);
+    expect(
+      (manager as any).excludeRejectedAuthorSequences(75, {
+        a: event.authorAddress,
+        s: event.authorStreamId,
+        from: 1,
+        to: 3,
+      })
+    ).toEqual([
+      expect.objectContaining({ from: 1, to: 1 }),
+      expect.objectContaining({ from: 3, to: 3 }),
+    ]);
+
+    now = 1_000_001;
+    expect(
+      (manager as any).isRejectedDigestRepairSuppressed(75, rejectedDigest)
+    ).toBe(true);
+    expect(
+      (manager as any).isRejectedDigestRepairSuppressed(75, changedDigest)
+    ).toBe(true);
+    expect(
+      (manager as any).excludeRejectedAuthorSequences(75, {
+        a: event.authorAddress,
+        s: event.authorStreamId,
+        from: 1,
+        to: 3,
+      })
+    ).toEqual([
+      expect.objectContaining({ from: 1, to: 1 }),
+      expect.objectContaining({ from: 3, to: 3 }),
+    ]);
     manager.close();
   });
 

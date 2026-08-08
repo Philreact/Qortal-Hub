@@ -680,6 +680,62 @@ class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
             )
         )
 
+    def test_dm_discovery_dedup_uses_stable_request_id(self):
+        notify = {
+            "t": "RCHAT",
+            "k": "dm_notify",
+            "d": {
+                "q": "11" * 4,
+                "p": "author-public-key",
+                "h": 0,
+                "b": "Qrecipient",
+            },
+            "r": "aa" * 16,
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(notify)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {
+                    **notify,
+                    "r": "bb" * 16,
+                    "d": {**notify["d"], "h": 4},
+                }
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**notify, "d": {**notify["d"], "q": "22" * 4}}
+            )
+        )
+
+    def test_group_subscription_dedup_preserves_a_better_hop_count(self):
+        subscription = {
+            "t": "RCHAT",
+            "k": "group_sub",
+            "groups": [73, 74],
+            "mode": "summary",
+            "q": "11" * 8,
+            "o": "aa" * 16,
+            "h": 3,
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(subscription)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**subscription, "r": "bb" * 16}
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**subscription, "h": 1, "r": "cc" * 16}
+            )
+        )
+
     def test_typing_dedup_ignores_origin_hops_and_ingress_sender(self):
         typing = {
             "t": "RCHAT",

@@ -259,6 +259,7 @@ _call_relay_dedup_suppressed_since_log: int = 0
 _RETICULUM_CHAT_INBOUND_DEDUP_MAX = 8192
 _RETICULUM_CHAT_IDENTITY_DEDUP_TTL_SECONDS = 35.0
 _RETICULUM_CHAT_TYPING_DEDUP_TTL_SECONDS = 35.0
+_RETICULUM_CHAT_DISCOVERY_DEDUP_TTL_SECONDS = 6 * 60.0
 _RETICULUM_CHAT_ROUTED_CONTROL_DEDUP_TTL_SECONDS = 2.0
 _RETICULUM_CHAT_ROUTED_CONTROL_DEDUP_MAX = 32768
 _RETICULUM_CHAT_ROUTED_CONTROL_PRUNE_INTERVAL_SECONDS = 2.0
@@ -11811,6 +11812,48 @@ def _reticulum_chat_inbound_dedup_key(
     message: Dict[str, Any],
 ) -> Optional[Tuple[str, float]]:
     message_type = message.get("k")
+    if message_type in {"dm_probe", "dm_notify", "dm_notify_ack"}:
+        body = message.get("q") if message_type == "dm_probe" else message.get("d")
+        request_id = body.get("q") if isinstance(body, dict) else None
+        if not isinstance(request_id, str) or not request_id.strip():
+            return None
+        # The signature and route validation remain in Electron. This cache
+        # only collapses byte-identical logical discovery IDs that arrived
+        # through several overlay links before they consume its event queue.
+        author_key = body.get("p") if isinstance(body, dict) else ""
+        return (
+            f"{message_type}:{request_id.strip().lower()}:{str(author_key)[:24]}",
+            _RETICULUM_CHAT_DISCOVERY_DEDUP_TTL_SECONDS,
+        )
+    if message_type == "group_sub":
+        advertisement_id = message.get("q")
+        groups = message.get("groups")
+        hops = message.get("h", 0)
+        origin = message.get("o") or message.get("r")
+        if (
+            not isinstance(advertisement_id, str)
+            or not advertisement_id.strip()
+            or not isinstance(groups, list)
+            or not isinstance(origin, str)
+            or not origin.strip()
+            or isinstance(hops, bool)
+            or not isinstance(hops, int)
+            or hops < 0
+            or hops > 8
+        ):
+            return None
+        try:
+            groups_hash = hashlib.sha256(
+                json.dumps(groups, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()[:16]
+        except (TypeError, ValueError):
+            return None
+        # Keep hop count in the key so a later, shorter route can still reach
+        # JavaScript and replace a worse path.
+        return (
+            f"group_sub:{origin.strip().lower()}:{advertisement_id.strip().lower()}:{groups_hash}:{hops}",
+            _RETICULUM_CHAT_DISCOVERY_DEDUP_TTL_SECONDS,
+        )
     if message_type == "identity_req":
         request_id = message.get("rid")
         destination_hash = message.get("d")
@@ -23131,12 +23174,43 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
         now_mono = time.monotonic()
         _reticulum_chat_prune_digest_fanout_recent(now_mono)
         fanout_hashes = list(dict.fromkeys(soft_peer_hashes + reliable_peer_hashes))
+        max_peer_count_raw = payload.get("maxPeerCount")
+        selection_key_raw = payload.get("selectionKey")
+        max_peer_count = (
+            max(1, min(_OVERLAY_MAX_TOTAL_LINKS, int(max_peer_count_raw)))
+            if isinstance(max_peer_count_raw, int)
+            and not isinstance(max_peer_count_raw, bool)
+            and max_peer_count_raw > 0
+            else 0
+        )
+        selection_key = (
+            selection_key_raw.strip()
+            if isinstance(selection_key_raw, str) and selection_key_raw.strip()
+            else ""
+        )
+        if max_peer_count and len(fanout_hashes) > max_peer_count:
+            # Stable rendezvous ordering spreads concurrent discovery rounds
+            # across different neighbors without depending on dict/link order.
+            fanout_hashes = sorted(
+                fanout_hashes,
+                key=lambda peer_hash: hashlib.sha256(
+                    f"{selection_key}:{peer_hash}".encode("utf-8")
+                ).digest(),
+            )[:max_peer_count]
+            allowed = set(fanout_hashes)
+            soft_peer_hashes = [
+                peer_hash for peer_hash in soft_peer_hashes if peer_hash in allowed
+            ]
+            reliable_peer_hashes = [
+                peer_hash for peer_hash in reliable_peer_hashes if peer_hash in allowed
+            ]
         log(
             "[presence_bridge] target=reticulum-chat fanout "
             f"peers={len(fanout_hashes)} soft_peers={len(soft_peer_hashes)} "
             f"reliable_peers={len(reliable_peer_hashes)} "
             f"exclude_hashes={','.join(exclude_hashes)} "
             f"fanout_hashes={','.join(fanout_hashes)} "
+            f"bounded={max_peer_count or 0} "
             f"message_types={','.join(message_types)} "
             f"message_keys={','.join(message_keys)}"
         )

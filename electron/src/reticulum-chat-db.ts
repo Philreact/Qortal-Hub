@@ -195,6 +195,19 @@ export type ReticulumPublicGroupActivityRecord =
     localStateJson: string | null;
   };
 
+export type ReticulumChatRejectedEventMarker = {
+  groupId: number;
+  eventId: string;
+  eventFingerprint: string;
+  authorAddress: string;
+  authorStreamId: string;
+  authorSeq: number;
+  digestFingerprint: string;
+  rejectedAt: number;
+  nextRevalidateAt: number;
+  revalidationAttempts: number;
+};
+
 export type ReticulumChatMetadataEntityRevision = {
   entityType: 'channel' | 'category';
   entityId: string;
@@ -333,6 +346,7 @@ export type ReticulumChatSummary = {
   mentionCount: number;
   hasUnreadMention: boolean;
   updatedAt: number;
+  readThroughTimestamp: number;
 };
 
 export type ReticulumGroupChatSummary = {
@@ -646,6 +660,7 @@ const rendererExpiresAtByEvent = new WeakMap<
   ReticulumChatEvent,
   number | null
 >();
+const projectionUpdatedAtByEvent = new WeakMap<ReticulumChatEvent, number>();
 
 function rememberRendererExpiresAt<T extends ReticulumChatEvent>(
   event: T,
@@ -959,6 +974,10 @@ function messageProjectionRowToEvent(
     ...(mentionTargets.length > 0 ? { mentionTargets } : {}),
     signature: row.signature,
   };
+  projectionUpdatedAtByEvent.set(
+    event,
+    Math.max(Number(row.created_at) || 0, Number(row.updated_at) || 0)
+  );
   return rememberRendererExpiresAt(event, row.expires_at);
 }
 
@@ -1672,6 +1691,13 @@ export class ReticulumChatDatabase {
   private stmtClearMissingRangePeerUnavailable: Statement;
   private stmtDeleteMissingRange: Statement;
   private stmtInsertMissingRangeRaw: Statement;
+  private stmtGetRejectedEventMarker: Statement;
+  private stmtHasRejectedDigestMarker: Statement;
+  private stmtGetRejectedAuthorSeqs: Statement;
+  private stmtUpsertRejectedEventMarker: Statement;
+  private stmtDeleteRejectedEventMarker: Statement;
+  private stmtUpsertRejectedDigestMarker: Statement;
+  private stmtDeleteRejectedDigestMarkers: Statement;
   private stmtInsertRelayBlob: Statement;
   private stmtGetRelayBlobByEvent: Statement;
   private stmtListRelayDigestEntries: Statement;
@@ -2609,6 +2635,64 @@ export class ReticulumChatDatabase {
         (group_id, author_address, author_stream_id, from_seq, to_seq, preferred_peer, attempts, next_attempt_at)
       VALUES
         (@group_id, @author_address, @author_stream_id, @from_seq, @to_seq, @preferred_peer, @attempts, @next_attempt_at)
+    `);
+    this.stmtGetRejectedEventMarker = this.db.prepare(`
+      SELECT group_id, event_id, event_fingerprint, author_address,
+             author_stream_id, author_seq, digest_fingerprint, rejected_at,
+             next_revalidate_at, revalidation_attempts
+      FROM rchat_rejected_event_markers
+      WHERE group_id = ? AND event_id = ?
+      LIMIT 1
+    `);
+    this.stmtHasRejectedDigestMarker = this.db.prepare(`
+      SELECT 1
+      FROM rchat_rejected_digest_markers
+      WHERE group_id = ?
+        AND digest_fingerprint = ?
+      LIMIT 1
+    `);
+    this.stmtGetRejectedAuthorSeqs = this.db.prepare(`
+      SELECT author_seq
+      FROM rchat_rejected_event_markers
+      WHERE group_id = ?
+        AND author_address = ?
+        AND author_stream_id = ?
+        AND author_seq BETWEEN ? AND ?
+      ORDER BY author_seq ASC
+    `);
+    this.stmtUpsertRejectedEventMarker = this.db.prepare(`
+      INSERT INTO rchat_rejected_event_markers
+        (group_id, event_id, event_fingerprint, author_address,
+         author_stream_id, author_seq, digest_fingerprint, rejected_at,
+         next_revalidate_at, revalidation_attempts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(group_id, event_id) DO UPDATE SET
+        event_fingerprint = excluded.event_fingerprint,
+        author_address = excluded.author_address,
+        author_stream_id = excluded.author_stream_id,
+        author_seq = excluded.author_seq,
+        digest_fingerprint = excluded.digest_fingerprint,
+        rejected_at = excluded.rejected_at,
+        next_revalidate_at = excluded.next_revalidate_at,
+        revalidation_attempts = excluded.revalidation_attempts
+    `);
+    this.stmtDeleteRejectedEventMarker = this.db.prepare(`
+      DELETE FROM rchat_rejected_event_markers
+      WHERE group_id = ? AND event_id = ?
+    `);
+    this.stmtUpsertRejectedDigestMarker = this.db.prepare(`
+      INSERT INTO rchat_rejected_digest_markers
+        (group_id, event_id, event_fingerprint, digest_fingerprint,
+         rejected_at, next_revalidate_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(group_id, event_id, digest_fingerprint) DO UPDATE SET
+        event_fingerprint = excluded.event_fingerprint,
+        rejected_at = excluded.rejected_at,
+        next_revalidate_at = excluded.next_revalidate_at
+    `);
+    this.stmtDeleteRejectedDigestMarkers = this.db.prepare(`
+      DELETE FROM rchat_rejected_digest_markers
+      WHERE group_id = ? AND event_id = ?
     `);
     this.stmtInsertRelayBlob = this.db.prepare(`
       INSERT INTO rchat_relay_cache
@@ -5311,6 +5395,199 @@ export class ReticulumChatDatabase {
       this.memoryScrubbedEventOverrides.has(eventId) ||
       !!this.stmtHasEvent.get(eventId)
     );
+  }
+
+  getRejectedEventMarker(
+    groupId: number,
+    eventId: string
+  ): ReticulumChatRejectedEventMarker | null {
+    if (!Number.isInteger(groupId) || groupId <= 0 || !eventId) return null;
+    const row = this.stmtGetRejectedEventMarker.get(groupId, eventId) as
+      | {
+          group_id: number;
+          event_id: string;
+          event_fingerprint: string;
+          author_address: string;
+          author_stream_id: string;
+          author_seq: number;
+          digest_fingerprint: string;
+          rejected_at: number;
+          next_revalidate_at: number;
+          revalidation_attempts: number;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      groupId: row.group_id,
+      eventId: row.event_id,
+      eventFingerprint: row.event_fingerprint,
+      authorAddress: row.author_address,
+      authorStreamId: normalizeReticulumChatAuthorStreamId(
+        row.author_stream_id
+      ),
+      // Zero is the migration sentinel for markers written before author
+      // sequence tracking existed. Keep it distinct from the real sequence 1;
+      // newly written markers are still required to use a positive sequence.
+      authorSeq: Math.max(0, Math.floor(Number(row.author_seq))),
+      digestFingerprint: row.digest_fingerprint,
+      rejectedAt: row.rejected_at,
+      nextRevalidateAt: row.next_revalidate_at,
+      revalidationAttempts: row.revalidation_attempts,
+    };
+  }
+
+  hasRejectedDigestMarker(
+    groupId: number,
+    digestFingerprint: string
+  ): boolean {
+    if (
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      !digestFingerprint
+    ) {
+      return false;
+    }
+    return !!this.stmtHasRejectedDigestMarker.get(
+      groupId,
+      digestFingerprint
+    );
+  }
+
+  getRejectedAuthorSeqs(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number
+  ): number[] {
+    const author = authorAddress.trim();
+    const from = Math.max(1, Math.floor(fromSeq));
+    const to = Math.max(from, Math.floor(toSeq));
+    if (
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      !author
+    ) {
+      return [];
+    }
+    return (
+      this.stmtGetRejectedAuthorSeqs.all(
+        groupId,
+        author,
+        normalizeReticulumChatAuthorStreamId(authorStreamId),
+        from,
+        to
+      ) as Array<{ author_seq?: number }>
+    )
+      .map((row) => Number(row.author_seq))
+      .filter(
+        (seq, index, values) =>
+          Number.isInteger(seq) &&
+          seq >= from &&
+          seq <= to &&
+          (index === 0 || seq !== values[index - 1])
+      );
+  }
+
+  upsertRejectedEventMarker(marker: ReticulumChatRejectedEventMarker): void {
+    const result = this.stmtUpsertRejectedEventMarker.run(
+      marker.groupId,
+      marker.eventId,
+      marker.eventFingerprint,
+      marker.authorAddress,
+      normalizeReticulumChatAuthorStreamId(marker.authorStreamId),
+      Math.max(1, Math.floor(marker.authorSeq)),
+      marker.digestFingerprint,
+      marker.rejectedAt,
+      marker.nextRevalidateAt,
+      marker.revalidationAttempts
+    );
+    if (result.changes !== 1) {
+      throw new Error('Failed to persist rejected Reticulum chat event marker');
+    }
+  }
+
+  upsertRejectedDigestMarker(
+    marker: ReticulumChatRejectedEventMarker,
+    digestFingerprint: string
+  ): void {
+    const digest = digestFingerprint.trim().toLowerCase();
+    if (!digest) return;
+    const result = this.stmtUpsertRejectedDigestMarker.run(
+      marker.groupId,
+      marker.eventId,
+      marker.eventFingerprint,
+      digest,
+      marker.rejectedAt,
+      marker.nextRevalidateAt
+    );
+    if (result.changes !== 1) {
+      throw new Error('Failed to persist rejected Reticulum chat digest marker');
+    }
+  }
+
+  deleteRejectedEventMarker(groupId: number, eventId: string): void {
+    const tx = this.db.transaction(() => {
+      this.stmtDeleteRejectedDigestMarkers.run(groupId, eventId);
+      this.stmtDeleteRejectedEventMarker.run(groupId, eventId);
+    });
+    tx();
+  }
+
+  clearMissingRangesForRejectedEvent(event: ReticulumChatEvent): void {
+    this.clearMissingRangesForEvent(event);
+  }
+
+  maintainRejectedEventMarkers(now: number, retentionMs: number): number {
+    const safeNow = Math.max(0, Math.floor(now));
+    const safeRetention = Math.max(1, Math.floor(retentionMs));
+    const tx = this.db.transaction(() => {
+      // Intermediate builds used this column as a short revalidation timer.
+      // Extend those rows to the full protocol-valid lifetime before pruning.
+      this.db
+        .prepare(
+          `UPDATE rchat_rejected_event_markers
+           SET next_revalidate_at = rejected_at + ?
+           WHERE next_revalidate_at < rejected_at + ?`
+        )
+        .run(safeRetention, safeRetention);
+      this.db
+        .prepare(
+          `UPDATE rchat_rejected_digest_markers
+           SET next_revalidate_at = (
+             SELECT events.next_revalidate_at
+             FROM rchat_rejected_event_markers AS events
+             WHERE events.group_id = rchat_rejected_digest_markers.group_id
+               AND events.event_id = rchat_rejected_digest_markers.event_id
+           )
+           WHERE EXISTS (
+             SELECT 1 FROM rchat_rejected_event_markers AS events
+             WHERE events.group_id = rchat_rejected_digest_markers.group_id
+               AND events.event_id = rchat_rejected_digest_markers.event_id
+               AND rchat_rejected_digest_markers.next_revalidate_at <
+                   events.next_revalidate_at
+           )`
+        )
+        .run();
+      const expired = this.db
+        .prepare(
+          `DELETE FROM rchat_rejected_event_markers
+           WHERE next_revalidate_at <= ?`
+        )
+        .run(safeNow).changes;
+      const orphaned = this.db
+        .prepare(
+          `DELETE FROM rchat_rejected_digest_markers
+           WHERE NOT EXISTS (
+             SELECT 1 FROM rchat_rejected_event_markers AS events
+             WHERE events.group_id = rchat_rejected_digest_markers.group_id
+               AND events.event_id = rchat_rejected_digest_markers.event_id
+           )`
+        )
+        .run().changes;
+      return expired + orphaned;
+    });
+    return tx();
   }
 
   isEventPayloadScrubbed(eventId: string): boolean {
@@ -10839,6 +11116,19 @@ export class ReticulumChatDatabase {
       eventMentionHashCount,
       eventMentionTargetCount
     );
+    // A message edit can add a mention after the original message timestamp.
+    // Keep this boundary separate from updatedAt/lastEvent so read state can
+    // acknowledge that mutation without changing channel ordering or causing
+    // metadata/control activity to look like a new chat message.
+    const readThroughTimestamp = events.reduce(
+      (latest, event) =>
+        Math.max(
+          latest,
+          event.timestamp,
+          projectionUpdatedAtByEvent.get(event) ?? event.timestamp
+        ),
+      lastEvent.timestamp
+    );
     return {
       groupId,
       channelId: normalizedChannelId,
@@ -10848,6 +11138,7 @@ export class ReticulumChatDatabase {
       mentionCount: totalMentionCount,
       hasUnreadMention: totalMentionCount > 0,
       updatedAt: lastEvent.timestamp,
+      readThroughTimestamp,
     };
   }
 
@@ -11731,6 +12022,36 @@ export class ReticulumChatDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_rchat_sync_queue_ready
         ON rchat_sync_queue (priority, next_attempt_at);
+      CREATE TABLE IF NOT EXISTS rchat_rejected_event_markers (
+        group_id INTEGER NOT NULL,
+        event_id TEXT NOT NULL,
+        event_fingerprint TEXT NOT NULL,
+        author_address TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL DEFAULT '',
+        author_seq INTEGER NOT NULL DEFAULT 0,
+        digest_fingerprint TEXT NOT NULL DEFAULT '',
+        rejected_at INTEGER NOT NULL,
+        next_revalidate_at INTEGER NOT NULL,
+        revalidation_attempts INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (group_id, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_rejected_event_revalidate
+        ON rchat_rejected_event_markers (next_revalidate_at, rejected_at);
+      CREATE INDEX IF NOT EXISTS idx_rchat_rejected_event_digest
+        ON rchat_rejected_event_markers
+          (group_id, digest_fingerprint, next_revalidate_at);
+      CREATE TABLE IF NOT EXISTS rchat_rejected_digest_markers (
+        group_id INTEGER NOT NULL,
+        event_id TEXT NOT NULL,
+        event_fingerprint TEXT NOT NULL,
+        digest_fingerprint TEXT NOT NULL,
+        rejected_at INTEGER NOT NULL,
+        next_revalidate_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, event_id, digest_fingerprint)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_rejected_digest_active
+        ON rchat_rejected_digest_markers
+          (group_id, digest_fingerprint, next_revalidate_at);
       CREATE INDEX IF NOT EXISTS idx_rchat_peer_channel_state
         ON rchat_peer_channel_state (peer_hash, group_id, channel_id);
       CREATE INDEX IF NOT EXISTS idx_rchat_peer_group_state
@@ -12328,6 +12649,10 @@ export class ReticulumChatDatabase {
         name: 'author-gap-peer-observations',
         run: () => this.initAuthorGapPeerObservationSchema(),
       },
+      {
+        name: 'rejected-event-author-sequence',
+        run: () => this.migrateRejectedEventAuthorSequenceSchema(),
+      },
       { name: 'group-calendar-v1', run: () => this.initCalendarSchema() },
     ];
     for (const migration of migrations) {
@@ -12340,6 +12665,27 @@ export class ReticulumChatDatabase {
         );
       }
     }
+  }
+
+  private migrateRejectedEventAuthorSequenceSchema(): void {
+    this.ensureColumn(
+      'rchat_rejected_event_markers',
+      'author_stream_id',
+      `ALTER TABLE rchat_rejected_event_markers
+       ADD COLUMN author_stream_id TEXT NOT NULL DEFAULT ''`
+    );
+    this.ensureColumn(
+      'rchat_rejected_event_markers',
+      'author_seq',
+      `ALTER TABLE rchat_rejected_event_markers
+       ADD COLUMN author_seq INTEGER NOT NULL DEFAULT 0`
+    );
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_rchat_rejected_event_author_seq
+        ON rchat_rejected_event_markers
+          (group_id, author_address, author_stream_id, author_seq,
+           next_revalidate_at)
+    `);
   }
 
   upsertCalendarMutation(
@@ -13304,6 +13650,32 @@ export class ReticulumChatDatabase {
           'author_seq',
           'timestamp',
           'expired_at',
+        ],
+      },
+      {
+        table: 'rchat_rejected_event_markers',
+        columns: [
+          'group_id',
+          'event_id',
+          'event_fingerprint',
+          'author_address',
+          'author_stream_id',
+          'author_seq',
+          'digest_fingerprint',
+          'rejected_at',
+          'next_revalidate_at',
+          'revalidation_attempts',
+        ],
+      },
+      {
+        table: 'rchat_rejected_digest_markers',
+        columns: [
+          'group_id',
+          'event_id',
+          'event_fingerprint',
+          'digest_fingerprint',
+          'rejected_at',
+          'next_revalidate_at',
         ],
       },
       {

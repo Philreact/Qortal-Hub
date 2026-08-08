@@ -2171,7 +2171,8 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 
   async fanoutReticulumChatDetailed(
     messages: Record<string, unknown>[],
-    excludePeerPresenceHashes: string[] = []
+    excludePeerPresenceHashes: string[] = [],
+    options: { maxPeerCount?: number; selectionKey?: string } = {}
   ): Promise<ReticulumSendResult> {
     if (messages.length === 0) {
       return {
@@ -2183,6 +2184,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return this.sendDetailed('fanout_reticulum_chat', {
       messages,
       excludePeerPresenceHashes,
+      ...(Number.isInteger(options.maxPeerCount) &&
+      Number(options.maxPeerCount) > 0
+        ? { maxPeerCount: Number(options.maxPeerCount) }
+        : {}),
+      ...(typeof options.selectionKey === 'string' && options.selectionKey
+        ? { selectionKey: options.selectionKey }
+        : {}),
     });
   }
 

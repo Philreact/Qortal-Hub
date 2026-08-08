@@ -5778,6 +5778,7 @@ export const ChatGroup = ({
       selectedReticulumChannelId
     );
     const latestSummaryTimestamp = Math.max(
+      Number(channelSummary?.readThroughTimestamp) || 0,
       Number(channelSummary?.lastEvent?.timestamp) || 0,
       Number(channelSummary?.updatedAt) || 0
     );
@@ -5864,6 +5865,7 @@ export const ChatGroup = ({
     );
     const latestTimestamp = Math.max(
       latestVisibleTimestamp,
+      Number(channelSummary?.readThroughTimestamp) || 0,
       Number(channelSummary?.lastEvent?.timestamp) || 0,
       Number(channelSummary?.updatedAt) || 0
     );
