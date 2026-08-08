@@ -328,7 +328,16 @@
     "empty_body": "Abonnez-vous aux créateurs et communautés via des Q-Apps compatibles abonnements, comme SubWire.",
     "open_subwire": "ouvrir SubWire",
     "tab_subscriptions": "Abonnements",
-    "tab_subwire": "SubWire"
+    "tab_subwire": "SubWire",
+    "auto_refresh": "mise à jour automatique",
+    "expires": "expire {{time}}",
+    "managed_subscriptions": "abonnements gérés",
+    "needs_payment_one": "{{count}} abonnement nécessite un paiement",
+    "needs_payment_other": "{{count}} abonnements nécessitent un paiement",
+    "no_active": "aucun abonnement actif",
+    "pending_join_request_one": "{{count}} demande d'adhésion",
+    "pending_join_request_other": "{{count}} demandes d'adhésion",
+    "re_encryption_needed": "rechiffrement nécessaire"
   },
   "group_invites": {
     "empty_title": "aucune invitation",
@@ -379,7 +388,7 @@
   "join_link": "lien pour rejoindre le groupe",
   "join_requests": "demandes d’adhésion",
   "last_message": "dernier message",
-  "last_message_date": "dernier message : {{date }}",
+  "last_message_date": "dernier message : {{date}}",
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Vous",
   "latest_mails": "derniers Q-Mails",

@@ -10,7 +10,7 @@
     "navigation": "٢.التنقل بين التطبيقات"
   },
   "initial": {
-    "recommended_qort_qty": "لديك على الأقل {{ quantity}} عملة كورتال في محفظتك",
+    "recommended_qort_qty": "لديك على الأقل {{quantity}} عملة كورتال في محفظتك",
     "explore": "يستكشف",
     "general_chat": "دردشة عامة",
     "getting_started": "ابدء",
@@ -65,6 +65,7 @@
     "persistent_guide_get_qorts": "لنبدأ بـ‎٦‎ QORT. اختر أي خيار أعلاه.",
     "persistent_guide_register_name": "بعد ذلك سجِّل اسمك.",
     "persistent_guide_load_avatar": "وأخيرًا أضف صورة رمزية.",
-    "post_onboarding_workspace_ready": "تمّ كل شيء. يمكنك البدء ببناء مساحة العمل أعلاه."
+    "post_onboarding_workspace_ready": "تمّ كل شيء. يمكنك البدء ببناء مساحة العمل أعلاه.",
+    "next": "التالي"
   }
 }

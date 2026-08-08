@@ -234,7 +234,7 @@ export default function ThemeManager() {
       const importedTheme = JSON.parse(fileContent);
       if (!validateTheme(importedTheme)) {
         throw new Error(
-          t('core:message.generic.invalid_theme_format', {
+          t('core:message.error.invalid_theme_format', {
             postProcess: 'capitalizeFirstChar',
           })
         );

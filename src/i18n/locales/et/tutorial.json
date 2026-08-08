@@ -65,6 +65,7 @@
     "persistent_guide_get_qorts": "Alustame 6 QORT-iga. Valige ülemalt mõni võimalus.",
     "persistent_guide_register_name": "Järgmisena registreerige oma nimi.",
     "persistent_guide_load_avatar": "Viimaks lisage avatar.",
-    "post_onboarding_workspace_ready": "Kõik valmis. Tööjaama saate üles ehitada ülal."
+    "post_onboarding_workspace_ready": "Kõik valmis. Tööjaama saate üles ehitada ülal.",
+    "next": "edasi"
   }
 }

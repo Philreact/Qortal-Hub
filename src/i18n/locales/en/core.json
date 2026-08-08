@@ -104,7 +104,10 @@
     "unpin_from_dashboard": "unpin from dashboard",
     "update": "update",
     "update_app": "update your app",
-    "vote": "vote"
+    "vote": "vote",
+    "full_screen": "full screen",
+    "open_in_new": "open in new window",
+    "restore": "restore"
   },
   "address_your": "your address",
   "admin": "admin",
@@ -274,7 +277,8 @@
       "save_qdn": "unable to save to QDN",
       "send_failed": "failed to send",
       "update_failed": "failed to update",
-      "vote": "unable to vote"
+      "vote": "unable to vote",
+      "same_foreign_blockchain": "the address does not belong to the same foreign blockchain"
     },
     "generic": {
       "already_voted": "you've already voted.",
@@ -370,7 +374,11 @@
       "unsaved_changes": "you have unsaved changes to your pinned apps. Save them to QDN.",
       "updating": "updating",
       "wait": "please wait",
-      "open_q_trade_subtitle": "Open Q-Trade and buy QORT from the trade portal."
+      "open_q_trade_subtitle": "Open Q-Trade and buy QORT from the trade portal.",
+      "address_copied": "address copied to clipboard.",
+      "avatar_publish_fee": "publishing an avatar requires a fee of {{fee}} QORT",
+      "link_copied": "link copied to clipboard.",
+      "no_primary_name": "no primary name"
     },
     "message": "message",
     "promotion_text": "promotion text",
@@ -764,7 +772,8 @@
   "voice_call": {
     "rejected_declined": "The other person declined the call.",
     "rejected_not_friend": "Call declined — {{name}} does not have you as a friend.",
-    "rejected_media": "The call ended — their microphone may be unavailable."
+    "rejected_media": "The call ended — their microphone may be unavailable.",
+    "failed": "voice call failed"
   },
   "p2p_health_bad_call_tooltip": "P2P health is bad. Connect more Reticulum peers first.",
   "dm_friend_events": {

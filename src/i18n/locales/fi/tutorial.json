@@ -65,6 +65,7 @@
     "persistent_guide_get_qorts": "Aloitetaan kuudesta QORT valitse yhteys ylhäältä.",
     "persistent_guide_register_name": "Seuraavaksi rekisteröi nimesi.",
     "persistent_guide_load_avatar": "Vielä lisää avatarisi.",
-    "post_onboarding_workspace_ready": "Valmista. Voit alkaa rakentaa työtilaa yläpuolella."
+    "post_onboarding_workspace_ready": "Valmista. Voit alkaa rakentaa työtilaa yläpuolella.",
+    "next": "seuraava"
   }
 }

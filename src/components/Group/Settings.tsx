@@ -1172,14 +1172,10 @@ const ExportPrivateKey = ({ rawWallet }) => {
     } catch (error) {
       setInfoSnackCustom({
         type: 'error',
-        message: error?.message
-          ? t('group:message.error.decrypt_wallet', {
-              message: error?.message,
-              postProcess: 'capitalizeFirstChar',
-            })
-          : t('group:message.error.descrypt_wallet', {
-              postProcess: 'capitalizeFirstChar',
-            }),
+        message: t('group:message.error.descrypt_wallet', {
+          message: error?.message ?? '',
+          postProcess: 'capitalizeFirstChar',
+        }),
       });
 
       setOpenSnackGlobal(true);

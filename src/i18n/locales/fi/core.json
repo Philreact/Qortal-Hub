@@ -103,7 +103,10 @@
     "unpin_from_dashboard": "poista kiinnitys ohjauspaneelista",
     "update": "päivitä",
     "update_app": "päivitä sovellus",
-    "vote": "äänestä"
+    "vote": "äänestä",
+    "full_screen": "koko näyttö",
+    "open_in_new": "avaa uudessa ikkunassa",
+    "restore": "palauta"
   },
   "address_your": "sinun osoitteesi",
   "admin": "ylläpitäjä",
@@ -237,7 +240,8 @@
       "save_qdn": "tallennus QDN:ään epäonnistui",
       "send_failed": "lähetys epäonnistui",
       "update_failed": "päivitys epäonnistui",
-      "vote": "äänestys epäonnistui"
+      "vote": "äänestys epäonnistui",
+      "same_foreign_blockchain": "osoite ei kuulu samaan ulkoiseen lohkoketjuun"
     },
     "generic": {
       "already_voted": "olet jo äänestänyt.",
@@ -295,7 +299,11 @@
       "account_menu": "Tilivalikko",
       "authenticated_account": "Todennettu tili",
       "address": "Osoite",
-      "copy_address": "Kopioi osoite"
+      "copy_address": "Kopioi osoite",
+      "address_copied": "osoite kopioitu leikepöydälle.",
+      "avatar_publish_fee": "avatarin julkaiseminen vaatii {{fee}} QORT maksun",
+      "link_copied": "linkki kopioitu leikepöydälle.",
+      "no_primary_name": "ei ensisijaista nimeä"
     },
     "success": {
       "transfer": "siirto onnistui!",
@@ -726,5 +734,8 @@
   "call_audio_list_error": "laitteita ei voitu listata",
   "call_audio_microphone": "mikrofoni",
   "call_audio_settings": "puhelun ääniasetukset",
-  "call_audio_speaker": "kaiutin"
+  "call_audio_speaker": "kaiutin",
+  "voice_call": {
+    "failed": "äänipuhelu epäonnistui"
+  }
 }

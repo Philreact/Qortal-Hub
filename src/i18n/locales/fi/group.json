@@ -328,7 +328,16 @@
     "empty_body": "Tilaa tekijöitä ja yhteisöjä Q-Appeista, jotka tukevat tilauksia, kuten SubWire.",
     "open_subwire": "avaa SubWire",
     "tab_subscriptions": "Tilaukset",
-    "tab_subwire": "SubWire"
+    "tab_subwire": "SubWire",
+    "auto_refresh": "päivittyy automaattisesti",
+    "expires": "vanhenee {{time}}",
+    "managed_subscriptions": "hallitut tilaukset",
+    "needs_payment_one": "{{count}} tilaus vaatii maksun",
+    "needs_payment_other": "{{count}} tilausta vaatii maksun",
+    "no_active": "ei aktiivisia tilauksia",
+    "pending_join_request_one": "{{count}} liittymispyyntö",
+    "pending_join_request_other": "{{count}} liittymispyyntöä",
+    "re_encryption_needed": "uudelleensalaus vaaditaan"
   },
   "group_invites": {
     "empty_title": "ei kutsuja",

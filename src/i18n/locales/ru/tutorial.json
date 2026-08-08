@@ -65,6 +65,7 @@
     "persistent_guide_get_qorts": "Начинаем с 6 QORT. Выберите любой способ выше.",
     "persistent_guide_register_name": "Далее зарегистрируй своё имя.",
     "persistent_guide_load_avatar": "Наконец добавь аватар.",
-    "post_onboarding_workspace_ready": "Готово. Выше можно настраивать рабочую область."
+    "post_onboarding_workspace_ready": "Готово. Выше можно настраивать рабочую область.",
+    "next": "далее"
   }
 }

@@ -65,6 +65,7 @@
     "persistent_guide_get_qorts": "まずは 6 QORT から。上の選択肢から選んでください。",
     "persistent_guide_register_name": "次に名前を登録しましょう。",
     "persistent_guide_load_avatar": "最後にアバターを設定しましょう。",
-    "post_onboarding_workspace_ready": "準備完了です。上のワークスペースを組み立て始められます。"
+    "post_onboarding_workspace_ready": "準備完了です。上のワークスペースを組み立て始められます。",
+    "next": "次へ"
   }
 }

@@ -328,7 +328,16 @@
     "empty_body": "Подписывайтесь на авторов и сообщества в Q-Apps с поддержкой подписок, например SubWire.",
     "open_subwire": "открыть SubWire",
     "tab_subscriptions": "Подписки",
-    "tab_subwire": "SubWire"
+    "tab_subwire": "SubWire",
+    "auto_refresh": "обновляется автоматически",
+    "expires": "истекает {{time}}",
+    "managed_subscriptions": "управляемые подписки",
+    "needs_payment_one": "{{count}} подписка требует оплаты",
+    "needs_payment_other": "{{count}} подписок требуют оплаты",
+    "no_active": "нет активных подписок",
+    "pending_join_request_one": "{{count}} заявка на вступление",
+    "pending_join_request_other": "{{count}} заявок на вступление",
+    "re_encryption_needed": "требуется повторное шифрование"
   },
   "group_invites": {
     "empty_title": "нет приглашений",
@@ -379,7 +388,7 @@
   "join_link": "ссылка для вступления в группу",
   "join_requests": "запросы на вступление",
   "last_message": "последнее сообщение",
-  "last_message_date": "последнее сообщение: {{date }}",
+  "last_message_date": "последнее сообщение: {{date}}",
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Вы",
   "latest_mails": "последние Q-сообщения",

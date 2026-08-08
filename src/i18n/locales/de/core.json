@@ -103,7 +103,10 @@
     "unpin_from_dashboard": "Unpin aus dem Dashboard",
     "update": "aktualisieren",
     "update_app": "Aktualisieren Sie Ihre App",
-    "vote": "Abstimmung"
+    "vote": "Abstimmung",
+    "full_screen": "vollbild",
+    "open_in_new": "in neuem fenster öffnen",
+    "restore": "wiederherstellen"
   },
   "address_your": "Ihre Adresse",
   "admin": "Administrator",
@@ -237,7 +240,8 @@
       "save_qdn": "qdn kann nicht speichern",
       "send_failed": "nicht senden",
       "update_failed": "nicht aktualisiert",
-      "vote": "nicht stimmen können"
+      "vote": "nicht stimmen können",
+      "same_foreign_blockchain": "die adresse gehört nicht zur selben fremden blockchain"
     },
     "generic": {
       "already_voted": "Sie haben bereits gestimmt.",
@@ -329,7 +333,11 @@
       "authenticated_account": "Authentifiziertes Konto",
       "address": "Adresse",
       "copy_address": "Adresse kopieren",
-      "new_notification": "Neue Benachrichtigung"
+      "new_notification": "Neue Benachrichtigung",
+      "address_copied": "adresse in die zwischenablage kopiert.",
+      "avatar_publish_fee": "das veröffentlichen eines avatars kostet eine gebühr von {{fee}} QORT",
+      "link_copied": "link in die zwischenablage kopiert.",
+      "no_primary_name": "kein primärer name"
     },
     "message": "Nachricht",
     "promotion_text": "Promotionstext",
@@ -784,5 +792,8 @@
   "call_audio_list_error": "geräte konnten nicht aufgelistet werden",
   "call_audio_microphone": "mikrofon",
   "call_audio_settings": "audioeinstellungen für anrufe",
-  "call_audio_speaker": "lautsprecher"
+  "call_audio_speaker": "lautsprecher",
+  "voice_call": {
+    "failed": "sprachanruf fehlgeschlagen"
+  }
 }

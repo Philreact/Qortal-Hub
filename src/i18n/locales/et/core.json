@@ -103,7 +103,10 @@
     "unpin_from_dashboard": "eemalda juhtpaneelilt",
     "update": "uuenda",
     "update_app": "uuenda oma rakendust",
-    "vote": "hääleta"
+    "vote": "hääleta",
+    "full_screen": "täisekraan",
+    "open_in_new": "ava uues aknas",
+    "restore": "taasta"
   },
   "address_your": "sinu aadress",
   "admin": "admin",
@@ -237,7 +240,8 @@
       "save_qdn": "QDN-i salvestamine ebaõnnestus",
       "send_failed": "saatmine ebaõnnestus",
       "update_failed": "uuendamine ebaõnnestus",
-      "vote": "ei saa hääletada"
+      "vote": "ei saa hääletada",
+      "same_foreign_blockchain": "aadress ei kuulu samasse välisesse plokiahelasse"
     },
     "generic": {
       "already_voted": "oled juba hääletanud.",
@@ -330,7 +334,11 @@
       "authenticated_account": "Autenditud konto",
       "address": "Aadress",
       "copy_address": "Kopeeri aadress",
-      "new_notification": "Uus teavitus"
+      "new_notification": "Uus teavitus",
+      "address_copied": "aadress kopeeriti lõikelauale.",
+      "avatar_publish_fee": "avatari avaldamine nõuab tasu {{fee}} QORT",
+      "link_copied": "link kopeeriti lõikelauale.",
+      "no_primary_name": "peamine nimi puudub"
     },
     "message": "sõnum",
     "promotion_text": "Sisesta lühikene tutvustus",
@@ -787,5 +795,8 @@
   "call_audio_list_error": "seadmete loendi hankimine ebaõnnestus",
   "call_audio_microphone": "mikrofon",
   "call_audio_settings": "kõne heliseaded",
-  "call_audio_speaker": "kõlar"
+  "call_audio_speaker": "kõlar",
+  "voice_call": {
+    "failed": "kõne ebaõnnestus"
+  }
 }

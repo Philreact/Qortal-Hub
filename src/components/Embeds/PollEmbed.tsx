@@ -56,7 +56,7 @@ export const PollCard = ({
     const fee = await getFee('VOTE_ON_POLL');
 
     await show({
-      message: t('core:question.accept_vote_on_poll', {
+      message: t('core:message.question.accept_vote_on_poll', {
         postProcess: 'capitalizeFirstChar',
       }),
       publishFee: fee.fee + ' QORT',

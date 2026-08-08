@@ -65,6 +65,7 @@
     "persistent_guide_get_qorts": "先从 6 个 QORT 开始。任选上方的一种方式。",
     "persistent_guide_register_name": "接下来注册你的名字。",
     "persistent_guide_load_avatar": "最后上传你的头像。",
-    "post_onboarding_workspace_ready": "全部就绪。你可以开始在上方搭建工作区。"
+    "post_onboarding_workspace_ready": "全部就绪。你可以开始在上方搭建工作区。",
+    "next": "下一步"
   }
 }

@@ -328,7 +328,16 @@
     "empty_body": "SubWire など、サブスクリプションに対応した Q-App からクリエイターやコミュニティを購読できます。",
     "open_subwire": "SubWire を開く",
     "tab_subscriptions": "サブスクリプション",
-    "tab_subwire": "SubWire"
+    "tab_subwire": "SubWire",
+    "auto_refresh": "自動的に更新されます",
+    "expires": "{{time}} に期限切れ",
+    "managed_subscriptions": "管理中のサブスクリプション",
+    "needs_payment_one": "{{count}} 件のサブスクリプションに支払いが必要です",
+    "needs_payment_other": "{{count}} 件のサブスクリプションに支払いが必要です",
+    "no_active": "有効なサブスクリプションはありません",
+    "pending_join_request_one": "{{count}} 件の参加リクエスト",
+    "pending_join_request_other": "{{count}} 件の参加リクエスト",
+    "re_encryption_needed": "再暗号化が必要です"
   },
   "group_invites": {
     "empty_title": "招待はありません",
@@ -379,7 +388,7 @@
   "join_link": "グループ参加リンク",
   "join_requests": "参加リクエスト",
   "last_message": "最後のメッセージ",
-  "last_message_date": "最後のメッセージ: {{date }}",
+  "last_message_date": "最後のメッセージ: {{date}}",
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "あなた",
   "latest_mails": "最新のQメール",

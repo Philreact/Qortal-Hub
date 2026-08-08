@@ -103,7 +103,10 @@
     "unpin_from_dashboard": "إلغاء التثبيت من لوحة التحكم",
     "update": "تحديث",
     "update_app": "تحديث تطبيقك",
-    "vote": "تصويت"
+    "vote": "تصويت",
+    "full_screen": "ملء الشاشة",
+    "open_in_new": "فتح في نافذة جديدة",
+    "restore": "استعادة"
   },
   "address_your": "عنوانك",
   "admin": "أدمن",
@@ -237,7 +240,8 @@
       "save_qdn": "غير قادر على الحفظ في QDN",
       "send_failed": "فشل الإرسال",
       "update_failed": "فشل التحديث",
-      "vote": "غير قادر على التصويت"
+      "vote": "غير قادر على التصويت",
+      "same_foreign_blockchain": "العنوان لا ينتمي إلى نفس سلسلة الكتل الخارجية"
     },
     "generic": {
       "already_voted": "لقد قمت بالتصويت بالفعل.",
@@ -330,7 +334,11 @@
       "authenticated_account": "حساب موثق",
       "address": "العنوان",
       "copy_address": "نسخ العنوان",
-      "new_notification": "إشعار جديد"
+      "new_notification": "إشعار جديد",
+      "address_copied": "تم نسخ العنوان إلى الحافظة.",
+      "avatar_publish_fee": "يتطلب نشر الصورة الرمزية رسومًا قدرها {{fee}} QORT",
+      "link_copied": "تم نسخ الرابط إلى الحافظة.",
+      "no_primary_name": "لا يوجد اسم أساسي"
     },
     "message": "رسالة",
     "promotion_text": "نص الترويج",
@@ -787,5 +795,8 @@
   "call_audio_list_error": "تعذّر سرد الأجهزة",
   "call_audio_microphone": "الميكروفون",
   "call_audio_settings": "إعدادات صوت المكالمة",
-  "call_audio_speaker": "مكبر الصوت"
+  "call_audio_speaker": "مكبر الصوت",
+  "voice_call": {
+    "failed": "فشلت المكالمة الصوتية"
+  }
 }

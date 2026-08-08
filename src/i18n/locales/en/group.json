@@ -337,7 +337,16 @@
     "empty_body": "Subscribe to creators and communities from Q-Apps that support subscriptions, such as SubWire.",
     "open_subwire": "open SubWire",
     "tab_subscriptions": "Subscriptions",
-    "tab_subwire": "SubWire"
+    "tab_subwire": "SubWire",
+    "auto_refresh": "updates automatically",
+    "expires": "expires {{time}}",
+    "managed_subscriptions": "managed subscriptions",
+    "needs_payment_one": "{{count}} subscription needs payment",
+    "needs_payment_other": "{{count}} subscriptions need payment",
+    "no_active": "no active subscriptions",
+    "pending_join_request_one": "{{count}} join request",
+    "pending_join_request_other": "{{count}} join requests",
+    "re_encryption_needed": "re-encryption needed"
   },
   "group_invites": {
     "empty_title": "no invite requests",
@@ -389,7 +398,7 @@
   "join_link": "join group link",
   "join_requests": "join requests",
   "last_message": "last message",
-  "last_message_date": "last message: {{date }}",
+  "last_message_date": "last message: {{date}}",
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "You",
   "latest_mails": "latest Q-Mails",

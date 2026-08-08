@@ -328,7 +328,16 @@
     "empty_body": "在支持订阅的 Q-App（例如 SubWire）中订阅创作者与社区。",
     "open_subwire": "打开 SubWire",
     "tab_subscriptions": "订阅",
-    "tab_subwire": "SubWire"
+    "tab_subwire": "SubWire",
+    "auto_refresh": "自动更新",
+    "expires": "{{time}} 到期",
+    "managed_subscriptions": "托管的订阅",
+    "needs_payment_one": "{{count}} 个订阅需要付款",
+    "needs_payment_other": "{{count}} 个订阅需要付款",
+    "no_active": "没有有效的订阅",
+    "pending_join_request_one": "{{count}} 个加入请求",
+    "pending_join_request_other": "{{count}} 个加入请求",
+    "re_encryption_needed": "需要重新加密"
   },
   "group_invites": {
     "empty_title": "没有邀请",
@@ -379,7 +388,7 @@
   "join_link": "加入群组链接",
   "join_requests": "加入请求",
   "last_message": "最后一条消息",
-  "last_message_date": "最后一条消息：{{date }}",
+  "last_message_date": "最后一条消息：{{date}}",
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "你",
   "latest_mails": "最新 Q 邮件",

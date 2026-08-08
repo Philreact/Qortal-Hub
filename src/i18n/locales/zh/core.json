@@ -103,7 +103,10 @@
     "unpin_from_dashboard": "从仪表板上锁定",
     "update": "更新",
     "update_app": "更新您的应用程序",
-    "vote": "投票"
+    "vote": "投票",
+    "full_screen": "全屏",
+    "open_in_new": "在新窗口中打开",
+    "restore": "还原"
   },
   "address_your": "您的地址",
   "admin": "行政",
@@ -237,7 +240,8 @@
       "save_qdn": "无法保存到QDN",
       "send_failed": "未能发送",
       "update_failed": "无法更新",
-      "vote": "无法投票"
+      "vote": "无法投票",
+      "same_foreign_blockchain": "该地址不属于同一条外部区块链"
     },
     "generic": {
       "already_voted": "您已经投票了。",
@@ -330,7 +334,11 @@
       "authenticated_account": "已认证账户",
       "address": "地址",
       "copy_address": "复制地址",
-      "new_notification": "新通知"
+      "new_notification": "新通知",
+      "address_copied": "地址已复制到剪贴板。",
+      "avatar_publish_fee": "发布头像需要 {{fee}} QORT 的手续费",
+      "link_copied": "链接已复制到剪贴板。",
+      "no_primary_name": "没有主要名称"
     },
     "message": "信息",
     "promotion_text": "促销文本",
@@ -785,5 +793,8 @@
   "call_audio_list_error": "无法列出设备",
   "call_audio_microphone": "麦克风",
   "call_audio_settings": "通话音频设置",
-  "call_audio_speaker": "扬声器"
+  "call_audio_speaker": "扬声器",
+  "voice_call": {
+    "failed": "语音通话失败"
+  }
 }

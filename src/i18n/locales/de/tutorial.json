@@ -65,6 +65,7 @@
     "persistent_guide_get_qorts": "Wir starten mit 6 QORT. Wähle oben eine Option.",
     "persistent_guide_register_name": "Als Nächstes registrierst du deinen Namen.",
     "persistent_guide_load_avatar": "Zum Schluss fügst du deinen Avatar hinzu.",
-    "post_onboarding_workspace_ready": "Alles bereit. Du kannst deinen Workspace oben aufbauen."
+    "post_onboarding_workspace_ready": "Alles bereit. Du kannst deinen Workspace oben aufbauen.",
+    "next": "weiter"
   }
 }

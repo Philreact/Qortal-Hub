@@ -328,7 +328,16 @@
     "empty_body": "Abbonati a creatori e community da Q-Apps che supportano gli abbonamenti, come SubWire.",
     "open_subwire": "apri SubWire",
     "tab_subscriptions": "Abbonamenti",
-    "tab_subwire": "SubWire"
+    "tab_subwire": "SubWire",
+    "auto_refresh": "si aggiorna automaticamente",
+    "expires": "scade {{time}}",
+    "managed_subscriptions": "abbonamenti gestiti",
+    "needs_payment_one": "{{count}} abbonamento richiede un pagamento",
+    "needs_payment_other": "{{count}} abbonamenti richiedono un pagamento",
+    "no_active": "nessun abbonamento attivo",
+    "pending_join_request_one": "{{count}} richiesta di adesione",
+    "pending_join_request_other": "{{count}} richieste di adesione",
+    "re_encryption_needed": "è necessaria una nuova crittografia"
   },
   "group_invites": {
     "empty_title": "nessun invito",

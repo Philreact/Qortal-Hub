@@ -103,7 +103,10 @@
     "unpin_from_dashboard": "Desvinar del tablero",
     "update": "actualizar",
     "update_app": "Actualiza tu aplicación",
-    "vote": "votar"
+    "vote": "votar",
+    "full_screen": "pantalla completa",
+    "open_in_new": "abrir en una ventana nueva",
+    "restore": "restaurar"
   },
   "address_your": "Tu dirección",
   "admin": "administración",
@@ -237,7 +240,8 @@
       "save_qdn": "No se puede guardar en QDN",
       "send_failed": "No se pudo enviar",
       "update_failed": "No se pudo actualizar",
-      "vote": "Incapaz de votar"
+      "vote": "Incapaz de votar",
+      "same_foreign_blockchain": "la dirección no pertenece a la misma cadena de bloques externa"
     },
     "generic": {
       "already_voted": "ya has votado.",
@@ -330,7 +334,11 @@
       "authenticated_account": "Cuenta autenticada",
       "address": "Dirección",
       "copy_address": "Copiar dirección",
-      "new_notification": "Nueva notificación"
+      "new_notification": "Nueva notificación",
+      "address_copied": "dirección copiada al portapapeles.",
+      "avatar_publish_fee": "publicar un avatar requiere una tarifa de {{fee}} QORT",
+      "link_copied": "enlace copiado al portapapeles.",
+      "no_primary_name": "sin nombre principal"
     },
     "message": "mensaje",
     "promotion_text": "texto de promoción",
@@ -785,5 +793,8 @@
   "call_audio_list_error": "no se pudieron listar los dispositivos",
   "call_audio_microphone": "micrófono",
   "call_audio_settings": "ajustes de audio de llamada",
-  "call_audio_speaker": "altavoz"
+  "call_audio_speaker": "altavoz",
+  "voice_call": {
+    "failed": "la llamada de voz ha fallado"
+  }
 }

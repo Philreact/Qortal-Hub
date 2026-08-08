@@ -328,7 +328,16 @@
     "empty_body": "اشترك عند المبدعين والمجتمعات من تطبيقات Q-App التي تدعم الاشتراكات، مثل SubWire.",
     "open_subwire": "فتح SubWire",
     "tab_subscriptions": "الاشتراكات",
-    "tab_subwire": "SubWire"
+    "tab_subwire": "SubWire",
+    "auto_refresh": "يتم التحديث تلقائيًا",
+    "expires": "ينتهي {{time}}",
+    "managed_subscriptions": "الاشتراكات المُدارة",
+    "needs_payment_one": "{{count}} اشتراك يحتاج إلى دفع",
+    "needs_payment_other": "{{count}} اشتراكات تحتاج إلى دفع",
+    "no_active": "لا توجد اشتراكات نشطة",
+    "pending_join_request_one": "{{count}} طلب انضمام",
+    "pending_join_request_other": "{{count}} طلبات انضمام",
+    "re_encryption_needed": "إعادة التشفير مطلوبة"
   },
   "group_invites": {
     "empty_title": "لا توجد دعوات",

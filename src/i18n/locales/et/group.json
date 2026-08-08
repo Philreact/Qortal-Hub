@@ -328,7 +328,16 @@
     "empty_body": "Telli loojaid ja kogukondi Q-Appidest, mis toetavad tellimusi, näiteks SubWire.",
     "open_subwire": "ava SubWire",
     "tab_subscriptions": "Tellimused",
-    "tab_subwire": "SubWire"
+    "tab_subwire": "SubWire",
+    "auto_refresh": "uueneb automaatselt",
+    "expires": "aegub {{time}}",
+    "managed_subscriptions": "hallatud tellimused",
+    "needs_payment_one": "{{count}} tellimus vajab tasumist",
+    "needs_payment_other": "{{count}} tellimust vajab tasumist",
+    "no_active": "aktiivseid tellimusi pole",
+    "pending_join_request_one": "{{count}} liitumistaotlus",
+    "pending_join_request_other": "{{count}} liitumistaotlust",
+    "re_encryption_needed": "vajalik on uuesti krüpteerimine"
   },
   "group_invites": {
     "empty_title": "kutseid pole",
@@ -380,7 +389,7 @@
   "join_link": "rühma liitumislink",
   "join_requests": "liitumistaotlused",
   "last_message": "viimane sõnum",
-  "last_message_date": "viimane sõnum: {{date }}",
+  "last_message_date": "viimane sõnum: {{date}}",
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Sina",
   "latest_mails": "viimased Q-kirjad",

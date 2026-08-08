@@ -442,10 +442,7 @@ function AuthenticatedUserMenu({
                   whiteSpace: 'nowrap',
                 }}
               >
-                {primaryName ||
-                  t('core:message.generic.no_primary_name', {
-                    defaultValue: 'No primary name',
-                  })}
+                {primaryName || t('core:message.generic.no_primary_name', {})}
               </Typography>
               <Typography
                 sx={{
@@ -858,9 +855,7 @@ export function GlobalQortalNavBar({
         setInfoSnackGlobal({
           compact: true,
           duration: 3000,
-          message: t('core:message.generic.link_copied', {
-            defaultValue: 'Link copied to clipboard.',
-          }),
+          message: t('core:message.generic.link_copied', {}),
           type: 'success',
         });
         setOpenSnackGlobal(true);
@@ -904,9 +899,7 @@ export function GlobalQortalNavBar({
     setInfoSnackGlobal({
       compact: true,
       duration: 3000,
-      message: t('core:message.generic.address_copied', {
-        defaultValue: 'Address copied to clipboard.',
-      }),
+      message: t('core:message.generic.address_copied', {}),
       type: 'success',
     });
     setOpenSnackGlobal(true);

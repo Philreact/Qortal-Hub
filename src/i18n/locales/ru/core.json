@@ -103,7 +103,10 @@
     "unpin_from_dashboard": "открепить с приборной панели",
     "update": "обновлять",
     "update_app": "Обновите свое приложение",
-    "vote": "голосование"
+    "vote": "голосование",
+    "full_screen": "полный экран",
+    "open_in_new": "открыть в новом окне",
+    "restore": "восстановить"
   },
   "address_your": "Ваш адрес",
   "admin": "администратор",
@@ -237,7 +240,8 @@
       "save_qdn": "Невозможно сохранить в QDN",
       "send_failed": "не удалось отправить",
       "update_failed": "Не удалось обновить",
-      "vote": "Невозможно проголосовать"
+      "vote": "Невозможно проголосовать",
+      "same_foreign_blockchain": "адрес не принадлежит той же внешней блокчейн-сети"
     },
     "generic": {
       "already_voted": "Вы уже проголосовали.",
@@ -330,7 +334,11 @@
       "authenticated_account": "Авторизованный аккаунт",
       "address": "Адрес",
       "copy_address": "Скопировать адрес",
-      "new_notification": "Новое уведомление"
+      "new_notification": "Новое уведомление",
+      "address_copied": "адрес скопирован в буфер обмена.",
+      "avatar_publish_fee": "публикация аватара требует комиссии {{fee}} QORT",
+      "link_copied": "ссылка скопирована в буфер обмена.",
+      "no_primary_name": "основное имя отсутствует"
     },
     "message": "сообщение",
     "promotion_text": "Текст продвижения",
@@ -787,5 +795,8 @@
   "call_audio_list_error": "не удалось получить список устройств",
   "call_audio_microphone": "микрофон",
   "call_audio_settings": "настройки звука вызова",
-  "call_audio_speaker": "динамик"
+  "call_audio_speaker": "динамик",
+  "voice_call": {
+    "failed": "не удалось совершить голосовой вызов"
+  }
 }

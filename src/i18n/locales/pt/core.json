@@ -103,7 +103,10 @@
     "unpin_from_dashboard": "desafixar do dashboard",
     "update": "atualizar",
     "update_app": "atualizar seu app",
-    "vote": "votar"
+    "vote": "votar",
+    "full_screen": "ecrã inteiro",
+    "open_in_new": "abrir numa nova janela",
+    "restore": "restaurar"
   },
   "address_your": "seu endereço:",
   "admin": "administrador",
@@ -237,7 +240,8 @@
       "save_qdn": "não foi possível salvar na QDN",
       "send_failed": "falha ao enviar",
       "update_failed": "falha ao atualizar",
-      "vote": "não foi possível votar"
+      "vote": "não foi possível votar",
+      "same_foreign_blockchain": "o endereço não pertence à mesma blockchain externa"
     },
     "generic": {
       "already_voted": "você já votou.",
@@ -330,7 +334,11 @@
       "authenticated_account": "Conta autenticada",
       "address": "Endereço",
       "copy_address": "Copiar endereço",
-      "new_notification": "Nova notificação"
+      "new_notification": "Nova notificação",
+      "address_copied": "endereço copiado para a área de transferência.",
+      "avatar_publish_fee": "publicar um avatar exige uma taxa de {{fee}} QORT",
+      "link_copied": "ligação copiada para a área de transferência.",
+      "no_primary_name": "sem nome principal"
     },
     "message": "messagem",
     "promotion_text": "texto promocional",
@@ -787,5 +795,8 @@
   "call_audio_list_error": "não foi possível listar os dispositivos",
   "call_audio_microphone": "microfone",
   "call_audio_settings": "definições de áudio da chamada",
-  "call_audio_speaker": "altifalante"
+  "call_audio_speaker": "altifalante",
+  "voice_call": {
+    "failed": "a chamada de voz falhou"
+  }
 }

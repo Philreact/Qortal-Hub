@@ -234,11 +234,9 @@ export const WalletsAppWrapper = () => {
                   title={
                     isFullScreen
                       ? t('core:action.restore', {
-                          defaultValue: 'Restore',
                           postProcess: 'capitalizeFirstChar',
                         })
                       : t('core:action.full_screen', {
-                          defaultValue: 'Full screen',
                           postProcess: 'capitalizeFirstChar',
                         })
                   }

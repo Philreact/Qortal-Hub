@@ -103,7 +103,10 @@
     "unpin_from_dashboard": "UNIN DU Tableau de bord",
     "update": "mise à jour",
     "update_app": "Mettez à jour votre application",
-    "vote": "voter"
+    "vote": "voter",
+    "full_screen": "plein écran",
+    "open_in_new": "ouvrir dans une nouvelle fenêtre",
+    "restore": "restaurer"
   },
   "address_your": "Votre adresse",
   "admin": "administrer",
@@ -237,7 +240,8 @@
       "save_qdn": "Impossible d'économiser sur QDN",
       "send_failed": "Échec de l'envoi",
       "update_failed": "Échec de la mise à jour",
-      "vote": "Impossible de voter"
+      "vote": "Impossible de voter",
+      "same_foreign_blockchain": "l'adresse n'appartient pas à la même blockchain externe"
     },
     "generic": {
       "already_voted": "Vous avez déjà voté.",
@@ -330,7 +334,11 @@
       "authenticated_account": "Compte authentifié",
       "address": "Adresse",
       "copy_address": "Copier l’adresse",
-      "new_notification": "Nouvelle notification"
+      "new_notification": "Nouvelle notification",
+      "address_copied": "adresse copiée dans le presse-papiers.",
+      "avatar_publish_fee": "la publication d'un avatar nécessite des frais de {{fee}} QORT",
+      "link_copied": "lien copié dans le presse-papiers.",
+      "no_primary_name": "aucun nom principal"
     },
     "message": "message",
     "promotion_text": "texte de promotion",
@@ -785,5 +793,8 @@
   "call_audio_list_error": "impossible de lister les périphériques",
   "call_audio_microphone": "microphone",
   "call_audio_settings": "paramètres audio de l'appel",
-  "call_audio_speaker": "haut-parleur"
+  "call_audio_speaker": "haut-parleur",
+  "voice_call": {
+    "failed": "l'appel vocal a échoué"
+  }
 }
