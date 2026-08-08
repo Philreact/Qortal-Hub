@@ -313,11 +313,71 @@
       "no_primary_name": "ei ensisijaista nimeä",
       "replied_to_deleted_message": "vastasi poistettuun viestiin",
       "replied_to_you": "↩ vastasi sinulle",
-      "replying_to": "vastaa käyttäjälle {{name}}"
+      "replying_to": "vastaa käyttäjälle {{name}}",
+      "amount_qort": "määrä: {{ amount }} QORT",
+      "buy_order_request": "sovellus <br/><italic>{{hostname}}</italic> <br/><span>pyytää {{count}} ostotoimeksiantoa</span>",
+      "buy_order_request_other": "sovellus <br/><italic>{{hostname}}</italic> <br/><span>pyytää {{count}} ostotoimeksiantoa</span>",
+      "devmode_local_node": "käytä paikallista solmua kehitystilassa! Kirjaudu ulos ja käytä paikallista solmua.",
+      "downloading_decrypting_app": "ladataan ja puretaan yksityistä sovellusta.",
+      "fee_qort": "maksu: {{ fee }} QORT",
+      "foreign_fee": "ulkoinen maksu: {{ fee }}",
+      "get_qort_trade_portal": "hanki QORT Qortalin ketjujenvälisestä kauppaportaalista",
+      "message_with_image": "tässä viestissä on jo kuva",
+      "most_recent_payment": "{{ count }} viimeisintä maksua",
+      "name_preview": "tarvitset nimen esikatselun käyttämiseen",
+      "name_publish": "tarvitset Qortal-nimen julkaisemiseen",
+      "name_rate": "tarvitset nimen arvioidaksesi.",
+      "no_message": "ei viestiä",
+      "no_minting_details": "lyöntitietoja ei voi tarkastella yhdyskäytävässä",
+      "no_pinned_changes": "sinulla ei ole tällä hetkellä muutoksia kiinnitettyihin sovelluksiin",
+      "one_app_per_name": "huomaa: tällä hetkellä vain yksi sovellus ja verkkosivusto on sallittu nimeä kohden.",
+      "ongoing_transactions": "käynnissä olevat tapahtumat",
+      "overwrite_qdn": "korvaa QDN:ään",
+      "password_confirm": "vahvista salasana",
+      "password_enter": "anna salasana",
+      "payment_request": "sovellus <br/><italic>{{hostname}}</italic> <br/><span>pyytää maksua</span>",
+      "people_reaction": "käyttäjät, jotka reagoivat merkillä {{ reaction }}",
+      "processing_transaction": "käsittelee tapahtumaa, odota hetki...",
+      "qdn": "käytä QDN-tallennusta",
+      "rating": "arvio kohteelle {{ service }} {{ name }}",
+      "register_name": "tarvitset rekisteröidyn Qortal-nimen tallentaaksesi kiinnitetyt sovellukset QDN:ään.",
+      "replied_to": "vastasi käyttäjälle {{ person }}",
+      "revert_default": "palauta oletukseen",
+      "revert_qdn": "palauta QDN:stä",
+      "save_qdn": "tallenna QDN:ään",
+      "select_image": "valitse kuva logoksi",
+      "select_zip": "valitse .zip-tiedosto, joka sisältää staattisen sisällön:",
+      "space_for_admins": "valitettavasti tämä tila on vain ylläpitäjille.",
+      "unsaved_changes": "sinulla on tallentamattomia muutoksia kiinnitettyihin sovelluksiin. Tallenna ne QDN:ään."
     },
     "success": {
       "transfer": "siirto onnistui!",
-      "transfer_submitted": "siirtosi on lähetetty onnistuneesti."
+      "transfer_submitted": "siirtosi on lähetetty onnistuneesti.",
+      "order_submitted": "ostotoimeksiantosi lähetettiin",
+      "published": "julkaisu onnistui. Odota muutama minuutti, että verkko levittää muutokset.",
+      "published_qdn": "julkaistu onnistuneesti QDN:ään",
+      "rated_app": "arviointi onnistui. Odota muutama minuutti, että verkko levittää muutokset.",
+      "request_read": "olen lukenut tämän pyynnön",
+      "voted": "äänestys onnistui. Odota muutama minuutti, että verkko levittää muutokset."
+    },
+    "message": "viesti",
+    "promotion_text": "mainosteksti",
+    "question": {
+      "accept_vote_on_poll": "hyväksytkö tämän VOTE_ON_POLL-tapahtuman? KYSELYT ovat julkisia!",
+      "delete_chat_image": "haluatko poistaa edellisen chat-kuvasi?",
+      "logout": "haluatko varmasti kirjautua ulos?",
+      "new_user": "oletko uusi käyttäjä?",
+      "overwrite_changes": "sovellus ei voinut ladata QDN:ään tallennettuja kiinnitettyjä sovelluksiasi. Haluatko korvata nämä muutokset?",
+      "perform_transaction": "haluatko suorittaa {{action}}-tapahtuman?",
+      "provide_thread": "anna ketjun otsikko",
+      "publish_app": "haluatko julkaista tämän sovelluksen?",
+      "publish_avatar": "haluatko julkaista profiilikuvan?",
+      "publish_qdn": "haluatko julkaista asetuksesi QDN:ään (salattuna)?",
+      "rate_app": "haluatko antaa tälle sovellukselle arvion {{ rate }}? Se luo POLL-tapahtuman.",
+      "register_name": "haluatko rekisteröidä tämän nimen?",
+      "reset_pinned": "etkö pidä nykyisistä paikallisista muutoksistasi? Haluatko palauttaa oletuksena kiinnitetyt sovellukset?",
+      "reset_qdn": "etkö pidä nykyisistä paikallisista muutoksistasi? Haluatko palauttaa QDN:ään tallennetut kiinnitetyt sovellukset?",
+      "transfer_qort": "haluatko siirtää {{ amount }} QORT"
     }
   },
   "minting": {
@@ -376,7 +436,8 @@
       "network_details": "Verkon tiedot",
       "rewardshares_loading": "Tarkistetaan reward-share-tilaa. Odota, kunnes tämä pyyntö valmistuu.",
       "loading_spinner_aria": "Ladataan"
-    }
+    },
+    "current_tier_content": "{{ tier }} (tasot {{ levels }})"
   },
   "name": "nimi",
   "name_app": "nimi/sovellus",
@@ -836,5 +897,6 @@
     "online": "Verkossa",
     "peer_offline_hint": "Ei tavoitettavissa verkossa — äänipuhelu ei ole käytettävissä",
     "peer_online_hint": "Tavoitettavissa verkossa — äänipuhelu käytettävissä"
-  }
+  },
+  "opened_apps": "avatut sovellukset"
 }

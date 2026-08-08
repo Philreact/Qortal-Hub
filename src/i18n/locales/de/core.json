@@ -347,7 +347,8 @@
       "no_primary_name": "kein primärer name",
       "replied_to_deleted_message": "hat auf eine gelöschte Nachricht geantwortet",
       "replied_to_you": "↩ hat dir geantwortet",
-      "replying_to": "antwortet auf {{name}}"
+      "replying_to": "antwortet auf {{name}}",
+      "confirmed": "bestätigt"
     },
     "message": "Nachricht",
     "promotion_text": "Promotionstext",
@@ -577,7 +578,9 @@
     "hour_other": "{{count}} Stunden",
     "minute_one": "{{count}} Minute",
     "minute_other": "{{count}} Minuten",
-    "time": "zeit"
+    "time": "zeit",
+    "second_one": "{{count}} Sekunde",
+    "second_other": "{{count}} Sekunden"
   },
   "title": "Titel",
   "to": "Zu",
@@ -894,5 +897,6 @@
     "online": "Online",
     "peer_offline_hint": "Nicht im Netzwerk — Sprachanruf nicht verfügbar",
     "peer_online_hint": "Im Netzwerk — Sprachanruf verfügbar"
-  }
+  },
+  "opened_apps": "geöffnete Apps"
 }

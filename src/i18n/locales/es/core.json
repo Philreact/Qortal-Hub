@@ -578,7 +578,9 @@
     "hour_other": "{{count}} horas",
     "minute_one": "{{count}} minuto",
     "minute_other": "{{count}} minutos",
-    "time": "tiempo"
+    "time": "tiempo",
+    "second_one": "{{count}} segundo",
+    "second_other": "{{count}} segundos"
   },
   "title": "título",
   "to": "a",
@@ -895,5 +897,6 @@
     "online": "En línea",
     "peer_offline_hint": "No está en la red — llamada de voz no disponible",
     "peer_online_hint": "En la red — llamada de voz disponible"
-  }
+  },
+  "opened_apps": "aplicaciones abiertas"
 }

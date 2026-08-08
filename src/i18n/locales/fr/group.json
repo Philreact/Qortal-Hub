@@ -390,7 +390,8 @@
     "private": "groupe privé",
     "promotions": "promotions du groupe",
     "public": "groupe public",
-    "type": "type de groupe"
+    "type": "type de groupe",
+    "owner": "propriétaire"
   },
   "invitation_expiry": "expiration de l’invitation",
   "invitees_list": "liste des invités",

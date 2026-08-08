@@ -348,7 +348,8 @@
       "no_primary_name": "nessun nome principale",
       "replied_to_deleted_message": "ha risposto a un messaggio eliminato",
       "replied_to_you": "↩ ti ha risposto",
-      "replying_to": "risposta a {{name}}"
+      "replying_to": "risposta a {{name}}",
+      "no_message": "nessun messaggio"
     },
     "message": "messaggio",
     "promotion_text": "testo di promozione",
@@ -578,7 +579,9 @@
     "hour_other": "{{count}} ore",
     "minute_one": "{{count}} minuto",
     "minute_other": "{{count}} minuti",
-    "time": "tempo"
+    "time": "tempo",
+    "second_one": "{{count}} secondo",
+    "second_other": "{{count}} secondi"
   },
   "title": "titolo",
   "to": "a",

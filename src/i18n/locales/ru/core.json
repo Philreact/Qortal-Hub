@@ -580,7 +580,9 @@
     "hour_other": "{{count}} ч.",
     "minute_one": "{{count}} минута",
     "minute_other": "{{count}} мин.",
-    "time": "время"
+    "time": "время",
+    "second_one": "{{count}} секунда",
+    "second_other": "{{count}} секунд"
   },
   "title": "заголовок",
   "to": "к",
@@ -897,5 +899,6 @@
     "online": "В сети",
     "peer_offline_hint": "Нет в сети — голосовой вызов недоступен",
     "peer_online_hint": "В сети — голосовой вызов доступен"
-  }
+  },
+  "opened_apps": "открытые приложения"
 }

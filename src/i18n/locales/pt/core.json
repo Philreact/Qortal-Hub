@@ -897,5 +897,6 @@
     "online": "Online",
     "peer_offline_hint": "Fora da rede — chamada de voz indisponível",
     "peer_online_hint": "Na rede — chamada de voz disponível"
-  }
+  },
+  "opened_apps": "aplicações abertas"
 }

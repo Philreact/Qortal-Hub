@@ -897,5 +897,6 @@
     "online": "Võrgus",
     "peer_offline_hint": "Ei ole võrgus — häälkõne pole saadaval",
     "peer_online_hint": "On võrgus — häälkõne on saadaval"
-  }
+  },
+  "opened_apps": "avatud rakendused"
 }

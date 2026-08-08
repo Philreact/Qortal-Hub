@@ -390,7 +390,8 @@
     "private": "非公開グループ",
     "promotions": "グループのプロモーション",
     "public": "公開グループ",
-    "type": "グループの種類"
+    "type": "グループの種類",
+    "owner": "所有者"
   },
   "invitation_expiry": "招待の有効期限",
   "invitees_list": "招待者リスト",

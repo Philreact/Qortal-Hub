@@ -578,7 +578,9 @@
     "hour_other": "{{count}} 小时",
     "minute_one": "{{count}} 分钟",
     "minute_other": "{{count}} 分钟",
-    "time": "时间"
+    "time": "时间",
+    "second_one": "{{count}} 秒",
+    "second_other": "{{count}} 秒"
   },
   "title": "标题",
   "to": "到",
@@ -895,5 +897,6 @@
     "online": "在线",
     "peer_offline_hint": "不在网络中 — 无法进行语音通话",
     "peer_online_hint": "在网络中 — 可进行语音通话"
-  }
+  },
+  "opened_apps": "已打开的应用"
 }

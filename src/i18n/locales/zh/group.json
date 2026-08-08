@@ -390,7 +390,8 @@
     "private": "私有群组",
     "promotions": "群组推广",
     "public": "公共群组",
-    "type": "群组类型"
+    "type": "群组类型",
+    "owner": "所有者"
   },
   "invitation_expiry": "邀请过期时间",
   "invitees_list": "被邀请者列表",

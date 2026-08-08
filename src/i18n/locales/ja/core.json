@@ -578,7 +578,9 @@
     "hour_other": "{{count}} 時間",
     "minute_one": "{{count}} 分",
     "minute_other": "{{count}} 分",
-    "time": "時間"
+    "time": "時間",
+    "second_one": "{{count}} 秒",
+    "second_other": "{{count}} 秒"
   },
   "title": "タイトル",
   "to": "に",
@@ -895,5 +897,6 @@
     "online": "オンライン",
     "peer_offline_hint": "ネットワーク上にいません — 音声通話を利用できません",
     "peer_online_hint": "ネットワーク上にいます — 音声通話を利用できます"
-  }
+  },
+  "opened_apps": "開いているアプリ"
 }

@@ -390,7 +390,8 @@
     "private": "yksityinen ryhmä",
     "promotions": "ryhmän mainokset",
     "public": "julkinen ryhmä",
-    "type": "ryhmän tyyppi"
+    "type": "ryhmän tyyppi",
+    "owner": "omistaja"
   },
   "invitation_expiry": "kutsun voimassaoloaika",
   "invitees_list": "kutsuttujen lista",

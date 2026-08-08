@@ -390,7 +390,8 @@
     "private": "جروب خاص",
     "promotions": "ترويج الجروب",
     "public": "جروب عام",
-    "type": "نوع الجروب"
+    "type": "نوع الجروب",
+    "owner": "المالك"
   },
   "invitation_expiry": "مدة انتهاء الدعوة",
   "invitees_list": "قائمة المدعوين",
