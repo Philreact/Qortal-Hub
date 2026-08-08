@@ -33,6 +33,28 @@
     "select_group": "select a group",
     "visit_q_mintership": "visit Q-Mintership"
   },
+  "add_group": {
+    "access_closed_description": "Members join by invitation.",
+    "access_closed_label": "Closed",
+    "access_label": "Group access",
+    "access_open_description": "Anyone can find and join.",
+    "access_open_label": "Open",
+    "advanced_note": "These settings affect group transactions and cannot be changed after creation.",
+    "approval_none": "None",
+    "approval_single": "One",
+    "approval_threshold_description": "Percentage of admins required to approve group decisions.",
+    "approval_threshold_label": "Approval threshold",
+    "creating": "Creating...",
+    "description_create": "Choose a name, describe your group, and get started.",
+    "description_invites": "Review the invitations you have received.",
+    "description_placeholder": "What is this group about?",
+    "description_too_long": "Description must be {{max}} characters or fewer",
+    "max_delay_label": "Maximum approval delay",
+    "min_delay_label": "Minimum approval delay",
+    "modes_aria": "Group management modes",
+    "name_hint": "Use a clear, recognizable name.",
+    "name_placeholder": "e.g. Qortal developers"
+  },
   "admin_space": {
     "ask_description": "This key encrypts content visible only to admins.",
     "gsk_description": "This key encrypts group content visible to all group members. It is currently the only key used for group chat and shared data.",
@@ -95,6 +117,7 @@
     "event_soon_html": "<p><strong>{{creator}}'s Event will start in 10 minutes.</strong><br><strong>Details</strong><br>Title: {{title}}<br>Description: {{description}}</p>",
     "expiry_locked_editing": "Expiry cannot be changed while editing",
     "group_call": "Group Call",
+    "hidden_members": "Hidden Members",
     "hide_members": "Hide Members",
     "image_unavailable": "Reticulum image file is not available",
     "leave_call": "Leave Call",
@@ -105,6 +128,7 @@
     "notify_online": "Notify members currently online",
     "open_group": "Open Group",
     "open_group_chat": "Open group chat",
+    "open_hidden_members": "Open hidden members",
     "private_encrypted_group": "Private Encrypted Group",
     "qortal_land": "Qortal Land",
     "remove_file": "Remove file",
@@ -327,6 +351,7 @@
     "add_friend_before_calling": "Add this user as a friend before calling",
     "attach_select_chat": "Select a direct chat before attaching files",
     "direct_message": "Direct Message",
+    "direct_messages": "Direct Messages",
     "dismiss_expiry_notice": "Dismiss direct message expiry notice",
     "expires_in_hours": "Expires in hours",
     "expiry_locked_editing": "Expiry cannot be changed while editing",
@@ -352,6 +377,11 @@
     "transfer_file_reticulum": "Transfer file with Reticulum",
     "transfer_register_failed": "Unable to register file transfer",
     "transfer_unavailable": "Reticulum file transfer is unavailable"
+  },
+  "find_groups": {
+    "close": "Close Find groups",
+    "subtitle": "Discover groups that are available to join.",
+    "title": "Find groups"
   },
   "group": {
     "approval_threshold": "group Approval Threshold",
@@ -741,6 +771,11 @@
       "special": "special mentions",
       "suggestions": "mention suggestions"
     },
+    "mode_pill": {
+      "chat": "Chat",
+      "enter_qortal_land": "Enter Qortal Land",
+      "return_to_chat": "Return to Chat"
+    },
     "qapp_preview": {
       "check_again": "check again",
       "no_resource": "no Q-App resource was found for this link.",
@@ -754,6 +789,65 @@
       "shared_video_titled": "shared a video: {{title}}",
       "view_on_quitter": "view this post on Quitter",
       "watch_on_qtube": "watch this video on Q-Tube."
+    },
+    "rail": {
+      "find_groups": "Find Groups",
+      "group_settings": "Group Settings",
+      "whats_new": "Open What's New"
+    },
+    "settings": {
+      "category": {
+        "accessibility": "Accessibility",
+        "legacy": "Legacy"
+      },
+      "legacy": {
+        "description": "Show the legacy Threads and Admin controls in the Q-Chat header.",
+        "title": "Threads",
+        "toggle": {
+          "aria": "Show legacy Threads",
+          "description": "Display the legacy Threads and Admin icons.",
+          "label": "Threads"
+        },
+        "warning": "Threads will be removed in the upcoming release. Move any important thread information to a safe place or to a new channel in Q-Chat before updating."
+      },
+      "messages": {
+        "description": "Adjust how your own messages appear in Reticulum Q-Chat.",
+        "highlight_own": {
+          "description": "Add a faint background to messages you send.",
+          "label": "Highlight my messages"
+        },
+        "title": "Messages"
+      },
+      "nav": {
+        "mentions": "Mentions",
+        "messages": "Messages",
+        "text_size": "Text size",
+        "threads": "Threads"
+      },
+      "notifications": {
+        "description": "Show Reticulum Q-Chat mentions in the Hub notification panel. Regular unread messages will not create Hub notifications.",
+        "mentions": {
+          "description": "Alert me when someone mentions me in a channel.",
+          "label": "Mention notifications"
+        },
+        "title": "Notifications"
+      },
+      "text_size": {
+        "default": {
+          "detail": "Current chat text size",
+          "label": "Default"
+        },
+        "description": "Choose a reading size for Reticulum messages, channel labels and the members list. Invitation previews keep their fixed layout.",
+        "high": {
+          "detail": "Largest readable chat text",
+          "label": "High"
+        },
+        "medium": {
+          "detail": "A comfortable increase",
+          "label": "Medium"
+        },
+        "title": "Text size"
+      }
     },
     "user_card": {
       "address_copied": "address copied",
@@ -853,5 +947,77 @@
     "send_to_reopen": "Send a message to re-open.",
     "start_voice_call": "Start voice call"
   },
-  "thread_posts": "new thread posts"
+  "thread_posts": "new thread posts",
+  "whats_new": {
+    "close": "Close What's New",
+    "closing_note": "This is the beginning of the new Q-Chat. More social experiences, community tools, and refinements are already on the way.",
+    "comparison": {
+      "aria_label": "Legacy and Reticulum Q-Chat comparison",
+      "body": "Legacy Q-Chat established decentralized social communication inside Qortal. The Reticulum edition builds on that achievement with a network and interface designed for faster, more interactive daily conversation.",
+      "column_area": "Area",
+      "column_legacy": "Legacy Q-Chat",
+      "column_reticulum": "Reticulum Q-Chat",
+      "discovery": {
+        "area": "Community discovery",
+        "legacy": "Member count and established group information",
+        "reticulum": "Search, practical filters, previews, and Group Score"
+      },
+      "live": {
+        "area": "Live communication",
+        "legacy": "Focused on durable text chat",
+        "reticulum": "Text, mentions, direct chat, calls, and proximity voice"
+      },
+      "organization": {
+        "area": "Organization",
+        "legacy": "A group generally centered on one conversation",
+        "reticulum": "Channels and categories inside the same group"
+      },
+      "title": "From legacy Q-Chat to Reticulum Q-Chat",
+      "transport": {
+        "area": "Message transport",
+        "legacy": "Chat messages recorded through Qortal transactions",
+        "reticulum": "Fast, real-time Reticulum conversations"
+      }
+    },
+    "gallery": {
+      "legacy_caption": "Legacy Q-Chat (2022)",
+      "legacy_heart_aria": "Celebrating Legacy Q-Chat",
+      "legacy_placeholder_aria": "Legacy Q-Chat image placeholder",
+      "legacy_placeholder_text": "Legacy interface image coming soon",
+      "reticulum_alt": "Reticulum Q-Chat interface in 2026",
+      "reticulum_caption": "Reticulum Q-Chat (2026)",
+      "reticulum_star_aria": "Celebrating Reticulum Q-Chat"
+    },
+    "highlights": {
+      "calls": {
+        "description": "Start one-to-one and group calls without leaving Q-Chat. Group calls support up to seven people and begin in a compact view that can be expanded whenever you need it.",
+        "title": "Calls that stay out of the way"
+      },
+      "channels": {
+        "description": "Groups can organize discussion into channels and categories. There is no longer a need to create a separate group for every subject.",
+        "title": "One community, many conversations"
+      },
+      "discovery": {
+        "description": "The new Group Score brings holdings, activity, history, and community size into one clear 0–100 score, helping active public groups stand out in Find Groups and invitations.",
+        "title": "Discover communities with context"
+      },
+      "expiry": {
+        "description": "Choose how long messages should remain, from 24 hours to one week, or keep them with no expiry. Replies, mentions, attachments, editing, and richer message tools make everyday chat easier.",
+        "title": "Messages on your terms"
+      },
+      "network": {
+        "description": "Q-Chat now uses Reticulum for its real-time conversations while keeping Qortal identities and group membership at the center. Messages feel immediate, dependable, and at home inside the Hub.",
+        "title": "A faster chat network"
+      },
+      "qortalland": {
+        "description": "Enter a new shared social space where you can meet other members, use moods and proximity voice, and challenge people to Chess, Checkers, or Qonnect Four, all from inside your community.",
+        "title": "Introducing QortalLand"
+      }
+    },
+    "highlights_title": "Highlights",
+    "intro_body": "This release combines Qortal's community identity with the speed of Reticulum. It is a substantial evolution of Q-Chat: quicker to use, easier to organize, and built for richer ways to spend time together.",
+    "intro_title": "A new foundation for Qortal conversations",
+    "title": "What's new in Q-Chat",
+    "version": "Version {{version}}"
+  }
 }

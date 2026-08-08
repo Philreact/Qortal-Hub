@@ -685,6 +685,17 @@
   },
   "name": "имя",
   "name_app": "имя/приложение",
+  "navbar": {
+    "search_placeholder": "Search Q-Apps or enter qortal://",
+    "session": {
+      "lock_description": "Keep chats and calls connected",
+      "lock_title": "Lock",
+      "logout_description": "End this signed-in session",
+      "logout_title": "Log out",
+      "menu_aria": "Session options",
+      "tooltip": "Lock or log out"
+    }
+  },
   "new_post_in": "новые сообщения в {{ title }}",
   "none": "никто",
   "not_available": "н/д",

@@ -9403,7 +9403,7 @@ export const ChatGroup = ({
               >
                 {typeof onQortalLandClick === 'function' && (
                   <ReticulumModePill
-                    label={t('group:chat_group.qortal_land')}
+                    target="qortal_land"
                     onClick={onQortalLandClick}
                   />
                 )}

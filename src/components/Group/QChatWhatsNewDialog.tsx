@@ -20,6 +20,7 @@ import {
   useTheme,
 } from '@mui/material';
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import reticulumQChat2026 from '../../assets/qchat/reticulum-qchat-2026.png';
 
 type QChatWhatsNewDialogProps = {
@@ -28,77 +29,35 @@ type QChatWhatsNewDialogProps = {
 };
 
 type ReleaseHighlight = {
-  description: string;
   icon: ReactNode;
-  title: string;
+  /** Key suffix under group:whats_new.highlights */
+  id: string;
 };
 
+const QCHAT_RELEASE_VERSION = '3.0.0';
+
 const RELEASE_HIGHLIGHTS: ReleaseHighlight[] = [
-  {
-    icon: <HubRoundedIcon />,
-    title: 'A faster chat network',
-    description:
-      'Q-Chat now uses Reticulum for its real-time conversations while keeping Qortal identities and group membership at the center. Messages feel immediate, dependable, and at home inside the Hub.',
-  },
-  {
-    icon: <ForumRoundedIcon />,
-    title: 'One community, many conversations',
-    description:
-      'Groups can organize discussion into channels and categories. There is no longer a need to create a separate group for every subject.',
-  },
-  {
-    icon: <AutoDeleteRoundedIcon />,
-    title: 'Messages on your terms',
-    description:
-      'Choose how long messages should remain, from 24 hours to one week, or keep them with no expiry. Replies, mentions, attachments, editing, and richer message tools make everyday chat easier.',
-  },
-  {
-    icon: <CallRoundedIcon />,
-    title: 'Calls that stay out of the way',
-    description:
-      'Start one-to-one and group calls without leaving Q-Chat. Group calls support up to seven people and begin in a compact view that can be expanded whenever you need it.',
-  },
-  {
-    icon: <SportsEsportsRoundedIcon />,
-    title: 'Introducing QortalLand',
-    description:
-      'Enter a new shared social space where you can meet other members, use moods and proximity voice, and challenge people to Chess, Checkers, or Qonnect Four, all from inside your community.',
-  },
-  {
-    icon: <LeaderboardRoundedIcon />,
-    title: 'Discover communities with context',
-    description:
-      'The new Group Score brings holdings, activity, history, and community size into one clear 0–100 score, helping active public groups stand out in Find Groups and invitations.',
-  },
+  { icon: <HubRoundedIcon />, id: 'network' },
+  { icon: <ForumRoundedIcon />, id: 'channels' },
+  { icon: <AutoDeleteRoundedIcon />, id: 'expiry' },
+  { icon: <CallRoundedIcon />, id: 'calls' },
+  { icon: <SportsEsportsRoundedIcon />, id: 'qortalland' },
+  { icon: <LeaderboardRoundedIcon />, id: 'discovery' },
 ];
 
-const COMPARISON_ROWS = [
-  {
-    area: 'Message transport',
-    legacy: 'Chat messages recorded through Qortal transactions',
-    reticulum: 'Fast, real-time Reticulum conversations',
-  },
-  {
-    area: 'Organization',
-    legacy: 'A group generally centered on one conversation',
-    reticulum: 'Channels and categories inside the same group',
-  },
-  {
-    area: 'Live communication',
-    legacy: 'Focused on durable text chat',
-    reticulum: 'Text, mentions, direct chat, calls, and proximity voice',
-  },
-  {
-    area: 'Community discovery',
-    legacy: 'Member count and established group information',
-    reticulum: 'Search, practical filters, previews, and Group Score',
-  },
-];
+/** Key suffixes under group:whats_new.comparison */
+const COMPARISON_ROW_IDS = [
+  'transport',
+  'organization',
+  'live',
+  'discovery',
+] as const;
 
 export function QChatWhatsNewDialog({
   onClose,
   open,
 }: QChatWhatsNewDialogProps) {
+  const { t } = useTranslation(['group']);
   const theme = useTheme();
 
   return (
@@ -134,7 +93,7 @@ export function QChatWhatsNewDialog({
             component="h2"
             sx={{ fontSize: 26, fontWeight: 750, lineHeight: 1.2 }}
           >
-            What&apos;s new in Q-Chat
+            {t('group:whats_new.title')}
           </Typography>
           <Typography
             sx={{
@@ -144,11 +103,13 @@ export function QChatWhatsNewDialog({
               mt: 0.5,
             }}
           >
-            Version 3.0.0
+            {t('group:whats_new.version', {
+              version: QCHAT_RELEASE_VERSION,
+            })}
           </Typography>
         </Box>
         <IconButton
-          aria-label="Close What's New"
+          aria-label={t('group:whats_new.close')}
           onClick={onClose}
           size="small"
           sx={{ color: 'text.secondary' }}
@@ -180,7 +141,7 @@ export function QChatWhatsNewDialog({
           <Box sx={{ alignItems: 'center', display: 'flex', gap: 1 }}>
             <BoltRoundedIcon sx={{ color: '#52a8ff', fontSize: 22 }} />
             <Typography sx={{ fontSize: 18, fontWeight: 700 }}>
-              A new foundation for Qortal conversations
+              {t('group:whats_new.intro_title')}
             </Typography>
           </Box>
           <Typography
@@ -192,15 +153,12 @@ export function QChatWhatsNewDialog({
               maxWidth: 680,
             }}
           >
-            This release combines Qortal&apos;s community identity with the
-            speed of Reticulum. It is a substantial evolution of Q-Chat: quicker
-            to use, easier to organize, and built for richer ways to spend time
-            together.
+            {t('group:whats_new.intro_body')}
           </Typography>
         </Box>
 
         <Typography sx={{ fontSize: 17, fontWeight: 700, mb: 1.5 }}>
-          Highlights
+          {t('group:whats_new.highlights_title')}
         </Typography>
         <Box
           sx={{
@@ -211,7 +169,7 @@ export function QChatWhatsNewDialog({
         >
           {RELEASE_HIGHLIGHTS.map((item) => (
             <Box
-              key={item.title}
+              key={item.id}
               sx={{
                 backgroundColor: 'action.hover',
                 border: '1px solid',
@@ -240,7 +198,7 @@ export function QChatWhatsNewDialog({
               </Box>
               <Box>
                 <Typography sx={{ fontSize: 14.5, fontWeight: 700 }}>
-                  {item.title}
+                  {t(`group:whats_new.highlights.${item.id}.title`)}
                 </Typography>
                 <Typography
                   sx={{
@@ -250,7 +208,7 @@ export function QChatWhatsNewDialog({
                     mt: 0.5,
                   }}
                 >
-                  {item.description}
+                  {t(`group:whats_new.highlights.${item.id}.description`)}
                 </Typography>
               </Box>
             </Box>
@@ -261,7 +219,7 @@ export function QChatWhatsNewDialog({
           <Box sx={{ alignItems: 'center', display: 'flex', gap: 1 }}>
             <GroupsRoundedIcon sx={{ color: '#52a8ff', fontSize: 21 }} />
             <Typography sx={{ fontSize: 17, fontWeight: 700 }}>
-              From legacy Q-Chat to Reticulum Q-Chat
+              {t('group:whats_new.comparison.title')}
             </Typography>
           </Box>
           <Typography
@@ -272,15 +230,12 @@ export function QChatWhatsNewDialog({
               mt: 0.75,
             }}
           >
-            Legacy Q-Chat established decentralized social communication inside
-            Qortal. The Reticulum edition builds on that achievement with a
-            network and interface designed for faster, more interactive daily
-            conversation.
+            {t('group:whats_new.comparison.body')}
           </Typography>
 
           <Box
             role="table"
-            aria-label="Legacy and Reticulum Q-Chat comparison"
+            aria-label={t('group:whats_new.comparison.aria_label')}
             sx={{
               border: '1px solid',
               borderColor: 'divider',
@@ -300,19 +255,21 @@ export function QChatWhatsNewDialog({
                 py: 1.1,
               }}
             >
-              {['Area', 'Legacy Q-Chat', 'Reticulum Q-Chat'].map((label) => (
-                <Typography
-                  key={label}
-                  role="columnheader"
-                  sx={{ fontSize: 12, fontWeight: 700 }}
-                >
-                  {label}
-                </Typography>
-              ))}
+              {['column_area', 'column_legacy', 'column_reticulum'].map(
+                (columnKey) => (
+                  <Typography
+                    key={columnKey}
+                    role="columnheader"
+                    sx={{ fontSize: 12, fontWeight: 700 }}
+                  >
+                    {t(`group:whats_new.comparison.${columnKey}`)}
+                  </Typography>
+                )
+              )}
             </Box>
-            {COMPARISON_ROWS.map((row, index) => (
+            {COMPARISON_ROW_IDS.map((rowId, index) => (
               <Box
-                key={row.area}
+                key={rowId}
                 role="row"
                 sx={{
                   borderTop: index === 0 ? '1px solid' : '1px solid',
@@ -328,19 +285,19 @@ export function QChatWhatsNewDialog({
                   role="cell"
                   sx={{ fontSize: 12.5, fontWeight: 650 }}
                 >
-                  {row.area}
+                  {t(`group:whats_new.comparison.${rowId}.area`)}
                 </Typography>
                 <Typography
                   role="cell"
                   sx={{ color: 'text.secondary', fontSize: 12.5 }}
                 >
-                  {row.legacy}
+                  {t(`group:whats_new.comparison.${rowId}.legacy`)}
                 </Typography>
                 <Typography
                   role="cell"
                   sx={{ color: 'text.secondary', fontSize: 12.5 }}
                 >
-                  {row.reticulum}
+                  {t(`group:whats_new.comparison.${rowId}.reticulum`)}
                 </Typography>
               </Box>
             ))}
@@ -359,10 +316,12 @@ export function QChatWhatsNewDialog({
           >
             <Box>
               <Typography sx={{ fontSize: 13, fontWeight: 700, mb: 0.75 }}>
-                Legacy Q-Chat (2022)
+                {t('group:whats_new.gallery.legacy_caption')}
               </Typography>
               <Box
-                aria-label="Legacy Q-Chat image placeholder"
+                aria-label={t(
+                  'group:whats_new.gallery.legacy_placeholder_aria'
+                )}
                 sx={{
                   alignItems: 'center',
                   aspectRatio: '16 / 9',
@@ -382,7 +341,7 @@ export function QChatWhatsNewDialog({
                 }}
               >
                 <FavoriteRoundedIcon
-                  aria-label="Celebrating Legacy Q-Chat"
+                  aria-label={t('group:whats_new.gallery.legacy_heart_aria')}
                   sx={{
                     color: '#ef476f',
                     fontSize: 23,
@@ -393,13 +352,13 @@ export function QChatWhatsNewDialog({
                 />
                 <ForumRoundedIcon sx={{ fontSize: 28, opacity: 0.65 }} />
                 <Typography sx={{ fontSize: 12.5, fontWeight: 600 }}>
-                  Legacy interface image coming soon
+                  {t('group:whats_new.gallery.legacy_placeholder_text')}
                 </Typography>
               </Box>
             </Box>
             <Box>
               <Typography sx={{ fontSize: 13, fontWeight: 700, mb: 0.75 }}>
-                Reticulum Q-Chat (2026)
+                {t('group:whats_new.gallery.reticulum_caption')}
               </Typography>
               <Box
                 sx={{
@@ -414,7 +373,7 @@ export function QChatWhatsNewDialog({
                 }}
               >
                 <Box
-                  alt="Reticulum Q-Chat interface in 2026"
+                  alt={t('group:whats_new.gallery.reticulum_alt')}
                   component="img"
                   src={reticulumQChat2026}
                   sx={{
@@ -425,7 +384,7 @@ export function QChatWhatsNewDialog({
                   }}
                 />
                 <StarRoundedIcon
-                  aria-label="Celebrating Reticulum Q-Chat"
+                  aria-label={t('group:whats_new.gallery.reticulum_star_aria')}
                   sx={{
                     color: '#f6c344',
                     filter: 'drop-shadow(0 1px 3px rgba(0, 0, 0, 0.55))',
@@ -449,8 +408,7 @@ export function QChatWhatsNewDialog({
             pb: 0.5,
           }}
         >
-          This is the beginning of the new Q-Chat. More social experiences,
-          community tools, and refinements are already on the way.
+          {t('group:whats_new.closing_note')}
         </Typography>
       </DialogContent>
     </Dialog>

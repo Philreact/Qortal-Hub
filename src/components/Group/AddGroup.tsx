@@ -33,6 +33,42 @@ import { txListAtom } from '../../atoms/global';
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const GROUP_DESCRIPTION_MAX_LENGTH = 300;
+
+/** Block-delay choices; `unit`/`count` feed the pluralised core:time.* keys. */
+type BlockDelayOption = {
+  count: number;
+  unit: 'minute' | 'hour' | 'day';
+  value: string;
+};
+
+const MIN_BLOCK_DELAY_OPTIONS: BlockDelayOption[] = [
+  { value: '5', unit: 'minute', count: 5 },
+  { value: '10', unit: 'minute', count: 10 },
+  { value: '30', unit: 'minute', count: 30 },
+  { value: '60', unit: 'hour', count: 1 },
+  { value: '180', unit: 'hour', count: 3 },
+  { value: '300', unit: 'hour', count: 5 },
+  { value: '420', unit: 'hour', count: 7 },
+  { value: '720', unit: 'hour', count: 12 },
+  { value: '1440', unit: 'day', count: 1 },
+  { value: '4320', unit: 'day', count: 3 },
+  { value: '7200', unit: 'day', count: 5 },
+  { value: '10080', unit: 'day', count: 7 },
+];
+
+const MAX_BLOCK_DELAY_OPTIONS: BlockDelayOption[] = [
+  { value: '60', unit: 'hour', count: 1 },
+  { value: '180', unit: 'hour', count: 3 },
+  { value: '300', unit: 'hour', count: 5 },
+  { value: '420', unit: 'hour', count: 7 },
+  { value: '720', unit: 'hour', count: 12 },
+  { value: '1440', unit: 'day', count: 1 },
+  { value: '4320', unit: 'day', count: 3 },
+  { value: '7200', unit: 'day', count: 5 },
+  { value: '10080', unit: 'day', count: 7 },
+  { value: '14400', unit: 'day', count: 10 },
+  { value: '21600', unit: 'day', count: 15 },
+];
 const GROUP_MODAL_CONTROL_SX = {
   '& .MuiOutlinedInput-root': {
     backgroundColor: 'background.default',
@@ -102,7 +138,10 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
         );
       if (description.length > GROUP_DESCRIPTION_MAX_LENGTH) {
         throw new Error(
-          `Description must be ${GROUP_DESCRIPTION_MAX_LENGTH} characters or fewer`
+          t('group:add_group.description_too_long', {
+            max: GROUP_DESCRIPTION_MAX_LENGTH,
+            postProcess: 'capitalizeFirstChar',
+          })
         );
       }
 
@@ -224,11 +263,16 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
     };
   }, []);
 
-  const modeTitle = value === 0 ? 'Create Group' : 'Group invites';
+  const modeTitle =
+    value === 0
+      ? t('group:action.create_group', {
+          postProcess: 'capitalizeEachFirstChar',
+        })
+      : t('group:group.invites', { postProcess: 'capitalizeFirstChar' });
   const modeDescription =
     value === 0
-      ? 'Choose a name, describe your group, and get started.'
-      : 'Review the invitations you have received.';
+      ? t('group:add_group.description_create')
+      : t('group:add_group.description_invites');
   const canCreateGroup =
     Boolean(name.trim() && description.trim()) && !isCreating;
 
@@ -302,7 +346,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
             </Typography>
           </Box>
           <Box
-            aria-label="Group management modes"
+            aria-label={t('group:add_group.modes_aria')}
             sx={{ display: 'flex', flexShrink: 0, gap: 0.5 }}
           >
             {tabItems.map((item) => {
@@ -377,14 +421,16 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     mb: 1,
                   }}
                 >
-                  Group name
+                  {t('group:group.name', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
                 </Typography>
                 <TextField
                   autoFocus
                   fullWidth
                   id="reticulum-group-name"
                   inputProps={{ maxLength: 32 }}
-                  placeholder="e.g. Qortal developers"
+                  placeholder={t('group:add_group.name_placeholder')}
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   sx={{
@@ -405,7 +451,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     mt: 0.75,
                   }}
                 >
-                  <span>Use a clear, recognizable name.</span>
+                  <span>{t('group:add_group.name_hint')}</span>
                   <span>{name.length} / 32</span>
                 </Box>
               </Box>
@@ -422,7 +468,9 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     mb: 1,
                   }}
                 >
-                  Description
+                  {t('core:description', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
                 </Typography>
                 <TextField
                   fullWidth
@@ -431,7 +479,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                   maxRows={4}
                   minRows={2}
                   multiline
-                  placeholder="What is this group about?"
+                  placeholder={t('group:add_group.description_placeholder')}
                   value={description}
                   onChange={(event) => setDescription(event.target.value)}
                   sx={{
@@ -471,7 +519,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     mb: 1,
                   }}
                 >
-                  Group access
+                  {t('group:add_group.access_label')}
                 </Typography>
                 <Box
                   aria-labelledby="reticulum-group-access-label"
@@ -491,15 +539,17 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                 >
                   {[
                     {
-                      description: 'Anyone can find and join.',
+                      description: t('group:add_group.access_open_description'),
                       icon: PublicRoundedIcon,
-                      label: 'Open',
+                      label: t('group:add_group.access_open_label'),
                       value: '1',
                     },
                     {
-                      description: 'Members join by invitation.',
+                      description: t(
+                        'group:add_group.access_closed_description'
+                      ),
                       icon: LockRoundedIcon,
-                      label: 'Closed',
+                      label: t('group:add_group.access_closed_label'),
                       value: '0',
                     },
                   ].map((option, index) => {
@@ -618,7 +668,9 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                       textAlign: 'left',
                     }}
                   >
-                    Advanced options
+                    {t('group:advanced_options', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
                   </Typography>
                   {openAdvance ? <ExpandLess /> : <ExpandMore />}
                 </Button>
@@ -642,7 +694,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                           mb: 0.4,
                         }}
                       >
-                        Approval threshold
+                        {t('group:add_group.approval_threshold_label')}
                       </Typography>
                       <Typography
                         sx={{
@@ -652,16 +704,19 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                           mb: 0.85,
                         }}
                       >
-                        Percentage of admins required to approve group
-                        decisions.
+                        {t('group:add_group.approval_threshold_description')}
                       </Typography>
                       <FormControl fullWidth sx={GROUP_MODAL_CONTROL_SX}>
                         <Select
                           value={approvalThreshold}
                           onChange={handleChangeApprovalThreshold}
                         >
-                          <MenuItem value="0">None</MenuItem>
-                          <MenuItem value="1">One</MenuItem>
+                          <MenuItem value="0">
+                            {t('group:add_group.approval_none')}
+                          </MenuItem>
+                          <MenuItem value="1">
+                            {t('group:add_group.approval_single')}
+                          </MenuItem>
                           <MenuItem value="20">20%</MenuItem>
                           <MenuItem value="40">40%</MenuItem>
                           <MenuItem value="60">60%</MenuItem>
@@ -691,25 +746,20 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                             mb: 0.85,
                           }}
                         >
-                          Minimum approval delay
+                          {t('group:add_group.min_delay_label')}
                         </Typography>
                         <FormControl fullWidth sx={GROUP_MODAL_CONTROL_SX}>
                           <Select
                             value={minBlock}
                             onChange={handleChangeMinBlock}
                           >
-                            <MenuItem value="5">5 minutes</MenuItem>
-                            <MenuItem value="10">10 minutes</MenuItem>
-                            <MenuItem value="30">30 minutes</MenuItem>
-                            <MenuItem value="60">1 hour</MenuItem>
-                            <MenuItem value="180">3 hours</MenuItem>
-                            <MenuItem value="300">5 hours</MenuItem>
-                            <MenuItem value="420">7 hours</MenuItem>
-                            <MenuItem value="720">12 hours</MenuItem>
-                            <MenuItem value="1440">1 day</MenuItem>
-                            <MenuItem value="4320">3 days</MenuItem>
-                            <MenuItem value="7200">5 days</MenuItem>
-                            <MenuItem value="10080">7 days</MenuItem>
+                            {MIN_BLOCK_DELAY_OPTIONS.map((option) => (
+                              <MenuItem key={option.value} value={option.value}>
+                                {t(`core:time.${option.unit}`, {
+                                  count: option.count,
+                                })}
+                              </MenuItem>
+                            ))}
                           </Select>
                         </FormControl>
                       </Box>
@@ -724,24 +774,20 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                             mb: 0.85,
                           }}
                         >
-                          Maximum approval delay
+                          {t('group:add_group.max_delay_label')}
                         </Typography>
                         <FormControl fullWidth sx={GROUP_MODAL_CONTROL_SX}>
                           <Select
                             value={maxBlock}
                             onChange={handleChangeMaxBlock}
                           >
-                            <MenuItem value="60">1 hour</MenuItem>
-                            <MenuItem value="180">3 hours</MenuItem>
-                            <MenuItem value="300">5 hours</MenuItem>
-                            <MenuItem value="420">7 hours</MenuItem>
-                            <MenuItem value="720">12 hours</MenuItem>
-                            <MenuItem value="1440">1 day</MenuItem>
-                            <MenuItem value="4320">3 days</MenuItem>
-                            <MenuItem value="7200">5 days</MenuItem>
-                            <MenuItem value="10080">7 days</MenuItem>
-                            <MenuItem value="14400">10 days</MenuItem>
-                            <MenuItem value="21600">15 days</MenuItem>
+                            {MAX_BLOCK_DELAY_OPTIONS.map((option) => (
+                              <MenuItem key={option.value} value={option.value}>
+                                {t(`core:time.${option.unit}`, {
+                                  count: option.count,
+                                })}
+                              </MenuItem>
+                            ))}
                           </Select>
                         </FormControl>
                       </Box>
@@ -761,8 +807,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                     >
                       <InfoOutlinedIcon sx={{ fontSize: 18 }} />
                       <Typography sx={{ fontSize: 12, lineHeight: '17px' }}>
-                        These settings affect group transactions and cannot be
-                        changed after creation.
+                        {t('group:add_group.advanced_note')}
                       </Typography>
                     </Box>
                   </Box>
@@ -819,7 +864,7 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
               },
             }}
           >
-            Cancel
+            {t('core:action.cancel', { postProcess: 'capitalizeFirstChar' })}
           </Button>
           {value === 0 && (
             <Button
@@ -842,7 +887,11 @@ export const AddGroup = ({ address, open, setOpen, initialTab = 0 }) => {
                 },
               }}
             >
-              {isCreating ? 'Creating...' : 'Create Group'}
+              {isCreating
+                ? t('group:add_group.creating')
+                : t('group:action.create_group', {
+                    postProcess: 'capitalizeEachFirstChar',
+                  })}
             </Button>
           )}
         </Box>

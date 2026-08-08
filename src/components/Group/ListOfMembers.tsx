@@ -1070,7 +1070,7 @@ const ListOfMembers = ({
       </div>
       {categorizedReticulumMembers && (
         <ButtonBase
-          aria-label="Open hidden members"
+          aria-label={t('group:chat_group.open_hidden_members')}
           onClick={() =>
             executeEvent('openReticulumHiddenMembers', {
               groupId: Number(groupId),
@@ -1097,7 +1097,7 @@ const ListOfMembers = ({
           }}
         >
           <VisibilityOffRoundedIcon sx={{ fontSize: 17 }} />
-          Hidden Members
+          {t('group:chat_group.hidden_members')}
         </ButtonBase>
       )}
     </div>

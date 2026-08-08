@@ -715,7 +715,7 @@ function ReticulumGroupSectionHeader({
       >
         {typeof onModeSwitchClick === 'function' && (
           <>
-            <ReticulumModePill label="Chat" onClick={onModeSwitchClick} />
+            <ReticulumModePill target="chat" onClick={onModeSwitchClick} />
             <Box
               aria-hidden
               sx={{
