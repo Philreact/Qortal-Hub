@@ -40,7 +40,6 @@ export type CustomTitleBarRightNavProps = {
   onLogout: () => void;
   getUserInfo: (useTimer?: boolean) => Promise<void>;
   onOpenMinting: () => void;
-  showTutorial: (key: string, force?: boolean) => void;
   onBackupWallet: () => void;
 };
 
