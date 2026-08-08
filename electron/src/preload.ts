@@ -87,6 +87,12 @@ let callOnEventRefCount = 0;
 let audioSurfaceOnEventRefCount = 0;
 /** Group and DM chat can both observe local hide-state changes in the same renderer. */
 let reticulumChatSilenceChangedRefCount = 0;
+/**
+ * The global DM badge, missed-call notifications, and an open DM all observe
+ * summary changes. Keep main-process delivery alive until the final observer
+ * leaves; otherwise closing one view unsubscribes the entire renderer.
+ */
+let reticulumChatDirectSummaryChangedRefCount = 0;
 
 function subscribeReticulumChatSilenceChanged(): void {
   reticulumChatSilenceChangedRefCount += 1;
@@ -100,6 +106,21 @@ function unsubscribeReticulumChatSilenceChanged(): void {
   if (reticulumChatSilenceChangedRefCount <= 0) {
     reticulumChatSilenceChangedRefCount = 0;
     ipcRenderer.send('reticulumChat:silenceChanged:unsubscribe');
+  }
+}
+
+function subscribeReticulumChatDirectSummaryChanged(): void {
+  reticulumChatDirectSummaryChangedRefCount += 1;
+  if (reticulumChatDirectSummaryChangedRefCount === 1) {
+    ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');
+  }
+}
+
+function unsubscribeReticulumChatDirectSummaryChanged(): void {
+  reticulumChatDirectSummaryChangedRefCount -= 1;
+  if (reticulumChatDirectSummaryChangedRefCount <= 0) {
+    reticulumChatDirectSummaryChangedRefCount = 0;
+    ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
   }
 }
 
@@ -2336,13 +2357,16 @@ try {
           );
         };
         ipcRenderer.on('reticulumChat:directSummaryChanged', handler);
-        ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');
+        subscribeReticulumChatDirectSummaryChanged();
+        let active = true;
         return () => {
+          if (!active) return;
+          active = false;
           ipcRenderer.removeListener(
             'reticulumChat:directSummaryChanged',
             handler
           );
-          ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
+          unsubscribeReticulumChatDirectSummaryChanged();
         };
       },
       onSilenceChanged: (
@@ -3396,13 +3420,16 @@ try {
           );
         };
         ipcRenderer.on('reticulumChat:directSummaryChanged', handler);
-        ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');
+        subscribeReticulumChatDirectSummaryChanged();
+        let active = true;
         return () => {
+          if (!active) return;
+          active = false;
           ipcRenderer.removeListener(
             'reticulumChat:directSummaryChanged',
             handler
           );
-          ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
+          unsubscribeReticulumChatDirectSummaryChanged();
         };
       },
       onSilenceChanged: (
