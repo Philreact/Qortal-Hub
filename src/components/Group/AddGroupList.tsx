@@ -484,7 +484,7 @@ export const AddGroupList = ({
               res(response);
               return;
             } else {
-              setJoinError('Unable to join this group. Please try again.');
+              setJoinError(t('group:find_groups.join_error'));
               setInfoSnack({
                 type: 'error',
                 message: response?.error,
@@ -494,7 +494,7 @@ export const AddGroupList = ({
             }
           })
           .catch((error) => {
-            setJoinError('Unable to join this group. Please try again.');
+            setJoinError(t('group:find_groups.join_error'));
             setInfoSnack({
               type: 'error',
               message:
@@ -510,7 +510,7 @@ export const AddGroupList = ({
       setIsLoading(false);
     } catch (error) {
       if (!error?.isCanceled) {
-        setJoinError('Unable to join this group. Please try again.');
+        setJoinError(t('group:find_groups.join_error'));
         console.log(error);
       }
     } finally {
@@ -553,7 +553,7 @@ export const AddGroupList = ({
                 },
               }}
             >
-              Load more
+              {t('group:find_groups.load_more')}
             </ButtonBase>
           </Box>
         </div>
@@ -655,11 +655,15 @@ export const AddGroupList = ({
                   {group?.groupName}
                 </Typography>
                 <Tooltip
-                  title={openGroup ? 'Open Group' : 'Reticulum Encrypted Group'}
+                  title={
+                    openGroup
+                      ? t('group:find_groups.open_group')
+                      : t('group:find_groups.encrypted_group')
+                  }
                 >
                   {openGroup ? (
                     <PublicRoundedIcon
-                      aria-label="Open Group"
+                      aria-label={t('group:find_groups.open_group')}
                       sx={{
                         color: 'text.secondary',
                         flexShrink: 0,
@@ -668,7 +672,7 @@ export const AddGroupList = ({
                     />
                   ) : (
                     <LockIcon
-                      aria-label="Reticulum Encrypted Group"
+                      aria-label={t('group:find_groups.encrypted_group')}
                       sx={{
                         color: 'text.secondary',
                         flexShrink: 0,
@@ -714,7 +718,7 @@ export const AddGroupList = ({
                 }}
               >
                 {formatMemberCount(memberCount)}{' '}
-                {memberCount === 1 ? 'member' : 'members'}
+                {t('group:group.member', { count: memberCount })}
               </Typography>
             </Box>
             <Box
@@ -752,11 +756,20 @@ export const AddGroupList = ({
                 }}
               >
                 {formatMemberCount(memberCount)}{' '}
-                {memberCount === 1 ? 'member' : 'members'}
+                {t('group:group.member', { count: memberCount })}
               </Typography>
             </Box>
             <ButtonBase
-              aria-label={`${joinedGroup ? 'Open' : pendingGroup ? 'Pending' : openGroup ? 'Join' : 'Request to join'} ${group?.groupName}`}
+              aria-label={t('group:find_groups.card_action_aria', {
+                action: joinedGroup
+                  ? t('group:find_groups.action_open')
+                  : pendingGroup
+                    ? t('group:find_groups.action_pending')
+                    : openGroup
+                      ? t('group:find_groups.action_join')
+                      : t('group:find_groups.action_request_to_join'),
+                name: group?.groupName,
+              })}
               disabled={pendingGroup || Boolean(joiningGroupId)}
               onClick={(event) => {
                 event.stopPropagation();
@@ -830,13 +843,13 @@ export const AddGroupList = ({
               {joiningGroup ? (
                 <CircularProgress color="inherit" size={15} thickness={5} />
               ) : joinedGroup ? (
-                'Joined'
+                t('group:find_groups.action_joined')
               ) : pendingGroup ? (
-                'Pending'
+                t('group:find_groups.action_pending')
               ) : openGroup ? (
-                'Join'
+                t('group:find_groups.action_join')
               ) : (
-                'Request'
+                t('group:find_groups.action_request')
               )}
             </ButtonBase>
           </ListItemButton>
@@ -854,23 +867,25 @@ export const AddGroupList = ({
     Number(selectedGroup?.memberCount) || 0
   );
   const selectedOwnerDisplayName =
-    ownerPrimaryName || ownerAddress || 'Unknown';
+    ownerPrimaryName ||
+    ownerAddress ||
+    t('core:unknown', { postProcess: 'capitalizeFirstChar' });
   const selectedOwnerAvatarUrl = ownerPrimaryName
     ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(ownerPrimaryName)}/qortal_avatar?async=true`
     : undefined;
   const privateFilterDisabled = sortMode === 'top' || sortMode === 'active';
   const privateFilterExplanation =
     sortMode === 'top'
-      ? 'Group Scores are available only for Open Groups.'
+      ? t('group:find_groups.private_filter_top')
       : sortMode === 'active'
-        ? 'Activity ranking is available only for Open Groups.'
+        ? t('group:find_groups.private_filter_active')
         : '';
   const sortDescription = {
-    top: 'Sorted by Group Score',
-    active: 'Sorted by activity',
-    newest: 'Sorted by newest',
-    largest: 'Sorted by members',
-    holdings: 'Sorted by QORT Holdings',
+    top: t('group:find_groups.sorted_by_top'),
+    active: t('group:find_groups.sorted_by_active'),
+    newest: t('group:find_groups.sorted_by_newest'),
+    largest: t('group:find_groups.sorted_by_largest'),
+    holdings: t('group:find_groups.sorted_by_holdings'),
   }[sortMode];
 
   return (
@@ -925,7 +940,7 @@ export const AddGroupList = ({
                   lineHeight: '20px',
                 }}
               >
-                Join group
+                {t('group:find_groups.join_group_heading')}
               </Typography>
               <Typography
                 component="h2"
@@ -962,18 +977,20 @@ export const AddGroupList = ({
                   <LockIcon sx={{ flexShrink: 0, fontSize: 17, mr: 1 }} />
                 )}
                 <Typography component="span" sx={{ fontSize: 14 }}>
-                  {isSelectedGroupOpen ? 'Public' : 'Private'}
+                  {isSelectedGroupOpen
+                    ? t('group:find_groups.visibility_public')
+                    : t('group:find_groups.visibility_private')}
                 </Typography>
                 <Box component="span" sx={{ mx: 1 }}>
                   •
                 </Box>
                 <Typography component="span" sx={{ fontSize: 14 }}>
                   {formatMemberCount(selectedGroupMemberCount)}{' '}
-                  {selectedGroupMemberCount === 1 ? 'member' : 'members'}
+                  {t('group:group.member', { count: selectedGroupMemberCount })}
                 </Typography>
               </Box>
               <IconButton
-                aria-label="Close group preview"
+                aria-label={t('group:find_groups.close_preview')}
                 onClick={handleCloseDialog}
                 sx={{
                   borderRadius: '8px',
@@ -1011,7 +1028,7 @@ export const AddGroupList = ({
                     lineHeight: '16px',
                   }}
                 >
-                  DESCRIPTION
+                  {t('group:find_groups.section_description')}
                 </Typography>
               </Box>
               <Typography
@@ -1043,7 +1060,7 @@ export const AddGroupList = ({
                     lineHeight: '16px',
                   }}
                 >
-                  MEMBERS
+                  {t('group:find_groups.section_members')}
                 </Typography>
               </Box>
               <Box
@@ -1084,7 +1101,7 @@ export const AddGroupList = ({
                   }}
                 >
                   {formatMemberCount(selectedGroupMemberCount)}{' '}
-                  {selectedGroupMemberCount === 1 ? 'member' : 'members'}
+                  {t('group:group.member', { count: selectedGroupMemberCount })}
                 </Typography>
               </Box>
             </Box>
@@ -1103,7 +1120,7 @@ export const AddGroupList = ({
                     lineHeight: '16px',
                   }}
                 >
-                  OWNER
+                  {t('group:find_groups.section_owner')}
                 </Typography>
               </Box>
               <Box
@@ -1181,14 +1198,18 @@ export const AddGroupList = ({
                 </Box>
                 <Tooltip
                   arrow
-                  title={ownerAddressCopied ? 'Copied' : 'Copy address'}
+                  title={
+                    ownerAddressCopied
+                      ? t('group:find_groups.copied')
+                      : t('core:message.generic.copy_address')
+                  }
                 >
                   <span>
                     <IconButton
                       aria-label={
                         ownerAddressCopied
-                          ? 'Address copied'
-                          : 'Copy owner address'
+                          ? t('group:find_groups.address_copied')
+                          : t('group:find_groups.copy_owner_address')
                       }
                       disabled={!ownerAddress || ownerLoading}
                       onClick={handleCopyAddress}
@@ -1238,7 +1259,12 @@ export const AddGroupList = ({
                 </Typography>
               ) : null}
               <LoadingButton
-                aria-label={`${isSelectedGroupOpen ? 'Join' : 'Apply to join'} ${selectedGroup.groupName}`}
+                aria-label={t('group:find_groups.card_action_aria', {
+                  action: isSelectedGroupOpen
+                    ? t('group:find_groups.action_join')
+                    : t('group:find_groups.action_apply_to_join'),
+                  name: selectedGroup.groupName,
+                })}
                 disabled={
                   isSelectedGroupJoined ||
                   isSelectedGroupPending ||
@@ -1306,18 +1332,17 @@ export const AddGroupList = ({
                 }}
               >
                 {isSelectedGroupJoined
-                  ? 'Joined'
+                  ? t('group:find_groups.action_joined')
                   : isSelectedGroupPending
-                    ? 'Pending'
+                    ? t('group:find_groups.action_pending')
                     : isSelectedGroupOpen
-                      ? 'Join Group'
-                      : 'Apply to Join'}
+                      ? t('group:find_groups.action_join_group')
+                      : t('group:find_groups.action_apply_to_join')}
               </LoadingButton>
             </Box>
           </DialogContent>
         )}
       </Dialog>
-
       {!overviewOnly && (
         <Box
           sx={{
@@ -1330,8 +1355,8 @@ export const AddGroupList = ({
         >
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1 }}>
             <TextField
-              inputProps={{ 'aria-label': 'Search groups by name' }}
-              placeholder="Search by group name"
+              inputProps={{ 'aria-label': t('group:find_groups.search_aria') }}
+              placeholder={t('group:find_groups.search_placeholder')}
               variant="outlined"
               fullWidth
               value={inputValue}
@@ -1347,7 +1372,7 @@ export const AddGroupList = ({
                 endAdornment: inputValue ? (
                   <InputAdornment position="end">
                     <IconButton
-                      aria-label="Clear search"
+                      aria-label={t('group:find_groups.clear_search')}
                       onClick={() => setInputValue('')}
                       size="small"
                     >
@@ -1389,25 +1414,25 @@ export const AddGroupList = ({
               {[
                 {
                   icon: <EmojiEventsRoundedIcon sx={{ fontSize: 17 }} />,
-                  label: 'Top',
+                  label: t('group:find_groups.sort_top'),
                   selected: sortMode === 'top',
                   onClick: () => handleSortChange('top'),
                 },
                 {
                   icon: <BoltRoundedIcon sx={{ fontSize: 17 }} />,
-                  label: 'Active',
+                  label: t('group:find_groups.sort_active'),
                   selected: sortMode === 'active',
                   onClick: () => handleSortChange('active'),
                 },
                 {
                   icon: <ScheduleRoundedIcon sx={{ fontSize: 17 }} />,
-                  label: 'Newest',
+                  label: t('group:find_groups.sort_newest'),
                   selected: sortMode === 'newest',
                   onClick: () => handleSortChange('newest'),
                 },
                 {
                   icon: <GroupsRoundedIcon sx={{ fontSize: 17 }} />,
-                  label: 'Largest',
+                  label: t('group:find_groups.sort_largest'),
                   selected: sortMode === 'largest',
                   onClick: () => handleSortChange('largest'),
                 },
@@ -1415,7 +1440,7 @@ export const AddGroupList = ({
                   icon: (
                     <AccountBalanceWalletRoundedIcon sx={{ fontSize: 17 }} />
                   ),
-                  label: 'QORT Holdings',
+                  label: t('group:find_groups.sort_holdings'),
                   selected: sortMode === 'holdings',
                   onClick: () => handleSortChange('holdings'),
                 },
@@ -1480,7 +1505,7 @@ export const AddGroupList = ({
                 }}
               >
                 <PublicRoundedIcon sx={{ fontSize: 17 }} />
-                Open
+                {t('group:find_groups.filter_open')}
               </ButtonBase>
               <Tooltip arrow title={privateFilterExplanation}>
                 <span style={{ display: 'inline-flex' }}>
@@ -1520,7 +1545,7 @@ export const AddGroupList = ({
                     }}
                   >
                     <LockIcon sx={{ fontSize: 17 }} />
-                    Private
+                    {t('group:find_groups.filter_private')}
                   </ButtonBase>
                 </span>
               </Tooltip>
@@ -1562,7 +1587,9 @@ export const AddGroupList = ({
                   lineHeight: '21px',
                 }}
               >
-                Groups
+                {t('group:group.group_other', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
               </Typography>
               <Typography
                 sx={{
