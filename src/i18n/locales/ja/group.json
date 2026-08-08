@@ -112,7 +112,7 @@
     "no_active_wallet": "アクティブなウォレットがありません",
     "names_qapp_actions_hint": "購入・売却・改名は Names Q-App で行ってください。",
     "open_the": "開く",
-    "names": "Names",
+    "names": "名前",
     "names_qapp_hint_suffix": "名前の購入・売却、または登録名の変更用の Q-App です。",
     "private_key_warning": "秘密鍵は共有しないでください。取得した人がこのウォレットと資金を操作できる可能性があります。",
     "wallet_password": "ウォレットのパスワード",

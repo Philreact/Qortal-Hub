@@ -363,7 +363,7 @@
       "publish_avatar": "Souhaitez-vous publier un avatar?",
       "publish_qdn": "Souhaitez-vous publier vos paramètres sur QDN (chiffré)?",
       "overwrite_changes": "L'application n'a pas été en mesure de télécharger vos applications épinglées existantes existantes. Souhaitez-vous écraser ces changements?",
-      "rate_app": "voulez-vous attribuer à cette app une note de {{ rate }} ?. Il reste {{ days }} jours avant votre prochaine note.",
+      "rate_app": "Voulez-vous attribuer à cette app une note de {{ rate }} ? Cela créera une transaction POLL.",
       "register_name": "Souhaitez-vous enregistrer ce nom?",
       "reset_pinned": "Vous n'aimez pas vos changements locaux actuels? Souhaitez-vous réinitialiser les applications épinglées par défaut?",
       "reset_qdn": "Vous n'aimez pas vos changements locaux actuels? Souhaitez-vous réinitialiser avec vos applications QDN enregistrées?",

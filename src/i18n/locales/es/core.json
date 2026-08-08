@@ -363,7 +363,7 @@
       "publish_avatar": "¿Le gustaría publicar un avatar?",
       "publish_qdn": "¿Le gustaría publicar su configuración en QDN (cifrado)?",
       "overwrite_changes": "La aplicación no pudo descargar sus aplicaciones fijadas existentes de QDN. ¿Le gustaría sobrescribir esos cambios?",
-      "rate_app": "¿quieres valorar esta app con {{ rate }}?. Quedan {{ days }} días hasta tu próxima valoración.",
+      "rate_app": "¿Quieres valorar esta app con {{ rate }}? Se creará una transacción POLL.",
       "register_name": "¿Le gustaría registrar este nombre?",
       "reset_pinned": "¿No te gustan tus cambios locales actuales? ¿Le gustaría restablecer las aplicaciones fijadas predeterminadas?",
       "reset_qdn": "¿No te gustan tus cambios locales actuales? ¿Le gustaría restablecer a sus aplicaciones guardadas de QDN guardadas?",

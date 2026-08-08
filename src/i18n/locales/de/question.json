@@ -87,7 +87,7 @@
       "server_info": "Fehler beim Abrufen der Serverinformationen",
       "server_remove": "Server konnte nicht entfernt werden",
       "submit_sell_order": "Verkaufsauftrag konnte nicht übermittelt werden",
-      "synchronization_attempts": "Synchronisierung nach {{ quantity }} Versuchen fehlgeschlagen",
+      "synchronization_attempts": "Synchronisierung nach {{ count }} Versuchen fehlgeschlagen",
       "timeout_request": "Zeitüberschreitung bei der Anfrage",
       "token_not_supported": "{{ token }} wird für diesen Aufruf nicht unterstützt",
       "transaction_activity_summary": "Fehler in der Zusammenfassung der Transaktionsaktivität",
