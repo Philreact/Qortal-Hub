@@ -53,21 +53,24 @@ def scan_file(path: Path):
         if stripped.startswith(('//', '*', '/*')) or SKIP_LINE.search(line):
             continue
 
-        seen = set()
-        for match in ATTR_RE.finditer(line):
-            value = match.group(1) or match.group(2)
-            if value and not SKIP_VALUE.match(value) and re.search(r'[a-z]', value):
-                seen.add(('attr', value))
-        for match in JSX_RE.finditer(line):
-            value = match.group(1).strip()
-            if value and not SKIP_VALUE.match(value):
-                seen.add(('jsx', value))
+        # One entry per distinct string on the line. An attribute value also
+        # matches the generic string-literal pattern, so the more specific kind
+        # wins rather than the string being reported twice.
+        found = {}
         for match in STR_RE.finditer(line):
             value = match.group(1)
             if ' ' in value and not SKIP_VALUE.match(value) and not CSS_ISH.search(value):
-                seen.add(('str', value))
+                found[value] = 'str'
+        for match in JSX_RE.finditer(line):
+            value = match.group(1).strip()
+            if value and not SKIP_VALUE.match(value):
+                found[value] = 'jsx'
+        for match in ATTR_RE.finditer(line):
+            value = match.group(1) or match.group(2)
+            if value and not SKIP_VALUE.match(value) and re.search(r'[a-z]', value):
+                found[value] = 'attr'
 
-        for kind, value in sorted(seen):
+        for value, kind in sorted(found.items()):
             hits.append({'line': number, 'kind': kind, 'text': value})
     return hits
 
@@ -112,7 +115,10 @@ def main():
             for hit in hits:
                 print(f"       {hit['line']:5d} {hit['kind']:4s} {hit['text'][:88]}")
 
-    print(f'\n{total} candidates across {len(report)} files')
+    if total:
+        print(f'\n{total} candidates across {len(report)} files')
+    else:
+        print(f'No hardcoded strings found in {target.relative_to(REPO_ROOT)}')
 
     if args.output:
         Path(args.output).write_text(
