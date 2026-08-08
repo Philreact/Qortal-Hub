@@ -403,7 +403,7 @@
       "block_delay_minimum": "グループ取引承認の最小ブロック遅延",
       "block_delay_maximum": "グループ取引承認の最大ブロック遅延",
       "closed_group": "このグループは非公開のため、管理者の承認を待つ必要があります",
-      "descrypt_wallet": "ウォレットを復号中...",
+      "decrypt_wallet": "ウォレットを復号中...",
       "encryption_key": "グループの共通暗号鍵を生成中です。数分お待ちください...",
       "group_announcement": "グループのお知らせ",
       "group_approval_threshold": "グループの承認閾値（取引を承認する必要がある管理者の数/割合）",
@@ -445,7 +445,7 @@
     },
     "error": {
       "access_name": "名前にアクセスできないため、メッセージを送信できません",
-      "descrypt_wallet": "ウォレットの復号エラー：{{ message }}",
+      "decrypt_wallet": "ウォレットの復号エラー：{{ message }}",
       "description_required": "説明を入力してください",
       "group_info": "グループ情報にアクセスできません",
       "group_join": "グループへの参加に失敗しました",

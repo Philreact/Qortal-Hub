@@ -404,7 +404,7 @@
       "block_delay_minimum": "minimaalne ploki viivitus rühma tehingute kinnitamiseks",
       "block_delay_maximum": "maksimaalne ploki viivitus rühma tehingute kinnitamiseks",
       "closed_group": "tegemist on suletud/privaatse rühmaga, nii et pead ootama, kuni administraator sinu taotluse kinnitab",
-      "descrypt_wallet": "dekrüpteerin rahakotti...",
+      "decrypt_wallet": "dekrüpteerin rahakotti...",
       "encryption_key": "rühma esimene ühine krüpteerimisvõti on loomisel. Palun oota paar minutit, kuni võrk selle kätte saab. Kontrollitakse iga 2 minuti tagant...",
       "group_announcement": "rühma teadaanded",
       "group_approval_threshold": "rühma kinnituslävi (administraatorite arv / protsent, kes peavad tehingu kinnitama)",
@@ -446,7 +446,7 @@
     },
     "error": {
       "access_name": "ei saa saata sõnumit ilma juurdepääsuta sinu nimele",
-      "descrypt_wallet": "viga rahakoti dekrüpteerimisel {{ message }}",
+      "decrypt_wallet": "viga rahakoti dekrüpteerimisel {{ message }}",
       "description_required": "palun anna kirjeldus",
       "group_info": "rühma teabele ligipääs puudub",
       "group_join": "liitumine rühmaga ebaõnnestus",

@@ -1150,7 +1150,7 @@ const ExportPrivateKey = ({ rawWallet }) => {
     try {
       setInfoSnackCustom({
         type: 'info',
-        message: t('group:message.generic.descrypt_wallet', {
+        message: t('group:message.generic.decrypt_wallet', {
           postProcess: 'capitalizeFirstChar',
         }),
       });
@@ -1172,7 +1172,7 @@ const ExportPrivateKey = ({ rawWallet }) => {
     } catch (error) {
       setInfoSnackCustom({
         type: 'error',
-        message: t('group:message.error.descrypt_wallet', {
+        message: t('group:message.error.decrypt_wallet', {
           message: error?.message ?? '',
           postProcess: 'capitalizeFirstChar',
         }),

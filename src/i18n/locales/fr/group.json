@@ -403,7 +403,7 @@
       "block_delay_minimum": "délai minimum de bloc pour les validations de transactions de groupe",
       "block_delay_maximum": "délai maximum de bloc pour les validations de transactions de groupe",
       "closed_group": "ce groupe est fermé/privé. Veuillez attendre qu’un admin accepte votre demande",
-      "descrypt_wallet": "décryptage du portefeuille...",
+      "decrypt_wallet": "décryptage du portefeuille...",
       "encryption_key": "la première clé de chiffrement commune est en cours de création. Veuillez patienter...",
       "group_announcement": "annonces du groupe",
       "group_approval_threshold": "seuil d’approbation du groupe (nombre ou pourcentage d’admins requis)",
@@ -445,7 +445,7 @@
     },
     "error": {
       "access_name": "impossible d’envoyer un message sans accès à votre nom",
-      "descrypt_wallet": "erreur de décryptage du portefeuille {{ message }}",
+      "decrypt_wallet": "erreur de décryptage du portefeuille {{ message }}",
       "description_required": "veuillez fournir une description",
       "group_info": "impossible d’accéder aux informations du groupe",
       "group_join": "échec de l’adhésion au groupe",

@@ -403,7 +403,7 @@
       "block_delay_minimum": "retraso mínimo de bloque para aprobaciones de transacciones del grupo",
       "block_delay_maximum": "retraso máximo de bloque para aprobaciones de transacciones del grupo",
       "closed_group": "este es un grupo cerrado/privado, deberás esperar a que un administrador acepte tu solicitud",
-      "descrypt_wallet": "descifrando cartera...",
+      "decrypt_wallet": "descifrando cartera...",
       "encryption_key": "la clave de cifrado común del grupo está en proceso de creación. Espera unos minutos...",
       "group_announcement": "anuncios del grupo",
       "group_approval_threshold": "umbral de aprobación del grupo (número / porcentaje de administradores que deben aprobar una transacción)",
@@ -445,7 +445,7 @@
     },
     "error": {
       "access_name": "no se puede enviar un mensaje sin acceso a tu nombre",
-      "descrypt_wallet": "error al descifrar la cartera {{ message }}",
+      "decrypt_wallet": "error al descifrar la cartera {{ message }}",
       "description_required": "por favor proporciona una descripción",
       "group_info": "no se puede acceder a la información del grupo",
       "group_join": "no se pudo unir al grupo",

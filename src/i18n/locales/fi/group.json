@@ -403,7 +403,7 @@
       "block_delay_minimum": "vähimmäislohkon viive ryhmätapahtumien hyväksyntään",
       "block_delay_maximum": "enimmäislohkon viive ryhmätapahtumien hyväksyntään",
       "closed_group": "tämä on suljettu/yksityinen ryhmä. Odota, että ylläpitäjä hyväksyy pyyntösi.",
-      "descrypt_wallet": "puretaan lompakon salausta...",
+      "decrypt_wallet": "puretaan lompakon salausta...",
       "encryption_key": "ryhmän ensimmäistä yhteistä salaustekijää luodaan. Odota muutama minuutti, että verkko hakee sen. Tarkistetaan 2 minuutin välein...",
       "group_announcement": "ryhmän ilmoitukset",
       "group_approval_threshold": "ryhmän hyväksymisraja (kuinka moni ylläpitäjä hyväksyy tapahtuman)",
@@ -445,7 +445,7 @@
     },
     "error": {
       "access_name": "viestiä ei voi lähettää ilman pääsyä nimeesi",
-      "descrypt_wallet": "virhe purettaessa lompakon salausta {{ message }}",
+      "decrypt_wallet": "virhe purettaessa lompakon salausta {{ message }}",
       "description_required": "kirjoita kuvaus",
       "group_info": "ryhmätietoja ei voida hakea",
       "group_join": "ryhmään liittyminen epäonnistui",

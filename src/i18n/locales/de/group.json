@@ -403,7 +403,7 @@
       "block_delay_minimum": "Minimale Blockverzögerung für Gruppen-Transaktionsfreigaben",
       "block_delay_maximum": "Maximale Blockverzögerung für Gruppen-Transaktionsfreigaben",
       "closed_group": "Dies ist eine geschlossene/private Gruppe. Du musst warten, bis ein Admin deine Anfrage akzeptiert",
-      "descrypt_wallet": "Wallet wird entschlüsselt...",
+      "decrypt_wallet": "Wallet wird entschlüsselt...",
       "encryption_key": "Der erste gemeinsame Verschlüsselungsschlüssel der Gruppe wird erstellt. Bitte warte einige Minuten...",
       "group_announcement": "Gruppenankündigungen",
       "group_approval_threshold": "Genehmigungsschwelle der Gruppe (Anzahl/Prozentsatz der Admins, die zustimmen müssen)",
@@ -445,7 +445,7 @@
     },
     "error": {
       "access_name": "Nachricht kann nicht gesendet werden ohne Zugriff auf deinen Namen",
-      "descrypt_wallet": "Fehler beim Entschlüsseln der Wallet {{ message }}",
+      "decrypt_wallet": "Fehler beim Entschlüsseln der Wallet {{ message }}",
       "description_required": "Bitte gib eine Beschreibung an",
       "group_info": "Gruppeninformationen können nicht abgerufen werden",
       "group_join": "Beitritt zur Gruppe fehlgeschlagen",

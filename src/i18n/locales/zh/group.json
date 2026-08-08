@@ -403,7 +403,7 @@
       "block_delay_minimum": "群组交易批准的最小区块延迟",
       "block_delay_maximum": "群组交易批准的最大区块延迟",
       "closed_group": "这是私有群组，请等待管理员批准你的加入请求",
-      "descrypt_wallet": "正在解密钱包...",
+      "decrypt_wallet": "正在解密钱包...",
       "encryption_key": "群组加密密钥正在生成，请稍等几分钟...",
       "group_announcement": "群组公告",
       "group_approval_threshold": "群组批准阈值（需要批准交易的管理员数量或百分比）",
@@ -445,7 +445,7 @@
     },
     "error": {
       "access_name": "无法发送消息：缺少姓名访问权限",
-      "descrypt_wallet": "解密钱包出错：{{ message }}",
+      "decrypt_wallet": "解密钱包出错：{{ message }}",
       "description_required": "请提供描述",
       "group_info": "无法获取群组信息",
       "group_join": "加入群组失败",
