@@ -6,6 +6,7 @@ import * as path from 'path';
 import { ReticulumResourceStore, type ReticulumResourceManifest } from './reticulum-resource-store';
 import {
   RETICULUM_RESOURCE_TRANSFER_AUTHORIZATION_TIMEOUT_MS,
+  RETICULUM_RESOURCE_TRANSFER_FINALIZATION_TIMEOUT_MS,
   RETICULUM_RESOURCE_TRANSFER_OVERLAY_THROTTLE_RETRY_MS,
   RETICULUM_RESOURCE_TRANSFER_QUEUE_TIMEOUT_MS,
   RETICULUM_RESOURCE_TRANSFER_REQUEST_START_TIMEOUT_MS,
@@ -22,6 +23,7 @@ describe('reticulum resource transfer storage protection', () => {
   afterEach(() => {
     while (transfers.length) transfers.pop()?.close();
     while (stores.length) stores.pop()?.close();
+    vi.useRealTimers();
   });
 
   it('does not touch resource storage after the transfer manager closes', async () => {
@@ -261,6 +263,162 @@ describe('reticulum resource transfer storage protection', () => {
     );
     expect((transfer as any).activeAccepts.has(transferId)).toBe(false);
     expect((transfer as any).offers.has(transferId)).toBe(false);
+  });
+
+  it('retries when transport reaches 100% but never hands off the received file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    vi.useFakeTimers({ now: 100_000 });
+    const now = () => Date.now();
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now,
+    });
+    stores.push(store);
+    const contents = Buffer.from('complete transport without terminal event');
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      ownerId: '716:sender',
+      fileName: 'stalled-finalization.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: contents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(contents).digest('hex'),
+      encrypted: false,
+      createdAt: now(),
+      metadata: { groupId: 716 },
+    };
+    store.storeManifest(manifest, { provenance: 'remote_downloaded' });
+    const peer = 'b'.repeat(32);
+    const cancelReticulumResourceDetailed = vi.fn().mockResolvedValue({ ok: true });
+    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+      bridge: { cancelReticulumResourceDetailed } as any,
+      resourceStore: store,
+      now,
+      buildRequestPayloads: async () => [],
+    });
+    transfers.push(transfer);
+    const state = (transfer as any).upsertDownload(716, manifest, 'image-event', [peer]);
+    const transferId = 'stalled-finalization';
+    const offer = {
+      transferId,
+      contextId: 716,
+      eventId: 'image-event',
+      fileHash: manifest.fileHash,
+      totalSizeBytes: contents.length,
+      sizeBytes: contents.length,
+      fileName: manifest.fileName,
+      mimeType: manifest.mimeType,
+      ranges: [{ startByte: 0, endByteExclusive: contents.length }],
+      sourcePeerHash: peer,
+    };
+    (transfer as any).offers.set(transferId, offer);
+    (transfer as any).activeAccepts.add(transferId);
+    (transfer as any).transferProgressWatch.set(transferId, {
+      lastProgressAt: now,
+      lastProgressBytes: 0,
+      receivingStarted: false,
+      phase: 'requesting',
+    });
+    (transfer as any).markOfferRangesInFlight(state, offer);
+
+    transfer.handleResourceEvent({
+      status: 'receiving',
+      transferId,
+      bytesTransferred: contents.length,
+      progress: 1,
+    });
+    expect(store.getCompletedRanges(manifest.fileHash)).toEqual([]);
+    expect((transfer as any).transferProgressWatch.get(transferId).finalizationStartedAt).toBe(now());
+
+    await vi.advanceTimersByTimeAsync(RETICULUM_RESOURCE_TRANSFER_FINALIZATION_TIMEOUT_MS - 1);
+    expect(cancelReticulumResourceDetailed).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(2);
+    expect(cancelReticulumResourceDetailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transferId,
+        reason: 'resource_response_finalization_timeout',
+      })
+    );
+    expect((transfer as any).offers.has(transferId)).toBe(false);
+    expect((transfer as any).activeAccepts.has(transferId)).toBe(false);
+    expect(state.inFlightRanges.size).toBe(0);
+    expect(store.getCompletedRanges(manifest.fileHash)).toEqual([]);
+    expect(state.peerBulkThrottleUntil.get(peer)).toBeGreaterThan(now());
+  });
+
+  it('disarms the finalization watchdog when the terminal received event arrives', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    let now = 100_000;
+    const store = new ReticulumResourceStore({
+      dbPath: path.join(dir, 'resources.db'),
+      rootDir: path.join(dir, 'resources'),
+      now: () => now,
+    });
+    stores.push(store);
+    const contents = Buffer.from('terminal handoff');
+    const manifest: ReticulumResourceManifest = {
+      namespace: 'reticulum-group-resource',
+      ownerId: '716:sender',
+      fileName: 'terminal.bin',
+      mimeType: 'application/octet-stream',
+      sizeBytes: contents.length,
+      fileHash: nodeCrypto.createHash('sha256').update(contents).digest('hex'),
+      encrypted: false,
+      createdAt: now,
+      metadata: { groupId: 716 },
+    };
+    store.storeManifest(manifest, { provenance: 'remote_downloaded' });
+    const cancelReticulumResourceDetailed = vi.fn().mockResolvedValue({ ok: true });
+    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+      bridge: { cancelReticulumResourceDetailed } as any,
+      resourceStore: store,
+      now: () => now,
+      buildRequestPayloads: async () => [],
+    });
+    transfers.push(transfer);
+    (transfer as any).upsertDownload(716, manifest, 'image-event', ['c'.repeat(32)]);
+    const transferId = 'received-finalization';
+    (transfer as any).offers.set(transferId, {
+      transferId,
+      contextId: 716,
+      fileHash: manifest.fileHash,
+      totalSizeBytes: contents.length,
+      sizeBytes: contents.length,
+      fileName: manifest.fileName,
+      mimeType: manifest.mimeType,
+      ranges: [{ startByte: 0, endByteExclusive: contents.length }],
+      sourcePeerHash: 'c'.repeat(32),
+    });
+    (transfer as any).activeAccepts.add(transferId);
+    (transfer as any).transferProgressWatch.set(transferId, {
+      lastProgressAt: now,
+      lastProgressBytes: 0,
+      receivingStarted: false,
+      phase: 'requesting',
+    });
+    const readAndHashFile = vi.spyOn(store, 'readAndHashFile').mockReturnValue(
+      new Promise(() => undefined)
+    );
+
+    transfer.handleResourceEvent({
+      status: 'receiving',
+      transferId,
+      bytesTransferred: contents.length,
+      progress: 1,
+    });
+    transfer.handleResourceEvent({
+      status: 'received',
+      transferId,
+      path: path.join(dir, 'received.range'),
+    });
+    expect(readAndHashFile).toHaveBeenCalledTimes(1);
+    expect((transfer as any).transferProgressWatch.get(transferId).receivedEventSeen).toBe(true);
+    expect((transfer as any).transferFinalizationTimers.has(transferId)).toBe(false);
+
+    now += RETICULUM_RESOURCE_TRANSFER_FINALIZATION_TIMEOUT_MS + 1;
+    (transfer as any).retryNoProgressTransfers();
+    expect(cancelReticulumResourceDetailed).not.toHaveBeenCalled();
   });
 
   it('keeps an authorized request alive through the legacy provider window', () => {

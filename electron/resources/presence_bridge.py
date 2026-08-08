@@ -31,9 +31,9 @@ if _BRIDGE_RESOURCE_DIR not in sys.path:
     sys.path.insert(0, _BRIDGE_RESOURCE_DIR)
 from qortalland_games import QortalLandGameManager, _b58decode, _b58encode, derive_qortal_address
 
-APP_NAMESPACE = "qortal-hub-v2"
+APP_NAMESPACE = "qortal-hub-v3"
 PRESENCE_ASPECT = "presence"
-PRESENCE_VERSION = "v2"
+PRESENCE_VERSION = "v3"
 IDENTITY_FILENAME = "presence-bridge.identity"
 COMMUNITY_STUN_ASPECT = "community-stun"
 COMMUNITY_STUN_VERSION = "v1"
