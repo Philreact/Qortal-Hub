@@ -38,6 +38,7 @@ import { RequestQueueWithPromise } from '../../utils/queue/queue';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { addDataPublishesFunc, getDataPublishesFunc } from '../Group/Group';
 import { useTranslation } from 'react-i18next';
+import i18n from '../../i18n/i18n';
 import { TIME_SECONDS_20_IN_MILLISECONDS } from '../../constants/constants.ts';
 
 const uid = new ShortUniqueId({ length: 8 });
@@ -67,7 +68,7 @@ export const saveTempPublish = async ({ data, key }: any) => {
       .catch((error) => {
         rej(
           error.message ||
-            t('core:message.error.generic', {
+            i18n.t('core:message.error.generic', {
               postProcess: 'capitalizeFirstChar',
             })
         );
@@ -89,7 +90,7 @@ export const getTempPublish = async () => {
       .catch((error) => {
         rej(
           error.message ||
-            t('core:message.error.generic', {
+            i18n.t('core:message.error.generic', {
               postProcess: 'capitalizeFirstChar',
             })
         );

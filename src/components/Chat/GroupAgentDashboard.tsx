@@ -85,7 +85,7 @@ const ROLE_COLORS: Record<GroupCallRole, string> = {
   participant: 'transparent',
 };
 
-const ROLE_LABEL_KEYS: Record<MyRole, string> = {
+const ROLE_LABEL_KEYS: Record<GroupCallRole, string> = {
   'root-forwarder': 'group:support.forwarder_root',
   'cluster-forwarder': 'group:support.forwarder_cluster',
   'standby-forwarder': 'group:support.forwarder_standby',
@@ -103,6 +103,7 @@ function ParticipantRow({
   speaking: boolean;
   role: GroupCallRole;
 }) {
+  const { t } = useTranslation(['core', 'group']);
   return (
     <Box
       sx={{

@@ -913,6 +913,7 @@ function EventUnavailableCard({
 }
 
 function EventPreview({ link }: { link: ReticulumEventLink }) {
+  const { t } = useTranslation();
   const memberGroups = useAtomValue(memberGroupsAtom);
   const memberGroupsLoadedAddress = useAtomValue(memberGroupsLoadedAddressAtom);
   const userInfo = useAtomValue(userInfoAtom);

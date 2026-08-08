@@ -77,6 +77,7 @@ import {
   MenuItem,
   Popover,
   Portal,
+  SvgIcon,
   TextField,
   Tooltip,
   Typography,
@@ -552,6 +553,13 @@ function ReticulumChannelExpiryField({
   onChange: (durationMs: number | undefined) => void;
   value?: number;
 }) {
+  const { t } = useTranslation([
+    'auth',
+    'core',
+    'group',
+    'question',
+    'tutorial',
+  ]);
   const normalizedValue =
     Number.isFinite(value) && Number(value) > 0 ? Number(value) : '';
   const hasCustomValue =
@@ -858,6 +866,13 @@ function ReticulumSortableChannelButton({
   unreadCount,
   replyCount,
 }: ReticulumSortableChannelButtonProps) {
+  const { t } = useTranslation([
+    'auth',
+    'core',
+    'group',
+    'question',
+    'tutorial',
+  ]);
   const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: reticulumChannelDragId(channel.channelId),
     disabled: !isAdmin,
@@ -1112,6 +1127,13 @@ function ReticulumSortableCategory({
   onToggleCollapsed: (categoryId: string) => void;
 }) {
   const theme = useTheme();
+  const { t } = useTranslation([
+    'auth',
+    'core',
+    'group',
+    'question',
+    'tutorial',
+  ]);
   const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: reticulumCategoryDragId(category.categoryId),
     disabled: !isAdmin,

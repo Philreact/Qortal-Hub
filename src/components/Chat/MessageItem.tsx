@@ -78,6 +78,7 @@ import {
   messageHasImage,
 } from '../../utils/chat';
 import { useTranslation } from 'react-i18next';
+import i18n from '../../i18n/i18n';
 import { ReactionsMap } from './ChatList';
 import { AvatarPreviewModal } from '../Chat/AvatarPreviewModal';
 import { useStatus } from '../../hooks/usePresence';
@@ -127,12 +128,12 @@ const normalizeReticulumExpiryMs = (value: unknown): number | null => {
 
 const formatReticulumExpiry = (value: number | null): string => {
   if (!value)
-    return t('group:reticulum.expiry.no_expiry', {
+    return i18n.t('group:reticulum.expiry.no_expiry', {
       postProcess: 'capitalizeEachFirstChar',
     });
   const date = new Date(value);
   if (Number.isNaN(date.getTime()))
-    return t('group:reticulum.expiry.no_expiry', {
+    return i18n.t('group:reticulum.expiry.no_expiry', {
       postProcess: 'capitalizeEachFirstChar',
     });
   const pad = (part: number) => String(part).padStart(2, '0');

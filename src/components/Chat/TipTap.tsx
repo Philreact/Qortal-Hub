@@ -568,6 +568,13 @@ const Tiptap = ({
   collapseFormattingTraySignal,
 }: TiptapProps) => {
   const theme = useTheme();
+  const { t } = useTranslation([
+    'auth',
+    'core',
+    'group',
+    'question',
+    'tutorial',
+  ]);
   const compactFileInputRef = useRef<HTMLInputElement | null>(null);
   const [showFormattingTray, setShowFormattingTray] = useState(false);
 
