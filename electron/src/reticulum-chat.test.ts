@@ -12514,6 +12514,44 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('keeps an equal-cost group route stable until it fails', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 100_000,
+    });
+
+    (manager as any).noteGroupInterestRoute(73, 'peer-origin', 'peer-a', 1);
+    const initialRevision = (manager as any).landStateForwardingRevision;
+    (manager as any).noteGroupInterestRoute(73, 'peer-origin', 'peer-b', 1);
+
+    expect((manager as any).landStateForwardingRevision).toBe(
+      initialRevision
+    );
+    expect((manager as any).groupInterestRoutes.get('73:peer-origin')).toEqual(
+      expect.objectContaining({ reversePeerHash: 'peer-a', hops: 1 })
+    );
+
+    (manager as any).pruneGroupInterestRoutesForNextHop(
+      73,
+      'peer-a',
+      'no-route'
+    );
+    (manager as any).noteGroupInterestRoute(73, 'peer-origin', 'peer-b', 1);
+
+    expect((manager as any).groupInterestRoutes.get('73:peer-origin')).toEqual(
+      expect.objectContaining({ reversePeerHash: 'peer-b', hops: 1 })
+    );
+    expect((manager as any).landStateForwardingRevision).toBe(
+      initialRevision + 2
+    );
+    manager.close();
+  });
+
   it('dedupes the same Land auth across relay peers and hop counts', async () => {
     const signer = createLandAuthSigner();
     const validateGroupMember = vi.fn(
@@ -13782,6 +13820,250 @@ describe('reticulum chat manager', () => {
         s: rejectTimestamp,
       })
     );
+    manager.close();
+  });
+
+  it('forwards one QortalLand control per next hop without route flapping across duplicate mesh paths', async () => {
+    const now = 100_000;
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const emitted: Array<Record<string, unknown>> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => now,
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.on('landCall', (payload) => {
+      emitted.push(payload as Record<string, unknown>);
+    });
+
+    const routes = (manager as any).groupInterestRoutes as Map<
+      string,
+      Record<string, unknown>
+    >;
+    const addRoute = (origin: string, reversePeerHash: string): void => {
+      routes.set(`73:${origin}`, {
+        groupId: 73,
+        originPeerHash: origin,
+        reversePeerHash,
+        hops: 1,
+        expiresAt: now + 60_000,
+      });
+    };
+    addRoute('route-origin-one', 'peer-next-hop');
+    addRoute('route-origin-two', 'peer-next-hop');
+    addRoute('route-origin-three', 'peer-other-hop');
+    const chatControlDedupe = (manager as any).forwardedGroupControlKeys as Map<
+      string,
+      number
+    >;
+    chatControlDedupe.set('history-control-sentinel', now + 60_000);
+    const chatInboundDedupe = (manager as any).recentInboundControlWires as Map<
+      string,
+      number
+    >;
+    chatInboundDedupe.set('history-inbound-sentinel', now);
+
+    const wire = {
+      t: 'RCHAT',
+      k: 'lc',
+      g: 73,
+      y: 'g',
+      c: 'game-match-id',
+      a: 'QplayerOne',
+      b: 'QplayerTwo',
+      u: 'park',
+      s: now,
+      r: 'bbbbbbbbbbbbbbbb',
+      o: 'bbbbbbbbbbbbbbbb',
+      h: 0,
+    };
+    const initialForwardingRevision = (manager as any)
+      .landStateForwardingRevision;
+    manager.handleWire(wire, 'peer-inbound-one');
+    await flushAsyncWork();
+
+    expect(direct.map(({ peer }) => peer).sort()).toEqual([
+      'peer-next-hop',
+      'peer-other-hop',
+    ]);
+    expect(emitted).toHaveLength(1);
+    expect((manager as any).landStateForwardingRevision).toBe(
+      initialForwardingRevision
+    );
+    expect([...chatControlDedupe.keys()]).toEqual(['history-control-sentinel']);
+    expect([...chatInboundDedupe.keys()]).toEqual(['history-inbound-sentinel']);
+    expect((manager as any).recentInboundLandControlWires.size).toBe(1);
+    expect((manager as any).forwardedLandControlKeys.size).toBe(2);
+    expect(
+      new Set((manager as any).forwardedLandControlKeys.values())
+    ).toEqual(new Set([now + 8_000]));
+
+    manager.handleWire(
+      { ...wire, o: 'bbbbbbbbbbbbbbbb', h: 3 },
+      'peer-inbound-two'
+    );
+    await flushAsyncWork();
+    expect(direct).toHaveLength(2);
+    expect(emitted).toHaveLength(1);
+    expect((manager as any).landStateForwardingRevision).toBe(
+      initialForwardingRevision
+    );
+
+    addRoute('route-origin-four', 'peer-late-hop');
+    manager.handleWire(
+      { ...wire, o: 'bbbbbbbbbbbbbbbb', h: 2 },
+      'peer-inbound-three'
+    );
+    await flushAsyncWork();
+    expect(direct.map(({ peer }) => peer).sort()).toEqual([
+      'peer-late-hop',
+      'peer-next-hop',
+      'peer-other-hop',
+    ]);
+    expect(emitted).toHaveLength(1);
+    expect([...chatControlDedupe.keys()]).toEqual(['history-control-sentinel']);
+    expect((manager as any).forwardedLandControlKeys.size).toBe(3);
+    manager.close();
+  });
+
+  it('does not forward stale or invalid-hop QortalLand controls', async () => {
+    const now = 500_000;
+    const direct: Array<Record<string, unknown>> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatDetailed: async (
+          _peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push(wire);
+          return { ok: true as const };
+        },
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => now,
+      validateGroupMember: async () => true,
+    });
+    const routes = (manager as any).groupInterestRoutes as Map<
+      string,
+      Record<string, unknown>
+    >;
+    routes.set('73:route-origin', {
+      groupId: 73,
+      originPeerHash: 'route-origin',
+      reversePeerHash: 'peer-next-hop',
+      hops: 1,
+      expiresAt: now + 60_000,
+    });
+    const wire = {
+      t: 'RCHAT',
+      k: 'lc',
+      g: 73,
+      y: 'g',
+      c: 'game-match-id',
+      a: 'QplayerOne',
+      b: 'QplayerTwo',
+      s: now - 2 * 60_000 - 1,
+      r: 'bbbbbbbbbbbbbbbb',
+      o: 'bbbbbbbbbbbbbbbb',
+      h: 0,
+    };
+    manager.handleWire(wire, 'peer-inbound');
+    manager.handleWire({ ...wire, s: now, h: 9 }, 'peer-inbound');
+    await flushAsyncWork();
+    expect(direct).toHaveLength(0);
+    manager.close();
+  });
+
+  it('bounds QortalLand relay dedupe without evicting chat control state', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => 100_000,
+    });
+    const landDedupe = (manager as any).forwardedLandControlKeys as Map<
+      string,
+      number
+    >;
+    const chatDedupe = (manager as any).forwardedGroupControlKeys as Map<
+      string,
+      number
+    >;
+    const inboundLandDedupe = (manager as any)
+      .recentInboundLandControlWires as Map<string, number>;
+    const inboundChatDedupe = (manager as any).recentInboundControlWires as Map<
+      string,
+      number
+    >;
+    chatDedupe.set('history-control-sentinel', 200_000);
+    inboundChatDedupe.set('history-inbound-sentinel', 100_000);
+    for (let index = 0; index < 32_768; index += 1) {
+      landDedupe.set(`old-land-control-${index}`, 200_000);
+      inboundLandDedupe.set(`old-inbound-land-control-${index}`, 100_000);
+    }
+    (manager as any).lastInboundLandControlPruneAt = 100_000;
+
+    (manager as any).rememberForwardedLandControl('new-land-control', 200_000);
+    expect(
+      (manager as any).shouldDropRecentInboundLandControl(
+        'new-inbound-land-control'
+      )
+    ).toBe(false);
+
+    expect(landDedupe.size).toBe(32_768);
+    expect(landDedupe.has('old-land-control-0')).toBe(false);
+    expect(landDedupe.has('new-land-control')).toBe(true);
+    expect(inboundLandDedupe.size).toBe(32_768);
+    expect(inboundLandDedupe.has('old-inbound-land-control-0')).toBe(false);
+    expect(inboundLandDedupe.has('new-inbound-land-control')).toBe(true);
+    expect([...chatDedupe.keys()]).toEqual(['history-control-sentinel']);
+    expect([...inboundChatDedupe.keys()]).toEqual(['history-inbound-sentinel']);
+    manager.close();
+  });
+
+  it('recovers QortalLand dedupe after the system clock moves backward', () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+    });
+
+    (manager as any).pruneLandControlRoutes();
+    (manager as any).rememberForwardedLandControl(
+      'forwarded-control',
+      now + 8_000
+    );
+    expect(
+      (manager as any).shouldDropRecentInboundLandControl('inbound-control')
+    ).toBe(false);
+    expect(
+      (manager as any).shouldDropRecentInboundLandControl('inbound-control')
+    ).toBe(true);
+
+    now = 90_000;
+    (manager as any).pruneLandControlRoutes();
+
+    expect((manager as any).forwardedLandControlKeys.size).toBe(0);
+    expect(
+      (manager as any).shouldDropRecentInboundLandControl('inbound-control')
+    ).toBe(false);
     manager.close();
   });
 

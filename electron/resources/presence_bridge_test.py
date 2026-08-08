@@ -708,6 +708,79 @@ class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
             )
         )
 
+    def test_qortalland_control_dedup_ignores_mesh_route_fields(self):
+        self.bridge._reticulum_chat_inbound_dedup["identity-sentinel"] = (
+            time.monotonic() + 60.0
+        )
+        control = {
+            "t": "RCHAT",
+            "k": "lc",
+            "g": 73,
+            "y": "g",
+            "c": "game-match-id",
+            "a": "QplayerOne",
+            "b": "QplayerTwo",
+            "u": "park",
+            "s": 123_456,
+            "o": "aa" * 16,
+            "h": 0,
+            "r": "bb" * 16,
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(control)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**control, "o": "cc" * 16, "h": 5, "r": "dd" * 16}
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**control, "s": 123_457}
+            )
+        )
+        self.assertEqual(
+            list(self.bridge._reticulum_chat_inbound_dedup),
+            ["identity-sentinel"],
+        )
+        self.assertEqual(
+            len(self.bridge._reticulum_chat_routed_control_dedup),
+            2,
+        )
+
+    def test_qortalland_control_dedup_pressure_is_bounded_and_isolated(self):
+        self.bridge._RETICULUM_CHAT_ROUTED_CONTROL_DEDUP_MAX = 3
+        self.bridge._reticulum_chat_inbound_dedup["identity-sentinel"] = (
+            time.monotonic() + 60.0
+        )
+        base = {
+            "t": "RCHAT",
+            "k": "lc",
+            "g": 73,
+            "y": "g",
+            "c": "game-match-id",
+            "a": "QplayerOne",
+            "b": "QplayerTwo",
+            "s": 123_456,
+        }
+
+        for offset in range(4):
+            self.assertFalse(
+                self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                    {**base, "s": base["s"] + offset}
+                )
+            )
+
+        self.assertEqual(
+            len(self.bridge._reticulum_chat_routed_control_dedup),
+            3,
+        )
+        self.assertEqual(
+            list(self.bridge._reticulum_chat_inbound_dedup),
+            ["identity-sentinel"],
+        )
+
 
 class PresenceBridgeLandStateFastPathTest(unittest.TestCase):
     def setUp(self):

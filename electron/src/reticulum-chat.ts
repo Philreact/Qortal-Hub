@@ -2329,6 +2329,7 @@ const RETICULUM_CHAT_EVENT_SOURCE_PEER_TTL_MS = 2 * 60 * 60_000;
 const RETICULUM_CHAT_EVENT_SOURCE_PEER_MAX_EVENTS = 10_000;
 const RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS = 30_000;
 const RETICULUM_CHAT_CONTROL_DEDUP_MAX = 4096;
+const RETICULUM_LAND_INBOUND_CONTROL_DEDUP_MAX = 32_768;
 const RETICULUM_CHAT_READ_SYNC_ACK_MAX = 20_000;
 const RETICULUM_CHAT_READ_SYNC_RETRY_INITIAL_MS = 1_000;
 const RETICULUM_CHAT_READ_SYNC_RETRY_MAX_MS = 30_000;
@@ -2448,6 +2449,11 @@ const RETICULUM_CHAT_GROUP_ROUTE_MAX_ROUTES = 4096;
 const RETICULUM_CHAT_GROUP_ROUTE_FORWARD_DEDUPE_MS = 60_000;
 const RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_GROUP_CONTROL_RELAY_MAX_ROUTES = 4096;
+// High-frequency Land state must not evict history/control relay protection.
+// This cache is larger because every logical update is tracked per physical
+// next hop, but remains strictly bounded under malformed or hostile traffic.
+const RETICULUM_LAND_ROUTED_CONTROL_DEDUPE_MAX = 32_768;
+const RETICULUM_LAND_ROUTED_CONTROL_PRUNE_INTERVAL_MS = 2_000;
 const VALID_EVENT_TYPES = new Set<ReticulumChatEventType>([
   'message',
   'edit',
@@ -6817,6 +6823,8 @@ export class ReticulumChatManager extends EventEmitter {
   private activeDigestGroups = new Map<number, number>();
   private activeChannelSubscriptions = new Map<number, Set<string>>();
   private recentInboundControlWires = new Map<string, number>();
+  private recentInboundLandControlWires = new Map<string, number>();
+  private lastInboundLandControlPruneAt = 0;
   private recentLandChatHints = new Map<string, number>();
   private recentServedSyncRequests = new Map<string, number>();
   private recentRelayQueries = new Map<string, number>();
@@ -6870,6 +6878,8 @@ export class ReticulumChatManager extends EventEmitter {
   >();
   private forwardedGroupSubLeaseId = 0;
   private forwardedGroupControlKeys = new Map<string, number>();
+  private forwardedLandControlKeys = new Map<string, number>();
+  private lastForwardedLandControlPruneAt = 0;
   private dmDigestTimer: ReturnType<typeof setInterval> | null = null;
   private dmDiscoveryInFlight = false;
   private pendingInitialDmDiscovery = false;
@@ -7802,10 +7812,14 @@ export class ReticulumChatManager extends EventEmitter {
     this.recentLandStateVerifiedLogs.clear();
     this.recentLandStateAppliedLogs.clear();
     this.recentLandChatHints.clear();
+    this.recentInboundLandControlWires.clear();
+    this.lastInboundLandControlPruneAt = 0;
     this.groupInterestRoutes.clear();
     this.forwardedGroupSubKeys.clear();
     this.directPeerSubscriptions.clear();
     this.forwardedGroupControlKeys.clear();
+    this.forwardedLandControlKeys.clear();
+    this.lastForwardedLandControlPruneAt = 0;
     this.recentDmRequests.clear();
     this.digestRepairNoProgressSuppressions.clear();
     this.pendingDigestRepairFingerprints.clear();
@@ -14333,6 +14347,16 @@ export class ReticulumChatManager extends EventEmitter {
     for (const [key, expiresAt] of this.forwardedGroupControlKeys) {
       if (expiresAt <= now) this.forwardedGroupControlKeys.delete(key);
     }
+    while (
+      this.forwardedGroupControlKeys.size >
+      RETICULUM_CHAT_GROUP_CONTROL_RELAY_MAX_ROUTES
+    ) {
+      const oldestKey = this.forwardedGroupControlKeys.keys().next().value as
+        | string
+        | undefined;
+      if (!oldestKey) break;
+      this.forwardedGroupControlKeys.delete(oldestKey);
+    }
     for (const [key, route] of this.eventRelayRoutes) {
       if (route.expiresAt <= now) this.eventRelayRoutes.delete(key);
     }
@@ -14346,6 +14370,54 @@ export class ReticulumChatManager extends EventEmitter {
         .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
         .slice(0, excess);
       for (const [key] of oldest) this.eventRelayRoutes.delete(key);
+    }
+  }
+
+  private pruneLandControlRoutes(now = this.now()): void {
+    if (now < this.lastForwardedLandControlPruneAt) {
+      this.forwardedLandControlKeys.clear();
+      this.lastForwardedLandControlPruneAt = now;
+      return;
+    }
+    if (
+      this.forwardedLandControlKeys.size <
+        RETICULUM_LAND_ROUTED_CONTROL_DEDUPE_MAX &&
+      now - this.lastForwardedLandControlPruneAt <
+        RETICULUM_LAND_ROUTED_CONTROL_PRUNE_INTERVAL_MS
+    ) {
+      return;
+    }
+    this.lastForwardedLandControlPruneAt = now;
+    for (const [key, expiresAt] of this.forwardedLandControlKeys) {
+      if (expiresAt <= now) this.forwardedLandControlKeys.delete(key);
+    }
+    while (
+      this.forwardedLandControlKeys.size >
+      RETICULUM_LAND_ROUTED_CONTROL_DEDUPE_MAX
+    ) {
+      const oldestKey = this.forwardedLandControlKeys.keys().next().value as
+        | string
+        | undefined;
+      if (!oldestKey) break;
+      this.forwardedLandControlKeys.delete(oldestKey);
+    }
+  }
+
+  private rememberForwardedLandControl(key: string, expiresAt: number): void {
+    // Reinsert an expired key at the newest position before enforcing FIFO
+    // pressure eviction. Otherwise refreshing the oldest key could evict the
+    // control that was just sent and immediately reopen a relay loop.
+    this.forwardedLandControlKeys.delete(key);
+    this.forwardedLandControlKeys.set(key, expiresAt);
+    while (
+      this.forwardedLandControlKeys.size >
+      RETICULUM_LAND_ROUTED_CONTROL_DEDUPE_MAX
+    ) {
+      const oldestKey = this.forwardedLandControlKeys.keys().next().value as
+        | string
+        | undefined;
+      if (!oldestKey) break;
+      this.forwardedLandControlKeys.delete(oldestKey);
     }
   }
 
@@ -14407,6 +14479,9 @@ export class ReticulumChatManager extends EventEmitter {
       kind !== 'event_batch' &&
       kind !== 'land_chat_hint' &&
       kind !== 'land_auth' &&
+      kind !== 'land_auth_req' &&
+      kind !== 'land_route_v1' &&
+      kind !== 'land_state' &&
       kind !== 'la' &&
       kind !== 'land_action' &&
       kind !== 'land_call' &&
@@ -14415,21 +14490,116 @@ export class ReticulumChatManager extends EventEmitter {
     ) {
       return false;
     }
+    const isRoutedLandControl =
+      kind === 'land_auth' ||
+      kind === 'land_auth_req' ||
+      kind === 'land_route_v1' ||
+      kind === 'land_state' ||
+      kind === 'land_chat_hint' ||
+      kind === 'la' ||
+      kind === 'land_action' ||
+      kind === 'land_call' ||
+      kind === 'lc';
     let dedupePeer = peerHash;
-    let dedupeWire = wire;
-    if (kind === 'land_auth' || kind === 'land_call' || kind === 'lc') {
-      const routeIndependentWire = { ...wire };
-      delete routeIndependentWire.o;
-      delete routeIndependentWire.h;
+    let payloadKey: string;
+    if (isRoutedLandControl) {
       dedupePeer = '';
-      dedupeWire = routeIndependentWire;
+      payloadKey = this.routedLandControlPayloadKey(wire);
+    } else {
+      payloadKey = this.hashControlPayload(wire);
     }
-    const key = `${dedupePeer}:${groupId}:${kind}:${this.hashControlPayload(dedupeWire)}`;
+    const key = `${dedupePeer}:${groupId}:${kind}:${payloadKey}`;
+    if (isRoutedLandControl) {
+      return this.shouldDropRecentInboundLandControl(key);
+    }
     return this.markRecentOrDuplicate(
       this.recentInboundControlWires,
       key,
       RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS,
       RETICULUM_CHAT_CONTROL_DEDUP_MAX
+    );
+  }
+
+  private routedLandControlPayloadKey(wire: Record<string, unknown>): string {
+    const routeIndependentWire = { ...wire };
+    delete routeIndependentWire.o;
+    delete routeIndependentWire.h;
+    delete routeIndependentWire.r;
+    return nodeCrypto
+      .createHash('sha256')
+      .update(canonicalizeForSigning(routeIndependentWire))
+      .digest('hex')
+      .slice(0, 24);
+  }
+
+  private shouldDropRecentInboundLandControl(key: string): boolean {
+    const now = this.now();
+    if (now < this.lastInboundLandControlPruneAt) {
+      this.recentInboundLandControlWires.clear();
+      this.lastInboundLandControlPruneAt = now;
+    }
+    const lastSeenAt = this.recentInboundLandControlWires.get(key);
+    if (
+      lastSeenAt != null &&
+      now - lastSeenAt <= RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS
+    ) {
+      return true;
+    }
+    if (
+      now - this.lastInboundLandControlPruneAt >=
+      RETICULUM_LAND_ROUTED_CONTROL_PRUNE_INTERVAL_MS
+    ) {
+      this.lastInboundLandControlPruneAt = now;
+      for (const [cachedKey, timestamp] of this.recentInboundLandControlWires) {
+        if (now - timestamp > RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS) {
+          this.recentInboundLandControlWires.delete(cachedKey);
+        }
+      }
+    }
+    this.recentInboundLandControlWires.delete(key);
+    this.recentInboundLandControlWires.set(key, now);
+    while (
+      this.recentInboundLandControlWires.size >
+      RETICULUM_LAND_INBOUND_CONTROL_DEDUP_MAX
+    ) {
+      const oldestKey = this.recentInboundLandControlWires.keys().next()
+        .value as string | undefined;
+      if (!oldestKey) break;
+      this.recentInboundLandControlWires.delete(oldestKey);
+    }
+    return false;
+  }
+
+  private isFreshRoutedLandControlWire(
+    wire: Record<string, unknown>,
+    groupId: number
+  ): boolean {
+    if (Number(wire.g) !== groupId) return false;
+    const rawHops = wire.h == null ? 0 : wire.h;
+    if (
+      typeof rawHops !== 'number' ||
+      !Number.isInteger(rawHops) ||
+      rawHops < 0 ||
+      rawHops > RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS
+    ) {
+      return false;
+    }
+    const timestamp =
+      wire.k === 'land_auth' || wire.k === 'land_route_v1'
+        ? wire.n
+        : wire.k === 'lc'
+          ? wire.s
+          : wire.k === 'land_auth_req'
+            ? undefined
+            : wire.ts;
+    if (timestamp == null) return wire.k === 'land_auth_req';
+    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+      return false;
+    }
+    const now = this.now();
+    return (
+      timestamp <= now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS &&
+      timestamp >= now - RETICULUM_CHAT_CONTROL_MAX_AGE_MS
     );
   }
 
@@ -16199,6 +16369,11 @@ export class ReticulumChatManager extends EventEmitter {
       case 'land_chat_hint': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
+        const duplicate = this.shouldDropDuplicateInboundControlWire(
+          wire,
+          groupId,
+          peerHash
+        );
         void this.forwardLandChatHintToInterestRoutes(
           groupId,
           wire as Extract<ReticulumChatWire, { k: 'land_chat_hint' }>,
@@ -16209,8 +16384,7 @@ export class ReticulumChatManager extends EventEmitter {
           !this.subscribedGroups.has(groupId)
         )
           return;
-        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash))
-          return;
+        if (duplicate) return;
         void this.handleLandChatHint(
           groupId,
           wire as Extract<ReticulumChatWire, { k: 'land_chat_hint' }>,
@@ -16221,6 +16395,11 @@ export class ReticulumChatManager extends EventEmitter {
       case 'la': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
+        const duplicate = this.shouldDropDuplicateInboundControlWire(
+          wire,
+          groupId,
+          peerHash
+        );
         void this.forwardLandActionToInterestRoutes(
           groupId,
           wire as Extract<ReticulumChatWire, { k: 'la' }>,
@@ -16231,8 +16410,7 @@ export class ReticulumChatManager extends EventEmitter {
           !this.subscribedGroups.has(groupId)
         )
           return;
-        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash))
-          return;
+        if (duplicate) return;
         void this.handleLandActionWire(
           groupId,
           wire as Extract<ReticulumChatWire, { k: 'la' }>,
@@ -16243,6 +16421,11 @@ export class ReticulumChatManager extends EventEmitter {
       case 'land_action': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
+        const duplicate = this.shouldDropDuplicateInboundControlWire(
+          wire,
+          groupId,
+          peerHash
+        );
         void this.forwardLandActionToInterestRoutes(
           groupId,
           wire as Extract<ReticulumChatWire, { k: 'land_action' }>,
@@ -16253,8 +16436,7 @@ export class ReticulumChatManager extends EventEmitter {
           !this.subscribedGroups.has(groupId)
         )
           return;
-        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash))
-          return;
+        if (duplicate) return;
         void this.handleLegacyLandActionWire(
           groupId,
           wire as Extract<ReticulumChatWire, { k: 'land_action' }>
@@ -16265,6 +16447,11 @@ export class ReticulumChatManager extends EventEmitter {
       case 'lc': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
+        const duplicate = this.shouldDropDuplicateInboundControlWire(
+          wire,
+          groupId,
+          peerHash
+        );
         void this.forwardLandCallToInterestRoutes(
           groupId,
           wire as Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }>,
@@ -16275,8 +16462,7 @@ export class ReticulumChatManager extends EventEmitter {
           !this.subscribedGroups.has(groupId)
         )
           return;
-        if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash))
-          return;
+        if (duplicate) return;
         void this.handleLandCallWire(
           groupId,
           wire as Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }>,
@@ -16529,7 +16715,8 @@ export class ReticulumChatManager extends EventEmitter {
       const sameNextHop = existing.reversePeerHash === reverse;
       const sameRoute = sameNextHop && existing.hops === hops;
       const keepBetterRoute = existing.hops < hops;
-      if (sameRoute || keepBetterRoute) {
+      const keepStableEqualRoute = !sameNextHop && existing.hops === hops;
+      if (sameRoute || keepBetterRoute || keepStableEqualRoute) {
         if (
           sameNextHop &&
           existing.expiresAt - now <=
@@ -19247,157 +19434,42 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
-  private async forwardLandAuthToInterestRoutes(
+  private async forwardRoutedLandControl(
     groupId: number,
-    wire: Extract<ReticulumChatWire, { k: 'land_auth' }>,
-    inboundPeerHash: string
+    wire: Record<string, unknown>,
+    inboundPeerHash: string,
+    dedupeTtlMs: number
   ): Promise<void> {
     const inbound = this.routePeerHash(inboundPeerHash);
     const origin = this.routePeerHash(wire.o) ?? inbound;
-    if (!inbound || !origin) return;
-    const hops = Math.max(
-      0,
-      Math.min(
-        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
-        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
-      )
-    );
-    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
-    this.pruneGroupInterestRoutes();
-    this.pruneGroupControlRoutes();
-    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
-    const local = this.localPeerHash();
-    const forwarded: Extract<ReticulumChatWire, { k: 'land_auth' }> = {
-      ...wire,
-      o: this.compactRoutePeerHash(origin),
-      h: hops + 1,
-    };
-    const payloadKey = this.hashControlPayload(forwarded);
-    for (const route of this.groupInterestRoutes.values()) {
-      if (route.groupId !== groupId) continue;
-      if (route.reversePeerHash === inbound) continue;
-      if (local && route.originPeerHash === local) continue;
-      const key = this.groupControlRouteKey(
-        'land_auth',
-        groupId,
-        route.originPeerHash,
-        `${inbound}:${payloadKey}`
-      );
-      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
-      this.forwardedGroupControlKeys.set(
-        key,
-        this.now() + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
-      );
-      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
-        if (result.ok === false) {
-          this.pruneGroupInterestRoutesForNextHop(
-            groupId,
-            route.reversePeerHash,
-            result.reason
-          );
-        }
-      });
+    if (
+      !inbound ||
+      !origin ||
+      !this.isFreshRoutedLandControlWire(wire, groupId)
+    ) {
+      return;
     }
-  }
-
-  private async forwardLandAuthReqToInterestRoutes(
-    groupId: number,
-    wire: Extract<ReticulumChatWire, { k: 'land_auth_req' }>,
-    inboundPeerHash: string
-  ): Promise<void> {
-    const inbound = this.routePeerHash(inboundPeerHash);
-    const origin = this.routePeerHash(wire.o) ?? inbound;
-    if (!inbound || !origin) return;
-    const hops = Math.max(
-      0,
-      Math.min(
-        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
-        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
-      )
-    );
+    const hops = wire.h == null ? 0 : Number(wire.h);
     if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
-    this.pruneGroupInterestRoutes();
-    this.pruneGroupControlRoutes();
-    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
-    const local = this.localPeerHash();
-    const forwarded: Extract<ReticulumChatWire, { k: 'land_auth_req' }> = {
+    this.pruneLandControlRoutes();
+    const forwarded = {
       ...wire,
       o: this.compactRoutePeerHash(origin),
       h: hops + 1,
-    };
-    const payloadKey = this.hashControlPayload(forwarded);
-    for (const route of this.groupInterestRoutes.values()) {
-      if (route.groupId !== groupId) continue;
-      if (route.reversePeerHash === inbound) continue;
-      if (local && route.originPeerHash === local) continue;
+    } as ReticulumChatWire;
+    if (!wireFitsReticulumChat(forwarded)) return;
+    const payloadKey = this.routedLandControlPayloadKey(wire);
+    const nextHops = this.getGroupInterestNextHops(groupId, [inbound, origin]);
+    for (const nextHop of nextHops) {
       const key = this.groupControlRouteKey(
-        'land_auth_req',
-        groupId,
-        route.originPeerHash,
-        `${inbound}:${payloadKey}`
-      );
-      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
-      this.forwardedGroupControlKeys.set(
-        key,
-        this.now() + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
-      );
-      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
-        if (result.ok === false) {
-          this.pruneGroupInterestRoutesForNextHop(
-            groupId,
-            route.reversePeerHash,
-            result.reason
-          );
-        }
-      });
-    }
-  }
-
-  private async forwardLandSessionRouteToInterestRoutes(
-    groupId: number,
-    wire: Extract<ReticulumChatWire, { k: 'land_route_v1' }>,
-    inboundPeerHash: string
-  ): Promise<void> {
-    const inbound = this.routePeerHash(inboundPeerHash);
-    const origin = this.routePeerHash(wire.o) ?? inbound;
-    if (!inbound || !origin) return;
-    const hops = Math.max(
-      0,
-      Math.min(
-        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
-        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
-      )
-    );
-    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
-    this.pruneGroupInterestRoutes();
-    this.pruneGroupControlRoutes();
-    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
-    const local = this.localPeerHash();
-    const forwarded: Extract<ReticulumChatWire, { k: 'land_route_v1' }> = {
-      ...wire,
-      o: this.compactRoutePeerHash(origin),
-      h: hops + 1,
-    };
-    const payloadKey = this.hashControlPayload(forwarded);
-    const forwardedPeers = new Set<string>();
-    for (const route of this.groupInterestRoutes.values()) {
-      if (route.groupId !== groupId) continue;
-      if (route.reversePeerHash === inbound) continue;
-      if (local && route.originPeerHash === local) continue;
-      const nextHop = this.routePeerHash(route.reversePeerHash);
-      if (!nextHop || forwardedPeers.has(nextHop)) continue;
-      forwardedPeers.add(nextHop);
-      const key = this.groupControlRouteKey(
-        'land_route_v1',
+        String(wire.k || 'land_control'),
         groupId,
         nextHop,
         payloadKey
       );
-      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
-      this.forwardedGroupControlKeys.set(
-        key,
-        this.now() + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
-      );
+      const now = this.now();
+      if ((this.forwardedLandControlKeys.get(key) ?? 0) > now) continue;
+      this.rememberForwardedLandControl(key, now + dedupeTtlMs);
       void this.sendToPeer(nextHop, forwarded).then((result) => {
         if (result.ok === false) {
           this.pruneGroupInterestRoutesForNextHop(
@@ -19410,218 +19482,97 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
-  private async forwardLandStateToInterestRoutes(
+  private forwardLandAuthToInterestRoutes(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_auth' }>,
+    inboundPeerHash: string
+  ): Promise<void> {
+    return this.forwardRoutedLandControl(
+      groupId,
+      wire,
+      inboundPeerHash,
+      RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
+    );
+  }
+
+  private forwardLandAuthReqToInterestRoutes(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_auth_req' }>,
+    inboundPeerHash: string
+  ): Promise<void> {
+    return this.forwardRoutedLandControl(
+      groupId,
+      wire,
+      inboundPeerHash,
+      RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
+    );
+  }
+
+  private forwardLandSessionRouteToInterestRoutes(
+    groupId: number,
+    wire: Extract<ReticulumChatWire, { k: 'land_route_v1' }>,
+    inboundPeerHash: string
+  ): Promise<void> {
+    return this.forwardRoutedLandControl(
+      groupId,
+      wire,
+      inboundPeerHash,
+      RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
+    );
+  }
+
+  private forwardLandStateToInterestRoutes(
     groupId: number,
     wire: Extract<ReticulumChatWire, { k: 'land_state' }>,
     inboundPeerHash: string
   ): Promise<void> {
-    const inbound = this.routePeerHash(inboundPeerHash);
-    const origin = this.routePeerHash(wire.o) ?? inbound;
-    if (!inbound || !origin) return;
-    const hops = Math.max(
-      0,
-      Math.min(
-        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
-        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
-      )
+    return this.forwardRoutedLandControl(
+      groupId,
+      wire,
+      inboundPeerHash,
+      RETICULUM_CHAT_TYPING_TTL_MS
     );
-    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
-    this.pruneGroupInterestRoutes();
-    this.pruneGroupControlRoutes();
-    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
-    const local = this.localPeerHash();
-    const forwarded: Extract<ReticulumChatWire, { k: 'land_state' }> = {
-      ...wire,
-      o: this.compactRoutePeerHash(origin),
-      h: hops + 1,
-    };
-    const payloadKey = this.hashControlPayload(forwarded);
-    for (const route of this.groupInterestRoutes.values()) {
-      if (route.groupId !== groupId) continue;
-      if (route.reversePeerHash === inbound) continue;
-      if (local && route.originPeerHash === local) continue;
-      const key = this.groupControlRouteKey(
-        'land_state',
-        groupId,
-        route.originPeerHash,
-        `${inbound}:${payloadKey}`
-      );
-      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
-      this.forwardedGroupControlKeys.set(
-        key,
-        this.now() + RETICULUM_CHAT_TYPING_TTL_MS
-      );
-      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
-        if (result.ok === false) {
-          this.pruneGroupInterestRoutesForNextHop(
-            groupId,
-            route.reversePeerHash,
-            result.reason
-          );
-        }
-      });
-    }
   }
 
-  private async forwardLandChatHintToInterestRoutes(
+  private forwardLandChatHintToInterestRoutes(
     groupId: number,
     wire: Extract<ReticulumChatWire, { k: 'land_chat_hint' }>,
     inboundPeerHash: string
   ): Promise<void> {
-    const inbound = this.routePeerHash(inboundPeerHash);
-    const origin = this.routePeerHash(wire.o) ?? inbound;
-    if (!inbound || !origin) return;
-    const hops = Math.max(
-      0,
-      Math.min(
-        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
-        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
-      )
+    return this.forwardRoutedLandControl(
+      groupId,
+      wire,
+      inboundPeerHash,
+      RETICULUM_LAND_CHAT_HINT_DEDUPE_MS
     );
-    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
-    this.pruneGroupInterestRoutes();
-    this.pruneGroupControlRoutes();
-    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
-    const local = this.localPeerHash();
-    const forwarded: Extract<ReticulumChatWire, { k: 'land_chat_hint' }> = {
-      ...wire,
-      o: this.compactRoutePeerHash(origin),
-      h: hops + 1,
-    };
-    const payloadKey = this.hashControlPayload(forwarded);
-    for (const route of this.groupInterestRoutes.values()) {
-      if (route.groupId !== groupId) continue;
-      if (route.reversePeerHash === inbound) continue;
-      if (local && route.originPeerHash === local) continue;
-      const key = this.groupControlRouteKey(
-        'land_chat_hint',
-        groupId,
-        route.originPeerHash,
-        `${inbound}:${payloadKey}`
-      );
-      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
-      this.forwardedGroupControlKeys.set(
-        key,
-        this.now() + RETICULUM_LAND_CHAT_HINT_DEDUPE_MS
-      );
-      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
-        if (result.ok === false) {
-          this.pruneGroupInterestRoutesForNextHop(
-            groupId,
-            route.reversePeerHash,
-            result.reason
-          );
-        }
-      });
-    }
   }
 
-  private async forwardLandActionToInterestRoutes(
+  private forwardLandActionToInterestRoutes(
     groupId: number,
     wire:
       | Extract<ReticulumChatWire, { k: 'la' }>
       | Extract<ReticulumChatWire, { k: 'land_action' }>,
     inboundPeerHash: string
   ): Promise<void> {
-    const inbound = this.routePeerHash(inboundPeerHash);
-    const origin = this.routePeerHash(wire.o) ?? inbound;
-    if (!inbound || !origin) return;
-    const hops = Math.max(
-      0,
-      Math.min(
-        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
-        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
-      )
+    return this.forwardRoutedLandControl(
+      groupId,
+      wire,
+      inboundPeerHash,
+      RETICULUM_CHAT_TYPING_TTL_MS
     );
-    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
-    this.pruneGroupInterestRoutes();
-    this.pruneGroupControlRoutes();
-    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
-    const local = this.localPeerHash();
-    const forwarded = {
-      ...wire,
-      o: this.compactRoutePeerHash(origin),
-      h: hops + 1,
-    } as typeof wire;
-    const payloadKey = this.hashControlPayload(forwarded);
-    for (const route of this.groupInterestRoutes.values()) {
-      if (route.groupId !== groupId) continue;
-      if (route.reversePeerHash === inbound) continue;
-      if (local && route.originPeerHash === local) continue;
-      const key = this.groupControlRouteKey(
-        'land_action',
-        groupId,
-        route.originPeerHash,
-        `${inbound}:${payloadKey}`
-      );
-      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
-      this.forwardedGroupControlKeys.set(
-        key,
-        this.now() + RETICULUM_CHAT_TYPING_TTL_MS
-      );
-      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
-        if (result.ok === false) {
-          this.pruneGroupInterestRoutesForNextHop(
-            groupId,
-            route.reversePeerHash,
-            result.reason
-          );
-        }
-      });
-    }
   }
 
-  private async forwardLandCallToInterestRoutes(
+  private forwardLandCallToInterestRoutes(
     groupId: number,
     wire: Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }>,
     inboundPeerHash: string
   ): Promise<void> {
-    const inbound = this.routePeerHash(inboundPeerHash);
-    const origin = this.routePeerHash(wire.o) ?? inbound;
-    if (!inbound || !origin) return;
-    const hops = Math.max(
-      0,
-      Math.min(
-        RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS,
-        Number.isInteger(Number(wire.h)) ? Number(wire.h) : 0
-      )
+    return this.forwardRoutedLandControl(
+      groupId,
+      wire,
+      inboundPeerHash,
+      RETICULUM_CHAT_TYPING_TTL_MS
     );
-    if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
-    this.pruneGroupInterestRoutes();
-    this.pruneGroupControlRoutes();
-    this.noteGroupInterestRoute(groupId, origin, inbound, hops);
-    const local = this.localPeerHash();
-    const forwarded: Extract<ReticulumChatWire, { k: 'land_call' | 'lc' }> = {
-      ...wire,
-      o: this.compactRoutePeerHash(origin),
-      h: hops + 1,
-    };
-    const payloadKey = this.hashControlPayload(forwarded);
-    for (const route of this.groupInterestRoutes.values()) {
-      if (route.groupId !== groupId) continue;
-      if (route.reversePeerHash === inbound) continue;
-      if (local && route.originPeerHash === local) continue;
-      const key = this.groupControlRouteKey(
-        'land_call',
-        groupId,
-        route.originPeerHash,
-        `${inbound}:${payloadKey}`
-      );
-      if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
-      this.forwardedGroupControlKeys.set(
-        key,
-        this.now() + RETICULUM_CHAT_TYPING_TTL_MS
-      );
-      void this.sendToPeer(route.reversePeerHash, forwarded).then((result) => {
-        if (result.ok === false) {
-          this.pruneGroupInterestRoutesForNextHop(
-            groupId,
-            route.reversePeerHash,
-            result.reason
-          );
-        }
-      });
-    }
   }
 
   private relayGroupControlRequest(

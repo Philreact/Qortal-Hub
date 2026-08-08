@@ -259,7 +259,12 @@ _call_relay_dedup_suppressed_since_log: int = 0
 _RETICULUM_CHAT_INBOUND_DEDUP_MAX = 8192
 _RETICULUM_CHAT_IDENTITY_DEDUP_TTL_SECONDS = 35.0
 _RETICULUM_CHAT_TYPING_DEDUP_TTL_SECONDS = 35.0
+_RETICULUM_CHAT_ROUTED_CONTROL_DEDUP_TTL_SECONDS = 2.0
+_RETICULUM_CHAT_ROUTED_CONTROL_DEDUP_MAX = 32768
+_RETICULUM_CHAT_ROUTED_CONTROL_PRUNE_INTERVAL_SECONDS = 2.0
 _reticulum_chat_inbound_dedup: Dict[str, float] = {}
+_reticulum_chat_routed_control_dedup: Dict[str, float] = {}
+_reticulum_chat_routed_control_dedup_last_prune_at: float = 0.0
 _reticulum_chat_inbound_dedup_last_log_at: float = 0.0
 _reticulum_chat_inbound_dedup_suppressed_since_log: int = 0
 _QCHAT_FILE_LINK_OPEN_PATH_AWAIT_SECONDS = 0.0
@@ -11795,51 +11800,116 @@ def _reticulum_chat_inbound_dedup_key(
             f"typing:{digest}",
             _RETICULUM_CHAT_TYPING_DEDUP_TTL_SECONDS,
         )
+    if message_type in {
+        "land_auth",
+        "land_auth_req",
+        "land_route_v1",
+        "land_state",
+        "land_chat_hint",
+        "la",
+        "land_action",
+        "land_call",
+        "lc",
+    }:
+        group_id = message.get("g")
+        hops = message.get("h", 0)
+        if (
+            isinstance(group_id, bool)
+            or not isinstance(group_id, int)
+            or group_id <= 0
+            or isinstance(hops, bool)
+            or not isinstance(hops, int)
+            or hops < 0
+            or hops > _LAND_STATE_MAX_HOPS
+        ):
+            return None
+        # Routing fields change as a control crosses the mesh. Hash only the
+        # immutable logical payload so simultaneous copies arriving through
+        # different links collapse before consuming Electron's event queue.
+        stable_message = dict(message)
+        stable_message.pop("o", None)
+        stable_message.pop("h", None)
+        stable_message.pop("r", None)
+        try:
+            digest = hashlib.sha256(
+                json.dumps(
+                    stable_message,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+        except (TypeError, ValueError):
+            return None
+        return (
+            f"routed_control:{message_type}:{group_id}:{digest}",
+            _RETICULUM_CHAT_ROUTED_CONTROL_DEDUP_TTL_SECONDS,
+        )
     return None
 
 
 def _should_drop_duplicate_reticulum_chat_inbound(
     message: Dict[str, Any],
 ) -> bool:
+    global _reticulum_chat_routed_control_dedup_last_prune_at
     global _reticulum_chat_inbound_dedup_last_log_at
     global _reticulum_chat_inbound_dedup_suppressed_since_log
     keyed_ttl = _reticulum_chat_inbound_dedup_key(message)
     if keyed_ttl is None:
         return False
     key, ttl_seconds = keyed_ttl
-    now = time.time()
+    is_routed_control = key.startswith("routed_control:")
+    dedup_cache = (
+        _reticulum_chat_routed_control_dedup
+        if is_routed_control
+        else _reticulum_chat_inbound_dedup
+    )
+    dedup_max = (
+        _RETICULUM_CHAT_ROUTED_CONTROL_DEDUP_MAX
+        if is_routed_control
+        else _RETICULUM_CHAT_INBOUND_DEDUP_MAX
+    )
+    dedup_lane = "routed-control" if is_routed_control else "identity-typing"
+    # Dedupe entries represent durations, not wall-clock timestamps. Monotonic
+    # time prevents sleep/NTP clock corrections from extending suppression.
+    now = time.monotonic()
     with _state_lock:
-        expires_at = _reticulum_chat_inbound_dedup.get(key)
+        expires_at = dedup_cache.get(key)
         if isinstance(expires_at, (int, float)) and float(expires_at) > now:
             _reticulum_chat_inbound_dedup_suppressed_since_log += 1
             if now - _reticulum_chat_inbound_dedup_last_log_at >= 10.0:
                 log(
                     "[presence_bridge] target=reticulum-chat-inbound-dedup "
                     f"suppressed={_reticulum_chat_inbound_dedup_suppressed_since_log} "
-                    f"cache={len(_reticulum_chat_inbound_dedup)}"
+                    f"cache={len(dedup_cache)} lane={dedup_lane}"
                 )
                 _reticulum_chat_inbound_dedup_suppressed_since_log = 0
                 _reticulum_chat_inbound_dedup_last_log_at = now
             return True
-        _reticulum_chat_inbound_dedup[key] = now + ttl_seconds
-        if len(_reticulum_chat_inbound_dedup) > _RETICULUM_CHAT_INBOUND_DEDUP_MAX:
+        dedup_cache.pop(key, None)
+        dedup_cache[key] = now + ttl_seconds
+        should_prune_routed = (
+            is_routed_control
+            and now - _reticulum_chat_routed_control_dedup_last_prune_at
+            >= _RETICULUM_CHAT_ROUTED_CONTROL_PRUNE_INTERVAL_SECONDS
+        )
+        if should_prune_routed or (
+            not is_routed_control and len(dedup_cache) > dedup_max
+        ):
+            if is_routed_control:
+                _reticulum_chat_routed_control_dedup_last_prune_at = now
             expired = [
                 cached_key
-                for cached_key, cached_expiry in _reticulum_chat_inbound_dedup.items()
+                for cached_key, cached_expiry in dedup_cache.items()
                 if not isinstance(cached_expiry, (int, float))
                 or float(cached_expiry) <= now
             ]
             for cached_key in expired:
-                _reticulum_chat_inbound_dedup.pop(cached_key, None)
-            overflow = (
-                len(_reticulum_chat_inbound_dedup)
-                - _RETICULUM_CHAT_INBOUND_DEDUP_MAX
-            )
-            if overflow > 0:
-                for cached_key in list(_reticulum_chat_inbound_dedup.keys())[
-                    :overflow
-                ]:
-                    _reticulum_chat_inbound_dedup.pop(cached_key, None)
+                dedup_cache.pop(cached_key, None)
+        while len(dedup_cache) > dedup_max:
+            oldest_key = next(iter(dedup_cache), None)
+            if oldest_key is None:
+                break
+            dedup_cache.pop(oldest_key, None)
     return False
 
 
