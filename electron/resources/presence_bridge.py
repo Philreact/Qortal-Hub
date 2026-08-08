@@ -150,6 +150,15 @@ _KR_MISMATCH_LOGGED: set[str] = set()
 _OVERLAY_MAX_OUTBOUND_NEIGHBORS = 12
 _OVERLAY_MAX_INBOUND_NEIGHBORS = 8
 _OVERLAY_MAX_PINNED_CHAT_PEERS = 4
+# DM WebRTC negotiation is carried only over the authenticated Link to the
+# exact remote installation. Keep a small, bounded lease for peers involved in
+# recent call signaling so ordinary mesh pruning cannot remove that Link
+# between acceptance and SDP/ICE exchange (or during an immediate redial).
+_OVERLAY_MAX_PINNED_CALL_PEERS = 4
+_OVERLAY_MAX_PINNED_PEERS = (
+    _OVERLAY_MAX_PINNED_CHAT_PEERS + _OVERLAY_MAX_PINNED_CALL_PEERS
+)
+_CALL_SIGNAL_OVERLAY_LEASE_SECONDS = 2 * 60.0
 _OVERLAY_BOOTSTRAP_MAX_OUTBOUND_NEIGHBORS = _OVERLAY_MAX_OUTBOUND_NEIGHBORS
 _OVERLAY_MIN_HEALTHY_FANOUT = 8
 _OVERLAY_NEIGHBOR_GRACE_SECONDS = 90.0
@@ -177,6 +186,7 @@ _OVERLAY_MAX_TOTAL_LINKS = (
     _OVERLAY_MAX_OUTBOUND_NEIGHBORS
     + _OVERLAY_MAX_INBOUND_NEIGHBORS
     + _OVERLAY_MAX_PINNED_CHAT_PEERS
+    + _OVERLAY_MAX_PINNED_CALL_PEERS
     + 4
 )
 _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS = 60.0
@@ -507,6 +517,7 @@ _overlay_links_by_id: Dict[str, Dict[str, Any]] = {}
 _overlay_link_ids_by_object: Dict[int, str] = {}
 _active_overlay_link_id_by_peer_hash: Dict[str, str] = {}
 _pinned_chat_overlay_peers: Dict[str, float] = {}
+_pinned_call_overlay_peers: Dict[str, float] = {}
 _overlay_open_pending_by_peer_hash: Set[str] = set()
 _overlay_close_pending_link_ids: Set[str] = set()
 _overlay_dedup_pending_by_peer_hash: Set[str] = set()
@@ -6189,7 +6200,11 @@ def _overlay_peer_available_for_new_outbound(peer_key: str) -> bool:
         return False
     if _overlay_peer_is_suppressed(peer_key):
         return False
-    if _overlay_peer_inbound_full(peer_key) and not _overlay_peer_has_established_link(peer_key):
+    if (
+        _overlay_peer_inbound_full(peer_key)
+        and not _overlay_peer_is_pinned_for_call(peer_key)
+        and not _overlay_peer_has_established_link(peer_key)
+    ):
         return False
     return True
 
@@ -9525,7 +9540,7 @@ def _overlay_link_pressure_sort_key(item: tuple[str, Dict[str, Any]]) -> tuple[i
         category = 4
     else:
         category = 5
-    if category == 5 and _overlay_peer_is_pinned_for_chat(peer_hash):
+    if category in {4, 5} and _overlay_peer_is_pinned(peer_hash):
         category = 6
     return (category, activity, link_id)
 
@@ -10701,11 +10716,68 @@ def _prune_pinned_chat_overlay_peers(now: Optional[float] = None) -> Set[str]:
         return set(_pinned_chat_overlay_peers.keys())
 
 
+def _prune_pinned_call_overlay_peers(now: Optional[float] = None) -> Set[str]:
+    if now is None:
+        now = time.time()
+    with _state_lock:
+        for peer_hash, expires_at in list(_pinned_call_overlay_peers.items()):
+            if not isinstance(expires_at, (int, float)) or float(expires_at) <= now:
+                _pinned_call_overlay_peers.pop(peer_hash, None)
+        return set(_pinned_call_overlay_peers.keys())
+
+
+def _lease_call_overlay_peer(peer_hash: str, now: Optional[float] = None) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not _valid_presence_destination_hash_hex(peer_key):
+        return False
+    if now is None:
+        now = time.time()
+    expires_at = now + _CALL_SIGNAL_OVERLAY_LEASE_SECONDS
+    with _state_lock:
+        for existing_peer, existing_expiry in list(_pinned_call_overlay_peers.items()):
+            if (
+                not isinstance(existing_expiry, (int, float))
+                or float(existing_expiry) <= now
+            ):
+                _pinned_call_overlay_peers.pop(existing_peer, None)
+        if (
+            peer_key not in _pinned_call_overlay_peers
+            and len(_pinned_call_overlay_peers) >= _OVERLAY_MAX_PINNED_CALL_PEERS
+        ):
+            # Never make an established/retrying call less reliable to admit a
+            # new route. The extra attempt can still use the normal bounded
+            # direct-send retry path without a maintenance lease.
+            return False
+        _pinned_call_overlay_peers[peer_key] = max(
+            expires_at,
+            float(_pinned_call_overlay_peers.get(peer_key) or 0.0),
+        )
+    return True
+
+
+def _prune_pinned_overlay_peers(now: Optional[float] = None) -> Set[str]:
+    return _prune_pinned_chat_overlay_peers(now) | _prune_pinned_call_overlay_peers(now)
+
+
 def _overlay_peer_is_pinned_for_chat(peer_hash: str) -> bool:
     peer_key = str(peer_hash or "").strip().lower()
     if not peer_key:
         return False
     return peer_key in _prune_pinned_chat_overlay_peers()
+
+
+def _overlay_peer_is_pinned_for_call(peer_hash: str) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key:
+        return False
+    return peer_key in _prune_pinned_call_overlay_peers()
+
+
+def _overlay_peer_is_pinned(peer_hash: str) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    if not peer_key:
+        return False
+    return peer_key in _prune_pinned_overlay_peers()
 
 
 def _overlay_mesh_link_count_locked() -> int:
@@ -10727,17 +10799,25 @@ def _admit_overlay_peer_if_allowed(peer_key: str, reason: str, incoming: bool = 
         target[peer_key] = time.time()
         return True
     if incoming:
-        limit = _OVERLAY_MAX_INBOUND_NEIGHBORS
+        call_pinned = _prune_pinned_call_overlay_peers()
+        pinned_active = sum(1 for existing in target if existing in call_pinned)
+        ordinary_active = len(target) - pinned_active
+        if peer_key in call_pinned:
+            if pinned_active >= _OVERLAY_MAX_PINNED_CALL_PEERS:
+                return False
+        elif ordinary_active >= _OVERLAY_MAX_INBOUND_NEIGHBORS:
+            return False
+        limit = _OVERLAY_MAX_INBOUND_NEIGHBORS + _OVERLAY_MAX_PINNED_CALL_PEERS
     else:
-        pinned = _prune_pinned_chat_overlay_peers()
+        pinned = _prune_pinned_overlay_peers()
         pinned_active = sum(1 for existing in target if existing in pinned)
         ordinary_active = len(target) - pinned_active
         if peer_key in pinned:
-            if pinned_active >= _OVERLAY_MAX_PINNED_CHAT_PEERS:
+            if pinned_active >= _OVERLAY_MAX_PINNED_PEERS:
                 return False
         elif ordinary_active >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS:
             return False
-        limit = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_PINNED_CHAT_PEERS
+        limit = _OVERLAY_MAX_OUTBOUND_NEIGHBORS + _OVERLAY_MAX_PINNED_PEERS
     if len(target) >= limit:
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum overlay_admission_reject "
@@ -10760,6 +10840,7 @@ def _overlay_unknown_inbound_allowed() -> bool:
             _OVERLAY_MAX_OUTBOUND_NEIGHBORS
             + _OVERLAY_MAX_INBOUND_NEIGHBORS
             + _OVERLAY_MAX_PINNED_CHAT_PEERS
+            + _OVERLAY_MAX_PINNED_CALL_PEERS
         )
 
 
@@ -11075,7 +11156,9 @@ def _ensure_overlay_link(
         _overlay_enqueue_close(replaced_link_id, f"replace_unusable_active:{open_reason}")
     if existing is not None:
         return existing
-    if _overlay_peer_inbound_full(peer_key):
+    if _overlay_peer_inbound_full(peer_key) and not _overlay_peer_is_pinned_for_call(
+        peer_key
+    ):
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum overlay_link_skipped "
             f"peer={peer_key} reason=peer_inbound_full"
@@ -11503,17 +11586,17 @@ def _sync_overlay_links() -> None:
     _bootstrap_overlay_neighbors_if_degraded("sync")
     _recover_zero_overlay_fanout("sync")
     _prune_candidate_peers()
-    pinned_chat_peers = _prune_pinned_chat_overlay_peers(now)
-    desired_outbound = set(_active_overlay_neighbors.keys()) | pinned_chat_peers
+    pinned_overlay_peers = _prune_pinned_overlay_peers(now)
+    desired_outbound = set(_active_overlay_neighbors.keys()) | pinned_overlay_peers
     desired_ordinary_count = sum(
-        1 for peer_hash in desired_outbound if peer_hash not in pinned_chat_peers
+        1 for peer_hash in desired_outbound if peer_hash not in pinned_overlay_peers
     )
     for peer_hash in sorted(_candidate_peers.keys(), key=_overlay_bootstrap_peer_sort_key):
         peer_key = str(peer_hash or "").strip().lower()
         if not _valid_presence_destination_hash_hex(peer_key):
             continue
         if (
-            peer_key not in pinned_chat_peers
+            peer_key not in pinned_overlay_peers
             and desired_ordinary_count >= _OVERLAY_MAX_OUTBOUND_NEIGHBORS
         ):
             break
@@ -11522,11 +11605,11 @@ def _sync_overlay_links() -> None:
         if not _overlay_peer_available_for_new_outbound(peer_key):
             continue
         desired_outbound.add(peer_key)
-        if peer_key not in pinned_chat_peers:
+        if peer_key not in pinned_overlay_peers:
             desired_ordinary_count += 1
     desired = desired_outbound | set(_inbound_overlay_neighbors.keys())
     target_outbound_links = min(
-        _OVERLAY_MAX_OUTBOUND_NEIGHBORS + len(pinned_chat_peers),
+        _OVERLAY_MAX_OUTBOUND_NEIGHBORS + len(pinned_overlay_peers),
         len(desired_outbound),
     )
     maintained_outbound_links = 0
@@ -11541,7 +11624,9 @@ def _sync_overlay_links() -> None:
         if open_pending:
             maintained_outbound_links += 1
             continue
-        if _overlay_peer_inbound_full(peer_hash):
+        if _overlay_peer_inbound_full(peer_hash) and not _overlay_peer_is_pinned_for_call(
+            peer_hash
+        ):
             _active_overlay_neighbors.pop(peer_hash, None)
             _candidate_peers.pop(peer_hash, None)
             verbose_presence_log(
@@ -11591,6 +11676,7 @@ def _sync_overlay_links() -> None:
                     _OVERLAY_MAX_OUTBOUND_NEIGHBORS
                     + _OVERLAY_MAX_INBOUND_NEIGHBORS
                     + _OVERLAY_MAX_PINNED_CHAT_PEERS
+                    + _OVERLAY_MAX_PINNED_CALL_PEERS
                 )
             ):
                 if _overlay_enqueue_close(link_id, "pruned_unknown_full"):
@@ -19740,6 +19826,7 @@ def handle_stop(req_id: str) -> None:
         _land_state_forward_pending = {}
     with _state_lock:
         _pinned_chat_overlay_peers.clear()
+        _pinned_call_overlay_peers.clear()
         resource_sessions = [
             state
             for state in _qchat_file_links_by_id.values()
@@ -19935,6 +20022,10 @@ def handle_send_call(req_id: str, payload: Dict[str, Any]) -> None:
         wire_bytes = encoded["wire_bytes"]
         if len(wire_bytes) > 600:
             log(f"[presence_bridge] warning call packet len={len(wire_bytes)}")
+        # Lease before opening/sending. Even a first attempt that arrives while
+        # the Link is still opening must prevent the maintenance pass from
+        # pruning that Link out from under the bounded Electron retry loop.
+        _lease_call_overlay_peer(peer_key)
         failure = _prepare_call_signal_peer(peer_key)
         if failure is not None:
             emit_resp(

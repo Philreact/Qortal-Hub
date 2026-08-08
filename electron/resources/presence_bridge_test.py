@@ -6083,5 +6083,124 @@ class PresenceBridgePinnedChatPeersTest(unittest.TestCase):
         self.assertIn(peer_hash, self.bridge._candidate_peers)
 
 
+class PresenceBridgePinnedCallPeersTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+
+    def tearDown(self):
+        self.bridge._shutdown.clear()
+
+    def test_call_signal_lease_survives_immediate_redial_and_expires(self):
+        peer_hash = "dd" * 16
+        started_at = 1_000.0
+
+        self.assertTrue(self.bridge._lease_call_overlay_peer(peer_hash, started_at))
+        first_expiry = self.bridge._pinned_call_overlay_peers[peer_hash]
+        self.assertEqual(
+            first_expiry,
+            started_at + self.bridge._CALL_SIGNAL_OVERLAY_LEASE_SECONDS,
+        )
+
+        redial_at = started_at + 15.0
+        self.assertTrue(self.bridge._lease_call_overlay_peer(peer_hash, redial_at))
+        self.assertGreater(
+            self.bridge._pinned_call_overlay_peers[peer_hash],
+            first_expiry,
+        )
+        self.assertIn(
+            peer_hash,
+            self.bridge._prune_pinned_overlay_peers(redial_at + 1.0),
+        )
+        self.assertNotIn(
+            peer_hash,
+            self.bridge._prune_pinned_overlay_peers(
+                redial_at + self.bridge._CALL_SIGNAL_OVERLAY_LEASE_SECONDS + 1.0
+            ),
+        )
+
+    def test_send_call_leases_peer_before_a_missing_link_response(self):
+        peer_hash = "ee" * 16
+        responses = []
+        self.bridge._destination = object()
+
+        with mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda *args, **kwargs: responses.append((args, kwargs)),
+        ), mock.patch.object(
+            self.bridge,
+            "_encode_call_signal_wire",
+            return_value={
+                "ok": True,
+                "wire_bytes": b'{"t":"RS","c":"call-id"}',
+                "message_type": "RS",
+            },
+        ), mock.patch.object(
+            self.bridge, "_prepare_call_signal_peer", return_value=None
+        ), mock.patch.object(
+            self.bridge,
+            "_send_call_signal_wire_to_peer",
+            return_value={
+                "payload": {"code": "packet_send_false"},
+                "error": "Packet send returned False",
+            },
+        ):
+            self.bridge.handle_send_call(
+                "call-send",
+                {
+                    "peerPresenceHash": peer_hash,
+                    "message": {"t": "RS", "c": "call-id"},
+                },
+            )
+
+        self.assertIn(peer_hash, self.bridge._pinned_call_overlay_peers)
+        self.assertFalse(responses[-1][0][1])
+
+    def test_full_call_lease_table_does_not_evict_existing_calls(self):
+        now = 2_000.0
+        existing = {
+            f"{value:02x}" * 16: now + 60.0 + value
+            for value in range(self.bridge._OVERLAY_MAX_PINNED_CALL_PEERS)
+        }
+        self.bridge._pinned_call_overlay_peers.update(existing)
+
+        self.assertFalse(
+            self.bridge._lease_call_overlay_peer("ff" * 16, now)
+        )
+        self.assertEqual(self.bridge._pinned_call_overlay_peers, existing)
+
+    def test_call_lease_overrides_stale_remote_inbound_full_hint(self):
+        peer_hash = "ab" * 16
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "overlay_inbound_full_until": time.time() + 60.0,
+        }
+
+        self.assertFalse(
+            self.bridge._overlay_peer_available_for_new_outbound(peer_hash)
+        )
+        self.assertTrue(self.bridge._lease_call_overlay_peer(peer_hash))
+        self.assertTrue(
+            self.bridge._overlay_peer_available_for_new_outbound(peer_hash)
+        )
+
+    def test_call_pinned_inbound_peer_uses_reserved_capacity(self):
+        now = time.time()
+        for value in range(self.bridge._OVERLAY_MAX_INBOUND_NEIGHBORS):
+            self.bridge._inbound_overlay_neighbors[f"{value:02x}" * 16] = now
+        call_peer = "cd" * 16
+
+        self.assertFalse(
+            self.bridge._admit_overlay_peer_if_allowed(
+                "fe" * 16, "ordinary-over-capacity", incoming=True
+            )
+        )
+        self.assertTrue(self.bridge._lease_call_overlay_peer(call_peer, now))
+        self.assertTrue(
+            self.bridge._admit_overlay_peer_if_allowed(
+                call_peer, "call-reserved-capacity", incoming=True
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
