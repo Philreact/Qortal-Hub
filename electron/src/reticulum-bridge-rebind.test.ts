@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
     setCallBridge: vi.fn(),
     setGroupCallBridge: vi.fn(),
     setChatBridge: vi.fn(),
+    setStunBridge: vi.fn(),
   };
 });
 
@@ -43,6 +44,10 @@ vi.mock('./reticulum-chat', () => ({
   getReticulumChatManager: vi.fn(() => ({ setBridge: mocks.setChatBridge })),
 }));
 
+vi.mock('./stun-coordinator', () => ({
+  rebindStunCoordinatorBridge: mocks.setStunBridge,
+}));
+
 import { rebindReticulumBridgeConsumers } from './reticulum-bridge-rebind';
 
 describe('rebindReticulumBridgeConsumers', () => {
@@ -62,6 +67,7 @@ describe('rebindReticulumBridgeConsumers', () => {
     expect(mocks.setCallBridge).toHaveBeenCalledWith(mocks.bridge);
     expect(mocks.setGroupCallBridge).toHaveBeenCalledWith(mocks.bridge);
     expect(mocks.setChatBridge).toHaveBeenCalledWith(mocks.bridge);
+    expect(mocks.setStunBridge).toHaveBeenCalledWith(mocks.bridge);
   });
 
   it('does not rebind consumers when the bridge is not ready', () => {
@@ -73,5 +79,6 @@ describe('rebindReticulumBridgeConsumers', () => {
     expect(mocks.setCallBridge).not.toHaveBeenCalled();
     expect(mocks.setGroupCallBridge).not.toHaveBeenCalled();
     expect(mocks.setChatBridge).not.toHaveBeenCalled();
+    expect(mocks.setStunBridge).not.toHaveBeenCalled();
   });
 });

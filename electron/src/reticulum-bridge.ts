@@ -198,6 +198,8 @@ type BridgeCmdFrame = {
     | 'overlay_sync_state'
     | 'configure_reticulum_chat_pinned_peers'
     | 'overlay_note_candidate_failure'
+    | 'configure_community_stun'
+    | 'get_community_stun_endpoints'
     | 'stop'
     | 'send_call'
     | 'prepare_reticulum_resource_session'
@@ -847,6 +849,11 @@ type BridgeEventFrame =
     }
   | {
       type: 'event';
+      event: 'community_stun_endpoint';
+      payload?: { host?: string; port?: number; expiresAt?: number };
+    }
+  | {
+      type: 'event';
       event: 'error';
       payload?: {
         code?: string;
@@ -1135,6 +1142,8 @@ function commandPriorityForAction(
     case 'overlay_sync_state':
     case 'configure_reticulum_chat_pinned_peers':
     case 'overlay_note_candidate_failure':
+    case 'configure_community_stun':
+    case 'get_community_stun_endpoints':
       return 'low';
     default:
       return 'high';
@@ -3158,6 +3167,40 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return resp.ok;
   }
 
+  /**
+   * Configure the anonymous community-STUN advertisement owned by the Python
+   * bridge. The discovery destination has its own rotating RNS identity and is
+   * deliberately unrelated to this bridge's presence/account identity.
+   */
+  async configureCommunityStun(
+    endpoint: { host: string; port: number; expiresAt: number } | null
+  ): Promise<boolean> {
+    await this.start();
+    if (this.state !== 'ready') return false;
+    const resp = await this.sendCommand('configure_community_stun', {
+      enabled: endpoint !== null,
+      ...(endpoint ?? {}),
+    });
+    return resp.ok;
+  }
+
+  async getCommunityStunEndpoints(): Promise<
+    Array<{ host: string; port: number; expiresAt: number }>
+  > {
+    await this.start();
+    if (this.state !== 'ready') return [];
+    const resp = await this.sendCommand('get_community_stun_endpoints', {});
+    if (!resp.ok || !Array.isArray(resp.payload?.endpoints)) return [];
+    return resp.payload.endpoints.filter(
+      (value): value is { host: string; port: number; expiresAt: number } =>
+        value != null &&
+        typeof value === 'object' &&
+        typeof (value as { host?: unknown }).host === 'string' &&
+        typeof (value as { port?: unknown }).port === 'number' &&
+        typeof (value as { expiresAt?: unknown }).expiresAt === 'number'
+    );
+  }
+
   getState(): BridgeState {
     return this.state;
   }
@@ -5087,6 +5130,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       case 'reticulum_resource_session': {
         this.emitBridgeFrameEvent(
           'reticulum-resource-session',
+          frame.payload ?? {}
+        );
+        return;
+      }
+      case 'community_stun_endpoint': {
+        this.emitBridgeFrameEvent(
+          'community-stun-endpoint',
           frame.payload ?? {}
         );
         return;

@@ -302,6 +302,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     useState(false);
   const [reticulumTransitionBusy, setReticulumTransitionBusy] = useState(false);
   const [reticulumChatEnabled, setReticulumChatEnabled] = useState(false);
+  const [
+    communityStunContributionEnabled,
+    setCommunityStunContributionEnabled,
+  ] = useState(true);
   const [reticulumResourceLimitBytes, setReticulumResourceLimitBytes] =
     useState(10 * RETICULUM_RESOURCE_GIB);
   const [reticulumResourceStorage, setReticulumResourceStorage] =
@@ -795,6 +799,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       setReticulumChatEnabled(
         settings?.reticulumChatEnabled === false ? false : true
       );
+      setCommunityStunContributionEnabled(
+        settings?.communityStunContributionEnabled === false ? false : true
+      );
       setReticulumResourceLimitBytes(
         Number(settings?.reticulumResourceLimitBytes) ||
           10 * RETICULUM_RESOURCE_GIB
@@ -834,6 +841,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         settings?.reticulumManagedConfigEnabled !== false
       );
       setReticulumChatEnabled(settings?.reticulumChatEnabled !== false);
+      setCommunityStunContributionEnabled(
+        settings?.communityStunContributionEnabled !== false
+      );
     });
   }, []);
 
@@ -1243,6 +1253,29 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       }
     },
     [reticulumChatEnabled, setInfoSnack, setOpenSnack, td]
+  );
+
+  const handleToggleCommunityStunContribution = useCallback(
+    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      const previous = communityStunContributionEnabled;
+      setCommunityStunContributionEnabled(checked);
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          communityStunContributionEnabled: checked,
+        });
+      } catch {
+        setCommunityStunContributionEnabled(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'community_stun_update_error',
+            'We could not update community call support right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [communityStunContributionEnabled, setInfoSnack, setOpenSnack, td]
   );
 
   const handleReticulumResourceLimitChange = useCallback(
@@ -3884,6 +3917,58 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                               ))}
                             </Select>
                           </Box>
+                        </Box>
+
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+
+                        <Box
+                          sx={{
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'community_stun_contribution',
+                                'Community call support'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {td(
+                                'community_stun_contribution_desc',
+                                'Help direct calls connect by offering a small network service. Your public IP is shared anonymously with other Hub users.'
+                              )}
+                            </Typography>
+                          </Box>
+                          <Switch
+                            checked={communityStunContributionEnabled}
+                            onChange={handleToggleCommunityStunContribution}
+                            sx={settingsSwitchSx}
+                          />
                         </Box>
 
                         <Box

@@ -77,8 +77,8 @@ import {
 } from './p2p-network';
 import {
   startStunCoordinator,
+  stopStunCoordinator,
   getStunCoordinator,
-  getDirectCallFallbackIceServers,
   GET_ICE_SERVERS_DEADLINE_MS,
 } from './stun-coordinator';
 import {
@@ -1762,10 +1762,12 @@ export interface AppSettings {
   /** Whether the Hub P2P network auto-starts on launch (default true). */
   p2pEnabled?: boolean;
   /**
-   * When true, append public Google/Cloudflare STUN URLs to ICE (rollback / lab).
-   * Default false — use decentralized peer STUN + bootstrap.
+   * @deprecated Retained only for settings-file compatibility. Centralized
+   * public STUN fallback is no longer used.
    */
   legacyPublicStunFallback?: boolean;
+  /** Contribute this device as an anonymously advertised community STUN server. */
+  communityStunContributionEnabled?: boolean;
   /** When false, skip UPnP for Reticulum hub mesh TCP listen port (default true). */
   reticulumMeshUpnpEnabled?: boolean;
   /** When false, do not write/regenerate Qortal Hub's managed Reticulum config. */
@@ -1784,6 +1786,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   autoLockTimeoutMinutes: DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES,
   disableAutoLockOnIdle: false,
   p2pEnabled: !isDisabledLegacy,
+  communityStunContributionEnabled: true,
   reticulumMeshUpnpEnabled: true,
   reticulumManagedConfigEnabled: true,
   reticulumEnabled: true,
@@ -1820,6 +1823,8 @@ export async function readAppSettings(): Promise<AppSettings> {
       legacyPublicStunFallback: isDisabledLegacy
         ? false
         : parsed.legacyPublicStunFallback === true,
+      communityStunContributionEnabled:
+        parsed.communityStunContributionEnabled === false ? false : true,
       reticulumMeshUpnpEnabled:
         parsed.reticulumMeshUpnpEnabled === false ? false : true,
       reticulumManagedConfigEnabled:
@@ -1865,6 +1870,9 @@ let lastObservedAppSettingsJson = '';
 
 async function notifyAppSettingsChanged(settings: AppSettings): Promise<void> {
   setReticulumRuntimeEnabled(settings.reticulumEnabled !== false);
+  getStunCoordinator()?.setContributionEnabled(
+    settings.communityStunContributionEnabled !== false
+  );
   lastObservedAppSettingsJson = JSON.stringify(settings);
   for (const window of BrowserWindow.getAllWindows()) {
     sendToRenderer(window.webContents, 'appSettings:changed', settings);
@@ -2014,20 +2022,11 @@ ipcMain.handle(
           RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES,
       });
     }
-    if (!isDisabledLegacy) {
-      getStunCoordinator()?.setLegacyPublicStunFallback(
-        next.legacyPublicStunFallback === true
-      );
-    }
     return next;
   }
 );
 
 ipcMain.handle('hub:getIceServers', async () => {
-  // The old P2P network is disabled, but DM calls still need public STUN for
-  // their WebRTC audio fast path. This does not revive legacy signaling: SDP,
-  // candidates, call control, and keys continue over direct Reticulum links.
-  if (isDisabledLegacy) return getDirectCallFallbackIceServers();
   const c = getStunCoordinator();
   if (!c) return [];
   return await new Promise<{ urls: string }[]>((resolve, reject) => {
@@ -2059,7 +2058,6 @@ ipcMain.handle('hub:getIceServers', async () => {
 ipcMain.handle(
   'hub:reportStunCallOutcome',
   async (_event, urls: unknown, success: unknown) => {
-    if (isDisabledLegacy) return { ok: false };
     const c = getStunCoordinator();
     if (!c) return { ok: false };
     if (!Array.isArray(urls)) return { ok: false };
@@ -2076,7 +2074,6 @@ ipcMain.handle(
 ipcMain.handle(
   'hub:reportObservedStunSources',
   async (_event, urls: unknown) => {
-    if (isDisabledLegacy) return { ok: false };
     const c = getStunCoordinator();
     if (!c) return { ok: false };
     if (!Array.isArray(urls)) return { ok: false };
@@ -2627,19 +2624,11 @@ export async function startDecentralizedStunAfterP2P(
   network: NonNullable<ReturnType<typeof getP2PNetwork>>,
   opts: P2PNetworkOptions
 ): Promise<void> {
-  if (isDisabledLegacy) return;
-  const chatDb =
-    opts.dbPath ?? join(app.getPath('appData'), 'qortal-shared', 'chat.db');
-  const stunPath = join(dirname(chatDb), 'stun-cache.db');
-  const settings = await readAppSettings();
-  await startStunCoordinator(network, {
-    initialPeers: opts.initialPeers ?? [],
-    stunCacheDbPath: stunPath,
-    legacyPublicStunFallback: settings.legacyPublicStunFallback === true,
-  });
-  if (getStunCoordinator()?.didBindStunUdp()) {
-    await network.mapOwnedStunUdpIfPossible();
-  }
+  // Compatibility entry point for the disabled TLS P2P stack. Community STUN
+  // now starts with the Reticulum bridge so discovery never inherits a normal
+  // P2P/presence identity or peer address.
+  void network;
+  void opts;
 }
 
 async function startReticulumManagers(): Promise<void> {
@@ -2684,6 +2673,19 @@ async function startReticulumManagers(): Promise<void> {
     registerLateReticulumBridgeRecovery();
   }
   attachReticulumStatusBridgeEvents(bridgeTransport);
+
+  if (bridgeTransport) {
+    const stunPath = join(
+      app.getPath('appData'),
+      'qortal-shared',
+      'stun-cache.db'
+    );
+    await startStunCoordinator(bridgeTransport, {
+      stunCacheDbPath: stunPath,
+      contributionEnabled:
+        latestGlobalSettings.communityStunContributionEnabled !== false,
+    });
+  }
 
   await registerReticulumResourceProtocol();
   if (
@@ -2802,6 +2804,7 @@ export function stopReticulumManagers(): void {
     reticulumChatSubscriptionReplayTimer = null;
   }
   stopPresenceMainHeartbeatScheduler();
+  stopStunCoordinator();
   stopReticulumMeshCoordinator();
   stopGroupCallManager();
   stopCallManager();

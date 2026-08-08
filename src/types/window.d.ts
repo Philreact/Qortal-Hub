@@ -165,6 +165,7 @@ declare global {
         disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
+        communityStunContributionEnabled?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
         reticulumEnabled?: boolean;
@@ -178,6 +179,7 @@ declare global {
         disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
+        communityStunContributionEnabled?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
         reticulumEnabled?: boolean;
@@ -190,6 +192,7 @@ declare global {
         disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
+        communityStunContributionEnabled?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
         reticulumEnabled?: boolean;
@@ -203,6 +206,7 @@ declare global {
           reticulumEnabled?: boolean;
           reticulumManagedConfigEnabled?: boolean;
           reticulumChatEnabled?: boolean;
+          communityStunContributionEnabled?: boolean;
         }) => void
       ) => () => void;
       /** Reticulum (rnsd) child process status from main process. */

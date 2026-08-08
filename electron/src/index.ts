@@ -77,6 +77,7 @@ import { isDisabledLegacy } from './feature-flags';
 import { buildAudioSurfaceScheme } from './audio-window-policy';
 import { setAudioSurfaceHttpsInstanceIndex } from './audio-surface-https';
 import { isReticulumRuntimeEnabled } from './reticulum-runtime-state';
+import { rebindReticulumBridgeConsumers } from './reticulum-bridge-rebind';
 
 import * as net from 'net';
 
@@ -195,6 +196,7 @@ function applyGlobalReticulumSetting(enabled: boolean): Promise<void> {
       loggerLog('[Reticulum] Global setting enabled; starting Reticulum.');
       await startReticulumForAppLaunch();
       await ensureReticulumManagersStarted();
+      rebindReticulumBridgeConsumers();
       notifyPresenceTransportReady();
       reticulumGlobalTransitionFailed = false;
       loggerLog('[Reticulum] Global startup complete.');
@@ -414,6 +416,7 @@ async function recoverReticulumAfterWake(source: string): Promise<void> {
       }
 
       await ensureReticulumManagersStarted();
+      rebindReticulumBridgeConsumers();
       notifyPresenceTransportReady();
       await replayReticulumCachedPresence(`wake:${source}`, true);
 
@@ -612,8 +615,7 @@ async function setupMultiInstanceUserData(
   await app.whenReady();
   const initialAppSettings = await readAppSettings();
   reticulumGloballyEnabled = initialAppSettings.reticulumEnabled !== false;
-  automaticAppLockDisabled =
-    initialAppSettings.autoLockTimeoutMinutes === 0;
+  automaticAppLockDisabled = initialAppSettings.autoLockTimeoutMinutes === 0;
   subscribeToAppSettingsChanges((settings) => {
     automaticAppLockDisabled = settings.autoLockTimeoutMinutes === 0;
     return applyGlobalReticulumSetting(settings.reticulumEnabled !== false);

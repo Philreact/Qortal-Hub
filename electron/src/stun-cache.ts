@@ -17,6 +17,10 @@ export const W_FAIL = 3;
 
 /** Target rows to retain in DB (soft cap via prune). */
 export const STUN_CACHE_MAX_ROWS = 32;
+/** Never give WebRTC an endpoint that has not passed a recent local probe. */
+// Shorter than the 10-minute anonymous advertisement lease so a vanished or
+// opted-out contributor cannot remain eligible beyond its advertised life.
+export const STUN_PROBE_FRESHNESS_MS = 8 * 60 * 1000;
 
 export interface StunEndpointRow {
   stun_key: string;
@@ -49,18 +53,33 @@ export interface StunSelectionDebugRow {
   recentProbeOk: boolean;
 }
 
+export function isEligibleStunEndpointRow(
+  row: StunEndpointRow,
+  now = Date.now()
+): boolean {
+  return (
+    row.stun_server_capable === 1 &&
+    row.probe_success_at != null &&
+    row.probe_success_at >= now - STUN_PROBE_FRESHNESS_MS &&
+    (!row.probe_fail_at || row.probe_success_at > row.probe_fail_at)
+  );
+}
+
 function ipv4Prefix24(host: string): string | null {
   const m = host.match(/^(\d+)\.(\d+)\.(\d+)\.\d+$/);
   if (!m) return null;
   return `${m[1]}.${m[2]}.${m[3]}`;
 }
 
-function parseStunEndpointKey(stunKey: string): { host: string; stunPort: number } | null {
+function parseStunEndpointKey(
+  stunKey: string
+): { host: string; stunPort: number } | null {
   const idx = stunKey.lastIndexOf(':');
   if (idx <= 0) return null;
   const host = stunKey.slice(0, idx).trim();
   const stunPort = Number.parseInt(stunKey.slice(idx + 1), 10);
-  if (!host || Number.isNaN(stunPort) || stunPort < 1 || stunPort > 65535) return null;
+  if (!host || Number.isNaN(stunPort) || stunPort < 1 || stunPort > 65535)
+    return null;
   return { host, stunPort };
 }
 
@@ -136,7 +155,11 @@ export class StunCache {
     );
   }
 
-  private ensureEndpointRow(stunKey: string, host: string, stunPort: number): void {
+  private ensureEndpointRow(
+    stunKey: string,
+    host: string,
+    stunPort: number
+  ): void {
     const db = this.requireDb();
     const now = Date.now();
     db.prepare(
@@ -184,17 +207,7 @@ export class StunCache {
           probe_fail_streak = 0,
           stun_server_capable = 1,
           updated_at = excluded.updated_at`
-      ).run(
-        key,
-        host,
-        stunPort,
-        now,
-        ewma,
-        cs,
-        cf,
-        ob,
-        now
-      );
+      ).run(key, host, stunPort, now, ewma, cs, cf, ob, now);
     } else {
       const streak = (row?.probe_fail_streak ?? 0) + 1;
       const cs = row?.call_success_events ?? 0;
@@ -212,19 +225,7 @@ export class StunCache {
           probe_fail_at = excluded.probe_fail_at,
           probe_fail_streak = excluded.probe_fail_streak,
           updated_at = excluded.updated_at`
-      ).run(
-        key,
-        host,
-        stunPort,
-        ps,
-        now,
-        ew,
-        streak,
-        cs,
-        cf,
-        ob,
-        now
-      );
+      ).run(key, host, stunPort, ps, now, ew, streak, cs, cf, ob, now);
     }
     this.pruneSoft();
   }
@@ -288,7 +289,9 @@ export class StunCache {
     try {
       const db = this.requireDb();
       return db
-        .prepare(`SELECT * FROM stun_endpoints ORDER BY updated_at DESC LIMIT ?`)
+        .prepare(
+          `SELECT * FROM stun_endpoints ORDER BY updated_at DESC LIMIT ?`
+        )
         .all(STUN_CACHE_MAX_ROWS * 2) as StunEndpointRow[];
     } catch {
       return [];
@@ -301,7 +304,9 @@ export class StunCache {
    * still produce wire-v2 URLs; at most one URL per host (highest score first).
    */
   selectTopIceServers(maxOut: number): IceServerOut[] {
-    const rows = this.getAllRows();
+    const rows = this.getAllRows().filter((row) =>
+      isEligibleStunEndpointRow(row)
+    );
     const scored = rows.map((r) => ({ r, score: this.computeScore(r) }));
     scored.sort((a, b) => b.score - a.score);
     const out: IceServerOut[] = [];
@@ -333,7 +338,9 @@ export class StunCache {
   }
 
   describeSelection(maxOut: number): StunSelectionDebugRow[] {
-    const rows = this.getAllRows();
+    const rows = this.getAllRows().filter((row) =>
+      isEligibleStunEndpointRow(row)
+    );
     const scored = rows.map((r) => ({
       stunKey: r.stun_key,
       host: r.host,
@@ -344,7 +351,8 @@ export class StunCache {
       observerConfirmations: r.observer_confirmations ?? 0,
       probeFailStreak: r.probe_fail_streak ?? 0,
       recentProbeOk:
-        !!r.probe_success_at && (!r.probe_fail_at || r.probe_success_at > r.probe_fail_at),
+        !!r.probe_success_at &&
+        (!r.probe_fail_at || r.probe_success_at > r.probe_fail_at),
     }));
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, maxOut);

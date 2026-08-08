@@ -469,6 +469,7 @@ try {
       disableAutoLockOnIdle?: boolean;
       p2pEnabled?: boolean;
       legacyPublicStunFallback?: boolean;
+      communityStunContributionEnabled?: boolean;
       reticulumMeshUpnpEnabled?: boolean;
       reticulumManagedConfigEnabled?: boolean;
       reticulumEnabled?: boolean;
@@ -482,6 +483,7 @@ try {
         reticulumEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
         reticulumChatEnabled?: boolean;
+        communityStunContributionEnabled?: boolean;
       }) => void
     ) => {
       const listener = (_event: Electron.IpcRendererEvent, settings: any) =>
@@ -1624,9 +1626,10 @@ try {
           addresses
         ) as Promise<{ success: boolean; error?: string }>,
       clearLocalAccountState: async () =>
-        ipcRenderer.invoke(
-          'reticulumChat:clearLocalAccountState'
-        ) as Promise<{ success: boolean; error?: string }>,
+        ipcRenderer.invoke('reticulumChat:clearLocalAccountState') as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
       getSilence: async (
         ownerAddress: string,
         targetAddress: string,
@@ -2712,9 +2715,10 @@ try {
           addresses
         ) as Promise<{ success: boolean; error?: string }>,
       clearLocalAccountState: async () =>
-        ipcRenderer.invoke(
-          'reticulumChat:clearLocalAccountState'
-        ) as Promise<{ success: boolean; error?: string }>,
+        ipcRenderer.invoke('reticulumChat:clearLocalAccountState') as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
       getSilence: async (
         ownerAddress: string,
         targetAddress: string,

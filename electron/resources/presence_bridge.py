@@ -3,6 +3,7 @@
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -34,6 +35,15 @@ APP_NAMESPACE = "qortal-hub-test2"
 PRESENCE_ASPECT = "presence"
 PRESENCE_VERSION = "v1-test2"
 IDENTITY_FILENAME = "presence-bridge.identity"
+COMMUNITY_STUN_ASPECT = "community-stun"
+COMMUNITY_STUN_VERSION = "v1"
+COMMUNITY_STUN_IDENTITY_FILENAME = (
+    "community-stun."
+    + hashlib.sha256(APP_NAMESPACE.encode("utf-8")).hexdigest()[:12]
+    + ".identity"
+)
+COMMUNITY_STUN_IDENTITY_MAX_AGE_SECONDS = 24 * 60 * 60
+COMMUNITY_STUN_PORT = 47321
 disable_bootstrap = False
 
 _state_lock = threading.RLock()
@@ -41,6 +51,15 @@ _reticulum = None
 _identity = None
 _destination = None
 _announce_handler = None
+_community_stun_identity = None
+_community_stun_destination = None
+_community_stun_announce_handler = None
+_community_stun_seen_endpoints: Dict[str, float] = {}
+_community_stun_recent_endpoints: Dict[str, Dict[str, Any]] = {}
+_community_stun_event_times: "deque[float]" = deque()
+_community_stun_local_hashes: "deque[bytes]" = deque(maxlen=8)
+_community_stun_local_endpoint: Optional[Dict[str, Any]] = None
+_community_stun_last_query_response_at = 0.0
 _reticulum_config_dir = ""
 # A shared-instance client does not own the authoritative Transport.path_table.
 # Keep a very short cache for the uncommon local-miss/RPC-fallback path so
@@ -7960,6 +7979,244 @@ class PresenceAnnounceHandler:
         _retry_pending_overlay_connect_on_announce(peer_hash)
         _retry_pending_audio_connect_on_announce(peer_hash)
         _maybe_schedule_overlay_route_migration(peer_hash, "announce")
+
+
+class CommunityStunAnnounceHandler:
+    """Receive anonymous, short-lived STUN endpoint advertisements.
+
+    The announcing identity is intentionally not registered as a presence peer
+    and its destination hash is never emitted to Electron. This keeps endpoint
+    discovery outside all Qortal-account and normal Reticulum-route bindings.
+    """
+
+    def __init__(self, local_hash: Optional[bytes] = None):
+        self.aspect_filter = (
+            f"{APP_NAMESPACE}.{COMMUNITY_STUN_ASPECT}.{COMMUNITY_STUN_VERSION}"
+        )
+        self.local_hash = local_hash
+
+    def received_announce(self, destination_hash, announced_identity, app_data):
+        global _community_stun_last_query_response_at
+        if destination_hash in _community_stun_local_hashes:
+            return
+        try:
+            raw = bytes(app_data or b"")
+            if not raw or len(raw) > 256:
+                return
+            value = json.loads(raw.decode("utf-8"))
+            if not isinstance(value, dict) or int(value.get("v") or 0) != 1:
+                return
+            if value.get("q") is True:
+                with _state_lock:
+                    received_at = time.time()
+                    endpoint = dict(_community_stun_local_endpoint or {})
+                    endpoint_expires_at = int(endpoint.get("expiresAt") or 0)
+                    if (
+                        endpoint_expires_at <= int(received_at * 1000)
+                        or received_at - _community_stun_last_query_response_at < 30.0
+                    ):
+                        return
+                    _community_stun_last_query_response_at = received_at
+                # Spread simultaneous contributor responses without making a
+                # new consumer wait for the periodic two-minute refresh.
+                timer = threading.Timer(
+                    secrets.randbelow(2000) / 1000.0,
+                    _announce_community_stun_endpoint,
+                )
+                timer.daemon = True
+                timer.start()
+                return
+            host = str(value.get("h") or "").strip()
+            port = int(value.get("p") or 0)
+            expires_at = int(value.get("x") or 0)
+            now = int(time.time())
+            try:
+                address = ipaddress.ip_address(host)
+            except ValueError:
+                return
+            if (
+                not isinstance(address, ipaddress.IPv4Address)
+                or not address.is_global
+                or port != COMMUNITY_STUN_PORT
+            ):
+                return
+            if expires_at <= now or expires_at > now + 60 * 60:
+                return
+            endpoint_key = f"{host}:{port}"
+            with _state_lock:
+                received_at = time.time()
+                while (
+                    _community_stun_event_times
+                    and received_at - _community_stun_event_times[0] >= 60.0
+                ):
+                    _community_stun_event_times.popleft()
+                if len(_community_stun_event_times) >= 60:
+                    return
+                seen_at = _community_stun_seen_endpoints.get(endpoint_key, 0.0)
+                if received_at - seen_at < 60.0:
+                    return
+                _community_stun_seen_endpoints[endpoint_key] = received_at
+                _community_stun_recent_endpoints[endpoint_key] = {
+                    "host": host,
+                    "port": port,
+                    "expiresAt": expires_at * 1000,
+                }
+                _community_stun_event_times.append(received_at)
+                if len(_community_stun_seen_endpoints) > 256:
+                    oldest = sorted(
+                        _community_stun_seen_endpoints.items(),
+                        key=lambda item: item[1],
+                    )[:64]
+                    for key, _ in oldest:
+                        _community_stun_seen_endpoints.pop(key, None)
+                        _community_stun_recent_endpoints.pop(key, None)
+            emit_event(
+                "community_stun_endpoint",
+                {"host": host, "port": port, "expiresAt": expires_at * 1000},
+            )
+        except Exception:
+            # Untrusted announces are expected on a public aspect. Ignore
+            # malformed advertisements without creating noisy error logs.
+            return
+
+
+def _load_rotating_community_stun_identity(config_dir: str):
+    identity_path = os.path.join(config_dir, COMMUNITY_STUN_IDENTITY_FILENAME)
+    now = time.time()
+    try:
+        age = now - os.path.getmtime(identity_path)
+        if 0 <= age < COMMUNITY_STUN_IDENTITY_MAX_AGE_SECONDS:
+            loaded = RNS.Identity.from_file(identity_path)
+            if loaded is not None:
+                return loaded
+    except Exception:
+        pass
+    identity = RNS.Identity()
+    identity.to_file(identity_path)
+    try:
+        os.chmod(identity_path, 0o600)
+    except Exception:
+        pass
+    return identity
+
+
+def _ensure_community_stun_discovery(config_dir: str) -> None:
+    global _community_stun_identity, _community_stun_destination
+    global _community_stun_announce_handler
+    if _community_stun_announce_handler is None:
+        # Register discovery even when this installation cannot contribute.
+        _community_stun_announce_handler = CommunityStunAnnounceHandler()
+        RNS.Transport.register_announce_handler(_community_stun_announce_handler)
+    identity_path = os.path.join(config_dir, COMMUNITY_STUN_IDENTITY_FILENAME)
+    if _community_stun_destination is not None:
+        try:
+            age = time.time() - os.path.getmtime(identity_path)
+            if 0 <= age < COMMUNITY_STUN_IDENTITY_MAX_AGE_SECONDS:
+                return
+        except Exception:
+            pass
+    _community_stun_identity = _load_rotating_community_stun_identity(config_dir)
+    _community_stun_destination = RNS.Destination(
+        _community_stun_identity,
+        RNS.Destination.IN,
+        RNS.Destination.SINGLE,
+        APP_NAMESPACE,
+        COMMUNITY_STUN_ASPECT,
+        COMMUNITY_STUN_VERSION,
+    )
+    _community_stun_local_hashes.append(_community_stun_destination.hash)
+    _community_stun_announce_handler.local_hash = _community_stun_destination.hash
+
+
+def _announce_community_stun_endpoint() -> bool:
+    with _state_lock:
+        endpoint = dict(_community_stun_local_endpoint or {})
+        destination = _community_stun_destination
+    host = str(endpoint.get("host") or "").strip()
+    port = int(endpoint.get("port") or 0)
+    expires_at_ms = int(endpoint.get("expiresAt") or 0)
+    expires_at = expires_at_ms // 1000
+    now = int(time.time())
+    if destination is None or expires_at <= now:
+        return False
+    app_data = json.dumps(
+        {"v": 1, "h": host, "p": port, "x": expires_at},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(app_data) > 256:
+        return False
+    destination.announce(app_data=app_data)
+    return True
+
+
+def handle_configure_community_stun(req_id: str, payload: Dict[str, Any]) -> None:
+    global _community_stun_local_endpoint
+    if payload.get("enabled") is not True:
+        with _state_lock:
+            _community_stun_local_endpoint = None
+        emit_resp(req_id, True)
+        return
+    host = str(payload.get("host") or "").strip()
+    try:
+        port = int(payload.get("port") or 0)
+        expires_at_ms = int(payload.get("expiresAt") or 0)
+    except Exception:
+        emit_resp(req_id, False, error="Invalid community STUN endpoint")
+        return
+    now = int(time.time())
+    expires_at = expires_at_ms // 1000
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if (
+        not isinstance(address, ipaddress.IPv4Address)
+        or not address.is_global
+        or port != COMMUNITY_STUN_PORT
+        or expires_at <= now
+        or expires_at > now + 60 * 60
+    ):
+        emit_resp(req_id, False, error="Invalid community STUN endpoint")
+        return
+    try:
+        _ensure_community_stun_discovery(_reticulum_config_dir)
+        with _state_lock:
+            _community_stun_local_endpoint = {
+                "host": host,
+                "port": port,
+                "expiresAt": expires_at_ms,
+            }
+        if not _announce_community_stun_endpoint():
+            raise ValueError("Community STUN endpoint is not ready")
+        emit_resp(req_id, True)
+        log("[presence_bridge] community_stun advertised endpoint=yes identity=anonymous")
+    except Exception as exc:
+        emit_resp(req_id, False, error=str(exc))
+
+
+def handle_get_community_stun_endpoints(req_id: str) -> None:
+    now_ms = int(time.time() * 1000)
+    with _state_lock:
+        expired = [
+            key
+            for key, value in _community_stun_recent_endpoints.items()
+            if int(value.get("expiresAt") or 0) <= now_ms
+        ]
+        for key in expired:
+            _community_stun_recent_endpoints.pop(key, None)
+            _community_stun_seen_endpoints.pop(key, None)
+        endpoints = list(_community_stun_recent_endpoints.values())[:128]
+    try:
+        _ensure_community_stun_discovery(_reticulum_config_dir)
+        query_data = json.dumps(
+            {"v": 1, "q": True}, separators=(",", ":")
+        ).encode("utf-8")
+        _community_stun_destination.announce(app_data=query_data)
+    except Exception:
+        # Cached endpoints remain useful if an on-demand discovery announce
+        # cannot be sent during a transient bridge/transport transition.
+        pass
+    emit_resp(req_id, True, payload={"endpoints": endpoints})
 
 
 def build_outbound_destination(peer_identity):
@@ -18936,6 +19193,7 @@ def ensure_started(config_dir: str):
         )
         _announce_handler = PresenceAnnounceHandler(_destination.hash)
         RNS.Transport.register_announce_handler(_announce_handler)
+        _ensure_community_stun_discovery(config_dir)
         ensure_transport_monitor_started()
         ensure_rns_callback_scheduler_monitor_started()
         ensure_audio_rtt_monitor_started()
@@ -23135,6 +23393,10 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_configure_reticulum_chat_pinned_peers(req_id, payload)
     elif action == "overlay_note_candidate_failure":
         handle_overlay_note_candidate_failure(req_id, payload)
+    elif action == "configure_community_stun":
+        handle_configure_community_stun(req_id, payload)
+    elif action == "get_community_stun_endpoints":
+        handle_get_community_stun_endpoints(req_id)
     elif action == "stop":
         handle_stop(req_id)
     elif action == "send_call":
