@@ -28,7 +28,9 @@ import { useTranslation } from 'react-i18next';
 
 const { t } = useTranslation(['auth', 'core', 'group', 'question', 'tutorial']);
 
-<Button>{t('core:action.close', { postProcess: 'capitalizeFirstChar' })}</Button>
+<Button>
+  {t('core:action.close', { postProcess: 'capitalizeFirstChar' })}
+</Button>;
 ```
 
 Declare only the namespaces the component actually uses. Always prefix the key
@@ -43,7 +45,9 @@ Non-React modules import the instance directly rather than using the hook:
 import i18n from '../i18n/i18n';
 
 throw new Error(
-  i18n.t('auth:message.error.invalid_uint8', { postProcess: 'capitalizeFirstChar' })
+  i18n.t('auth:message.error.invalid_uint8', {
+    postProcess: 'capitalizeFirstChar',
+  })
 );
 ```
 
@@ -52,33 +56,39 @@ For pure helper modules that return display text (see
 **taking `t` as a parameter** so the caller's namespaces and language reactivity
 apply. Return a key + params object instead of a sentence when that is cleaner.
 
-## Casing is done by post-processors, not by the source string
+## Casing
 
-Values in the JSON files are stored **lowercase**. Casing is applied at render
-time via `postProcess`. Never capitalize inside the JSON, and never do
-`t(...).toUpperCase()` in JSX.
+**A value may start uppercase or lowercase** — both are accepted (see
+`docs/i18n_languages.md`). Pick per case:
+
+- **lowercase source + `postProcess`** for short reusable labels, so one key can
+  render as `Close`, `CLOSE` or `close` depending on the call site
+- **natural capitalization** for full sentences shown only one way
+
+Be consistent within a subtree. Never do `t(...).toUpperCase()` in JSX — use a
+post-processor, so other languages capitalize by their own rules.
 
 Available processors (see `src/i18n/processors.ts`):
 
-| Processor | Effect |
-|---|---|
-| `capitalizeFirstChar` | `close` → `Close` — the default choice |
-| `capitalizeFirstWord` | first word uppercased entirely |
-| `capitalizeEachFirstChar` | Title Case |
+| Processor                  | Effect                                     |
+| -------------------------- | ------------------------------------------ |
+| `capitalizeFirstChar`      | `close` → `Close` — the default choice     |
+| `capitalizeFirstWord`      | first word uppercased entirely             |
+| `capitalizeEachFirstChar`  | Title Case                                 |
 | `capitalizeSentenceStarts` | capitalizes after `.`/`!`/`?` and newlines |
-| `capitalizeAll` | ALL CAPS — for stat labels and similar |
+| `capitalizeAll`            | ALL CAPS — for stat labels and similar     |
 
 ## Never hand-edit 12 locale files
 
 Every locale operation has a script in `scripts/`. Editing the JSON by hand is
 how keys go missing from one language, so reach for these instead:
 
-| Task | Command |
-| --- | --- |
-| Find what needs migrating | `python3 scripts/i18n_scan_hardcoded.py <path>` |
-| Seed new keys into all 12 locales | `python3 scripts/i18n_add_keys.py <ns> <patch.json>` |
-| Apply the translations | `python3 scripts/i18n_apply_translations.py <translations.json>` |
-| Check nothing is left | `python3 scripts/i18n_apply_translations.py --audit` |
+| Task                              | Command                                                          |
+| --------------------------------- | ---------------------------------------------------------------- |
+| Find what needs migrating         | `python3 scripts/i18n_scan_hardcoded.py <path>`                  |
+| Seed new keys into all 12 locales | `python3 scripts/i18n_add_keys.py <ns> <patch.json>`             |
+| Apply the translations            | `python3 scripts/i18n_apply_translations.py <translations.json>` |
+| Check nothing is left             | `python3 scripts/i18n_apply_translations.py --audit`             |
 
 All four run from the repo root and take `--help`.
 
@@ -118,10 +128,10 @@ python3 scripts/i18n_add_keys.py group /tmp/new-keys.json
 ```
 
 It never overwrites an existing value, so it is safe to re-run as the patch
-grows. Values are lowercase, nested by topic. Pick the namespace by domain:
+grows. Nest values by topic. Pick the namespace by domain:
 `core` for shared UI vocabulary and generic messages, `group` for
 group/chat/Reticulum features, `auth`, `node`, `question`, `tutorial` for their
-own areas. A *new* namespace also has to be registered in the `namespaces` array
+own areas. A _new_ namespace also has to be registered in the `namespaces` array
 in `src/i18n/i18n.ts`.
 
 At this point all 12 locales hold English. That is a deliberate, temporary state
@@ -158,15 +168,15 @@ python3 scripts/i18n_apply_translations.py /tmp/translations.json
 ```
 
 It aborts before writing anything if a value drops or renames a `{{placeholder}}`,
-is not lowercase, or names a key that does not exist.
+is empty, or names a key that does not exist. Casing is not checked — see below.
 
 The task is not finished while any non-English locale still holds English for a
 key you introduced.
 
 #### Translation rules
 
-- Keep the value **lowercase** — casing is applied by `postProcess` at render
-  time, in every language.
+- Casing follows the English source's style for that key. Do not force lowercase
+  on languages that capitalize by rule — German nouns, for instance.
 - Preserve every `{{placeholder}}` name exactly; reorder them freely within the
   sentence to suit the target language's word order.
 - Leave proper nouns and protocol terms untranslated: `Qortal`, `QORT`, `QDN`,
@@ -217,7 +227,7 @@ wording so the key survives a copy edit.
 t('group:message.error.qortals_required', {
   quantity: 4,
   postProcess: 'capitalizeFirstChar',
-})
+});
 ```
 
 Never concatenate translated fragments to build a sentence — word order differs

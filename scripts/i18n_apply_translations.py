@@ -26,10 +26,14 @@ Input format: namespace -> language -> dotted key -> translated value.
       }
     }
 
-Values must stay lowercase (casing is applied by postProcess at render time) and
-must keep every {{placeholder}} from the English source -- reordered freely to
-suit the target language. Both rules are enforced below; violations abort the
+Values must keep every {{placeholder}} from the English source -- reordered
+freely to suit the target language. That is enforced below; violations abort the
 run before anything is written.
+
+Casing is NOT enforced. A value may start uppercase or lowercase (see
+docs/i18n_languages.md): lowercase plus a postProcess suits short reusable
+labels, while natural capitalization suits full sentences -- and some languages,
+German among them, capitalize nouns regardless.
 """
 
 import argparse
@@ -87,10 +91,8 @@ def apply_translations(path_arg):
                         f'{lang}/{namespace}:{key} placeholder mismatch '
                         f'{sorted(expected)} -> {sorted(actual)}'
                     )
-                if value != value.lower() and not PLACEHOLDER.search(value):
-                    problems.append(
-                        f'{lang}/{namespace}:{key} is not lowercase: {value!r}'
-                    )
+                if not str(value).strip():
+                    problems.append(f'{lang}/{namespace}:{key} is empty')
 
     if problems:
         print('Refusing to write, fix these first:\n')
