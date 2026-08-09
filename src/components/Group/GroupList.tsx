@@ -1748,9 +1748,7 @@ const GroupItem = memo(
             </Box>
           }
           slotProps={{
-            popper: {
-              // -7r15: Keep this tooltip fixed on the rail's right side to
-              // prevent Popper placement changes from causing an update loop.
+            popper: {          
               modifiers: GROUP_RAIL_TOOLTIP_MODIFIERS,
             },
             tooltip: {
