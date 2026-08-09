@@ -31,6 +31,7 @@ import {
   buildReticulumDmProbeSignedFields,
   buildReticulumDmRequestSignedFields,
   getReticulumDmResourceFindRejectReason,
+  getReticulumLandAuthRejectionReason,
   hashReticulumChatPayload,
   isDisabledRelayCache,
   metadataSnapshotHasConsistentRevisions,
@@ -13157,6 +13158,68 @@ describe('reticulum chat manager', () => {
     expect((manager as any).landStateForwardingRevision).toBe(
       initialRevision + 1
     );
+    manager.close();
+  });
+
+  it('classifies expired Land auth separately from signature failures', () => {
+    const signer = createLandAuthSigner();
+    const auth = signer.landAuthWire(73, 'session-expiry', 100_000);
+
+    expect(getReticulumLandAuthRejectionReason(auth, 100_000)).toBeNull();
+    expect(getReticulumLandAuthRejectionReason(auth, 220_000)).toBe(
+      'expired'
+    );
+    expect(getReticulumLandAuthRejectionReason(auth, 220_001)).toBe(
+      'expired'
+    );
+    expect(
+      getReticulumLandAuthRejectionReason({ ...auth, g: 74 }, 100_000)
+    ).toBe('bad_signature');
+  });
+
+  it('keeps the newest queued Land auth for a session', () => {
+    const signer = createLandAuthSigner();
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 100_100,
+    });
+    const newer = signer.landAuthWire(73, 'session-queued', 100_100);
+    const older = signer.landAuthWire(73, 'session-queued', 100_000);
+
+    (manager as any).enqueueLandAuthWire(newer, 'peer-new');
+    (manager as any).enqueueLandAuthWire(older, 'peer-old');
+
+    const queued = [...(manager as any).landAuthItems.values()][0];
+    expect(queued.wire.n).toBe(100_100);
+    expect(queued.peerHash).toBe('peer-new');
+    manager.close();
+  });
+
+  it('expires an accepted Land auth from its signed timestamp', async () => {
+    const signer = createLandAuthSigner();
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'aaaaaaaaaaaaaaaa',
+      } as any,
+      now: () => 150_000,
+      validateGroupMember: async (_groupId, address) =>
+        address === signer.address,
+    });
+    const auth = signer.landAuthWire(73, 'session-delayed', 100_000);
+
+    await (manager as any).handleLandAuthWire(auth, 'peer-delayed');
+
+    const session = [...(manager as any).landAuthSessions.values()][0];
+    expect(session.authenticatedAt).toBe(100_000);
+    expect(session.expiresAt).toBe(220_000);
     manager.close();
   });
 
