@@ -1171,7 +1171,25 @@ interface GroupRoom {
   dmVoiceAudioLinkRole?: 'opener' | 'waiter';
   /** Exact verified endpoint selected by an endpoint-aware 1:1 call. */
   dmVoicePeerDestinationHash?: string;
+  /** Exact active CallManager call bound to this authenticated 1:1 media room. */
+  dmVoiceCallId?: string;
 }
+
+export type DmCallLinkControlInput = {
+  version: 1;
+  kind: 'hangup' | 'hangup-ack';
+  roomId: string;
+  callSessionId: string;
+  mediaSessionGeneration: number;
+  callId: string;
+  chatId: string;
+  controlId: string;
+  fromAddress: string;
+  toAddress: string;
+  timestamp: number;
+  publicKey?: string;
+  signature?: string;
+};
 
 export interface GroupCallRtcSignalInput {
   roomId: string;
@@ -4986,21 +5004,117 @@ export class GroupCallManager extends EventEmitter {
     ) {
       return;
     }
-    let input: GroupCallRtcSignalInput;
+    let input: unknown;
     try {
       const inflated = nodeZlib.inflateRawSync(compressed, {
         maxOutputLength: GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES,
       });
-      input = JSON.parse(inflated.toString('utf8')) as GroupCallRtcSignalInput;
+      input = JSON.parse(inflated.toString('utf8')) as unknown;
     } catch {
       return;
     }
+    if (this.isDmCallLinkControlInput(input)) {
+      this.verifyAndDeliverDmCallLinkControl(
+        input,
+        entry.senderDestinationHash,
+        entry.peerPresenceHash,
+        now
+      );
+      return;
+    }
     void this.verifyAndDeliverRtcSignal(
-      input,
+      input as GroupCallRtcSignalInput,
       entry.senderDestinationHash,
       entry.peerPresenceHash,
       now
     );
+  }
+
+  private isDmCallLinkControlInput(
+    input: unknown
+  ): input is DmCallLinkControlInput {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return false;
+    }
+    const value = input as Partial<DmCallLinkControlInput>;
+    return Boolean(
+      value.version === 1 &&
+        (value.kind === 'hangup' || value.kind === 'hangup-ack') &&
+        typeof value.roomId === 'string' &&
+        value.roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
+        typeof value.callSessionId === 'string' &&
+        value.callSessionId.length > 0 &&
+        value.callSessionId.length <= 128 &&
+        Number.isInteger(value.mediaSessionGeneration) &&
+        typeof value.callId === 'string' &&
+        value.callId.length > 0 &&
+        value.callId.length <= 64 &&
+        typeof value.chatId === 'string' &&
+        value.chatId.startsWith('direct:') &&
+        value.chatId.length <= 256 &&
+        typeof value.controlId === 'string' &&
+        value.controlId.length > 0 &&
+        value.controlId.length <= 128 &&
+        typeof value.fromAddress === 'string' &&
+        value.fromAddress.length > 0 &&
+        value.fromAddress.length <= 128 &&
+        typeof value.toAddress === 'string' &&
+        value.toAddress.length > 0 &&
+        value.toAddress.length <= 128 &&
+        typeof value.timestamp === 'number' &&
+        Number.isFinite(value.timestamp) &&
+        (value.kind === 'hangup-ack' ||
+          (typeof value.publicKey === 'string' &&
+            value.publicKey.length > 0 &&
+            typeof value.signature === 'string' &&
+            value.signature.length > 0))
+    );
+  }
+
+  private verifyAndDeliverDmCallLinkControl(
+    input: DmCallLinkControlInput,
+    senderDestinationHash: string,
+    peerPresenceHash: string,
+    now: number
+  ): void {
+    if (Math.abs(now - input.timestamp) > 30_000) return;
+    const room = this.rooms.get(input.roomId);
+    if (
+      !room ||
+      room.dmVoiceCallId !== input.callId ||
+      room.chatId !== input.chatId ||
+      room.callSessionId !== input.callSessionId ||
+      room.mediaSessionGeneration >>> 0 !==
+        input.mediaSessionGeneration >>> 0 ||
+      !this.localAddresses.has(input.toAddress)
+    ) {
+      return;
+    }
+    const source = room.participants.get(input.fromAddress);
+    const target = room.participants.get(input.toAddress);
+    if (!source || !target) return;
+    const expectedHash = source.reticulumDestinationHash.trim().toLowerCase();
+    const transportHash = resolveGroupCallSourcePeerHash(
+      senderDestinationHash,
+      peerPresenceHash
+    );
+    if (
+      !expectedHash ||
+      !transportHash ||
+      expectedHash !== transportHash ||
+      (room.dmVoicePeerDestinationHash &&
+        room.dmVoicePeerDestinationHash !== expectedHash)
+    ) {
+      return;
+    }
+    const replayKey = `dm-control:${input.roomId}:${input.controlId}:${input.kind}`;
+    this.sweepRtcSignalState(now);
+    if (this.receivedRtcSignalIds.has(replayKey)) return;
+    this.receivedRtcSignalIds.set(replayKey, now + 60_000);
+    this.emit('gcall:dm-call-control', {
+      ...input,
+      verifiedPeerDestinationHash: expectedHash,
+    });
   }
 
   private async verifyAndDeliverRtcSignal(
@@ -5138,7 +5252,9 @@ export class GroupCallManager extends EventEmitter {
     /** Exact peer endpoint selected by QortalLand's signed call handshake. */
     dmVoicePeerDestinationHash?: string,
     /** Set only by main after resolving an active authenticated CallManager record. */
-    dmVoicePeerDestinationHashVerifiedByCall = false
+    dmVoicePeerDestinationHashVerifiedByCall = false,
+    /** Exact CallManager call bound to this DM media room. */
+    dmVoiceCallId?: string
   ): { callSessionId: string; mediaSessionGeneration: number } {
     this.clearReticulumOverlayLogicalDedupeForRoomLifecycle(roomId, 'join');
     if (this.shouldRejectLocalJoinAtParticipantCap(roomId, localAddress)) {
@@ -5186,6 +5302,15 @@ export class GroupCallManager extends EventEmitter {
       typeof dmVoicePeerDestinationHash === 'string' &&
       isRnsDestinationHashHex(dmVoicePeerDestinationHash)
         ? dmVoicePeerDestinationHash.trim().toLowerCase()
+        : undefined;
+    const normalizedDmVoiceCallId =
+      roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
+      dmVoicePeerDestinationHashVerifiedByCall &&
+      Boolean(normalizedDmVoicePeerDestinationHash) &&
+      typeof dmVoiceCallId === 'string' &&
+      dmVoiceCallId.length > 0 &&
+      dmVoiceCallId.length <= 64
+        ? dmVoiceCallId
         : undefined;
     if (normalizedDmVoicePeerDestinationHash) {
       const directParticipants = chatId.startsWith('direct:')
@@ -5253,6 +5378,9 @@ export class GroupCallManager extends EventEmitter {
               dmVoicePeerDestinationHash: normalizedDmVoicePeerDestinationHash,
             }
           : {}),
+        ...(normalizedDmVoiceCallId
+          ? { dmVoiceCallId: normalizedDmVoiceCallId }
+          : {}),
       };
       this.rooms.set(roomId, room);
     } else {
@@ -5265,6 +5393,9 @@ export class GroupCallManager extends EventEmitter {
       }
       if (normalizedDmVoicePeerDestinationHash) {
         room.dmVoicePeerDestinationHash = normalizedDmVoicePeerDestinationHash;
+      }
+      if (normalizedDmVoiceCallId) {
+        room.dmVoiceCallId = normalizedDmVoiceCallId;
       }
     }
     const rk =
@@ -5717,9 +5848,80 @@ export class GroupCallManager extends EventEmitter {
     );
   }
 
-  /**
-   * Send encrypted group audio over a persistent Reticulum link.
-   */
+  /** Send terminal DM-call control over its authenticated media link. */
+  async sendDmCallLinkControl(
+    input: Omit<
+      DmCallLinkControlInput,
+      'version' | 'roomId' | 'callSessionId' | 'mediaSessionGeneration'
+    >
+  ): Promise<{ success: boolean; error?: string }> {
+    const room = [...this.rooms.values()].find(
+      (candidate) =>
+        candidate.roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
+        candidate.dmVoiceCallId === input.callId &&
+        candidate.chatId === input.chatId &&
+        this.localAddresses.has(input.fromAddress) &&
+        candidate.participants.has(input.fromAddress) &&
+        candidate.participants.has(input.toAddress)
+    );
+    if (!room) return { success: false, error: 'dm-call-room-not-found' };
+    const expectedPeerHash = room.dmVoicePeerDestinationHash?.trim().toLowerCase();
+    const peer = room.participants.get(input.toAddress);
+    if (
+      !expectedPeerHash ||
+      peer?.reticulumDestinationHash.trim().toLowerCase() !== expectedPeerHash
+    ) {
+      return { success: false, error: 'dm-call-peer-mismatch' };
+    }
+    const linkState = this.reticulumAudioPeersByAddress.get(input.toAddress);
+    if (
+      !linkState?.established ||
+      !linkState.linkId ||
+      !linkState.rooms.has(room.roomId) ||
+      !this.isReticulumAudioLinkVerifiedForAddress(
+        input.toAddress,
+        linkState.peerPresenceHash,
+        linkState.peerDestinationHash
+      ) ||
+      linkState.peerPresenceHash.trim().toLowerCase() !== expectedPeerHash
+    ) {
+      return { success: false, error: 'direct-link-not-ready' };
+    }
+    const control: DmCallLinkControlInput = {
+      ...input,
+      version: 1,
+      roomId: room.roomId,
+      callSessionId: room.callSessionId,
+      mediaSessionGeneration: room.mediaSessionGeneration >>> 0,
+    };
+    if (!this.isDmCallLinkControlInput(control)) {
+      return { success: false, error: 'invalid-dm-call-control' };
+    }
+    const compressed = nodeZlib.deflateRawSync(
+      Buffer.from(JSON.stringify(control), 'utf8')
+    );
+    if (compressed.length > GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES) {
+      return { success: false, error: 'dm-call-control-too-large' };
+    }
+    const result = await this.reticulumBridge?.sendGroupAudioLinkControlDetailed({
+      roomId: room.roomId,
+      payload: compressed,
+      signalType: 'call-control',
+      signalId: input.controlId,
+      callSessionId: room.callSessionId,
+      linkId: linkState.linkId,
+      peerPresenceHash: linkState.peerPresenceHash,
+    });
+    if (!result?.ok) {
+      const failure = result as Extract<ReticulumSendResult, { ok: false }> | undefined;
+      return {
+        success: false,
+        error: failure?.error ?? failure?.reason ?? 'direct-link-send-failed',
+      };
+    }
+    return { success: true };
+  }
+
   async sendRtcSignal(input: GroupCallRtcSignalInput): Promise<{
     success: boolean;
     error?: string;

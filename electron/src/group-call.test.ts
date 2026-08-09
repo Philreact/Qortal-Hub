@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as nodeZlib from 'node:zlib';
 import {
   GroupCallManager,
   buildParticipantFromVerifiedJoin,
@@ -203,6 +204,130 @@ describe('DM voice audio-link ownership recovery', () => {
         nowMs: 5_000,
       })
     ).toBe('open');
+  });
+});
+
+describe('DM call terminal control', () => {
+  const localAddress = 'Q-local';
+  const peerAddress = 'Q-peer';
+  const peerHash = 'a'.repeat(32);
+  const roomId = 'dmv:test-room';
+  const chatId = 'direct:Q-local:Q-peer';
+
+  function controlManager(): any {
+    const manager = Object.create(GroupCallManager.prototype) as any;
+    manager.localAddresses = new Set([localAddress]);
+    manager.rooms = new Map([
+      [
+        roomId,
+        {
+          roomId,
+          chatId,
+          callSessionId: 'media-session',
+          mediaSessionGeneration: 3,
+          dmVoiceCallId: 'call-1',
+          dmVoicePeerDestinationHash: peerHash,
+          participants: new Map([
+            [localAddress, { reticulumDestinationHash: 'b'.repeat(32) }],
+            [peerAddress, { reticulumDestinationHash: peerHash }],
+          ]),
+        },
+      ],
+    ]);
+    manager.reticulumAudioPeersByAddress = new Map([
+      [
+        peerAddress,
+        {
+          established: true,
+          linkId: 'audio-link-1',
+          rooms: new Set([roomId]),
+          peerPresenceHash: peerHash,
+          peerDestinationHash: peerHash,
+        },
+      ],
+    ]);
+    manager.rtcSignalReassemblies = new Map();
+    manager.receivedRtcSignalIds = new Map();
+    return manager;
+  }
+
+  it('sends hangup on the exact authenticated DM media link', async () => {
+    const manager = controlManager();
+    const send = vi.fn(async () => ({ ok: true }));
+    manager.reticulumBridge = { sendGroupAudioLinkControlDetailed: send };
+
+    await expect(
+      manager.sendDmCallLinkControl({
+        kind: 'hangup',
+        callId: 'call-1',
+        chatId,
+        controlId: 'control-1',
+        fromAddress: localAddress,
+        toAddress: peerAddress,
+        timestamp: 1_000,
+        publicKey: 'public-key',
+        signature: 'signature',
+      })
+    ).resolves.toEqual({ success: true });
+
+    expect(send).toHaveBeenCalledOnce();
+    const request = send.mock.calls[0][0];
+    expect(request).toMatchObject({
+      roomId,
+      linkId: 'audio-link-1',
+      peerPresenceHash: peerHash,
+      signalType: 'call-control',
+      signalId: 'control-1',
+      callSessionId: 'media-session',
+    });
+    const decoded = JSON.parse(
+      nodeZlib.inflateRawSync(request.payload).toString('utf8')
+    );
+    expect(decoded).toMatchObject({
+      version: 1,
+      kind: 'hangup',
+      roomId,
+      callSessionId: 'media-session',
+      mediaSessionGeneration: 3,
+      callId: 'call-1',
+    });
+  });
+
+  it('rejects terminal control delivered by a different endpoint', () => {
+    const manager = controlManager();
+    const received = vi.fn();
+    manager.on('gcall:dm-call-control', received);
+    const input = {
+      version: 1,
+      kind: 'hangup',
+      roomId,
+      callSessionId: 'media-session',
+      mediaSessionGeneration: 3,
+      callId: 'call-1',
+      chatId,
+      controlId: 'control-1',
+      fromAddress: peerAddress,
+      toAddress: localAddress,
+      timestamp: Date.now(),
+      publicKey: 'public-key',
+      signature: 'signature',
+    };
+
+    manager.verifyAndDeliverDmCallLinkControl(
+      input,
+      'c'.repeat(32),
+      'c'.repeat(32),
+      Date.now()
+    );
+    expect(received).not.toHaveBeenCalled();
+
+    manager.verifyAndDeliverDmCallLinkControl(
+      input,
+      peerHash,
+      peerHash,
+      Date.now()
+    );
+    expect(received).toHaveBeenCalledOnce();
   });
 });
 

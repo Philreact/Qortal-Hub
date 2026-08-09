@@ -117,13 +117,14 @@ import {
   type ReticulumChatHistoryReadOptions,
 } from './reticulum-chat';
 import { startCallManager, stopCallManager, getCallManager } from './call';
+import type { DmCallLinkControlPayload } from './call';
 import {
   startGroupCallManager,
   stopGroupCallManager,
   getGroupCallManager,
   GC_MESSAGE_TYPES,
 } from './group-call';
-import type { GcEnvelope } from './group-call';
+import type { DmCallLinkControlInput, GcEnvelope } from './group-call';
 import type { GroupCallJoinIpcArguments } from './group-call-ipc-contract';
 import {
   getReticulumBridge,
@@ -6344,6 +6345,14 @@ export function attachCallListeners(
 ): void {
   if (!manager) return;
 
+  manager.setDmCallLinkControlSender(async (input) => {
+    const groupCallManager = getGroupCallManager();
+    if (!groupCallManager) {
+      return { success: false, error: 'GroupCall manager not running' };
+    }
+    return groupCallManager.sendDmCallLinkControl(input);
+  });
+
   const forward = (channel: string) => (payload: unknown) =>
     broadcastToSet(callSubscribers, channel, payload);
 
@@ -6451,7 +6460,7 @@ ipcMain.handle(
   ) => {
     const mgr = getCallManager();
     if (!mgr) return { success: false, error: 'Call manager not running' };
-    mgr.hangUp(callId, signature, publicKey, timestamp);
+    await mgr.hangUp(callId, signature, publicKey, timestamp);
     return { success: true };
   }
 );
@@ -6613,6 +6622,32 @@ export function attachGroupCallListeners(
   manager.on('gcall:key-request', forward('gcall:key-request'));
   manager.on('gcall:session-updated', forward('gcall:session-updated'));
   manager.on('gcall:rtc-signal', forward('gcall:rtc-signal'));
+  manager.on('gcall:dm-call-control', (payload: unknown) => {
+    const control = payload as DmCallLinkControlInput & {
+      verifiedPeerDestinationHash: string;
+    };
+    const callManager = getCallManager();
+    if (!callManager) return;
+    const callPayload: DmCallLinkControlPayload = {
+      kind: control.kind,
+      callId: control.callId,
+      chatId: control.chatId,
+      controlId: control.controlId,
+      fromAddress: control.fromAddress,
+      toAddress: control.toAddress,
+      timestamp: control.timestamp,
+      publicKey: control.publicKey,
+      signature: control.signature,
+      verifiedPeerDestinationHash: control.verifiedPeerDestinationHash,
+    };
+    if (control.kind === 'hangup-ack') {
+      callManager.acknowledgeDmCallLinkHangup(callPayload);
+      return;
+    }
+    void callManager.handleDmCallLinkHangup(callPayload, (ack) =>
+      manager.sendDmCallLinkControl(ack)
+    );
+  });
   manager.on('gcall:qortal-group-call-activity', (payload: unknown) =>
     broadcastToSet(
       gcallActivitySubscribers,
@@ -6691,7 +6726,8 @@ ipcMain.handle(
         dmVoiceAudioLinkRole,
         takeover,
         selectedDmVoicePeerDestinationHash,
-        Boolean(authenticatedMediaDestination)
+        Boolean(authenticatedMediaDestination),
+        authenticatedMediaDestination ? dmVoiceCallId : undefined
       );
       return {
         success: true,
@@ -6814,8 +6850,17 @@ ipcMain.handle(
 ipcMain.handle(
   'gcall:sendRtcSignal',
   async (_event, input: import('./group-call').GroupCallRtcSignalInput) => {
-    if (!isAudioSurfaceHostSender(_event.sender)) {
-      return { success: false, error: 'Audio surface required' };
+    const fromAudioSurface = isAudioSurfaceHostSender(_event.sender);
+    const fromMainShell = isMainShellSender(_event.sender);
+    const isDirectVoiceRoom =
+      typeof input?.roomId === 'string' && input.roomId.startsWith('dmv:');
+    if (!fromAudioSurface && !(fromMainShell && isDirectVoiceRoom)) {
+      return {
+        success: false,
+        error: isDirectVoiceRoom
+          ? 'Main shell or audio surface required'
+          : 'Audio surface required',
+      };
     }
     const mgr = getGroupCallManager();
     if (!mgr) return { success: false, error: 'GroupCall manager not running' };

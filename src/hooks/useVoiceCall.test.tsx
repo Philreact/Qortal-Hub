@@ -261,15 +261,31 @@ describe('useVoiceCall', () => {
     let callEventHandler:
       | ((event: string, payload: unknown) => void | Promise<void>)
       | null = null;
-    let resolveJoin!: (value: { success: false; error: string }) => void;
+    let groupCallEventHandler:
+      | ((event: string, payload: unknown) => void | Promise<void>)
+      | null = null;
+    let resolveJoin!: (value: {
+      success: true;
+      callSessionId: string;
+      mediaSessionGeneration: number;
+    }) => void;
     const join = vi.fn(
       () =>
-        new Promise<{ success: false; error: string }>((resolve) => {
+        new Promise<{
+          success: true;
+          callSessionId: string;
+          mediaSessionGeneration: number;
+        }>((resolve) => {
           resolveJoin = resolve;
         })
     );
     const sendRtcSignal = vi.fn(
-      async (_input: { generation: string; payload: string }) => ({
+      async (_input: {
+        roomId: string;
+        callSessionId: string;
+        signalType: string;
+        payload: string;
+      }) => ({
         success: true,
       })
     );
@@ -289,9 +305,16 @@ describe('useVoiceCall', () => {
     Object.assign(window as any, {
       call: callApi,
       groupCall: {
-        onEvent: vi.fn(() => vi.fn()),
+        onEvent: vi.fn(
+          (cb: (event: string, payload: unknown) => void | Promise<void>) => {
+            groupCallEventHandler = cb;
+            return vi.fn();
+          }
+        ),
         join,
+        sendRtcSignal,
         setLocalAddresses: vi.fn(async () => {}),
+        requestPeerMediaRecovery: vi.fn(async () => ({ success: true })),
       },
       audioSurface: {
         sendCommand: audioSurfaceSendCommand,
@@ -338,30 +361,21 @@ describe('useVoiceCall', () => {
       });
     });
 
-    await waitFor(() =>
-      expect(sendRtcSignal).toHaveBeenCalledWith(
-        expect.objectContaining({
-          signalType: 'capability',
-          generation: 'native_audio_v1',
-        })
-      )
+    await waitFor(() => expect(join).toHaveBeenCalledTimes(1));
+    const roomId = await buildDmVoiceRoomId(
+      buildDirectVoiceCallChatId('Qme', 'Qpeer')
     );
-    const advertisedCapability = sendRtcSignal.mock.calls.find(
-      ([input]) => input.generation === 'native_audio_v1'
-    )?.[0];
-    expect(JSON.parse(advertisedCapability?.payload ?? '{}')).toMatchObject({
-      audio: 'native-track',
-      screen: 'video-track',
-      screenVersion: 1,
-    });
-    expect(audioSurfaceSendCommand).not.toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'start-direct-voice-rtc' })
-    );
-
+    // The main process can receive verified link-channel signals after it has
+    // created the room but before the renderer receives the join response.
+    // Both signals must survive that narrow IPC window.
     await act(async () => {
-      await callEventHandler?.('call:rtc-signal', {
-        callId: 'native-capability-call',
-        generation: 'generation_1234',
+      await groupCallEventHandler?.('gcall:rtc-signal', {
+        verified: true,
+        roomId,
+        callSessionId: 'dm-media-session',
+        mediaSessionGeneration: 1,
+        fromAddress: 'Qpeer',
+        toAddress: 'Qme',
         signalType: 'offer',
         payload: JSON.stringify({
           kind: 'description',
@@ -369,15 +383,13 @@ describe('useVoiceCall', () => {
           description: { type: 'offer', sdp: 'offer' },
         }),
       });
-    });
-    expect(audioSurfaceSendCommand).not.toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'start-direct-voice-rtc' })
-    );
-
-    await act(async () => {
-      await callEventHandler?.('call:rtc-signal', {
-        callId: 'native-capability-call',
-        generation: 'native_audio_v1',
+      await groupCallEventHandler?.('gcall:rtc-signal', {
+        verified: true,
+        roomId,
+        callSessionId: 'dm-media-session',
+        mediaSessionGeneration: 1,
+        fromAddress: 'Qpeer',
+        toAddress: 'Qme',
         signalType: 'capability',
         payload: JSON.stringify({
           kind: 'capability',
@@ -388,9 +400,34 @@ describe('useVoiceCall', () => {
         }),
       });
     });
+    expect(audioSurfaceSendCommand).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'start-direct-voice-rtc' })
+    );
+    await act(async () => {
+      resolveJoin({
+        success: true,
+        callSessionId: 'dm-media-session',
+        mediaSessionGeneration: 1,
+      });
+    });
 
-    expect(result.current.screenShareSupported).toBe(true);
-
+    await waitFor(() =>
+      expect(sendRtcSignal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          signalType: 'capability',
+          roomId: expect.stringMatching(/^dmv:/),
+          callSessionId: 'dm-media-session',
+        })
+      )
+    );
+    const advertisedCapability = sendRtcSignal.mock.calls.find(
+      ([input]) => input.signalType === 'capability'
+    )?.[0];
+    expect(JSON.parse(advertisedCapability?.payload ?? '{}')).toMatchObject({
+      audio: 'native-track',
+      screen: 'video-track',
+      screenVersion: 1,
+    });
     await waitFor(() =>
       expect(audioSurfaceSendCommand).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -409,7 +446,7 @@ describe('useVoiceCall', () => {
         }),
       })
     );
-    resolveJoin({ success: false, error: 'test-stop' });
+    expect(result.current.screenShareSupported).toBe(true);
   });
 
   it('auto-rejects direct call:incoming when caller is on blocked address list', async () => {

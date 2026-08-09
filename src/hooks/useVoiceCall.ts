@@ -27,6 +27,7 @@ import {
   sendDirectVoiceRoomKeyRequest,
   isDmVoiceRoomId,
 } from '../lib/call/directVoiceReticulumMedia';
+import { signGroupCallFields } from '../lib/group-call/groupCallJoinSigning';
 import {
   clearDirectVoiceUiLogs,
   pushDirectVoiceUiLog,
@@ -125,6 +126,17 @@ type GcallKeyRequestEventPayload = {
   callSessionId?: string;
   mediaSessionGeneration?: number;
   keyMessageVersion?: number;
+  verified?: boolean;
+};
+
+type GcallDirectRtcEventPayload = {
+  roomId?: string;
+  callSessionId?: string;
+  mediaSessionGeneration?: number;
+  fromAddress?: string;
+  toAddress?: string;
+  signalType?: 'capability' | 'offer' | 'answer' | 'candidate' | 'reconnect';
+  payload?: string;
   verified?: boolean;
 };
 
@@ -408,7 +420,8 @@ export function useVoiceCall(
     null;
   const prefersDirectVoiceWebRtc =
     !isReticulumCallEnabled &&
-    typeof callApiRef.current?.sendRtcSignal === 'function';
+    options.callApiSignsSignals !== true &&
+    typeof window.groupCall?.sendRtcSignal === 'function';
 
   const [callState, setCallState] = useState<CallState>('idle');
   const [audioMode, setAudioMode] = useState<AudioMode>(null);
@@ -588,6 +601,9 @@ export function useVoiceCall(
     async () => {}
   );
   const pendingDirectVoiceRtcSignalsRef = useRef<DirectVoiceRtcSignal[]>([]);
+  const pendingDirectVoiceLinkSignalsRef = useRef<GcallDirectRtcEventPayload[]>(
+    []
+  );
   const decryptWorkerRef = useRef<Worker | null>(null);
   const decryptWorkerKeyVersionRef = useRef(0);
   const decryptWorkerAppliedKeyVersionRef = useRef(0);
@@ -839,6 +855,7 @@ export function useVoiceCall(
   const stopDirectVoiceRtcOnAudioSurface = useCallback(async () => {
     dmRtcLifecycleGenerationRef.current += 1;
     pendingDirectVoiceRtcSignalsRef.current = [];
+    pendingDirectVoiceLinkSignalsRef.current = [];
     dmRtcStartPromiseRef.current = null;
     dmRtcPeerNativeCapabilityCallIdRef.current = null;
     dmRtcOnAudioSurfaceRef.current = false;
@@ -854,28 +871,56 @@ export function useVoiceCall(
   const sendAuthenticatedDirectVoiceRtcPayload = useCallback(
     async (input: {
       generation: string;
-      signalType: 'capability' | 'offer' | 'answer' | 'candidate';
+      signalType: 'capability' | 'offer' | 'answer' | 'candidate' | 'reconnect';
       payload: string;
     }): Promise<boolean> => {
       const callId = callIdRef.current;
-      const api = callApiRef.current;
-      if (!callId || !api?.sendRtcSignal || isReticulumCallEnabled) {
+      const roomId = dmRoomIdRef.current;
+      const callSessionId = callSessionIdRef.current;
+      const mediaSessionGeneration = mediaGenRef.current >>> 0;
+      const fromAddress = userInfo?.address?.trim() ?? '';
+      const toAddress = peerAddressRef.current?.trim() ?? '';
+      const api = window.groupCall;
+      if (
+        !callId ||
+        !roomId ||
+        !callSessionId ||
+        !fromAddress ||
+        !toAddress ||
+        !api?.sendRtcSignal ||
+        isReticulumCallEnabled
+      ) {
         return false;
       }
       const payloadHash = await sha256HexUtf8(input.payload);
       const signalId = createDirectVoiceRtcSignalId();
       const timestamp = Date.now();
+      const connectionId = `${callId}:${input.generation}`;
       const fields = {
-        type: 'CALL_RTC_SIGNAL',
-        callId,
-        generation: input.generation,
+        type: 'GC_RTC_SIGNAL',
+        roomId,
+        callSessionId,
+        mediaSessionGeneration,
+        fromAddress,
+        toAddress,
+        connectionId,
         signalId,
         signalType: input.signalType,
         payloadHash,
+        fromPublicKey: userInfo?.publicKey ?? '',
         timestamp,
       };
-      const { signature, publicKey } = await authorizeCallSignal(fields);
-      if (callIdRef.current !== callId) return false;
+      const signature = await signGroupCallFields(fields).catch(() => '');
+      const publicKey = userInfo?.publicKey ?? '';
+      if (
+        callIdRef.current !== callId ||
+        dmRoomIdRef.current !== roomId ||
+        callSessionIdRef.current !== callSessionId ||
+        mediaGenRef.current >>> 0 !== mediaSessionGeneration ||
+        peerAddressRef.current?.trim() !== toAddress
+      ) {
+        return false;
+      }
       if (!signature || !publicKey) {
         pushDirectVoiceUiLog('warn', 'WebRTC signal signing failed', {
           signalType: input.signalType,
@@ -883,17 +928,31 @@ export function useVoiceCall(
         });
         return false;
       }
-      const result = await api.sendRtcSignal({
-        callId,
-        generation: input.generation,
-        signalId,
-        signalType: input.signalType,
-        payload: input.payload,
-        payloadHash,
-        timestamp,
-        signature,
-        publicKey,
-      });
+      let result: { success: boolean; error?: string };
+      try {
+        result = await api.sendRtcSignal({
+          roomId,
+          callSessionId,
+          mediaSessionGeneration,
+          fromAddress,
+          toAddress,
+          connectionId,
+          signalId,
+          signalType: input.signalType,
+          payload: input.payload,
+          payloadHash,
+          timestamp,
+          signature,
+          publicKey,
+        });
+      } catch (error) {
+        pushDirectVoiceUiLog('warn', 'WebRTC signal transport failed', {
+          signalType: input.signalType,
+          callTrunc: callId.slice(0, 8),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
       if (!result.success) {
         pushDirectVoiceUiLog('warn', 'WebRTC signal send rejected', {
           signalType: input.signalType,
@@ -910,18 +969,37 @@ export function useVoiceCall(
       }
       return true;
     },
-    [authorizeCallSignal]
+    [userInfo?.address, userInfo?.publicKey]
   );
 
-  const announceDirectVoiceNativeAudioCapability = useCallback(
-    () =>
-      sendAuthenticatedDirectVoiceRtcPayload({
+  const announceDirectVoiceNativeAudioCapability = useCallback(async () => {
+    const expectedCallId = callIdRef.current;
+    if (!expectedCallId) return false;
+    // GC_JOIN and the authenticated audio link complete independently. Keep
+    // the capability pending until the reliable link channel is ready, but
+    // stop immediately if this call is replaced or torn down.
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      if (
+        callIdRef.current !== expectedCallId ||
+        callStateRef.current !== 'connected'
+      ) {
+        return false;
+      }
+      const queued = await sendAuthenticatedDirectVoiceRtcPayload({
         generation: DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION,
         signalType: 'capability',
         payload: DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_PAYLOAD,
-      }),
-    [sendAuthenticatedDirectVoiceRtcPayload]
-  );
+      });
+      if (queued) return true;
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    pushDirectVoiceUiLog(
+      'warn',
+      'WebRTC capability was not queued before the direct-link deadline',
+      { callTrunc: expectedCallId.slice(0, 8) }
+    );
+    return false;
+  }, [sendAuthenticatedDirectVoiceRtcPayload]);
 
   const sendDirectScreenShareSignal = useCallback(
     async (signal: DirectScreenShareRtcSignal): Promise<boolean> => {
@@ -932,7 +1010,7 @@ export function useVoiceCall(
             ? signal.description.type === 'offer'
               ? 'offer'
               : 'answer'
-            : 'capability';
+            : 'reconnect';
       return sendAuthenticatedDirectVoiceRtcPayload({
         generation: signal.generation,
         signalType,
@@ -2452,16 +2530,6 @@ export function useVoiceCall(
       );
     }
     dmRoomIdRef.current = roomId;
-    // Advertise native-track support over the authenticated direct link. The
-    // peer must advertise the same capability before either side starts native
-    // WebRTC, so mixed-version calls remain safely on Reticulum media.
-    if (prefersDirectVoiceWebRtc) {
-      void announceDirectVoiceNativeAudioCapability().catch(() => {});
-      if (dmRtcPeerNativeCapabilityCallIdRef.current === callIdRef.current) {
-        void startDirectVoiceRtcOnAudioSurface().catch(() => {});
-      }
-    }
-
     pushDirectVoiceUiLog('log', 'media session start', {
       outbound: isOutboundCallRef.current,
       roomTrunc: roomId.slice(0, 32),
@@ -2528,6 +2596,19 @@ export function useVoiceCall(
     callSessionIdRef.current = joinRes.callSessionId;
     mediaGenRef.current = (joinRes.mediaSessionGeneration ?? 1) >>> 0;
     reticulumSessionActiveRef.current = true;
+    const pendingLinkSignals =
+      pendingDirectVoiceLinkSignalsRef.current.splice(0);
+    for (const pendingSignal of pendingLinkSignals) {
+      await groupCallDmIpcHandlerRef.current('gcall:rtc-signal', pendingSignal);
+    }
+    // WebRTC setup uses the authenticated audio link's reliable control
+    // channel, so it cannot be advertised until this DM media room exists.
+    if (prefersDirectVoiceWebRtc) {
+      void announceDirectVoiceNativeAudioCapability().catch(() => {});
+      if (dmRtcPeerNativeCapabilityCallIdRef.current === callIdRef.current) {
+        void startDirectVoiceRtcOnAudioSurface().catch(() => {});
+      }
+    }
     // A key can arrive immediately after CALL_ACCEPT, before GC_JOIN finishes.
     // Applying it earlier makes readiness see an inactive session and can end a
     // valid call. Replay it only after this exact media session is active.
@@ -2611,6 +2692,72 @@ export function useVoiceCall(
     event: string,
     payload: unknown
   ) => {
+    if (event === 'gcall:rtc-signal') {
+      const p = payload as GcallDirectRtcEventPayload;
+      const callId = callIdRef.current;
+      const isDirectSignalType =
+        p.signalType === 'capability' ||
+        p.signalType === 'offer' ||
+        p.signalType === 'answer' ||
+        p.signalType === 'candidate' ||
+        p.signalType === 'reconnect';
+      const invalidActiveCallRoute =
+        p.verified !== true ||
+        !isDirectSignalType ||
+        !callId ||
+        p.roomId !== dmRoomIdRef.current ||
+        p.fromAddress !== peerAddressRef.current ||
+        p.toAddress !== userInfo?.address ||
+        typeof p.payload !== 'string';
+      if (invalidActiveCallRoute) {
+        return;
+      }
+      if (!callSessionIdRef.current) {
+        const pending = pendingDirectVoiceLinkSignalsRef.current;
+        if (pending.length >= 16) pending.shift();
+        pending.push({ ...p });
+        return;
+      }
+      if (
+        p.callSessionId !== callSessionIdRef.current ||
+        (p.mediaSessionGeneration ?? -1) >>> 0 !== mediaGenRef.current >>> 0
+      ) {
+        return;
+      }
+      let signalGeneration = '';
+      try {
+        const decoded = JSON.parse(p.payload) as {
+          kind?: unknown;
+          audio?: unknown;
+          version?: unknown;
+          generation?: unknown;
+        };
+        signalGeneration =
+          typeof decoded.generation === 'string'
+            ? decoded.generation
+            : decoded.kind === 'capability' &&
+                decoded.audio === 'native-track' &&
+                decoded.version === 1
+              ? DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION
+              : '';
+      } catch {
+        return;
+      }
+      if (!signalGeneration) return;
+      // `reconnect` is the reliable-channel carrier for screen-stop. Keeping
+      // it distinct prevents the bridge's capability coalescing from dropping
+      // a stop that races the native-audio capability announcement.
+      const directSignalType =
+        p.signalType === 'reconnect' ? 'capability' : p.signalType;
+      await callIpcHandlerRef.current('call:rtc-signal', {
+        callId,
+        generation: signalGeneration,
+        signalType: directSignalType!,
+        payload: p.payload,
+      });
+      return;
+    }
+
     if (event === 'gcall:participant-joined') {
       const p = payload as {
         roomId?: string;

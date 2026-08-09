@@ -23836,7 +23836,15 @@ def handle_send_group_audio_link_control(req_id: str, payload: Dict[str, Any]) -
         or not isinstance(encoded_payload, str)
         or not encoded_payload
         or signal_type
-        not in {"capability", "offer", "answer", "candidate", "candidates", "reconnect"}
+        not in {
+            "capability",
+            "offer",
+            "answer",
+            "candidate",
+            "candidates",
+            "reconnect",
+            "call-control",
+        }
         or not signal_id
         or len(signal_id) > 128
         or not call_session_id

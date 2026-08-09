@@ -72,6 +72,8 @@ const CALL_PINNED_SEND_RETRY_MS = 250;
 const CALL_PINNED_SEND_TIMEOUT_MS = 30_000;
 const CALL_ACCEPT_REPEAT_ATTEMPTS = 5;
 const CALL_ACCEPT_REPEAT_MS = 350;
+const DM_HANGUP_ACK_WAIT_MS = 900;
+const DM_HANGUP_ACK_QUEUE_WAIT_MS = 500;
 let retainedCallLocalAddresses: string[] = [];
 
 export type CallNetworkType =
@@ -440,6 +442,37 @@ interface DirectCallRtcInboundSignal {
   cleanupTimer?: ReturnType<typeof setTimeout>;
 }
 
+export type DmCallLinkControlPayload = {
+  kind: 'hangup' | 'hangup-ack';
+  callId: string;
+  chatId: string;
+  controlId: string;
+  fromAddress: string;
+  toAddress: string;
+  timestamp: number;
+  publicKey?: string;
+  signature?: string;
+  verifiedPeerDestinationHash: string;
+};
+
+type DmCallLinkControlSendInput = Omit<
+  DmCallLinkControlPayload,
+  'verifiedPeerDestinationHash'
+>;
+
+type DmCallLinkControlSender = (
+  input: DmCallLinkControlSendInput
+) => Promise<{ success: boolean; error?: string }>;
+
+type PendingDmHangupAck = {
+  callId: string;
+  localAddress: string;
+  remoteAddress: string;
+  peerDestinationHash: string;
+  resolve: (acknowledged: boolean) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 /**
  * Events emitted (forwarded to the renderer via IPC):
  *   'call:incoming'  { callId, fromAddress, chatId }
@@ -483,6 +516,8 @@ export class CallManager extends EventEmitter {
   private rtcInboundSignals = new Map<string, DirectCallRtcInboundSignal>();
   private rtcInboundBufferedBytes = 0;
   private rtcCandidateCounts = new Map<string, number>();
+  private dmCallLinkControlSender: DmCallLinkControlSender | null = null;
+  private pendingDmHangupAcks = new Map<string, PendingDmHangupAck>();
 
   constructor(
     presence: PresenceManager,
@@ -557,6 +592,12 @@ export class CallManager extends EventEmitter {
     }
   }
 
+  setDmCallLinkControlSender(
+    sender: DmCallLinkControlSender | null
+  ): void {
+    this.dmCallLinkControlSender = sender;
+  }
+
   start(): void {
     if (this.started) return;
     this.started = true;
@@ -580,6 +621,7 @@ export class CallManager extends EventEmitter {
     this.clearAllRtcSignals();
     this.seenReticulumOverlayIds.clear();
     this.pendingVerifiedIncomingWhenNoLocal = [];
+    this.clearPendingDmHangupAcks();
     loggerLog('[Call] Manager stopped.');
   }
 
@@ -607,6 +649,7 @@ export class CallManager extends EventEmitter {
     }
     this.activeCalls.clear();
     this.clearAllRtcSignals();
+    this.clearPendingDmHangupAcks();
   }
 
   /**
@@ -1579,12 +1622,100 @@ export class CallManager extends EventEmitter {
     loggerLog(`[Call] Rejected call ${callId.slice(0, 8)}…`);
   }
 
-  hangUp(
+  private clearPendingDmHangupAcks(): void {
+    for (const pending of this.pendingDmHangupAcks.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve(false);
+    }
+    this.pendingDmHangupAcks.clear();
+  }
+
+  private waitForDmHangupAck(
+    call: CallRecord,
+    controlId: string,
+    timeoutMs = DM_HANGUP_ACK_WAIT_MS
+  ): Promise<boolean> {
+    const peerDestinationHash = this.getRtcPeerDestinationHash(call);
+    if (!peerDestinationHash) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      const finish = (acknowledged: boolean) => {
+        const current = this.pendingDmHangupAcks.get(controlId);
+        if (!current) return;
+        clearTimeout(current.timer);
+        this.pendingDmHangupAcks.delete(controlId);
+        resolve(acknowledged);
+      };
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      timer.unref?.();
+      this.pendingDmHangupAcks.set(controlId, {
+        callId: call.callId,
+        localAddress: call.localAddress,
+        remoteAddress: call.remoteAddress,
+        peerDestinationHash,
+        resolve: finish,
+        timer,
+      });
+    });
+  }
+
+  private async sendActiveDmHangupOverMediaLink(
+    call: CallRecord,
+    env: CallHangupEnvelope
+  ): Promise<boolean> {
+    const sender = this.dmCallLinkControlSender;
+    if (!sender) return false;
+    const controlId = randomBytes(12).toString('hex');
+    const ack = this.waitForDmHangupAck(call, controlId);
+    let sendAttempt: Promise<{ success: boolean; error?: string }>;
+    try {
+      sendAttempt = sender({
+        kind: 'hangup',
+        callId: call.callId,
+        chatId: call.chatId,
+        controlId,
+        fromAddress: call.localAddress,
+        toAddress: call.remoteAddress,
+        timestamp: env.timestamp,
+        publicKey: env.fromPublicKey,
+        signature: env.signature,
+      });
+    } catch (error) {
+      sendAttempt = Promise.resolve({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    void sendAttempt
+      .then((result) => {
+        if (result.success) return;
+        const pending = this.pendingDmHangupAcks.get(controlId);
+        pending?.resolve(false);
+        loggerWarn(
+          `[Call] Dedicated DM hangup unavailable callId=${call.callId.slice(0, 8)}… reason=${result.error ?? 'unknown'}`
+        );
+      })
+      .catch((error) => {
+        const pending = this.pendingDmHangupAcks.get(controlId);
+        pending?.resolve(false);
+        loggerWarn(
+          `[Call] Dedicated DM hangup unavailable callId=${call.callId.slice(0, 8)}… reason=${error instanceof Error ? error.message : String(error)}`
+        );
+      });
+    const acknowledged = await ack;
+    if (acknowledged) {
+      loggerLog(
+        `[Call] Dedicated DM hangup acknowledged callId=${call.callId.slice(0, 8)}…`
+      );
+    }
+    return acknowledged;
+  }
+
+  async hangUp(
     callId: string,
     signature: string,
     publicKey: string,
     timestamp: number
-  ): void {
+  ): Promise<void> {
     const call = this.activeCalls.get(callId);
     if (!call) return;
     const previousState = call.state;
@@ -1615,7 +1746,19 @@ export class CallManager extends EventEmitter {
       timestamp,
       hopsRemaining: CALL_MAX_HOPS,
     };
-    this.sendToCall(call, env);
+    const dedicatedAcknowledged =
+      previousState === 'active'
+        ? await this.sendActiveDmHangupOverMediaLink(call, env)
+        : false;
+    if (!dedicatedAcknowledged) {
+      // Preserve the selected-device direct attempt, then use the existing
+      // signed targeted overlay as a multi-hop fallback for A↔B↔C layouts.
+      this.sendToCall(call, env);
+      this.sendEnvelope(call.remoteAddress, env);
+      loggerLog(
+        `[Call] Fell back to targeted overlay hangup callId=${callId.slice(0, 8)}…`
+      );
+    }
     loggerLog(`[Call] Hung up call ${callId.slice(0, 8)}…`);
   }
 
@@ -1904,6 +2047,124 @@ export class CallManager extends EventEmitter {
     loggerLog(`[Call] Call ${callId.slice(0, 8)}… rejected.`);
   }
 
+  private finalizeRemoteHangup(
+    call: CallRecord,
+    timestamp: number
+  ): void {
+    const previousState = call.state;
+    if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
+    if (call.rejectionFinalizeTimer) {
+      clearTimeout(call.rejectionFinalizeTimer);
+      call.rejectionFinalizeTimer = undefined;
+    }
+    this.clearControlRepeatTimers(call);
+    call.state = 'ended';
+    this.activeCalls.delete(call.callId);
+    this.clearRtcSignalsForCall(call.callId);
+    this.emitDirectCallHistory(
+      call,
+      previousState === 'active'
+        ? 'answered'
+        : call.direction === 'inbound'
+          ? 'missed'
+          : 'cancelled',
+      timestamp
+    );
+    this.emit('call:hangup', { callId: call.callId });
+    loggerLog(`[Call] Remote hung up call ${call.callId.slice(0, 8)}…`);
+  }
+
+  acknowledgeDmCallLinkHangup(input: DmCallLinkControlPayload): boolean {
+    if (input.kind !== 'hangup-ack') return false;
+    const pending = this.pendingDmHangupAcks.get(input.controlId);
+    if (
+      !pending ||
+      pending.callId !== input.callId ||
+      pending.localAddress !== input.toAddress ||
+      pending.remoteAddress !== input.fromAddress ||
+      pending.peerDestinationHash !==
+        input.verifiedPeerDestinationHash.trim().toLowerCase()
+    ) {
+      return false;
+    }
+    pending.resolve(true);
+    return true;
+  }
+
+  async handleDmCallLinkHangup(
+    input: DmCallLinkControlPayload,
+    sendAck: (input: DmCallLinkControlSendInput) => Promise<{
+      success: boolean;
+      error?: string;
+    }>
+  ): Promise<boolean> {
+    if (
+      input.kind !== 'hangup' ||
+      typeof input.publicKey !== 'string' ||
+      typeof input.signature !== 'string' ||
+      Math.abs(Date.now() - input.timestamp) > 30_000
+    ) {
+      return false;
+    }
+    const call = this.activeCalls.get(input.callId);
+    const expectedPeer = call ? this.getRtcPeerDestinationHash(call) : null;
+    if (
+      !call ||
+      call.state !== 'active' ||
+      call.chatId !== input.chatId ||
+      call.remoteAddress !== input.fromAddress ||
+      call.localAddress !== input.toAddress ||
+      !expectedPeer ||
+      expectedPeer !== input.verifiedPeerDestinationHash.trim().toLowerCase()
+    ) {
+      return false;
+    }
+    const verified = await this.verifyPool.verify({
+      kind: 'call_signed',
+      wireType: 'CALL_HANGUP',
+      callId: input.callId,
+      timestamp: input.timestamp,
+      signature: input.signature,
+      fromPublicKey: input.publicKey,
+      expectedAddress: call.remoteAddress,
+    });
+    const current = this.activeCalls.get(input.callId);
+    if (
+      !verified ||
+      current !== call ||
+      current.state !== 'active' ||
+      this.getRtcPeerDestinationHash(current) !== expectedPeer
+    ) {
+      return false;
+    }
+    // Queue the receipt while the authenticated media link and room still
+    // exist, but never let bridge backpressure delay remote UI cleanup for the
+    // bridge's full command timeout. The sender's overlay fallback remains the
+    // final delivery guarantee when this bounded enqueue does not complete.
+    let ackQueueTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      sendAck({
+        kind: 'hangup-ack',
+        callId: call.callId,
+        chatId: call.chatId,
+        controlId: input.controlId,
+        fromAddress: call.localAddress,
+        toAddress: call.remoteAddress,
+        timestamp: Date.now(),
+      }).catch(() => ({ success: false })),
+      new Promise<{ success: false }>((resolve) => {
+        ackQueueTimer = setTimeout(
+          () => resolve({ success: false }),
+          DM_HANGUP_ACK_QUEUE_WAIT_MS
+        );
+        ackQueueTimer.unref?.();
+      }),
+    ]);
+    if (ackQueueTimer) clearTimeout(ackQueueTimer);
+    this.finalizeRemoteHangup(call, input.timestamp);
+    return true;
+  }
+
   private handleHangup(
     env: CallHangupEnvelope,
     senderDestinationHash: string
@@ -1938,7 +2199,6 @@ export class CallManager extends EventEmitter {
         }
         const c = this.activeCalls.get(env.callId);
         if (!c) return;
-        const previousState = c.state;
         const expectedEndpoint =
           c.direction === 'outbound'
             ? c.acceptedReticulumPeerHash
@@ -1953,26 +2213,7 @@ export class CallManager extends EventEmitter {
           );
           return;
         }
-        if (c.cleanupTimer) clearTimeout(c.cleanupTimer);
-        if (c.rejectionFinalizeTimer) {
-          clearTimeout(c.rejectionFinalizeTimer);
-          c.rejectionFinalizeTimer = undefined;
-        }
-        this.clearControlRepeatTimers(c);
-        c.state = 'ended';
-        this.activeCalls.delete(env.callId);
-        this.clearRtcSignalsForCall(env.callId);
-        this.emitDirectCallHistory(
-          c,
-          previousState === 'active'
-            ? 'answered'
-            : c.direction === 'inbound'
-              ? 'missed'
-              : 'cancelled',
-          env.timestamp
-        );
-        this.emit('call:hangup', { callId: env.callId });
-        loggerLog(`[Call] Remote hung up call ${env.callId.slice(0, 8)}…`);
+        this.finalizeRemoteHangup(c, env.timestamp);
       });
   }
 
