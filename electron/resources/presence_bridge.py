@@ -297,10 +297,12 @@ _RESOURCE_SESSION_READY_TYPE = "RETICULUM_RESOURCE_SESSION_READY"
 _RESOURCE_SESSION_CANCEL_TYPE = "RETICULUM_RESOURCE_SESSION_CANCEL"
 _RESOURCE_SESSION_ESTABLISH_TIMEOUT_SECONDS = 30.0
 _RESOURCE_SESSION_REQUEST_TIMEOUT_SECONDS = 60.0
-# Authorization is a local Electron/database decision and should normally take
-# milliseconds. Bound a wedged provider quickly; receivers retain a longer
-# compatibility deadline for older bridges that still use 30 seconds.
-_RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS = 10.0
+# Authorization normally completes from the local cache, but an uncached group
+# membership decision can use Electron's full 10-second Core request budget.
+# Leave bounded scheduling margin so the bridge does not expire the waiter at
+# the same instant that a valid authorization result arrives. Receivers retain
+# a longer compatibility deadline for older bridges that still use 30 seconds.
+_RESOURCE_SESSION_PROVIDER_AUTH_TIMEOUT_SECONDS = 15.0
 _RESOURCE_SESSION_PRIMARY_IDLE_TIMEOUT_SECONDS = 2 * 60.0
 _RESOURCE_SESSION_OVERFLOW_IDLE_TIMEOUT_SECONDS = 30.0
 # Providers must not expire an incoming session before its requester-side
