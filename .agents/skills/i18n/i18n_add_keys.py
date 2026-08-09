@@ -10,8 +10,8 @@ still holding English in a non-English locale is unfinished work, not a valid
 default.
 
 Usage:
-    python3 scripts/i18n_add_keys.py <namespace> <patch.json>
-    python3 scripts/i18n_add_keys.py group /tmp/new-chat-keys.json
+    python3 .agents/skills/i18n/i18n_add_keys.py <namespace> <patch.json>
+    python3 .agents/skills/i18n/i18n_add_keys.py group /tmp/new-chat-keys.json
 
 The patch file mirrors the locale file structure, with values in English:
 
@@ -30,7 +30,8 @@ import json
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# .agents/skills/i18n/<this file> -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[4]
 LOCALES = REPO_ROOT / 'src' / 'i18n' / 'locales'
 LANGS = ['ar', 'de', 'en', 'es', 'et', 'fi', 'fr', 'it', 'ja', 'pt', 'ru', 'zh']
 NAMESPACES = ['auth', 'core', 'group', 'node', 'question']
@@ -39,7 +40,7 @@ NAMESPACES = ['auth', 'core', 'group', 'node', 'question']
 def sort_node(node):
     """Recursively sort dict keys — locale files are kept alphabetical at every
     level so keys are findable by eye and appends do not collide. See
-    scripts/i18n_sort.py."""
+    .agents/skills/i18n/i18n_sort.py."""
     if isinstance(node, dict):
         return {k: sort_node(node[k]) for k in sorted(node, key=str.lower)}
     if isinstance(node, list):

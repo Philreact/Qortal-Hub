@@ -4,13 +4,12 @@ Counterpart to i18n_add_keys.py. That script seeds new keys into every locale
 with English placeholders; this one replaces those placeholders with the real
 translations once they have been written and reviewed.
 
-Unlike i18n_translate_json.py -- which machine-translates a whole namespace and
-overwrites the target file -- this only touches the keys named in the input, so
-existing reviewed translations are never clobbered.
+It only touches the keys named in the input, never rewriting a whole namespace,
+so existing reviewed translations are never clobbered.
 
 Usage:
-    python3 scripts/i18n_apply_translations.py <translations.json>
-    python3 scripts/i18n_apply_translations.py --audit
+    python3 .agents/skills/i18n/i18n_apply_translations.py <translations.json>
+    python3 .agents/skills/i18n/i18n_apply_translations.py --audit
 
 Input format: namespace -> language -> dotted key -> translated value.
 
@@ -42,7 +41,8 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# .agents/skills/i18n/<this file> -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[4]
 LOCALES = REPO_ROOT / 'src' / 'i18n' / 'locales'
 PLACEHOLDER = re.compile(r'{{(\w+)}}')
 
@@ -54,7 +54,7 @@ COGNATE_ALLOWLIST = {'message', 'microphone', 'maximum', 'level {{level}}'}
 def sort_node(node):
     """Recursively sort dict keys — locale files are kept alphabetical at every
     level so keys are findable by eye and appends do not collide. See
-    scripts/i18n_sort.py."""
+    .agents/skills/i18n/i18n_sort.py."""
     if isinstance(node, dict):
         return {k: sort_node(node[k]) for k in sorted(node, key=str.lower)}
     if isinstance(node, list):

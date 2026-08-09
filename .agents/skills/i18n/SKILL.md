@@ -80,18 +80,22 @@ Available processors (see `src/i18n/processors.ts`):
 
 ## Never hand-edit 12 locale files
 
-Every locale operation has a script in `scripts/`. Editing the JSON by hand is
-how keys go missing from one language, so reach for these instead:
+Every locale operation has a script, and they ship with this skill in
+`.agents/skills/i18n/`. Editing the JSON by hand is how keys go missing
+from one language, so reach for these instead:
 
-| Task                              | Command                                                          |
-| --------------------------------- | ---------------------------------------------------------------- |
-| Find what needs migrating         | `python3 scripts/i18n_scan_hardcoded.py <path>`                  |
-| Seed new keys into all 12 locales | `python3 scripts/i18n_add_keys.py <ns> <patch.json>`             |
-| Apply the translations            | `python3 scripts/i18n_apply_translations.py <translations.json>` |
-| Check nothing is left             | `python3 scripts/i18n_apply_translations.py --audit`             |
-| Sort / verify sorting             | `python3 scripts/i18n_sort.py [--check]`                         |
+| Task                              | Command                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------ |
+| Find what needs migrating         | `python3 .agents/skills/i18n/i18n_scan_hardcoded.py <path>`                  |
+| Seed new keys into all 12 locales | `python3 .agents/skills/i18n/i18n_add_keys.py <ns> <patch.json>`             |
+| Apply the translations            | `python3 .agents/skills/i18n/i18n_apply_translations.py <translations.json>` |
+| Check nothing is left             | `python3 .agents/skills/i18n/i18n_apply_translations.py --audit`             |
+| Sort / verify sorting             | `python3 .agents/skills/i18n/i18n_sort.py [--check]`                         |
 
-All five run from the repo root and take `--help`.
+All four run from the repo root and take `--help`. They locate the locales
+themselves, so the working directory only matters for the paths you pass in.
+`.claude/skills/i18n/…` works too — it is the same folder through the
+symlink — but prefer the `.agents/` path, which exists in a fresh clone.
 
 **Locale files are sorted alphabetically at every nesting level, and that is
 mandatory.** `i18n_add_keys.py` and `i18n_apply_translations.py` re-sort the file
@@ -104,9 +108,9 @@ anything unsorted and is what CI should call.
 ### 1. Find the strings
 
 ```bash
-python3 scripts/i18n_scan_hardcoded.py src/components/Chat          # summary per file
-python3 scripts/i18n_scan_hardcoded.py --detail <file>              # every hit
-python3 scripts/i18n_scan_hardcoded.py -o /tmp/hits.json src/       # machine-readable
+python3 .agents/skills/i18n/i18n_scan_hardcoded.py src/components/Chat          # summary per file
+python3 .agents/skills/i18n/i18n_scan_hardcoded.py --detail <file>              # every hit
+python3 .agents/skills/i18n/i18n_scan_hardcoded.py -o /tmp/hits.json src/       # machine-readable
 ```
 
 Hits are candidates, not confirmed defects — CSS values and API field names show
@@ -130,8 +134,8 @@ Write a patch file mirroring the locale structure, values in English:
 Then seed all 12 locales at once:
 
 ```bash
-python3 scripts/i18n_add_keys.py group /tmp/new-keys.json --dry-run   # preview
-python3 scripts/i18n_add_keys.py group /tmp/new-keys.json
+python3 .agents/skills/i18n/i18n_add_keys.py group /tmp/new-keys.json --dry-run   # preview
+python3 .agents/skills/i18n/i18n_add_keys.py group /tmp/new-keys.json
 ```
 
 It never overwrites an existing value, so it is safe to re-run as the patch
@@ -172,7 +176,7 @@ ways in one locale. Write them as namespace → language → dotted key → valu
 ```
 
 ```bash
-python3 scripts/i18n_apply_translations.py /tmp/translations.json
+python3 .agents/skills/i18n/i18n_apply_translations.py /tmp/translations.json
 ```
 
 It aborts before writing anything if a value drops or renames a `{{placeholder}}`,
@@ -198,23 +202,12 @@ key you introduced.
 ### 5. Verify
 
 ```bash
-python3 scripts/i18n_apply_translations.py --audit
+python3 .agents/skills/i18n/i18n_apply_translations.py --audit
 ```
 
 Lists values still identical to English. It compares against `en`, so genuine
 cognates (`message` and `microphone` in French, `level` in German) appear as
 false positives — confirm before "fixing" them.
-
-## Two older scripts in the same folder
-
-`i18n_checker.py` is an earlier scanner. It catches string literals and JSX text
-but **not** JSX attributes, so it misses `aria-label`, `placeholder` and `title`.
-Prefer `i18n_scan_hardcoded.py`.
-
-**Do not run `i18n_translate_json.py`** on a namespace that already has reviewed
-translations. It machine-translates the whole file and overwrites the target,
-discarding human work; it also skips any string containing `{{`, and its language
-list is missing `ar`, `et`, `fi` and `pt`.
 
 ## Key naming
 
@@ -258,7 +251,7 @@ Run the scanner over the file you are about to touch to see what you are walking
 into:
 
 ```bash
-python3 scripts/i18n_scan_hardcoded.py --detail src/components/Chat/ChatGroup.tsx
+python3 .agents/skills/i18n/i18n_scan_hardcoded.py --detail src/components/Chat/ChatGroup.tsx
 ```
 
 ## Before you finish
@@ -266,9 +259,9 @@ python3 scripts/i18n_scan_hardcoded.py --detail src/components/Chat/ChatGroup.ts
 Both of these must come back clean — they are the definition of done:
 
 ```bash
-python3 scripts/i18n_scan_hardcoded.py --detail <file>   # no user-readable English left
-python3 scripts/i18n_apply_translations.py --audit       # no English in non-English locales
-python3 scripts/i18n_sort.py --check                     # locale files still sorted
+python3 .agents/skills/i18n/i18n_scan_hardcoded.py --detail <file>   # no user-readable English left
+python3 .agents/skills/i18n/i18n_apply_translations.py --audit       # no English in non-English locales
+python3 .agents/skills/i18n/i18n_sort.py --check                     # locale files still sorted
 ```
 
 Anything the first returns that a user can read must become a `t()` call. Any key

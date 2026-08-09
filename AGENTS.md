@@ -115,6 +115,7 @@ AGENTS.md                          the file you are reading
 CLAUDE.md            → AGENTS.md   loaded unconditionally every session
 
 .agents/skills/<name>/SKILL.md     skills — edit here
+.agents/skills/<name>/scripts/     tooling a skill owns, run from the repo root
 .agents/commands/<name>.md         slash commands — edit here
 .agents/settings.json              shared project settings — edit here
 
@@ -128,6 +129,13 @@ Edit the `.agents/` originals, never the links. Skills load on demand when their
 `description` matches the task; commands are invoked as `/<name>`.
 
 Currently present: the `i18n` skill and the `write_tests` command.
+
+The `i18n` skill owns the four locale scripts in
+`.agents/skills/i18n/` — `i18n_scan_hardcoded.py`, `i18n_add_keys.py`,
+`i18n_apply_translations.py` and `i18n_sort.py`. Invoke them as
+`python3 .agents/skills/i18n/<name>.py` from the repo root; they find
+`src/i18n/locales/` themselves. They used to live in a top-level `scripts/`
+directory, which is gone.
 
 Personal, cross-project equivalents live in `~/.claude/skills/` and
 `~/.claude/commands/`.
