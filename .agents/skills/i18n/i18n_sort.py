@@ -6,8 +6,8 @@ and `i18n_apply_translations.py` sort on write, so the tree stays sorted; this
 script is for a one-off pass or a CI check.
 
 Usage:
-    python3 scripts/i18n_sort.py            # sort in place
-    python3 scripts/i18n_sort.py --check    # exit 1 if anything is unsorted
+    python3 .agents/skills/i18n/i18n_sort.py            # sort in place
+    python3 .agents/skills/i18n/i18n_sort.py --check    # exit 1 if anything is unsorted
 
 Sorting is key-order only: no key is added, removed or renamed, and no value is
 touched. The script verifies that itself before writing.
@@ -18,7 +18,8 @@ import json
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# .agents/skills/i18n/<this file> -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[4]
 LOCALES = REPO_ROOT / 'src' / 'i18n' / 'locales'
 
 
@@ -77,7 +78,7 @@ def main():
             print(f'{len(unsorted_files)} locale files are not sorted:')
             for f in unsorted_files:
                 print(f'  {f}')
-            print('\nRun: python3 scripts/i18n_sort.py')
+            print('\nRun: python3 .agents/skills/i18n/i18n_sort.py')
             sys.exit(1)
         print('All locale files are sorted.')
     else:
