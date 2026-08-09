@@ -12,13 +12,7 @@ export const AdminSpace = ({
   isOwner,
 }) => {
   const balance = useAtomValue(balanceAtom);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   return (
     <Box

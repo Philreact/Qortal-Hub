@@ -29,13 +29,7 @@ export const JoinGroup = () => {
   const [isLoadingInfo, setIsLoadingInfo] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const [isLoadingJoinGroup, setIsLoadingJoinGroup] = useState(false);
 
   const handleJoinGroup = async (e) => {

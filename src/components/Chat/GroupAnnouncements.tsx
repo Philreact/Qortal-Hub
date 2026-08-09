@@ -38,6 +38,7 @@ import { RequestQueueWithPromise } from '../../utils/queue/queue';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { addDataPublishesFunc, getDataPublishesFunc } from '../Group/Group';
 import { useTranslation } from 'react-i18next';
+import i18n from '../../i18n/i18n';
 import { TIME_SECONDS_20_IN_MILLISECONDS } from '../../constants/constants.ts';
 
 const uid = new ShortUniqueId({ length: 8 });
@@ -65,7 +66,12 @@ export const saveTempPublish = async ({ data, key }: any) => {
         rej(response.error);
       })
       .catch((error) => {
-        rej(error.message || 'An error occurred');
+        rej(
+          error.message ||
+            i18n.t('core:message.error.generic', {
+              postProcess: 'capitalizeFirstChar',
+            })
+        );
       });
   });
 };
@@ -82,7 +88,12 @@ export const getTempPublish = async () => {
         rej(response.error);
       })
       .catch((error) => {
-        rej(error.message || 'An error occurred');
+        rej(
+          error.message ||
+            i18n.t('core:message.error.generic', {
+              postProcess: 'capitalizeFirstChar',
+            })
+        );
       });
   });
 };
@@ -163,13 +174,7 @@ export const GroupAnnouncements = ({
     editorRef.current = editorInstance;
   };
   const [, forceUpdate] = useReducer((x) => x + 1, 0);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const triggerRerender = () => {
     forceUpdate(); // Trigger re-render by updating the state
@@ -708,7 +713,7 @@ export const GroupAnnouncements = ({
               onEnter={publishAnnouncement}
               disableEnter
               compactChat
-              placeholder="Write an announcement..."
+              placeholder={t('group:announcement_placeholder')}
               maxHeightOffset={40}
               isFocusedParent={isFocusedParent}
               setIsFocusedParent={setIsFocusedParent}

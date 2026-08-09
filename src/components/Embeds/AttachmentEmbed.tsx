@@ -51,13 +51,7 @@ export const AttachmentCard = ({
   const [isOpen, setIsOpen] = useState(true);
   const { downloadResource } = useContext(QORTAL_APP_CONTEXT);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const formatETA = (seconds: number | undefined) => {
     if (!seconds || seconds <= 0) return null;

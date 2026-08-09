@@ -23,13 +23,7 @@ const ThemeSelector = ({
   sidebar = false,
   footer = false,
 }: ThemeSelectorProps) => {
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const { themeMode, toggleTheme } = useThemeContext();
   const selectorRef = useRef(null);
   const theme = useTheme();

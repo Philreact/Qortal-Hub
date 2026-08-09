@@ -75,13 +75,7 @@ export const AppsLibraryDesktop = ({
   const theme = useTheme();
   const isSearchActive = searchValue.trim().length > 0;
   const showLibraryScrollbar = currentTab === 'community' && !isSearchActive;
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   useEffect(() => {
     const handler = setTimeout(() => {

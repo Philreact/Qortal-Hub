@@ -20,13 +20,7 @@ export const useHandlePrivateApps = () => {
   const [infoSnackCustom, setInfoSnackCustom] = useAtom(infoSnackGlobalAtom);
   const setSortablePinnedApps = useSetAtom(sortablePinnedAppsAtom);
   const setSettingsLocalLastUpdated = useSetAtom(settingsLocalLastUpdatedAtom);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const openApp = async (
     privateAppProperties,
@@ -67,7 +61,7 @@ export const useHandlePrivateApps = () => {
         if (!responseData?.ok) {
           if (setLoadingStatePrivateApp) {
             setLoadingStatePrivateApp(
-              t('core:message.generic.unable_download_private_app', {
+              t('core:message.error.download_private_app', {
                 postProcess: 'capitalizeFirstChar',
               })
             );
@@ -84,13 +78,13 @@ export const useHandlePrivateApps = () => {
         if (data?.error) {
           if (setLoadingStatePrivateApp) {
             setLoadingStatePrivateApp(
-              t('core:message.generic.unable_download_private_app', {
+              t('core:message.error.download_private_app', {
                 postProcess: 'capitalizeFirstChar',
               })
             );
           }
           throw new Error(
-            t('core:message.generic.unable_fetch_app', {
+            t('core:message.error.fetch_app', {
               postProcess: 'capitalizeFirstChar',
             })
           );
@@ -98,7 +92,7 @@ export const useHandlePrivateApps = () => {
       } catch (error) {
         if (setLoadingStatePrivateApp) {
           setLoadingStatePrivateApp(
-            t('core:message.generic.unable_download_private_app', {
+            t('core:message.error.download_private_app', {
               postProcess: 'capitalizeFirstChar',
             })
           );
@@ -115,7 +109,7 @@ export const useHandlePrivateApps = () => {
         if (decryptedData?.error) {
           if (setLoadingStatePrivateApp) {
             setLoadingStatePrivateApp(
-              t('core:message.generic.unable_decrypt_app', {
+              t('core:message.error.decrypt_app', {
                 postProcess: 'capitalizeFirstChar',
               })
             );
@@ -125,7 +119,7 @@ export const useHandlePrivateApps = () => {
       } catch (error) {
         if (setLoadingStatePrivateApp) {
           setLoadingStatePrivateApp(
-            t('core:message.generic.unable_decrypt_app', {
+            t('core:message.error.decrypt_app', {
               postProcess: 'capitalizeFirstChar',
             })
           );

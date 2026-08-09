@@ -41,12 +41,14 @@ export const MinterAvatarOrnament = ({
           outline: 'none',
           position: 'relative',
           width: ornamentWidth,
-          '&:hover .minter-avatar-ornament-frame, &:focus-visible .minter-avatar-ornament-frame': {
-            filter: 'brightness(1.18)',
-          },
-          '&:hover .minter-avatar-ornament-plate, &:focus-visible .minter-avatar-ornament-plate': {
-            filter: 'brightness(1.12)',
-          },
+          '&:hover .minter-avatar-ornament-frame, &:focus-visible .minter-avatar-ornament-frame':
+            {
+              filter: 'brightness(1.18)',
+            },
+          '&:hover .minter-avatar-ornament-plate, &:focus-visible .minter-avatar-ornament-plate':
+            {
+              filter: 'brightness(1.12)',
+            },
         }}
       >
         <Box

@@ -856,21 +856,26 @@ describe('useVoiceCall', () => {
 
     await act(async () => {
       await result.current.acceptCall();
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(join).toHaveBeenCalled();
-    expect(result.current.audioMode).toBe('reticulum');
-    expect(sendKeyRequest).toHaveBeenCalledWith(
-      roomId,
-      peerAddr,
-      myAddr,
-      'sig',
-      'pub',
-      expect.any(Number),
-      'call-session',
-      1
+    // acceptCall awaits a chain of readiness, room-id hashing, signing and
+    // call.accept before reaching join, so poll for the effect rather than
+    // asserting on a fixed tick budget.
+    await waitFor(() => expect(join).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(sendKeyRequest).toHaveBeenCalledWith(
+        roomId,
+        peerAddr,
+        myAddr,
+        'sig',
+        'pub',
+        expect.any(Number),
+        'call-session',
+        1
+      )
     );
+
+    expect(result.current.audioMode).toBe('reticulum');
     expect(requestPeerMediaRecovery).toHaveBeenCalledWith(
       roomId,
       peerAddr,
@@ -884,10 +889,12 @@ describe('useVoiceCall', () => {
       });
     });
 
-    expect(requestPeerMediaRecovery).toHaveBeenCalledWith(
-      roomId,
-      peerAddr,
-      'dm-peer-joined'
+    await waitFor(() =>
+      expect(requestPeerMediaRecovery).toHaveBeenCalledWith(
+        roomId,
+        peerAddr,
+        'dm-peer-joined'
+      )
     );
   });
 

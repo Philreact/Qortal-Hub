@@ -41,13 +41,7 @@ type WalletsEmbeddedTab = {
 };
 
 export const WalletsAppWrapper = () => {
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const theme = useTheme();
   const iframeRef = useRef(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -234,11 +228,9 @@ export const WalletsAppWrapper = () => {
                   title={
                     isFullScreen
                       ? t('core:action.restore', {
-                          defaultValue: 'Restore',
                           postProcess: 'capitalizeFirstChar',
                         })
                       : t('core:action.full_screen', {
-                          defaultValue: 'Full screen',
                           postProcess: 'capitalizeFirstChar',
                         })
                   }

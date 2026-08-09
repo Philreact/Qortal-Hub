@@ -126,7 +126,8 @@ export const HomeDesktop = ({
       readStoredDashboardModuleVisible(HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY)
     );
   const [isQuitterFeedModuleVisible, setIsQuitterFeedModuleVisible] = useState(
-    () => readStoredDashboardModuleVisible(HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY)
+    () =>
+      readStoredDashboardModuleVisible(HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY)
   );
   const [groupWidgetRefreshToken, setGroupWidgetRefreshToken] = useState(0);
   const [isGroupWidgetRefreshing, setIsGroupWidgetRefreshing] = useState(false);
@@ -134,7 +135,7 @@ export const HomeDesktop = ({
   const [isQuitterWidgetRefreshing, setIsQuitterWidgetRefreshing] =
     useState(false);
   const reduce = useReducedMotion();
-  const { t } = useTranslation(['core', 'group', 'tutorial', 'auth']);
+  const { t } = useTranslation(['core', 'group', 'auth']);
   const td = useCallback(
     (key: string, defaultValue: string) =>
       t(`group:dashboard.${key}`, { defaultValue }),
@@ -212,7 +213,9 @@ export const HomeDesktop = ({
 
     const syncModuleVisibility = () => {
       setIsGroupActivityModuleVisible(
-        readStoredDashboardModuleVisible(HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY)
+        readStoredDashboardModuleVisible(
+          HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY
+        )
       );
       setIsQuitterFeedModuleVisible(
         readStoredDashboardModuleVisible(HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY)
@@ -589,23 +592,378 @@ export const HomeDesktop = ({
             backfaceVisibility: 'hidden',
           }}
         >
-            <Spacer height="20px" />
+          <Spacer height="20px" />
+          <Box
+            ref={homeLayoutDebugRootRef}
+            sx={{
+              alignItems: 'flex-start',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
+              maxWidth: '1320px',
+              padding: '0 20px',
+              position: 'relative',
+              width: '100%',
+              [theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)]: {
+                maxWidth: '1520px',
+              },
+            }}
+          >
             <Box
-              ref={homeLayoutDebugRootRef}
               sx={{
-                alignItems: 'flex-start',
-                display: 'flex',
-                flexDirection: 'column',
+                alignItems: 'start',
+                display: 'grid',
                 gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                maxWidth: '1320px',
-                padding: '0 20px',
-                position: 'relative',
+                gridTemplateColumns: '1fr',
                 width: '100%',
                 [theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)]: {
-                  maxWidth: '1520px',
+                  alignItems: 'stretch',
+                  gridTemplateColumns: `minmax(0, 1fr) ${HOME_SHARED_SIDE_RAIL_WIDTH_XL}`,
                 },
               }}
             >
+              <Box
+                sx={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
+                  minWidth: 0,
+                  width: '100%',
+                }}
+              >
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                    width: '100%',
+                  }}
+                >
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      color: theme.palette.text.secondary,
+                      display: 'flex',
+                      fontSize: '0.74rem',
+                      fontWeight: 700,
+                      justifyContent: 'space-between',
+                      letterSpacing: '0.0605em',
+                      minWidth: 0,
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    <Box component="span">Qortal Hub</Box>
+                    <Box
+                      component="span"
+                      sx={{
+                        alignItems: 'center',
+                        bgcolor: alpha(theme.palette.success.main, 0.08),
+                        border: `1px solid ${alpha(theme.palette.success.main, 0.16)}`,
+                        borderRadius: '999px',
+                        color: alpha(theme.palette.text.primary, 0.72),
+                        display: 'inline-flex',
+                        flexShrink: 0,
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        gap: '6px',
+                        letterSpacing: '0.045em',
+                        lineHeight: 1,
+                        px: '8px',
+                        py: '5px',
+                      }}
+                      title={td('online_users_count', 'Online users')}
+                    >
+                      <Box
+                        component="span"
+                        sx={{
+                          bgcolor: theme.palette.success.main,
+                          borderRadius: '50%',
+                          boxShadow: `0 0 0 3px ${alpha(
+                            theme.palette.success.main,
+                            0.14
+                          )}`,
+                          height: 6,
+                          width: 6,
+                        }}
+                      />
+                      {t('group:dashboard.online_users_count_value', {
+                        count: onlineUserCount,
+                        defaultValue: '{{count}} online',
+                      })}
+                    </Box>
+                  </Box>
+                  {isWideDashboardLayout ? (
+                    <Box
+                      sx={{
+                        alignItems: 'start',
+                        display: 'grid',
+                        gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
+                        gridTemplateColumns:
+                          HOME_LEFT_CENTER_GRID_TEMPLATE_COLUMNS.xl,
+                        width: '100%',
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
+                          minWidth: 0,
+                          width: '100%',
+                        }}
+                      >
+                        <Box
+                          ref={accountOverviewDebugRef}
+                          sx={{
+                            display: 'block',
+                            height:
+                              resolvedQortinoCardHeightPx != null
+                                ? `${resolvedQortinoCardHeightPx}px`
+                                : undefined,
+                            minWidth: 0,
+                            position: 'relative',
+                            '& > *': { height: '100%' },
+                          }}
+                        >
+                          {desktopViewMode === 'home' ? (
+                            <ErrorBoundary
+                              fallback={qortinoWorkspaceShellFallback}
+                            >
+                              <HomeQortinoWorkspaceCard
+                                onGettingStartedComplete={
+                                  handleGettingStartedComplete
+                                }
+                                onOpenAppsPanel={handleOpenAppsPanel}
+                              />
+                            </ErrorBoundary>
+                          ) : null}
+                        </Box>
+                        <Box
+                          ref={toolsDebugRef}
+                          sx={{
+                            display: 'block',
+                            minWidth: 0,
+                            position: 'relative',
+                            width: '100%',
+                          }}
+                        >
+                          <HomeQuickToolsPad
+                            fillHeight={false}
+                            onOpenApps={handleOpenAppsPanel}
+                            onOpenChat={handleOpenQChatPanel}
+                            onOpenQortalLand={onOpenQortalLand}
+                            onOpenSettings={onOpenSettings}
+                          />
+                        </Box>
+                      </Box>
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
+                          minWidth: 0,
+                          width: '100%',
+                        }}
+                      >
+                        <Box
+                          ref={profileCardDebugRef}
+                          sx={{
+                            display: 'block',
+                            minWidth: 0,
+                            position: 'relative',
+                            width: '100%',
+                            '& > *': { width: '100%' },
+                          }}
+                        >
+                          <HomeProfileCard
+                            onOpenReceive={handleOpenReceiveQort}
+                          />
+                        </Box>
+                        <Box
+                          ref={featuredAppsDebugRef}
+                          sx={{
+                            display: 'flex',
+                            height:
+                              resolvedWideLeftLowerRowPanelHeightPx != null
+                                ? `${resolvedWideLeftLowerRowPanelHeightPx}px`
+                                : undefined,
+                            minWidth: 0,
+                            overflow: 'visible',
+                            position: 'relative',
+                            width: '100%',
+                            '& > *': {
+                              height: '100%',
+                              position: 'relative',
+                              width: '100%',
+                              zIndex: 1,
+                            },
+                          }}
+                        >
+                          <HomeFeaturedApps />
+                        </Box>
+                      </Box>
+                    </Box>
+                  ) : (
+                    <>
+                      <Box
+                        sx={{
+                          display: 'grid',
+                          gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
+                          gridTemplateColumns:
+                            HOME_LEFT_CENTER_LOWER_ROW_GRID_TEMPLATE_COLUMNS,
+                          alignItems: 'stretch',
+                          width: '100%',
+                        }}
+                      >
+                        <Box
+                          ref={accountOverviewDebugRef}
+                          sx={{
+                            display: 'block',
+                            height:
+                              resolvedQortinoCardHeightPx != null
+                                ? `${resolvedQortinoCardHeightPx}px`
+                                : undefined,
+                            minWidth: 0,
+                            position: 'relative',
+                            '& > *': { height: '100%' },
+                          }}
+                        >
+                          {desktopViewMode === 'home' ? (
+                            <ErrorBoundary
+                              fallback={qortinoWorkspaceShellFallback}
+                            >
+                              <HomeQortinoWorkspaceCard
+                                onGettingStartedComplete={() => {
+                                  setIsOnboardingComplete(true);
+                                }}
+                                onOpenAppsPanel={handleOpenAppsPanel}
+                              />
+                            </ErrorBoundary>
+                          ) : null}
+                        </Box>
+                        <Box
+                          ref={profileCardDebugRef}
+                          sx={{
+                            display: 'block',
+                            minWidth: 0,
+                            position: 'relative',
+                            width: '100%',
+                            '& > *': { width: '100%' },
+                          }}
+                        >
+                          <HomeProfileCard
+                            onOpenReceive={handleOpenReceiveQort}
+                          />
+                        </Box>
+                      </Box>
+                      <Box
+                        sx={{
+                          display: 'grid',
+                          gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
+                          gridTemplateColumns:
+                            HOME_LEFT_CENTER_LOWER_ROW_GRID_TEMPLATE_COLUMNS,
+                          alignItems: 'stretch',
+                          width: '100%',
+                        }}
+                      >
+                        <Box
+                          ref={toolsDebugRef}
+                          sx={{
+                            display: 'block',
+                            minWidth: 0,
+                            position: 'relative',
+                            width: '100%',
+                          }}
+                        >
+                          <HomeQuickToolsPad
+                            fillHeight={false}
+                            onOpenApps={handleOpenAppsPanel}
+                            onOpenChat={handleOpenQChatPanel}
+                            onOpenQortalLand={onOpenQortalLand}
+                            onOpenSettings={onOpenSettings}
+                          />
+                        </Box>
+                        <Box
+                          ref={featuredAppsDebugRef}
+                          sx={{
+                            display: 'flex',
+                            height:
+                              resolvedWideLeftLowerRowPanelHeightPx != null
+                                ? `${resolvedWideLeftLowerRowPanelHeightPx}px`
+                                : undefined,
+                            minWidth: 0,
+                            overflow: 'visible',
+                            position: 'relative',
+                            width: '100%',
+                            '& > *': {
+                              height: '100%',
+                              position: 'relative',
+                              width: '100%',
+                              zIndex: 1,
+                            },
+                          }}
+                        >
+                          <HomeFeaturedApps />
+                        </Box>
+                      </Box>
+                    </>
+                  )}
+                </Box>
+              </Box>
+              <Box
+                ref={rightRailRef}
+                data-home-right-rail=""
+                sx={{
+                  alignContent: 'start',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
+                  minWidth: 0,
+                  [theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)]: {
+                    display: 'grid',
+                    gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
+                    gridTemplateRows: `${HOME_INFO_COLLAPSED_VISIBLE_HEIGHT_PX}px ${
+                      resolvedWalletActivityHeightPx != null
+                        ? `${resolvedWalletActivityHeightPx}px`
+                        : 'auto'
+                    }`,
+                    marginTop: `${HOME_RIGHT_RAIL_TOP_ALIGNMENT_OFFSET_PX}px`,
+                  },
+                }}
+              >
+                <Box
+                  ref={infoDebugRef}
+                  sx={{
+                    minWidth: 0,
+                    position: 'relative',
+                    width: '100%',
+                    '& > *': { height: '100%' },
+                  }}
+                >
+                  <InfoPreviewPanel
+                    maxExpandedHeightPx={infoPanelMaxExpandedHeightPx}
+                  />
+                </Box>
+                <Box
+                  ref={walletActivityDebugRef}
+                  sx={{
+                    maxWidth: { xs: '100%', md: '360px' },
+                    position: 'relative',
+                    width: '100%',
+                    minHeight: '182px',
+                    height:
+                      resolvedWalletActivityHeightPx != null
+                        ? `${resolvedWalletActivityHeightPx}px`
+                        : undefined,
+                    '& > *': { height: '100%' },
+                  }}
+                >
+                  <HomeDesktopWalletActivity />
+                </Box>
+              </Box>
+            </Box>
+
+            {isGroupActivityModuleVisible || isQuitterFeedModuleVisible ? (
               <Box
                 sx={{
                   alignItems: 'start',
@@ -614,433 +972,78 @@ export const HomeDesktop = ({
                   gridTemplateColumns: '1fr',
                   width: '100%',
                   [theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)]: {
-                    alignItems: 'stretch',
-                    gridTemplateColumns: `minmax(0, 1fr) ${HOME_SHARED_SIDE_RAIL_WIDTH_XL}`,
+                    gridTemplateColumns: areBothDashboardModulesVisible
+                      ? 'repeat(2, minmax(0, 1fr))'
+                      : '1fr',
                   },
                 }}
               >
-                <Box
-                  sx={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                    minWidth: 0,
-                    width: '100%',
-                  }}
-                >
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '10px',
-                      width: '100%',
-                    }}
+                {isGroupActivityModuleVisible ? (
+                  <DashboardWidgetFrame
+                    actionIcon={
+                      <ForumRoundedIcon sx={{ fontSize: '0.86rem' }} />
+                    }
+                    actionLabel={td('open_in_q_chat', 'Open in Q-Chat')}
+                    height={HOME_DASHBOARD_WIDGET_HEIGHT_PX}
+                    onAction={handleOpenGroupsWidget}
+                    onRefresh={handleRefreshGroupActivity}
+                    onSwap={
+                      areBothDashboardModulesVisible
+                        ? handleSwapDashboardWidgets
+                        : undefined
+                    }
+                    order={groupActivityCardOrder}
+                    panelRef={assignGroupActivityPanelNode}
+                    refreshing={isGroupWidgetRefreshing}
+                    title={t('group:home.group_activity', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                    widgetId="groups"
                   >
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        color: theme.palette.text.secondary,
-                        display: 'flex',
-                        fontSize: '0.74rem',
-                        fontWeight: 700,
-                        justifyContent: 'space-between',
-                        letterSpacing: '0.0605em',
-                        minWidth: 0,
-                        textTransform: 'uppercase',
-                      }}
-                    >
-                      <Box component="span">Qortal Hub</Box>
-                      <Box
-                        component="span"
-                        sx={{
-                          alignItems: 'center',
-                          bgcolor: alpha(theme.palette.success.main, 0.08),
-                          border: `1px solid ${alpha(theme.palette.success.main, 0.16)}`,
-                          borderRadius: '999px',
-                          color: alpha(theme.palette.text.primary, 0.72),
-                          display: 'inline-flex',
-                          flexShrink: 0,
-                          fontSize: '0.68rem',
-                          fontWeight: 700,
-                          gap: '6px',
-                          letterSpacing: '0.045em',
-                          lineHeight: 1,
-                          px: '8px',
-                          py: '5px',
-                        }}
-                        title={td('online_users_count', 'Online users')}
-                      >
-                        <Box
-                          component="span"
-                          sx={{
-                            bgcolor: theme.palette.success.main,
-                            borderRadius: '50%',
-                            boxShadow: `0 0 0 3px ${alpha(
-                              theme.palette.success.main,
-                              0.14
-                            )}`,
-                            height: 6,
-                            width: 6,
-                          }}
-                        />
-                        {t('group:dashboard.online_users_count_value', {
-                          count: onlineUserCount,
-                          defaultValue: '{{count}} online',
-                        })}
-                      </Box>
-                    </Box>
-                    {isWideDashboardLayout ? (
-                      <Box
-                        sx={{
-                          alignItems: 'start',
-                          display: 'grid',
-                          gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                          gridTemplateColumns:
-                            HOME_LEFT_CENTER_GRID_TEMPLATE_COLUMNS.xl,
-                          width: '100%',
-                        }}
-                      >
-                        <Box
-                          sx={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                            minWidth: 0,
-                            width: '100%',
-                          }}
-                        >
-                          <Box
-                            ref={accountOverviewDebugRef}
-                            sx={{
-                              display: 'block',
-                              height:
-                                resolvedQortinoCardHeightPx != null
-                                  ? `${resolvedQortinoCardHeightPx}px`
-                                  : undefined,
-                              minWidth: 0,
-                              position: 'relative',
-                              '& > *': { height: '100%' },
-                            }}
-                          >
-                            {desktopViewMode === 'home' ? (
-                              <ErrorBoundary
-                                fallback={qortinoWorkspaceShellFallback}
-                              >
-                                <HomeQortinoWorkspaceCard
-                                  onGettingStartedComplete={
-                                    handleGettingStartedComplete
-                                  }
-                                  onOpenAppsPanel={handleOpenAppsPanel}
-                                />
-                              </ErrorBoundary>
-                            ) : null}
-                          </Box>
-                          <Box
-                            ref={toolsDebugRef}
-                            sx={{
-                              display: 'block',
-                              minWidth: 0,
-                              position: 'relative',
-                              width: '100%',
-                            }}
-                          >
-                            <HomeQuickToolsPad
-                              fillHeight={false}
-                              onOpenApps={handleOpenAppsPanel}
-                              onOpenChat={handleOpenQChatPanel}
-                              onOpenQortalLand={onOpenQortalLand}
-                              onOpenSettings={onOpenSettings}
-                            />
-                          </Box>
-                        </Box>
-                        <Box
-                          sx={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                            minWidth: 0,
-                            width: '100%',
-                          }}
-                        >
-                          <Box
-                            ref={profileCardDebugRef}
-                            sx={{
-                              display: 'block',
-                              minWidth: 0,
-                              position: 'relative',
-                              width: '100%',
-                              '& > *': { width: '100%' },
-                            }}
-                          >
-                            <HomeProfileCard
-                              onOpenReceive={handleOpenReceiveQort}
-                            />
-                          </Box>
-                          <Box
-                            ref={featuredAppsDebugRef}
-                            sx={{
-                              display: 'flex',
-                              height:
-                                resolvedWideLeftLowerRowPanelHeightPx != null
-                                  ? `${resolvedWideLeftLowerRowPanelHeightPx}px`
-                                  : undefined,
-                              minWidth: 0,
-                              overflow: 'visible',
-                              position: 'relative',
-                              width: '100%',
-                              '& > *': {
-                                height: '100%',
-                                position: 'relative',
-                                width: '100%',
-                                zIndex: 1,
-                              },
-                            }}
-                          >
-                            <HomeFeaturedApps />
-                          </Box>
-                        </Box>
-                      </Box>
-                    ) : (
-                      <>
-                        <Box
-                          sx={{
-                            display: 'grid',
-                            gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                            gridTemplateColumns:
-                              HOME_LEFT_CENTER_LOWER_ROW_GRID_TEMPLATE_COLUMNS,
-                            alignItems: 'stretch',
-                            width: '100%',
-                          }}
-                        >
-                          <Box
-                            ref={accountOverviewDebugRef}
-                            sx={{
-                              display: 'block',
-                              height:
-                                resolvedQortinoCardHeightPx != null
-                                  ? `${resolvedQortinoCardHeightPx}px`
-                                  : undefined,
-                              minWidth: 0,
-                              position: 'relative',
-                              '& > *': { height: '100%' },
-                            }}
-                          >
-                            {desktopViewMode === 'home' ? (
-                              <ErrorBoundary
-                                fallback={qortinoWorkspaceShellFallback}
-                              >
-                                <HomeQortinoWorkspaceCard
-                                  onGettingStartedComplete={() => {
-                                    setIsOnboardingComplete(true);
-                                  }}
-                                  onOpenAppsPanel={handleOpenAppsPanel}
-                                />
-                              </ErrorBoundary>
-                            ) : null}
-                          </Box>
-                          <Box
-                            ref={profileCardDebugRef}
-                            sx={{
-                              display: 'block',
-                              minWidth: 0,
-                              position: 'relative',
-                              width: '100%',
-                              '& > *': { width: '100%' },
-                            }}
-                          >
-                            <HomeProfileCard
-                              onOpenReceive={handleOpenReceiveQort}
-                            />
-                          </Box>
-                        </Box>
-                        <Box
-                          sx={{
-                            display: 'grid',
-                            gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                            gridTemplateColumns:
-                              HOME_LEFT_CENTER_LOWER_ROW_GRID_TEMPLATE_COLUMNS,
-                            alignItems: 'stretch',
-                            width: '100%',
-                          }}
-                        >
-                          <Box
-                            ref={toolsDebugRef}
-                            sx={{
-                              display: 'block',
-                              minWidth: 0,
-                              position: 'relative',
-                              width: '100%',
-                            }}
-                          >
-                            <HomeQuickToolsPad
-                              fillHeight={false}
-                              onOpenApps={handleOpenAppsPanel}
-                              onOpenChat={handleOpenQChatPanel}
-                              onOpenQortalLand={onOpenQortalLand}
-                              onOpenSettings={onOpenSettings}
-                            />
-                          </Box>
-                          <Box
-                            ref={featuredAppsDebugRef}
-                            sx={{
-                              display: 'flex',
-                              height:
-                                resolvedWideLeftLowerRowPanelHeightPx != null
-                                  ? `${resolvedWideLeftLowerRowPanelHeightPx}px`
-                                  : undefined,
-                              minWidth: 0,
-                              overflow: 'visible',
-                              position: 'relative',
-                              width: '100%',
-                              '& > *': {
-                                height: '100%',
-                                position: 'relative',
-                                width: '100%',
-                                zIndex: 1,
-                              },
-                            }}
-                          >
-                            <HomeFeaturedApps />
-                          </Box>
-                        </Box>
-                      </>
-                    )}
-                  </Box>
-                </Box>
-                <Box
-                  ref={rightRailRef}
-                  data-home-right-rail=""
-                  sx={{
-                    alignContent: 'start',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                    minWidth: 0,
-                    [theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)]: {
-                      display: 'grid',
-                      gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                      gridTemplateRows: `${HOME_INFO_COLLAPSED_VISIBLE_HEIGHT_PX}px ${
-                        resolvedWalletActivityHeightPx != null
-                          ? `${resolvedWalletActivityHeightPx}px`
-                          : 'auto'
-                      }`,
-                      marginTop: `${HOME_RIGHT_RAIL_TOP_ALIGNMENT_OFFSET_PX}px`,
-                    },
-                  }}
-                >
-                  <Box
-                    ref={infoDebugRef}
-                    sx={{
-                      minWidth: 0,
-                      position: 'relative',
-                      width: '100%',
-                      '& > *': { height: '100%' },
-                    }}
-                  >
-                    <InfoPreviewPanel
-                      maxExpandedHeightPx={infoPanelMaxExpandedHeightPx}
+                    <GroupsWidget
+                      displayMode={HOME_DASHBOARD_WIDGET_DISPLAY_MODE}
+                      myAddress={myAddress}
+                      onRefreshStateChange={setIsGroupWidgetRefreshing}
+                      refreshToken={groupWidgetRefreshToken}
                     />
-                  </Box>
-                  <Box
-                    ref={walletActivityDebugRef}
-                    sx={{
-                      maxWidth: { xs: '100%', md: '360px' },
-                      position: 'relative',
-                      width: '100%',
-                      minHeight: '182px',
-                      height:
-                        resolvedWalletActivityHeightPx != null
-                          ? `${resolvedWalletActivityHeightPx}px`
-                          : undefined,
-                      '& > *': { height: '100%' },
-                    }}
+                  </DashboardWidgetFrame>
+                ) : null}
+
+                {isQuitterFeedModuleVisible ? (
+                  <DashboardWidgetFrame
+                    actionIcon={
+                      <OpenInNewRoundedIcon sx={{ fontSize: '0.86rem' }} />
+                    }
+                    actionLabel={td('open_in_q_apps', 'Open in Q-Apps')}
+                    height={HOME_DASHBOARD_WIDGET_HEIGHT_PX}
+                    onAction={handleOpenEmbeddedQuitter}
+                    onRefresh={handleRefreshQuitterWidget}
+                    onSwap={
+                      areBothDashboardModulesVisible
+                        ? handleSwapDashboardWidgets
+                        : undefined
+                    }
+                    order={quitterCardOrder}
+                    panelRef={quitterCardHeightRef}
+                    refreshing={isQuitterWidgetRefreshing}
+                    title={td('quitter_feed', 'Quitter Feed')}
+                    widgetId="quitter"
                   >
-                    <HomeDesktopWalletActivity />
-                  </Box>
-                </Box>
+                    <QuitterFeedWidget
+                      batchSize={quitterWidgetLoadMoreBatchSize}
+                      displayMode={HOME_DASHBOARD_WIDGET_DISPLAY_MODE}
+                      initialBatchSize={quitterWidgetInitialBatchSize}
+                      onRefreshStateChange={setIsQuitterWidgetRefreshing}
+                      refreshToken={quitterWidgetRefreshToken}
+                      searchLimit={quitterWidgetSearchLimit}
+                    />
+                  </DashboardWidgetFrame>
+                ) : null}
               </Box>
-
-              {isGroupActivityModuleVisible || isQuitterFeedModuleVisible ? (
-                <Box
-                  sx={{
-                    alignItems: 'start',
-                    display: 'grid',
-                    gap: `${HOME_DASHBOARD_VERTICAL_GAP_PX}px`,
-                    gridTemplateColumns: '1fr',
-                    width: '100%',
-                    [theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)]: {
-                      gridTemplateColumns: areBothDashboardModulesVisible
-                        ? 'repeat(2, minmax(0, 1fr))'
-                        : '1fr',
-                    },
-                  }}
-                >
-                  {isGroupActivityModuleVisible ? (
-                    <DashboardWidgetFrame
-                      actionIcon={
-                        <ForumRoundedIcon sx={{ fontSize: '0.86rem' }} />
-                      }
-                      actionLabel={td('open_in_q_chat', 'Open in Q-Chat')}
-                      height={HOME_DASHBOARD_WIDGET_HEIGHT_PX}
-                      onAction={handleOpenGroupsWidget}
-                      onRefresh={handleRefreshGroupActivity}
-                      onSwap={
-                        areBothDashboardModulesVisible
-                          ? handleSwapDashboardWidgets
-                          : undefined
-                      }
-                      order={groupActivityCardOrder}
-                      panelRef={assignGroupActivityPanelNode}
-                      refreshing={isGroupWidgetRefreshing}
-                      title={t('tutorial:home.group_activity', {
-                        postProcess: 'capitalizeFirstChar',
-                      })}
-                      widgetId="groups"
-                    >
-                      <GroupsWidget
-                        displayMode={HOME_DASHBOARD_WIDGET_DISPLAY_MODE}
-                        myAddress={myAddress}
-                        onRefreshStateChange={setIsGroupWidgetRefreshing}
-                        refreshToken={groupWidgetRefreshToken}
-                      />
-                    </DashboardWidgetFrame>
-                  ) : null}
-
-                  {isQuitterFeedModuleVisible ? (
-                    <DashboardWidgetFrame
-                      actionIcon={
-                        <OpenInNewRoundedIcon sx={{ fontSize: '0.86rem' }} />
-                      }
-                      actionLabel={td('open_in_q_apps', 'Open in Q-Apps')}
-                      height={HOME_DASHBOARD_WIDGET_HEIGHT_PX}
-                      onAction={handleOpenEmbeddedQuitter}
-                      onRefresh={handleRefreshQuitterWidget}
-                      onSwap={
-                        areBothDashboardModulesVisible
-                          ? handleSwapDashboardWidgets
-                          : undefined
-                      }
-                      order={quitterCardOrder}
-                      panelRef={quitterCardHeightRef}
-                      refreshing={isQuitterWidgetRefreshing}
-                      title={td('quitter_feed', 'Quitter Feed')}
-                      widgetId="quitter"
-                    >
-                      <QuitterFeedWidget
-                        batchSize={quitterWidgetLoadMoreBatchSize}
-                        displayMode={HOME_DASHBOARD_WIDGET_DISPLAY_MODE}
-                        initialBatchSize={quitterWidgetInitialBatchSize}
-                        onRefreshStateChange={setIsQuitterWidgetRefreshing}
-                        refreshToken={quitterWidgetRefreshToken}
-                        searchLimit={quitterWidgetSearchLimit}
-                      />
-                    </DashboardWidgetFrame>
-                  ) : null}
-                </Box>
-              ) : null}
-            </Box>
-            <Spacer height="120px" />
-          </motion.div>
+            ) : null}
+          </Box>
+          <Spacer height="120px" />
+        </motion.div>
       </Activity>
     </LazyMotion>
   );

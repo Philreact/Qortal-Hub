@@ -579,9 +579,7 @@ function ReticulumGroupSectionHeader({
   sectionLabel: string;
 }) {
   const theme = useTheme();
-  const legacyThreadsEnabled = useAtomValue(
-    reticulumLegacyThreadsEnabledAtom
-  );
+  const legacyThreadsEnabled = useAtomValue(reticulumLegacyThreadsEnabledAtom);
   const [isAdminMenuOpen, setIsAdminMenuOpen] = useState(false);
   const [isQManagerOpen, setIsQManagerOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -717,7 +715,7 @@ function ReticulumGroupSectionHeader({
       >
         {typeof onModeSwitchClick === 'function' && (
           <>
-            <ReticulumModePill label="Chat" onClick={onModeSwitchClick} />
+            <ReticulumModePill target="chat" onClick={onModeSwitchClick} />
             <Box
               aria-hidden
               sx={{
@@ -1140,13 +1138,7 @@ export const Group = ({
   const [isForceShowCreationKeyPopup, setIsForceShowCreationKeyPopup] =
     useState(false);
   const groupsOwnerNamesRef = useRef({});
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   useWebsocketStatus();
   const [groupsProperties, setGroupsProperties] = useAtom(groupsPropertiesAtom);
   const setGroupsOwnerNames = useSetAtom(groupsOwnerNamesAtom);

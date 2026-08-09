@@ -442,10 +442,7 @@ function AuthenticatedUserMenu({
                   whiteSpace: 'nowrap',
                 }}
               >
-                {primaryName ||
-                  t('core:message.generic.no_primary_name', {
-                    defaultValue: 'No primary name',
-                  })}
+                {primaryName || t('core:message.generic.no_primary_name', {})}
               </Typography>
               <Typography
                 sx={{
@@ -858,9 +855,7 @@ export function GlobalQortalNavBar({
         setInfoSnackGlobal({
           compact: true,
           duration: 3000,
-          message: t('core:message.generic.link_copied', {
-            defaultValue: 'Link copied to clipboard.',
-          }),
+          message: t('core:message.generic.link_copied', {}),
           type: 'success',
         });
         setOpenSnackGlobal(true);
@@ -904,9 +899,7 @@ export function GlobalQortalNavBar({
     setInfoSnackGlobal({
       compact: true,
       duration: 3000,
-      message: t('core:message.generic.address_copied', {
-        defaultValue: 'Address copied to clipboard.',
-      }),
+      message: t('core:message.generic.address_copied', {}),
       type: 'success',
     });
     setOpenSnackGlobal(true);
@@ -1438,7 +1431,7 @@ export function GlobalQortalNavBar({
                     handleOpenInput();
                   }
                 }}
-                placeholder="Search Q-Apps or enter qortal://"
+                placeholder={t('core:navbar.search_placeholder')}
                 sx={{
                   color: inputTextColor,
                   flex: 1,
@@ -1776,7 +1769,7 @@ export function GlobalQortalNavBar({
                 </Box>
               )}
               <Tooltip
-                title={tooltipTitle('Lock or log out')}
+                title={tooltipTitle(t('core:navbar.session.tooltip'))}
                 placement="bottom"
                 arrow
                 slotProps={tooltipSlotProps}
@@ -1793,7 +1786,7 @@ export function GlobalQortalNavBar({
                       setSessionMenuAnchor(event.currentTarget)
                     }
                     sx={utilityModuleButtonSx}
-                    aria-label="Lock or log out"
+                    aria-label={t('core:navbar.session.tooltip')}
                     aria-haspopup="menu"
                     aria-expanded={Boolean(sessionMenuAnchor)}
                   >
@@ -1808,7 +1801,10 @@ export function GlobalQortalNavBar({
                 anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
                 transformOrigin={{ vertical: 'top', horizontal: 'right' }}
                 slotProps={{
-                  root: { role: 'menu', 'aria-label': 'Session options' },
+                  root: {
+                    role: 'menu',
+                    'aria-label': t('core:navbar.session.menu_aria'),
+                  },
                   paper: {
                     sx: {
                       mt: 1,
@@ -1841,9 +1837,11 @@ export function GlobalQortalNavBar({
                 >
                   <LockRoundedIcon color="primary" />
                   <Box>
-                    <Typography fontWeight={700}>Lock</Typography>
+                    <Typography fontWeight={700}>
+                      {t('core:navbar.session.lock_title')}
+                    </Typography>
                     <Typography variant="caption" color="text.secondary">
-                      Keep chats and calls connected
+                      {t('core:navbar.session.lock_description')}
                     </Typography>
                   </Box>
                 </ButtonBase>
@@ -1867,9 +1865,11 @@ export function GlobalQortalNavBar({
                 >
                   <LogoutRoundedIcon color="error" />
                   <Box>
-                    <Typography fontWeight={700}>Log out</Typography>
+                    <Typography fontWeight={700}>
+                      {t('core:navbar.session.logout_title')}
+                    </Typography>
                     <Typography variant="caption" color="text.secondary">
-                      End this signed-in session
+                      {t('core:navbar.session.logout_description')}
                     </Typography>
                   </Box>
                 </ButtonBase>

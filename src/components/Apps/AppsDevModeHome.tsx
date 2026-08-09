@@ -54,13 +54,7 @@ export const AppsDevModeHome = ({
   const [port, setPort] = useAtom(devServerPortAtom);
   const [selectedPreviewFile, setSelectedPreviewFile] = useState(null);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const { isShow, onCancel, onOk, show, message } = useModal();
   const [openSnackGlobal, setOpenSnackGlobal] = useAtom(openSnackGlobalAtom);
   const [infoSnackCustom, setInfoSnackCustom] = useAtom(infoSnackGlobalAtom);

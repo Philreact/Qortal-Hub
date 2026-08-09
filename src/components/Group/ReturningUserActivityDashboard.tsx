@@ -13,6 +13,8 @@ import {
 } from '@mui/material';
 import { useAtomValue } from 'jotai';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { getBaseApiReact } from '../../App';
 import { groupsOwnerNamesAtom } from '../../atoms/global';
 import {
@@ -54,19 +56,22 @@ type ReturningUserActivityDashboardProps = {
   onSelectGroup: (group: ActivityGroup) => void;
 };
 
-const activityLabel = ({
-  mentionCount,
-  name,
-  newMessageCount,
-}: NormalizedActivityGroup) => {
-  const parts = [`Open ${name}`];
+const activityLabel = (
+  { mentionCount, name, newMessageCount }: NormalizedActivityGroup,
+  t: TFunction
+) => {
+  const parts = [t('group:activity_dashboard.open_group_aria', { name })];
   if (newMessageCount > 0) {
     parts.push(
-      `${newMessageCount} new ${newMessageCount === 1 ? 'message' : 'messages'}`
+      t('group:activity_dashboard.new_message_count', {
+        count: newMessageCount,
+      })
     );
   }
   if (mentionCount > 0) {
-    parts.push(`${mentionCount} ${mentionCount === 1 ? 'mention' : 'mentions'}`);
+    parts.push(
+      t('group:activity_dashboard.mention_count', { count: mentionCount })
+    );
   }
   return parts.join(', ');
 };
@@ -78,12 +83,13 @@ function GroupActivityCard({
   item: NormalizedActivityGroup;
   onSelect: () => void;
 }) {
+  const { t } = useTranslation(['group']);
   const theme = useTheme();
   const initial = item.name.trim().charAt(0).toUpperCase() || 'G';
   const lightMode = theme.palette.mode === 'light';
   return (
     <ButtonBase
-      aria-label={activityLabel(item)}
+      aria-label={activityLabel(item, t)}
       onClick={onSelect}
       sx={{
         alignItems: 'center',
@@ -175,17 +181,23 @@ function GroupActivityCard({
             <Typography
               sx={{ color: 'text.secondary', fontSize: 13.5, lineHeight: 1.35 }}
             >
-              {item.newMessageCount} new{' '}
-              {item.newMessageCount === 1 ? 'message' : 'messages'}
+              {t('group:activity_dashboard.new_message_count', {
+                count: item.newMessageCount,
+              })}
             </Typography>
           )}
           {item.mentionCount > 0 && (
             <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.75 }}>
               <Typography
-                sx={{ color: 'text.secondary', fontSize: 13.5, lineHeight: 1.35 }}
+                sx={{
+                  color: 'text.secondary',
+                  fontSize: 13.5,
+                  lineHeight: 1.35,
+                }}
               >
-                {item.mentionCount}{' '}
-                {item.mentionCount === 1 ? 'mention' : 'mentions'}
+                {t('group:activity_dashboard.mention_count', {
+                  count: item.mentionCount,
+                })}
               </Typography>
               <Box
                 component="span"
@@ -218,6 +230,7 @@ export function ReturningUserActivityDashboard({
   onBrowseCommunities,
   onSelectGroup,
 }: ReturningUserActivityDashboardProps) {
+  const { t } = useTranslation(['group']);
   const theme = useTheme();
   const ownerNames = useAtomValue(groupsOwnerNamesAtom) as Record<
     string,
@@ -230,10 +243,7 @@ export function ReturningUserActivityDashboard({
   const [isWhatsNewOpen, setIsWhatsNewOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(
-    () => subscribeToReticulumGroupOrder(setManualGroupOrder),
-    []
-  );
+  useEffect(() => subscribeToReticulumGroupOrder(setManualGroupOrder), []);
 
   const activityGroups = useMemo(() => {
     return orderReticulumGroups(groups || [], manualGroupOrder)
@@ -241,16 +251,13 @@ export function ReturningUserActivityDashboard({
         const groupId = String(group?.groupId ?? '');
         if (!groupId || groupId === '0') return null;
         const summary = group?.reticulumChatSummary;
-        const newMessageCount = Math.max(
-          0,
-          Number(summary?.unreadCount) || 0
-        );
-        const mentionCount = Math.max(
-          0,
-          Number(summary?.mentionCount) || 0
-        );
+        const newMessageCount = Math.max(0, Number(summary?.unreadCount) || 0);
+        const mentionCount = Math.max(0, Number(summary?.mentionCount) || 0);
         if (newMessageCount === 0 && mentionCount === 0) return null;
-        const name = group?.groupName || group?.name || `Group ${groupId}`;
+        const name =
+          group?.groupName ||
+          group?.name ||
+          t('group:activity_dashboard.group_fallback_name', { groupId });
         const ownerName = ownerNames[groupId];
         return {
           avatarUrl: ownerName
@@ -264,7 +271,7 @@ export function ReturningUserActivityDashboard({
         };
       })
       .filter((group): group is NormalizedActivityGroup => Boolean(group));
-  }, [groups, manualGroupOrder, ownerNames]);
+  }, [groups, manualGroupOrder, ownerNames, t]);
 
   const hasMore = activityGroups.length > initialVisibleCount;
   const visibleGroups = expanded
@@ -316,9 +323,8 @@ export function ReturningUserActivityDashboard({
           },
         }}
       >
-        What's New?
+        {t('group:activity_dashboard.whats_new')}
       </Button>
-
       <Box
         sx={{
           alignItems: 'center',
@@ -343,7 +349,11 @@ export function ReturningUserActivityDashboard({
             textAlign: 'center',
           }}
         >
-          {displayName ? `Welcome back, ${displayName}!` : 'Welcome back!'}
+          {displayName
+            ? t('group:activity_dashboard.welcome_back_named', {
+                name: displayName,
+              })
+            : t('group:activity_dashboard.welcome_back')}
         </Typography>
         <Typography
           sx={{
@@ -355,8 +365,8 @@ export function ReturningUserActivityDashboard({
           }}
         >
           {activityGroups.length > 0
-            ? "Here's what you've missed while you were away."
-            : "You're all caught up. No new messages right now."}
+            ? t('group:activity_dashboard.missed_summary')
+            : t('group:activity_dashboard.all_caught_up')}
         </Typography>
 
         {activityGroups.length > 0 && (
@@ -412,7 +422,9 @@ export function ReturningUserActivityDashboard({
               <Button
                 aria-expanded={expanded}
                 onClick={expanded ? collapseGroups : () => setExpanded(true)}
-                startIcon={<ChatBubbleOutlineRoundedIcon sx={{ fontSize: 18 }} />}
+                startIcon={
+                  <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 18 }} />
+                }
                 endIcon={
                   expanded ? (
                     <ExpandLessRoundedIcon sx={{ fontSize: 19 }} />
@@ -432,7 +444,9 @@ export function ReturningUserActivityDashboard({
                   },
                 }}
               >
-                {expanded ? 'Show fewer servers' : 'View all servers'}
+                {expanded
+                  ? t('group:activity_dashboard.show_fewer_servers')
+                  : t('group:activity_dashboard.view_all_servers')}
               </Button>
             )}
 
@@ -446,7 +460,7 @@ export function ReturningUserActivityDashboard({
                 }}
               >
                 <Button
-                  aria-label="Browse Communities"
+                  aria-label={t('group:activity_dashboard.browse_communities')}
                   onClick={onBrowseCommunities}
                   startIcon={<GroupsRoundedIcon sx={{ fontSize: 19 }} />}
                   variant="outlined"
@@ -478,7 +492,7 @@ export function ReturningUserActivityDashboard({
                     },
                   }}
                 >
-                  Browse Communities
+                  {t('group:activity_dashboard.browse_communities')}
                 </Button>
                 <Typography
                   sx={{
@@ -488,7 +502,7 @@ export function ReturningUserActivityDashboard({
                     mt: 1.75,
                   }}
                 >
-                  Looking for something new? Discover more communities.
+                  {t('group:activity_dashboard.browse_communities_hint')}
                 </Typography>
               </Box>
             )}

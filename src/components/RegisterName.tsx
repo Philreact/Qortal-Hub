@@ -47,13 +47,7 @@ export const RegisterName = ({
   const [nameFee, setNameFee] = useState(null);
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const modalSurface = isDarkMode
     ? 'linear-gradient(145deg, rgba(49,54,64,0.985) 0%, rgba(35,39,47,0.992) 48%, rgba(24,27,33,0.996) 100%)'
     : 'linear-gradient(180deg, rgba(251,253,255,0.985) 0%, rgba(244,247,251,0.99) 100%)';
@@ -270,7 +264,13 @@ export const RegisterName = ({
         },
       }}
     >
-      <Box sx={{ background: modalSurface, display: 'flex', flexDirection: 'column' }}>
+      <Box
+        sx={{
+          background: modalSurface,
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
         <Box
           sx={{
             alignItems: 'center',
@@ -310,7 +310,7 @@ export const RegisterName = ({
                 lineHeight: 1.45,
               }}
             >
-              {t('tutorial:home.register_name_workspace_hint')}
+              {t('group:home.register_name_workspace_hint')}
             </Typography>
           </Box>
           <ButtonBase
@@ -598,7 +598,9 @@ export const RegisterName = ({
                   opacity: 0.86,
                 }}
               >
-                <Box sx={{ display: 'flex', gap: 0.9, alignItems: 'flex-start' }}>
+                <Box
+                  sx={{ display: 'flex', gap: 0.9, alignItems: 'flex-start' }}
+                >
                   <CheckCircleOutlineIcon
                     sx={{
                       color: alpha(theme.palette.primary.main, 0.88),
@@ -619,7 +621,9 @@ export const RegisterName = ({
                     })}
                   </Typography>
                 </Box>
-                <Box sx={{ display: 'flex', gap: 0.9, alignItems: 'flex-start' }}>
+                <Box
+                  sx={{ display: 'flex', gap: 0.9, alignItems: 'flex-start' }}
+                >
                   <CheckCircleOutlineIcon
                     sx={{
                       color: alpha(theme.palette.primary.main, 0.88),

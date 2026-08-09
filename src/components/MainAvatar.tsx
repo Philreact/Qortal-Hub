@@ -47,13 +47,7 @@ export const MainAvatar = ({ myName, balance, setOpenSnack, setInfoSnack }) => {
   const open = Boolean(anchorEl);
   const id = open ? 'avatar-img' : undefined;
 
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const checkIfAvatarExists = async () => {
     try {
@@ -266,13 +260,7 @@ const PopoverComp = ({
   myName,
 }) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   return (
     <Popover

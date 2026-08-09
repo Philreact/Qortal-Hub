@@ -526,10 +526,7 @@ export const getWhichUI = async () => {
   }
 };
 
-export const getUserAccount = async ({
-  isFromExtension,
-  appInfo,
-}) => {
+export const getUserAccount = async ({ isFromExtension, appInfo }) => {
   try {
     const value =
       (await getPermission(`qAPPAutoAuth-${appInfo?.name}`)) || false;
@@ -7015,7 +7012,7 @@ export const createAndCopyEmbedLink = async (data, isFromExtension) => {
       missingFieldsFunc(data, ['type', 'name', 'service', 'identifier']);
       if (data?.encryptionType === 'private' && !data?.key) {
         throw new Error(
-          i18n.t('question:message.generic.provide_key_shared_link', {
+          i18n.t('question:message.error.provide_key_shared_link', {
             postProcess: 'capitalizeFirstChar',
           })
         );

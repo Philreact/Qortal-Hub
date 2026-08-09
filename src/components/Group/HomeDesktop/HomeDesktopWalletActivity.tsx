@@ -3,12 +3,7 @@ import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import SouthWestRoundedIcon from '@mui/icons-material/SouthWestRounded';
 import ShoppingBagRoundedIcon from '@mui/icons-material/ShoppingBagRounded';
 import { alpha } from '@mui/material/styles';
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { balanceAtom, userInfoAtom } from '../../../atoms/global';
 import { getBaseApiReact } from '../../../App';
@@ -20,10 +15,7 @@ import {
   HOME_WIDE_DASHBOARD_MIN_WIDTH_PX,
   WALLET_ACTIVITY_RECENT_PAYMENT_FETCH_LIMIT,
 } from './homeDesktopConstants';
-import type {
-  WalletActivityEntry,
-  WalletActivityTransaction,
-} from './types';
+import type { WalletActivityEntry, WalletActivityTransaction } from './types';
 import {
   formatWalletActivityAmount,
   formatWalletActivityRelativeTime,
@@ -53,7 +45,7 @@ export const HomeDesktopWalletActivity = () => {
   const userInfo = useAtomValue(userInfoAtom);
   const balance = useAtomValue(balanceAtom);
   const userAddress = userInfo?.address;
-  const { t } = useTranslation(['core', 'group', 'tutorial', 'auth']);
+  const { t } = useTranslation(['core', 'group', 'auth']);
   const td = useCallback(
     (key: string, defaultValue: string) =>
       t(`group:dashboard.${key}`, { defaultValue }),
@@ -79,28 +71,31 @@ export const HomeDesktopWalletActivity = () => {
     0.6
   );
 
-  const handleOpenReceiveQort = useCallback((target: HTMLElement | null) => {
-    if (!target) return;
-    const rect = target.getBoundingClientRect();
-    const rightRailRect = getRightRailRectFromElement(target);
-    executeEvent('openReceiveQortInternal', {
-      address: userAddress ?? '',
-      anchorRect: {
-        height: rect.height,
-        left: rect.left,
-        top: rect.top,
-        width: rect.width,
-      },
-      targetRect: rightRailRect
-        ? {
-            height: rightRailRect.height,
-            left: rightRailRect.left,
-            top: rightRailRect.top,
-            width: rightRailRect.width,
-          }
-        : null,
-    });
-  }, [userAddress]);
+  const handleOpenReceiveQort = useCallback(
+    (target: HTMLElement | null) => {
+      if (!target) return;
+      const rect = target.getBoundingClientRect();
+      const rightRailRect = getRightRailRectFromElement(target);
+      executeEvent('openReceiveQortInternal', {
+        address: userAddress ?? '',
+        anchorRect: {
+          height: rect.height,
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+        },
+        targetRect: rightRailRect
+          ? {
+              height: rightRailRect.height,
+              left: rightRailRect.left,
+              top: rightRailRect.top,
+              width: rightRailRect.width,
+            }
+          : null,
+      });
+    },
+    [userAddress]
+  );
 
   const handleOpenWalletActivityCounterparty = useCallback(
     (address: string) => {
@@ -447,10 +442,7 @@ export const HomeDesktopWalletActivity = () => {
               lineHeight: 1.45,
             }}
           >
-            {td(
-              'loading_wallet_activity',
-              'Loading recent wallet activity...'
-            )}
+            {td('loading_wallet_activity', 'Loading recent wallet activity...')}
           </Typography>
         ) : recentWalletActivity ? (
           [recentWalletActivity].map((activityEntry, index) => (

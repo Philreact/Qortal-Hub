@@ -14,7 +14,8 @@ dist
 dist.zip
 dist-ssr
 *.local
-.claude
+.agents/settings.*
+.claude/settings.*
 
 # Editor directories and files
 .vscode/*
@@ -29,7 +30,7 @@ release-builds/
 .env
 
 # reports from scripts
-scripts/i18n_report*
+.agents/skills/i18n/i18n_report*
 *wallet-storage.json
 
 # Python bytecode caches

@@ -31,10 +31,18 @@ export function GroupCallConnectionBanner({ hint }: Props) {
         },
       }}
     >
-      <Typography variant="caption" component="div" sx={{ fontWeight: 700, display: 'block' }}>
+      <Typography
+        variant="caption"
+        component="div"
+        sx={{ fontWeight: 700, display: 'block' }}
+      >
         {hint.headline}
       </Typography>
-      <Typography variant="caption" component="div" sx={{ opacity: 0.88, mt: 0.35 }}>
+      <Typography
+        variant="caption"
+        component="div"
+        sx={{ opacity: 0.88, mt: 0.35 }}
+      >
         {hint.detail}
       </Typography>
     </Alert>

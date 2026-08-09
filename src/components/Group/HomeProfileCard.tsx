@@ -216,7 +216,7 @@ const formatReticulumConnectedDuration = (
 };
 
 export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
-  const { t } = useTranslation(['tutorial', 'core', 'group']);
+  const { t } = useTranslation(['core', 'group']);
   const theme = useTheme();
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const userInfo = useAtomValue(userInfoAtom);
@@ -1514,7 +1514,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       compact: true,
       duration: 3000,
       type: 'info',
-      message: t('tutorial:home.address_copied', {
+      message: t('group:home.address_copied', {
         postProcess: 'capitalizeFirstChar',
       }),
     });

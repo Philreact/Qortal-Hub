@@ -1,6 +1,7 @@
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import { Box, Dialog, IconButton, Typography } from '@mui/material';
 import { Fragment, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { AddGroupList } from './AddGroupList';
 import { CustomizedSnackbars } from '../Snackbar/Snackbar';
 import { refreshReticulumGroupScores } from './reticulumGroupScore';
@@ -17,6 +18,7 @@ export function FindGroupModal({
   setOpen,
   onOpenJoinedGroup,
 }: FindGroupModalProps) {
+  const { t } = useTranslation(['group']);
   const [openSnack, setOpenSnack] = useState(false);
   const [infoSnack, setInfoSnack] = useState(null);
 
@@ -83,14 +85,15 @@ export function FindGroupModal({
               component="h2"
               sx={{
                 color: 'text.primary',
-                fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+                fontFamily:
+                  'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
                 fontSize: { xs: 28, sm: 32 },
                 fontWeight: 700,
                 letterSpacing: '-0.03em',
                 lineHeight: 1.15,
               }}
             >
-              Find groups
+              {t('group:find_groups.title')}
             </Typography>
             <Typography
               sx={{
@@ -101,11 +104,11 @@ export function FindGroupModal({
                 mt: 0.75,
               }}
             >
-              Discover groups that are available to join.
+              {t('group:find_groups.subtitle')}
             </Typography>
           </Box>
           <IconButton
-            aria-label="Close Find groups"
+            aria-label={t('group:find_groups.close')}
             onClick={() => setOpen(false)}
             sx={{
               borderRadius: '7px',

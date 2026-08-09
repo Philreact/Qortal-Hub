@@ -55,13 +55,7 @@ export const AppsCategoryDesktop = ({
   const [searchValue, setSearchValue] = useState('');
   const [sortOption, setSortOption] = useAtom(appSortAtom);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const categoryList = useMemo(() => {
     if (category?.id === 'all') return availableQapps;
@@ -189,12 +183,12 @@ export const AppsCategoryDesktop = ({
       </AppsDesktopLibraryHeader>
 
       <AppsDesktopLibraryBody
-      sx={{
-        alignItems: 'center',
-        height: 'calc(100% - 36px)',
-        overflow: 'auto',
-        padding: '0px',
-        width: '90%',
+        sx={{
+          alignItems: 'center',
+          height: 'calc(100% - 36px)',
+          overflow: 'auto',
+          padding: '0px',
+          width: '90%',
           maxWidth: '1200px',
         }}
       >

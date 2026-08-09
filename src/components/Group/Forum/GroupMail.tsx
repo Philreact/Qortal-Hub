@@ -76,13 +76,7 @@ export const GroupMail = ({
   const anchorElInstanceFilter = useRef<any>(null);
   const [tempPublishedList, setTempPublishedList] = useState([]);
   const dataPublishes = useRef({});
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const theme = useTheme();
   const [isLoading, setIsLoading] = useState(false);
   const groupIdRef = useRef<any>(null);

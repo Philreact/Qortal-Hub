@@ -33,7 +33,7 @@ i18n.init({
   fallbackLng: 'en',
   resources: {
     en: {
-      tutorial: {
+      group: {
         'home.copy_address': 'Click to copy address',
         'home.balance': 'Balance',
       },
@@ -85,22 +85,36 @@ describe('HomeProfileCard', () => {
   });
 
   it('renders the user name when available', () => {
-    renderCard({ name: 'alice', address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' }, 42.5);
+    renderCard(
+      { name: 'alice', address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' },
+      42.5
+    );
     expect(screen.getByText('alice')).toBeInTheDocument();
   });
 
   it('falls back to truncated address when name is absent', () => {
-    renderCard({ name: null, address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' }, 0);
-    expect(screen.getByText('QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H')).toBeInTheDocument();
+    renderCard(
+      { name: null, address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' },
+      0
+    );
+    expect(
+      screen.getByText('QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H')
+    ).toBeInTheDocument();
   });
 
   it('displays the registered name in the identity area', () => {
-    renderCard({ name: 'alice', address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' }, 42.5);
+    renderCard(
+      { name: 'alice', address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' },
+      42.5
+    );
     expect(screen.getByText('alice')).toBeInTheDocument();
   });
 
   it('calls clipboard.writeText with the address on click', () => {
-    renderCard({ name: 'alice', address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' }, 42.5);
+    renderCard(
+      { name: 'alice', address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' },
+      42.5
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Copy address' }));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
       'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H'
@@ -108,12 +122,18 @@ describe('HomeProfileCard', () => {
   });
 
   it('renders account overview when balance is present', () => {
-    renderCard({ name: 'alice', address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' }, 42.5);
+    renderCard(
+      { name: 'alice', address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' },
+      42.5
+    );
     expect(screen.getByText('Account Overview')).toBeInTheDocument();
   });
 
   it('renders account overview when balance is null', () => {
-    renderCard({ name: 'alice', address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' }, null);
+    renderCard(
+      { name: 'alice', address: 'QVosNNasvHkNBAQ6rCYVepY3ax8XQsyv1H' },
+      null
+    );
     expect(screen.getByText('Account Overview')).toBeInTheDocument();
   });
 

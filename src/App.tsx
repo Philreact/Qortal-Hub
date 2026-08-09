@@ -102,8 +102,6 @@ import {
 } from './atoms/global';
 import { NotAuthenticated } from './components/NotAuthenticated.tsx';
 import { useFetchResources } from './hooks/useFetchResources.tsx';
-import { Tutorials } from './components/Tutorials/Tutorials';
-import { useHandleTutorials } from './hooks/useHandleTutorials.tsx';
 import { useHandleUserInfo } from './hooks/useHandleUserInfo.tsx';
 import { Minting } from './components/Minting/Minting';
 import { isRunningGateway } from './qortal/qortal-requests.ts';
@@ -346,13 +344,7 @@ function App() {
   const [sendqortState, setSendqortState] = useState<any>(null);
   const [isLoading, setIsLoading] = useAtom(isLoadingAuthenticateAtom);
   const isAuthenticated = extState === 'authenticated';
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const theme = useTheme();
 
   const [
@@ -388,8 +380,6 @@ function App() {
   >(null);
 
   const { resetAllRecoil } = useAppReset();
-
-  const { showTutorial } = useHandleTutorials();
 
   const modals = useAppModals();
   const {
@@ -1615,7 +1605,6 @@ function App() {
       <QORTAL_APP_CONTEXT.Provider value={contextValue as AppContextInterface}>
         <ElectronPersistentStorageHydration />
         <CoreSetup />
-        <Tutorials />
         {extState === 'not-authenticated' && (
           <NotAuthenticated
             onWalletUnlockStart={setAuthUnlockTransition}
@@ -1740,7 +1729,6 @@ function App() {
                         onOpenWalletsApp={onOpenWalletsApp}
                         getUserInfo={getUserInfo}
                         onOpenMinting={onOpenMinting}
-                        showTutorial={showTutorial}
                         onBackupWallet={onBackupWallet}
                       />
                     </Box>
@@ -2050,7 +2038,6 @@ function App() {
           onLogout: logoutFunc,
           getUserInfo,
           onOpenMinting,
-          showTutorial,
           onBackupWallet,
         }
       : null;

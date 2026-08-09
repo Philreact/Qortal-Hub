@@ -41,7 +41,7 @@ export const QortPrice = () => {
   const [supply, setSupply] = useState<string>('');
   const [lastBlock, setLastBlock] = useState<string>('');
   const [loading, setLoading] = useState(true);
-  const { t } = useTranslation(['core', 'tutorial']);
+  const { t } = useTranslation(['core']);
   const theme = useTheme();
 
   const getPrice = useCallback(async () => {

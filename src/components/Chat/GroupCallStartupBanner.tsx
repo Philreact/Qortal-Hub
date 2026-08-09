@@ -19,11 +19,7 @@ export function GroupCallStartupBanner({ status }: Props) {
       variant="outlined"
       icon={
         status.showProgress ? (
-          <CircularProgress
-            size={16}
-            thickness={5}
-            color="inherit"
-          />
+          <CircularProgress size={16} thickness={5} color="inherit" />
         ) : undefined
       }
       sx={{
@@ -33,7 +29,9 @@ export function GroupCallStartupBanner({ status }: Props) {
         py: 0.75,
         alignItems: 'flex-start',
         bgcolor: isWarning ? alpha('#f59e0b', 0.08) : alpha('#38bdf8', 0.08),
-        borderColor: isWarning ? alpha('#f59e0b', 0.45) : alpha('#38bdf8', 0.45),
+        borderColor: isWarning
+          ? alpha('#f59e0b', 0.45)
+          : alpha('#38bdf8', 0.45),
         color: alpha('#fff', 0.92),
         '& .MuiAlert-icon': {
           color: isWarning ? '#fbbf24' : '#7dd3fc',
@@ -42,11 +40,19 @@ export function GroupCallStartupBanner({ status }: Props) {
         },
       }}
     >
-      <Typography variant="caption" component="div" sx={{ fontWeight: 700, display: 'block' }}>
+      <Typography
+        variant="caption"
+        component="div"
+        sx={{ fontWeight: 700, display: 'block' }}
+      >
         {status.headline}
       </Typography>
       {status.detail ? (
-        <Typography variant="caption" component="div" sx={{ opacity: 0.88, mt: 0.35 }}>
+        <Typography
+          variant="caption"
+          component="div"
+          sx={{ opacity: 0.88, mt: 0.35 }}
+        >
           {status.detail}
         </Typography>
       ) : null}

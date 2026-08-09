@@ -1,68 +1,131 @@
 {
-  "setup": {
-    "title": "ローカル設定：Hub と Core が同じシステム上で実行されます",
-    "advancedOptions": "詳細オプション",
-    "pickPath": "Core がデフォルト以外の場所にインストールされている場合は、カスタム Qortal インストールパスを選択してください。",
-    "removePath": "カスタム Qortal パスを削除"
+  "actions": {
+    "continue": "続行",
+    "continueLocal": "Local で続行",
+    "continuePublic": "パブリックノードで続行",
+    "finished": "完了",
+    "goToDownloads": "ダウンロードに移動",
+    "install": "Qortal Core をインストールして起動",
+    "openSetup": "ローカルセットアップを開く",
+    "resetKey": "APIキーをリセット",
+    "start": "Qortal Core を起動"
+  },
+  "bootstrap": "ブートストラップ",
+  "bootstrapChainHelp": {
+    "body": "1 つの操作：Core が応答できるときはスナップショットからブートストラップ。ブートストラップできないときはローカルチェーン DB を消去して Core を再起動。ウォレットは別に保存されます。",
+    "title": "チェーンブートストラップ"
+  },
+  "confirmations": {
+    "bootstrap": "ブートストラップしてもよろしいですか？",
+    "bootstrapOrClearChain": "Core がローカルで動作しているときはスナップショットからブートストラップします。できない場合や失敗した場合はローカルのチェーン DB を削除して Core を再起動する場合があります。ウォレット・ファイルはそのままです。続行しますか？",
+    "delete": "データベースを削除してもよろしいですか？",
+    "stop": "Core を停止してもよろしいですか？"
+  },
+  "coreSetupDialog": {
+    "actionDone": "完了",
+    "actionDownload": "Core をダウンロード",
+    "actionStart": "Core を起動",
+    "advancedSubtitle": "Core 向けの高度なツールとオプション。",
+    "advancedTitle": "詳細",
+    "cancel": "キャンセル",
+    "change": "変更",
+    "choose": "選択",
+    "clear": "クリア",
+    "confirmTitle": "操作の確認",
+    "folderCopied": "Core フォルダをコピーしました",
+    "helpers": {
+      "downloadActive": "Qortal Core をダウンロードして準備しています。",
+      "downloadDone": "Core ファイルはインストール済みで準備できています。",
+      "downloadIdle": "自分のノードを動かすには Qortal Core をダウンロードしてください。",
+      "runningBlocked": "Core のダウンロード後に利用できます。",
+      "runningDone": "Core はローカルで実行中です。",
+      "runningDoneSyncing": "Core は実行中でブロックチェーンを同期しています。",
+      "runningWaiting": "Core はバックグラウンドで起動し同期を開始します。"
+    },
+    "introSubtitle": "Core の起動と同期中もパブリックノードを利用できます。",
+    "introTitle": "自分のノードをローカルで実行できます。",
+    "locationCustom": "Qortal Core はこのフォルダから実行されます。",
+    "locationDefault": "Qortal Core はこのシステムのデフォルトフォルダを使います。",
+    "locationPathDefault": "既定の Qortal Core の場所",
+    "locationTitle": "Core の場所",
+    "maintenanceUnavailable": "Core の起動または同期中はメンテナンスツールは使えません。",
+    "nextStepPill": "次のステップ",
+    "progressAriaLabel": "{{label}} の進行状況",
+    "publicNodeUnavailable": "現在パブリックノードは利用できません。ローカル Core の起動と同期が終わるまでこの画面を開いたままにしてください。",
+    "readyToDownload": "ダウンロードの準備完了",
+    "readyToStart": "起動の準備完了",
+    "steps": {
+      "downloadActive": "Core をダウンロード中",
+      "downloadDone": "Core をダウンロード済み",
+      "downloadIdle": "Core をダウンロード",
+      "runningActive": "Core を起動中",
+      "runningDone": "Core 実行中",
+      "runningIdle": "Core を起動"
+    },
+    "stopButton": "停止",
+    "stopCoreBody": "ローカルの Core プロセスを停止します。",
+    "stopCoreTitle": "Core を停止",
+    "syncing": "同期中",
+    "title": "Qortal Core をセットアップ"
+  },
+  "coreStatusNotice": {
+    "actions": {
+      "ignore": "無視",
+      "later": "後で",
+      "openSetup": "設定を開く",
+      "start": "起動",
+      "starting": "起動中...",
+      "switchToLocal": "ローカルへ切り替え"
+    },
+    "installedPrompt": {
+      "description": "ローカルノードはすでにインストールされています。パブリックノードを使用している間に起動しますか？",
+      "title": "ローカルノードがインストール済みです"
+    },
+    "installing": {
+      "description": "Qortal Core をダウンロードしてインストールしています。",
+      "title": "Qortal Core をインストール中"
+    },
+    "localReady": {
+      "description": "Qortal Core は同期済みです。パブリックノードからローカルノードへ切り替えられます。",
+      "title": "ローカルノードの準備完了"
+    },
+    "needsAttention": {
+      "description": "Core の確認が必要です。設定を開いて問題を確認してください。",
+      "title": "Core 設定の確認が必要です"
+    },
+    "starting": {
+      "description": "Qortal Core を起動しています。",
+      "preparing": "Core を起動し、ブロックチェーンデータを準備しています。",
+      "title": "ローカル Core を起動中"
+    },
+    "syncing": {
+      "checking": "Core は実行中です。ブロックチェーン同期の進行状況を確認しています。",
+      "description": "ローカルノードはバックグラウンドで追いついています。",
+      "title": "ブロックチェーンを同期中"
+    }
+  },
+  "delete": "データベースを削除",
+  "enableAuthWhenSyncing": "同期時に認証を有効にする",
+  "error": {
+    "failed_bootstrap": "ブートストラップできませんでした",
+    "failed_bootstrap_or_clear": "ブートストラップ、チェーンデータのクリア、または Core の起動に失敗しました",
+    "failed_delete": "データベースを削除できませんでした",
+    "failed_stop": "Core を停止できませんでした",
+    "invalidKey": "無効な APIキー",
+    "noJar": "選択されたディレクトリに qortal.jar が存在しません"
   },
   "introSetup": {
-    "paragraph1": "Qortal は分散型プラットフォームで、データ、アプリケーション、財務を完全にコントロールできます。始めるには、ネットワークを駆動し Qortal の全機能を有効にする <strong>Qortal Core</strong> をインストールすることをおすすめします。",
-    "paragraph2": "このセットアップウィザードは、Qortal Core をデバイスにインストールし構成する手順を案内します。インストールを続行するには <strong>次へ</strong> をクリックしてください。",
+    "advanced": "リモートノードを使用している場合は、このセットアップウィザードを閉じてから「カスタムノードを選択」をクリックしてください",
     "note": "上級ユーザー向けの注意",
-    "advanced": "リモートノードを使用している場合は、このセットアップウィザードを閉じてから「カスタムノードを選択」をクリックしてください"
-  },
-  "sync": {
-    "behind": "{{count}} ブロック遅れています。",
-    "waiting": "同期が完了するまでお待ちください。",
-    "not_synchronized": "未同期",
-    "synchronized": "同期済み",
-    "synchronized_desc": "現在同期されています。続行できます。",
-    "description": "Local Node の同期を待ちたくない場合は、とりあえず public で続行できます。 (node が遅れている／オフになっていると分かっている場合でも、local で続行するか、public node に切り替えることができます。)"
-  },
-  "steps": {
-    "java": "Java がある",
-    "downloaded": "Core をダウンロード済み",
-    "running": "Core が実行中"
-  },
-  "actions": {
-    "finished": "完了",
-    "start": "Qortal Core を起動",
-    "install": "Qortal Core をインストールして起動",
-    "continuePublic": "パブリックノードで続行",
-    "openSetup": "ローカルセットアップを開く",
-    "goToDownloads": "ダウンロードに移動",
-    "resetKey": "APIキーをリセット",
-    "continue": "続行",
-    "continueLocal": "Local で続行"
-  },
-  "error": {
-    "noJar": "選択されたディレクトリに qortal.jar が存在しません",
-    "invalidKey": "無効な APIキー",
-    "failed_stop": "Core を停止できませんでした",
-    "failed_bootstrap": "ブートストラップできませんでした",
-    "failed_delete": "データベースを削除できませんでした",
-    "failed_bootstrap_or_clear": "ブートストラップ、チェーンデータのクリア、または Core の起動に失敗しました"
-  },
-  "status": {
-    "complete": "完了",
-    "inProgress": "進行中",
-    "pending": "保留中",
-    "error": "エラー"
-  },
-  "recommendation": {
-    "title": "ローカルノードの使用",
-    "description": "public node で続行することもできますが、最高の体験のためには local node を使用することを強く推奨します。 (接続がない状態でアクセスしようとしている場合は、public で接続なしのまま続行できます。)",
-    "subTitle": "ローカルノードを使用する利点：",
-    "point1": "完全に分散化されたアクセス",
-    "point2": "高速なダウンロード",
-    "point3": "ユーザーが制御するデータ",
-    "publicExplanation": "接続するパブリックノードは、実際には公開されたプライベートノードです。便利ですが、自分でノードを実行する場合と比べて制限があります。"
+    "paragraph1": "Qortal は分散型プラットフォームで、データ、アプリケーション、財務を完全にコントロールできます。始めるには、ネットワークを駆動し Qortal の全機能を有効にする <strong>Qortal Core</strong> をインストールすることをおすすめします。",
+    "paragraph2": "このセットアップウィザードは、Qortal Core をデバイスにインストールし構成する手順を案内します。インストールを続行するには <strong>次へ</strong> をクリックしてください。"
   },
   "invalidKey": {
-    "title": "無効な APIキー",
     "description": "APIキーが無効です。有効なキーを入力してください。",
-    "resetDescription": "APIキーが無効です。[リセット] をクリックして続行してください。"
+    "resetDescription": "APIキーが無効です。[リセット] をクリックして続行してください。",
+    "title": "無効な APIキー"
   },
+  "less": "少ないオプション",
   "messages": {
     "001": "Core を起動中... お待ちください。",
     "002": "エラー：リポジトリの起動に失敗しました",
@@ -75,113 +138,50 @@
     "009": "Qortal Core をダウンロード中... お待ちください。",
     "010": "エラー：Core をダウンロードまたはインストールできません"
   },
-  "url": {
-    "title": "無効なURL",
-    "description": "URLが正しくないか、ノードが実行されていません"
+  "more": "その他のオプション",
+  "NotFullyStarted": {
+    "descNotReady": "Qortal Core はまだ完全に起動していません。しばらくお待ちください。",
+    "descReady": "続行する準備ができています",
+    "titleNotReady": "Core は完全に起動していません",
+    "titleReady": "Qortal Core の準備ができました"
   },
-  "confirmations": {
-    "stop": "Core を停止してもよろしいですか？",
-    "bootstrap": "ブートストラップしてもよろしいですか？",
-    "delete": "データベースを削除してもよろしいですか？",
-    "bootstrapOrClearChain": "Core がローカルで動作しているときはスナップショットからブートストラップします。できない場合や失敗した場合はローカルのチェーン DB を削除して Core を再起動する場合があります。ウォレット・ファイルはそのままです。続行しますか？"
+  "recommendation": {
+    "description": "public node で続行することもできますが、最高の体験のためには local node を使用することを強く推奨します。 (接続がない状態でアクセスしようとしている場合は、public で接続なしのまま続行できます。)",
+    "point1": "完全に分散化されたアクセス",
+    "point2": "高速なダウンロード",
+    "point3": "ユーザーが制御するデータ",
+    "publicExplanation": "接続するパブリックノードは、実際には公開されたプライベートノードです。便利ですが、自分でノードを実行する場合と比べて制限があります。",
+    "subTitle": "ローカルノードを使用する利点：",
+    "title": "ローカルノードの使用"
   },
-  "bootstrapChainHelp": {
-    "title": "チェーンブートストラップ",
-    "body": "1 つの操作：Core が応答できるときはスナップショットからブートストラップ。ブートストラップできないときはローカルチェーン DB を消去して Core を再起動。ウォレットは別に保存されます。"
+  "setup": {
+    "advancedOptions": "詳細オプション",
+    "pickPath": "Core がデフォルト以外の場所にインストールされている場合は、カスタム Qortal インストールパスを選択してください。",
+    "removePath": "カスタム Qortal パスを削除",
+    "title": "ローカル設定：Hub と Core が同じシステム上で実行されます"
+  },
+  "status": {
+    "complete": "完了",
+    "error": "エラー",
+    "inProgress": "進行中",
+    "pending": "保留中"
+  },
+  "steps": {
+    "downloaded": "Core をダウンロード済み",
+    "java": "Java がある",
+    "running": "Core が実行中"
   },
   "stop": "Core を停止",
-  "bootstrap": "ブートストラップ",
-  "delete": "データベースを削除",
-  "more": "その他のオプション",
-  "less": "少ないオプション",
-  "enableAuthWhenSyncing": "同期時に認証を有効にする",
-  "coreSetupDialog": {
-    "title": "Qortal Core をセットアップ",
-    "introTitle": "自分のノードをローカルで実行できます。",
-    "introSubtitle": "Core の起動と同期中もパブリックノードを利用できます。",
-    "publicNodeUnavailable": "現在パブリックノードは利用できません。ローカル Core の起動と同期が終わるまでこの画面を開いたままにしてください。",
-    "steps": {
-      "downloadDone": "Core をダウンロード済み",
-      "downloadActive": "Core をダウンロード中",
-      "downloadIdle": "Core をダウンロード",
-      "runningDone": "Core 実行中",
-      "runningActive": "Core を起動中",
-      "runningIdle": "Core を起動"
-    },
-    "readyToDownload": "ダウンロードの準備完了",
-    "readyToStart": "起動の準備完了",
-    "syncing": "同期中",
-    "helpers": {
-      "downloadDone": "Core ファイルはインストール済みで準備できています。",
-      "downloadActive": "Qortal Core をダウンロードして準備しています。",
-      "downloadIdle": "自分のノードを動かすには Qortal Core をダウンロードしてください。",
-      "runningDoneSyncing": "Core は実行中でブロックチェーンを同期しています。",
-      "runningDone": "Core はローカルで実行中です。",
-      "runningWaiting": "Core はバックグラウンドで起動し同期を開始します。",
-      "runningBlocked": "Core のダウンロード後に利用できます。"
-    },
-    "nextStepPill": "次のステップ",
-    "locationTitle": "Core の場所",
-    "locationCustom": "Qortal Core はこのフォルダから実行されます。",
-    "locationDefault": "Qortal Core はこのシステムのデフォルトフォルダを使います。",
-    "locationPathDefault": "既定の Qortal Core の場所",
-    "change": "変更",
-    "choose": "選択",
-    "clear": "クリア",
-    "advancedTitle": "詳細",
-    "advancedSubtitle": "Core 向けの高度なツールとオプション。",
-    "maintenanceUnavailable": "Core の起動または同期中はメンテナンスツールは使えません。",
-    "stopCoreTitle": "Core を停止",
-    "stopCoreBody": "ローカルの Core プロセスを停止します。",
-    "stopButton": "停止",
-    "cancel": "キャンセル",
-    "actionDownload": "Core をダウンロード",
-    "actionStart": "Core を起動",
-    "actionDone": "完了",
-    "confirmTitle": "操作の確認",
-    "folderCopied": "Core フォルダをコピーしました",
-    "progressAriaLabel": "{{label}} の進行状況"
+  "sync": {
+    "behind": "{{count}} ブロック遅れています。",
+    "description": "Local Node の同期を待ちたくない場合は、とりあえず public で続行できます。 (node が遅れている／オフになっていると分かっている場合でも、local で続行するか、public node に切り替えることができます。)",
+    "not_synchronized": "未同期",
+    "synchronized": "同期済み",
+    "synchronized_desc": "現在同期されています。続行できます。",
+    "waiting": "同期が完了するまでお待ちください。"
   },
-  "NotFullyStarted": {
-    "titleNotReady": "Core は完全に起動していません",
-    "descNotReady": "Qortal Core はまだ完全に起動していません。しばらくお待ちください。",
-    "titleReady": "Qortal Core の準備ができました",
-    "descReady": "続行する準備ができています"
-  },
-  "coreStatusNotice": {
-    "installedPrompt": {
-      "title": "ローカルノードがインストール済みです",
-      "description": "ローカルノードはすでにインストールされています。パブリックノードを使用している間に起動しますか？"
-    },
-    "localReady": {
-      "title": "ローカルノードの準備完了",
-      "description": "Qortal Core は同期済みです。パブリックノードからローカルノードへ切り替えられます。"
-    },
-    "installing": {
-      "title": "Qortal Core をインストール中",
-      "description": "Qortal Core をダウンロードしてインストールしています。"
-    },
-    "starting": {
-      "title": "ローカル Core を起動中",
-      "description": "Qortal Core を起動しています。",
-      "preparing": "Core を起動し、ブロックチェーンデータを準備しています。"
-    },
-    "syncing": {
-      "title": "ブロックチェーンを同期中",
-      "description": "ローカルノードはバックグラウンドで追いついています。",
-      "checking": "Core は実行中です。ブロックチェーン同期の進行状況を確認しています。"
-    },
-    "needsAttention": {
-      "title": "Core 設定の確認が必要です",
-      "description": "Core の確認が必要です。設定を開いて問題を確認してください。"
-    },
-    "actions": {
-      "ignore": "無視",
-      "start": "起動",
-      "starting": "起動中...",
-      "later": "後で",
-      "switchToLocal": "ローカルへ切り替え",
-      "openSetup": "設定を開く"
-    }
+  "url": {
+    "description": "URLが正しくないか、ノードが実行されていません",
+    "title": "無効なURL"
   }
 }

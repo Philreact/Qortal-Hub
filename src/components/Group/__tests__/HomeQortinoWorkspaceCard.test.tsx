@@ -27,7 +27,7 @@ i18n.init({
   fallbackLng: 'en',
   resources: {
     en: {
-      tutorial: {},
+      group: {},
     },
   },
   interpolation: { escapeValue: false },

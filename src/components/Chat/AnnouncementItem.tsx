@@ -19,13 +19,7 @@ export const AnnouncementItem = ({
   myName,
 }) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const [commentLength, setCommentLength] = useState(0);
 
   const getNumberOfComments = useCallback(async () => {

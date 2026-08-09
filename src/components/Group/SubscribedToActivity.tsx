@@ -27,18 +27,18 @@ function useFormatTimeUntil() {
   const { t } = useTranslation(['group']);
   return (ts: number): string => {
     const diff = ts - Date.now();
-    if (diff <= 0) return t('group:subscription.time_soon');
+    if (diff <= 0) return t('group:subscription.relative_soon');
     const mins = Math.floor(diff / 60_000);
     if (mins < 60)
-      return t('group:subscription.time_in_mins', { count: mins });
+      return t('group:subscription.relative_in_minutes', { count: mins });
     const hours = Math.floor(diff / 3_600_000);
     if (hours < 24)
-      return t('group:subscription.time_in_hours', { count: hours });
+      return t('group:subscription.relative_in_hours', { count: hours });
     const days = Math.floor(diff / 86_400_000);
     if (days < 30)
-      return t('group:subscription.time_in_days', { count: days });
+      return t('group:subscription.relative_in_days', { count: days });
     const months = Math.floor(days / 30);
-    return t('group:subscription.time_in_months', { count: months });
+    return t('group:subscription.relative_in_months', { count: months });
   };
 }
 
@@ -220,7 +220,7 @@ export function SubscribedToActivity({
                   mt: '2px',
                 }}
               >
-                {t('group:subscription.by_owner', { name: sub.ownerName })}
+                {t('group:subscription.by_creator', { name: sub.ownerName })}
               </Typography>
               <Typography
                 variant="caption"
@@ -228,7 +228,13 @@ export function SubscribedToActivity({
               >
                 {sub.priceQort} QORT / {sub.billingInterval}
                 {!needsPayment && sub.nextPaymentDue != null && (
-                  <> · {t('group:subscription.expires', { when: formatTimeUntil(sub.nextPaymentDue) })}</>
+                  <>
+                    {' '}
+                    ·{' '}
+                    {t('group:subscription.expires', {
+                      time: formatTimeUntil(sub.nextPaymentDue),
+                    })}
+                  </>
                 )}
               </Typography>
             </Box>
@@ -310,7 +316,7 @@ export function SubscribedToActivity({
               }}
             >
               {totalManagedActions > 0
-                ? t('group:subscription.actions_needed', {
+                ? t('group:subscription.actions_badge', {
                     count: totalManagedActions,
                   })
                 : t('group:subscription.managed_subscriptions')}
@@ -386,13 +392,14 @@ export function SubscribedToActivity({
                       display: 'block',
                     }}
                   >
-                    {t('group:subscription.member', {
+                    {t('group:subscription.members', {
                       count: group.memberCount,
                     })}
                     {actions.pendingJoinRequests > 0 && (
                       <>
                         {' '}
-                        · {t('group:subscription.pending_join_request', {
+                        ·{' '}
+                        {t('group:subscription.pending_join_request', {
                           count: actions.pendingJoinRequests,
                         })}
                       </>
@@ -430,7 +437,7 @@ export function SubscribedToActivity({
                         letterSpacing: '0.04em',
                       }}
                     >
-                      {t('group:subscription.actions_needed', {
+                      {t('group:subscription.actions_badge', {
                         count: actions.totalActions,
                       })}
                     </Typography>

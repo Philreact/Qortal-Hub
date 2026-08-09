@@ -84,13 +84,7 @@ export default function ThemeManager() {
   });
   const [currentTab, setCurrentTab] = useState('light');
   const nameInputRef = useRef(null);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   useEffect(() => {
     if (openEditor && nameInputRef.current) {
@@ -234,7 +228,7 @@ export default function ThemeManager() {
       const importedTheme = JSON.parse(fileContent);
       if (!validateTheme(importedTheme)) {
         throw new Error(
-          t('core:message.generic.invalid_theme_format', {
+          t('core:message.error.invalid_theme_format', {
             postProcess: 'capitalizeFirstChar',
           })
         );

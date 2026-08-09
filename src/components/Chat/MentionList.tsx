@@ -9,6 +9,7 @@ import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import KeyboardReturnRoundedIcon from '@mui/icons-material/KeyboardReturnRounded';
 import PersonRoundedIcon from '@mui/icons-material/PersonRounded';
 import { useTheme } from '@mui/material';
+import { useTranslation } from 'react-i18next';
 import type { MentionSuggestionItem } from './TipTap';
 
 type MentionListProps = {
@@ -17,17 +18,13 @@ type MentionListProps = {
 };
 
 type MentionListHandle = {
-  onKeyDown: ({
-    event,
-  }: {
-    event: KeyboardEvent;
-  }) => boolean;
+  onKeyDown: ({ event }: { event: KeyboardEvent }) => boolean;
 };
 
-const SECTION_LABELS: Record<MentionSuggestionItem['section'], string> = {
-  people: 'People',
-  special: 'Special Mentions',
-  channels: 'Channels',
+const SECTION_LABEL_KEYS: Record<MentionSuggestionItem['section'], string> = {
+  people: 'group:reticulum.mention.people',
+  special: 'group:reticulum.mention.special',
+  channels: 'group:reticulum.mention.channels',
 };
 
 const SECTION_ORDER: MentionSuggestionItem['section'][] = [
@@ -39,6 +36,7 @@ const SECTION_ORDER: MentionSuggestionItem['section'][] = [
 const MentionList = forwardRef<MentionListHandle, MentionListProps>(
   ({ command, items }, ref) => {
     const theme = useTheme();
+    const { t } = useTranslation(['group']);
     const [selectedIndex, setSelectedIndex] = useState(0);
 
     const groupedItems = useMemo(
@@ -90,7 +88,9 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(
 
     return (
       <div
-        aria-label="Mention suggestions"
+        aria-label={t('group:reticulum.mention.suggestions', {
+          postProcess: 'capitalizeFirstChar',
+        })}
         className="qchat-mention-menu"
         data-color-mode={theme.palette.mode}
         role="listbox"
@@ -98,12 +98,11 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(
         <div className="qchat-mention-menu__scroll">
           {items.length > 0 ? (
             groupedItems.map(({ section, items: sectionItems }) => (
-              <section
-                className="qchat-mention-menu__section"
-                key={section}
-              >
+              <section className="qchat-mention-menu__section" key={section}>
                 <div className="qchat-mention-menu__section-label">
-                  {SECTION_LABELS[section]}
+                  {t(SECTION_LABEL_KEYS[section], {
+                    postProcess: 'capitalizeEachFirstChar',
+                  })}
                 </div>
                 {sectionItems.map(({ item, index }) => {
                   const selected = index === selectedIndex;
@@ -162,7 +161,11 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(
               </section>
             ))
           ) : (
-            <div className="qchat-mention-menu__empty">No matches found</div>
+            <div className="qchat-mention-menu__empty">
+              {t('group:reticulum.mention.empty', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+            </div>
           )}
         </div>
       </div>

@@ -1,6 +1,14 @@
 import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import GroupAddIcon from '@mui/icons-material/GroupAdd';
-import { Box, Button, ButtonBase, Collapse, Popover, Typography, useTheme } from '@mui/material';
+import {
+  Box,
+  Button,
+  ButtonBase,
+  Collapse,
+  Popover,
+  Typography,
+  useTheme,
+} from '@mui/material';
 import { LoadingButton } from '@mui/lab';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
@@ -41,20 +49,16 @@ export const GroupInvites = ({
   onCountChange?: (count: number) => void;
   onLoadingChange?: (loading: boolean) => void;
 }) => {
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const theme = useTheme();
   const compactViewportHeightCss =
     compactViewportHeight != null ? `${compactViewportHeight}px` : undefined;
   const hasFixedCompactViewport = compact && compactViewportHeightCss != null;
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const setTxList = useSetAtom(txListAtom);
-  const [groupInvitesCache, setGroupInvitesCache] = useAtom(groupInvitesCacheAtom);
+  const [groupInvitesCache, setGroupInvitesCache] = useAtom(
+    groupInvitesCacheAtom
+  );
   const memberGroups = useAtomValue(memberGroupsAtom);
   const myGroupsWhereIAmAdmin = useAtomValue(myGroupsWhereIAmAdminAtom);
 
@@ -71,7 +75,10 @@ export const GroupInvites = ({
   } | null>(null);
   const [isLoadingJoinGroup, setIsLoadingJoinGroup] = useState(false);
   const [openSnack, setOpenSnack] = useState(false);
-  const [infoSnack, setInfoSnack] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [infoSnack, setInfoSnack] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   const handlePopoverClose = useCallback(() => {
     setPopoverAnchor(null);
@@ -97,7 +104,9 @@ export const GroupInvites = ({
               if (!response?.error) {
                 setInfoSnack({
                   type: 'success',
-                  message: t('group:message.success.group_join', { postProcess: 'capitalizeFirstChar' }),
+                  message: t('group:message.success.group_join', {
+                    postProcess: 'capitalizeFirstChar',
+                  }),
                 });
                 if (group.isOpen) {
                   setTxList((prev) => [
@@ -149,7 +158,11 @@ export const GroupInvites = ({
             .catch((error) => {
               setInfoSnack({
                 type: 'error',
-                message: error?.message ?? t('core:message.error.generic', { postProcess: 'capitalizeFirstChar' }),
+                message:
+                  error?.message ??
+                  t('core:message.error.generic', {
+                    postProcess: 'capitalizeFirstChar',
+                  }),
               });
               setOpenSnack(true);
               rej(error);
@@ -196,12 +209,7 @@ export const GroupInvites = ({
         setLoading(false);
       }
     },
-    [
-      myAddress,
-      isInvitesCacheValid,
-      groupInvitesCache,
-      setGroupInvitesCache,
-    ]
+    [myAddress, isInvitesCacheValid, groupInvitesCache, setGroupInvitesCache]
   );
 
   useEffect(() => {
@@ -254,14 +262,20 @@ export const GroupInvites = ({
     executeEvent('open-group-discovery', {});
   }, []);
 
-  const handleInviteItemClick = (e: React.MouseEvent<HTMLElement>, group: (typeof groupsWithJoinRequests)[number]) => {
+  const handleInviteItemClick = (
+    e: React.MouseEvent<HTMLElement>,
+    group: (typeof groupsWithJoinRequests)[number]
+  ) => {
     setPopoverAnchor(e.currentTarget as HTMLElement);
     setSelectedGroupForPopover({
       groupId: group.groupId,
       groupName: group.groupName ?? '',
       description: group.description,
       isOpen: group.isOpen,
-      participantCount: group.participantCount ?? (group as { memberCount?: number }).memberCount ?? 0,
+      participantCount:
+        group.participantCount ??
+        (group as { memberCount?: number }).memberCount ??
+        0,
     });
   };
 
@@ -275,14 +289,29 @@ export const GroupInvites = ({
         flex: hasFixedCompactViewport ? 1 : undefined,
         height: hasFixedCompactViewport ? '100%' : compact ? 'auto' : '250px',
         maxHeight: compact && !hasFixedCompactViewport ? '300px' : undefined,
-        minHeight: hasFixedCompactViewport ? compactViewportHeightCss : undefined,
-        overflow: hasFixedCompactViewport ? 'hidden' : compact ? 'auto' : undefined,
+        minHeight: hasFixedCompactViewport
+          ? compactViewportHeightCss
+          : undefined,
+        overflow: hasFixedCompactViewport
+          ? 'hidden'
+          : compact
+            ? 'auto'
+            : undefined,
         padding: compact ? 1.5 : 2,
         width: compact ? '100%' : '322px',
       }}
     >
       {loading && groupsWithJoinRequests.length === 0 && (
-        <Box sx={{ alignItems: 'center', display: 'flex', flex: hasFixedCompactViewport ? 1 : undefined, justifyContent: 'center', py: 4, width: '100%' }}>
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            flex: hasFixedCompactViewport ? 1 : undefined,
+            justifyContent: 'center',
+            py: 4,
+            width: '100%',
+          }}
+        >
           <CustomLoader />
         </Box>
       )}
@@ -344,7 +373,8 @@ export const GroupInvites = ({
                 gap: 1.5,
                 justifyContent: 'space-between',
                 padding: '12px 14px',
-                transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                transition:
+                  'background-color 0.2s ease, border-color 0.2s ease',
                 '&:hover': {
                   bgcolor: theme.palette.action.hover,
                   borderColor: theme.palette.divider,
@@ -408,7 +438,9 @@ export const GroupInvites = ({
         display: 'flex',
         flexDirection: 'column',
         height: hasFixedCompactViewport ? compactViewportHeightCss : undefined,
-        minHeight: hasFixedCompactViewport ? compactViewportHeightCss : undefined,
+        minHeight: hasFixedCompactViewport
+          ? compactViewportHeightCss
+          : undefined,
         width: '100%',
       }}
     >
@@ -437,7 +469,9 @@ export const GroupInvites = ({
         </ButtonBase>
       )}
 
-      {compact ? listContent : (
+      {compact ? (
+        listContent
+      ) : (
         <Collapse in={isExpanded} timeout="auto" unmountOnExit>
           {listContent}
         </Collapse>
@@ -472,18 +506,37 @@ export const GroupInvites = ({
                 borderBottom: `1px solid ${theme.palette.border?.subtle ?? 'rgba(255,255,255,0.08)'}`,
               }}
             >
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: 'block', mb: 0.5 }}
+              >
                 {t('group:group.name', { postProcess: 'capitalizeFirstChar' })}
               </Typography>
-              <Typography variant="h6" fontWeight={700} sx={{ lineHeight: 1.3 }}>
+              <Typography
+                variant="h6"
+                fontWeight={700}
+                sx={{ lineHeight: 1.3 }}
+              >
                 {selectedGroupForPopover.groupName}
               </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
-                {t('group:group.member_number', { postProcess: 'capitalizeFirstChar' })}: {selectedGroupForPopover.participantCount ?? 0}
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mt: 0.75 }}
+              >
+                {t('group:group.member_number', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+                : {selectedGroupForPopover.participantCount ?? 0}
               </Typography>
             </Box>
             <Box sx={{ px: 2.5, py: 2 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.75, fontWeight: 600 }}>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: 'block', mb: 0.75, fontWeight: 600 }}
+              >
                 {t('group:group.description', {
                   postProcess: 'capitalizeFirstChar',
                 })}
@@ -506,13 +559,32 @@ export const GroupInvites = ({
                   })}
               </Typography>
               {selectedGroupForPopover.isOpen === false && (
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-                  {t('group:message.generic.closed_group', { postProcess: 'capitalizeFirstChar' })}
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: 'block', mt: 1 }}
+                >
+                  {t('group:message.generic.closed_group', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
                 </Typography>
               )}
             </Box>
-            <Box sx={{ px: 2.5, pb: 2.5, pt: 0, display: 'flex', gap: 1.5, justifyContent: 'flex-end' }}>
-              <Button variant="outlined" onClick={handlePopoverClose} sx={{ textTransform: 'none', fontWeight: 600 }}>
+            <Box
+              sx={{
+                px: 2.5,
+                pb: 2.5,
+                pt: 0,
+                display: 'flex',
+                gap: 1.5,
+                justifyContent: 'flex-end',
+              }}
+            >
+              <Button
+                variant="outlined"
+                onClick={handlePopoverClose}
+                sx={{ textTransform: 'none', fontWeight: 600 }}
+              >
                 {t('core:action.close', { postProcess: 'capitalizeFirstChar' })}
               </Button>
               <LoadingButton
@@ -529,7 +601,12 @@ export const GroupInvites = ({
         )}
       </Popover>
 
-      <CustomizedSnackbars open={openSnack} setOpen={setOpenSnack} info={infoSnack} setInfo={setInfoSnack} />
+      <CustomizedSnackbars
+        open={openSnack}
+        setOpen={setOpenSnack}
+        info={infoSnack}
+        setInfo={setInfoSnack}
+      />
     </Box>
   );
 };

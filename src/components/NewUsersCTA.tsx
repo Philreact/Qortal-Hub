@@ -6,13 +6,7 @@ import { useTranslation } from 'react-i18next';
 
 export const NewUsersCTA = () => {
   const balance = useAtomValue(balanceAtom);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   if (balance === undefined || +balance > 0) return null;
 

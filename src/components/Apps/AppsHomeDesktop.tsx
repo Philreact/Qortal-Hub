@@ -55,13 +55,7 @@ export const AppsHomeDesktop = ({
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const searchContainerRef = useRef(null);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const canOpenAsLink = useMemo(() => {
     const normalized = normalizeQortalInput(query);
@@ -91,7 +85,12 @@ export const AppsHomeDesktop = ({
   const suggestions = useMemo(() => {
     const list = [];
     if (canOpenAsLink && query.trim()) {
-      list.push({ type: 'link', label: t('core:action.open_as_qortal_link', { postProcess: 'capitalizeFirstChar' }) });
+      list.push({
+        type: 'link',
+        label: t('core:action.open_as_qortal_link', {
+          postProcess: 'capitalizeFirstChar',
+        }),
+      });
     }
     const apps = filteredApps.slice(0, MAX_SUGGESTIONS - list.length);
     apps.forEach((app) => list.push({ type: 'app', app }));
@@ -151,7 +150,15 @@ export const AppsHomeDesktop = ({
     } else if (filteredApps.length > 0) {
       openApp(filteredApps[0]);
     }
-  }, [query, displaySuggestions, highlightedIndex, canOpenAsLink, filteredApps, openAsLink, openApp]);
+  }, [
+    query,
+    displaySuggestions,
+    highlightedIndex,
+    canOpenAsLink,
+    filteredApps,
+    openAsLink,
+    openApp,
+  ]);
 
   const handleKeyDown = useCallback(
     (e) => {
@@ -166,7 +173,9 @@ export const AppsHomeDesktop = ({
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setHighlightedIndex((i) => (i - 1 + displaySuggestions.length) % displaySuggestions.length);
+        setHighlightedIndex(
+          (i) => (i - 1 + displaySuggestions.length) % displaySuggestions.length
+        );
         return;
       }
       if (e.key === 'Enter') {
@@ -181,7 +190,14 @@ export const AppsHomeDesktop = ({
         setDropdownOpen(false);
       }
     },
-    [dropdownOpen, displaySuggestions, highlightedIndex, handleSubmit, openAsLink, openApp]
+    [
+      dropdownOpen,
+      displaySuggestions,
+      highlightedIndex,
+      handleSubmit,
+      openAsLink,
+      openApp,
+    ]
   );
 
   return (
@@ -245,11 +261,15 @@ export const AppsHomeDesktop = ({
                 }}
                 onFocus={() => setDropdownOpen(true)}
                 onKeyDown={handleKeyDown}
-                placeholder={t('core:action.search_apps_or_link', { postProcess: 'capitalizeFirstChar' })}
+                placeholder={t('core:action.search_apps_or_link', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
                 autoComplete="off"
                 autoCorrect="off"
                 inputProps={{
-                  'aria-label': t('core:action.search_apps_or_link', { postProcess: 'capitalizeFirstChar' }),
+                  'aria-label': t('core:action.search_apps_or_link', {
+                    postProcess: 'capitalizeFirstChar',
+                  }),
                 }}
                 sx={{
                   flex: 1,
@@ -270,7 +290,11 @@ export const AppsHomeDesktop = ({
                   sx={{ p: 0.5, borderRadius: '50%' }}
                   aria-label="Clear"
                 >
-                  <img src={IconClearInput} alt="" style={{ width: 18, height: 18 }} />
+                  <img
+                    src={IconClearInput}
+                    alt=""
+                    style={{ width: 18, height: 18 }}
+                  />
                 </ButtonBase>
               )}
               <ButtonBase
@@ -278,7 +302,9 @@ export const AppsHomeDesktop = ({
                 sx={{
                   p: 1,
                   borderRadius: '50%',
-                  color: query ? theme.palette.primary.main : theme.palette.text.secondary,
+                  color: query
+                    ? theme.palette.primary.main
+                    : theme.palette.text.secondary,
                 }}
                 aria-label="Go"
               >
@@ -290,10 +316,11 @@ export const AppsHomeDesktop = ({
               open={showDropdown}
               anchorEl={searchContainerRef.current}
               placement="bottom-start"
-              style={{ width: searchContainerRef.current?.offsetWidth ?? '100%', maxWidth: 560 }}
-              modifiers={[
-                { name: 'offset', options: { offset: [0, 8] } },
-              ]}
+              style={{
+                width: searchContainerRef.current?.offsetWidth ?? '100%',
+                maxWidth: 560,
+              }}
+              modifiers={[{ name: 'offset', options: { offset: [0, 8] } }]}
             >
               <Paper
                 elevation={8}
@@ -329,8 +356,17 @@ export const AppsHomeDesktop = ({
                 }}
               >
                 {displaySuggestions.length === 0 && (
-                  <Box sx={{ px: 2, py: 2, color: theme.palette.text.secondary, fontSize: 14 }}>
-                    {t('core:action.search_apps', { postProcess: 'capitalizeFirstChar' })}
+                  <Box
+                    sx={{
+                      px: 2,
+                      py: 2,
+                      color: theme.palette.text.secondary,
+                      fontSize: 14,
+                    }}
+                  >
+                    {t('core:action.search_apps', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
                   </Box>
                 )}
                 {displaySuggestions.map((item, idx) => {
@@ -347,13 +383,28 @@ export const AppsHomeDesktop = ({
                           px: 2,
                           py: 1.5,
                           textAlign: 'left',
-                          backgroundColor: highlightedIndex === idx ? theme.palette.action.hover : 'transparent',
+                          backgroundColor:
+                            highlightedIndex === idx
+                              ? theme.palette.action.hover
+                              : 'transparent',
                           borderRadius: '8px',
                           mx: 0.5,
                         }}
                       >
-                        <LinkIcon sx={{ color: theme.palette.primary.main, fontSize: 20, flexShrink: 0 }} />
-                        <Box sx={{ fontSize: 14, color: theme.palette.text.primary, flexShrink: 0 }}>
+                        <LinkIcon
+                          sx={{
+                            color: theme.palette.primary.main,
+                            fontSize: 20,
+                            flexShrink: 0,
+                          }}
+                        />
+                        <Box
+                          sx={{
+                            fontSize: 14,
+                            color: theme.palette.text.primary,
+                            flexShrink: 0,
+                          }}
+                        >
                           {item.label}
                         </Box>
                         <Box
@@ -387,7 +438,10 @@ export const AppsHomeDesktop = ({
                         px: 2,
                         py: 1.25,
                         textAlign: 'left',
-                        backgroundColor: highlightedIndex === idx ? theme.palette.action.hover : 'transparent',
+                        backgroundColor:
+                          highlightedIndex === idx
+                            ? theme.palette.action.hover
+                            : 'transparent',
                         borderRadius: '8px',
                         mx: 0.5,
                       }}
