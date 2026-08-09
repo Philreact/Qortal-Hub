@@ -2466,6 +2466,10 @@ const RETICULUM_CHAT_RESOURCE_FIND_TTL_MS = 30_000;
 const RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS = 5;
 const RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_RESOURCE_FIND_ROUTE_MAX = 4096;
+// Event sources are useful discovery routes, but are not proof that a peer
+// retained the referenced bytes. Keep direct discovery bounded and promote a
+// peer to the range downloader only after it answers resource_have.
+const RETICULUM_CHAT_RESOURCE_DIRECT_DISCOVERY_MAX_PEERS = 8;
 const RETICULUM_CHAT_RESOURCE_REPLICA_RETENTION_MS = 24 * 60 * 60_000;
 const RETICULUM_CHAT_RESOURCE_RECEIPT_MAX_RETENTION_MS = 7 * 24 * 60 * 60_000;
 const RETICULUM_CHAT_DIRECT_RESOURCE_FIND_FANOUT_FALLBACK_MS = 2_000;
@@ -12971,17 +12975,17 @@ export class ReticulumChatManager extends EventEmitter {
         ...(isCalendarCover ? { manifest } : {}),
       });
     }
-    const candidatePeers = this.getResourceRequestPeers(eventId);
+    const discoveryPeers = this.getResourceDiscoveryPeers(eventId);
     this.resourceTransfer.requestResource({
       contextId: groupId,
       manifest,
       eventId,
-      candidatePeers,
+      candidatePeers: [],
     });
     void this.announceResourceDiscovery(
       groupId,
       manifest,
-      candidatePeers,
+      discoveryPeers,
       true
     );
     return { ok: true };
@@ -29339,35 +29343,20 @@ export class ReticulumChatManager extends EventEmitter {
     event: ReticulumChatEvent,
     excludePeerPresenceHashes: string[] = []
   ): Promise<void> {
-    const peerHashes = this.getInterestedPeers(
-      event.groupId,
-      excludePeerPresenceHashes
-    );
     const wire = await this.buildEventNoticeWire(
       event,
       Buffer.byteLength(JSON.stringify(event), 'utf8')
     );
     if (!wire) return;
-    const deliveredPeerHashes = new Set<string>();
-    for (const peerHash of peerHashes) {
-      const result = await this.sendToPeer(peerHash, wire);
-      if (result.ok) {
-        deliveredPeerHashes.add(peerHash);
-      } else {
-        const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
-        loggerWarn(
-          `[ReticulumChat] Targeted event batch failed for ${event.eventId}:`,
-          failed.error ?? failed.reason
-        );
-        this.pruneGroupInterestRoutesForNextHop(
-          event.groupId,
-          peerHash,
-          failed.reason
-        );
-      }
-    }
+    // peerSubscriptions contains both direct subscribers and origins learned
+    // through routed group_sub advertisements. Sending to every origin here
+    // attempts to open redundant overlay links and treats an origin as though
+    // it were the immediate next hop. The route table already covers direct
+    // subscribers (origin === reverse peer) and immediate next-hop delivery
+    // for routed subscribers, while deduplicating multiple origins behind the
+    // same next hop.
     await this.sendGroupRoutedControl(event.groupId, wire, {
-      excludePeerHashes: [...excludePeerPresenceHashes, ...deliveredPeerHashes],
+      excludePeerHashes: excludePeerPresenceHashes,
       fallbackFanout: true,
       fallbackOnPartialFailure: true,
       useRetryQueue: true,
@@ -30003,13 +29992,19 @@ export class ReticulumChatManager extends EventEmitter {
     return baseWire;
   }
 
-  private getResourceRequestPeers(eventId?: string): string[] {
+  private getResourceDiscoveryPeers(eventId?: string): string[] {
     this.pruneEventSourcePeers();
     const localPeerHash = this.getLocalResourcePeerHash();
     const peers = new Set<string>();
     if (eventId) {
-      for (const peer of this.eventSourcePeers.get(eventId)?.peers ?? []) {
+      for (const rawPeer of this.eventSourcePeers.get(eventId)?.peers ?? []) {
+        const peer = this.normalizeResourcePeerHash(rawPeer);
         if (peer && peer !== localPeerHash) peers.add(peer);
+        if (
+          peers.size >= RETICULUM_CHAT_RESOURCE_DIRECT_DISCOVERY_MAX_PEERS
+        ) {
+          break;
+        }
       }
     }
     return [...peers];
@@ -30222,7 +30217,7 @@ export class ReticulumChatManager extends EventEmitter {
   private async announceResourceDiscovery(
     groupId: number,
     manifest: ReticulumResourceManifest,
-    candidatePeers: string[],
+    discoveryPeers: string[],
     force = false
   ): Promise<void> {
     const fileHash = manifest.fileHash.toLowerCase();
@@ -30256,27 +30251,72 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     const localPeerHash = this.getLocalResourcePeerHash();
+    const directPeers = [
+      ...new Set(
+        discoveryPeers
+          .map((peer) => this.normalizeResourcePeerHash(peer))
+          .filter(
+            (peer): peer is string =>
+              Boolean(peer) && peer !== localPeerHash
+          )
+      ),
+    ].slice(0, RETICULUM_CHAT_RESOURCE_DIRECT_DISCOVERY_MAX_PEERS);
     const exclude = [
-      ...candidatePeers,
+      ...directPeers,
       ...(localPeerHash ? [localPeerHash] : []),
     ];
-    const result = await this.fanoutOnce(wire, exclude);
-    if (result.ok) {
+
+    // Install the response route before sending. A directly linked peer can
+    // answer quickly enough for resource_have to arrive before these awaits.
+    this.localResourceFindRequests.set(
+      wire.q,
+      now + RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS
+    );
+    const bridgeFailure = (error: unknown): ReticulumSendResult => ({
+      ok: false,
+      reason: 'bridge-exception',
+      error: error instanceof Error ? error.message : String(error),
+    });
+    const sendDirect = async (peer: string): Promise<ReticulumSendResult> => {
+      try {
+        return await this.sendToPeer(peer, wire);
+      } catch (error) {
+        const failure = bridgeFailure(error) as Exclude<
+          ReticulumSendResult,
+          { ok: true }
+        >;
+        if (this.shouldRetryControlSend(wire, failure.reason)) {
+          this.enqueueControlRetry({ peerHash: peer, wire });
+        }
+        return failure;
+      }
+    };
+    const [directResults, fanoutResult] = await Promise.all([
+      Promise.all(directPeers.map(sendDirect)),
+      this.fanoutOnce(wire, exclude).catch(bridgeFailure),
+    ]);
+    const directSent = directResults.filter((result) => result.ok).length;
+    if (directSent > 0 || fanoutResult.ok) {
       this.recentResourceDiscoveryRequests.set(
         key,
         this.now() + RETICULUM_CHAT_RESOURCE_DISCOVERY_TTL_MS
       );
-      this.localResourceFindRequests.set(
-        wire.q,
-        this.now() + RETICULUM_CHAT_RESOURCE_FIND_ROUTE_TTL_MS
-      );
       loggerLog(
-        `[ReticulumChat] resource_find_sent group=${groupId} file=${fileHash.slice(0, 12)} rid=${wire.q.slice(0, 12)} excluded=${exclude.length} maxHops=${wire.m ?? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS}`
+        `[ReticulumChat] resource_find_sent group=${groupId} file=${fileHash.slice(0, 12)} rid=${wire.q.slice(0, 12)} direct=${directSent}/${directPeers.length} fanout=${fanoutResult.ok ? 'sent' : 'failed'} excluded=${exclude.length} maxHops=${wire.m ?? RETICULUM_CHAT_RESOURCE_FIND_MAX_HOPS}`
       );
     } else {
-      const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
+      // A failed targeted send may already be in the bounded control retry
+      // queue. Retain its response route until the normal TTL; without direct
+      // targets there is no later response to accept.
+      if (directPeers.length === 0) {
+        this.localResourceFindRequests.delete(wire.q);
+      }
+      const failed = fanoutResult as Exclude<
+        ReticulumSendResult,
+        { ok: true }
+      >;
       loggerWarn(
-        `[ReticulumChat] resource_find_send_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${wire.q.slice(0, 12)} reason=${failed.reason}`
+        `[ReticulumChat] resource_find_send_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${wire.q.slice(0, 12)} direct=0/${directPeers.length} responseRoute=${directPeers.length > 0 ? 'retained' : 'removed'} reason=${failed.reason}`
       );
     }
   }

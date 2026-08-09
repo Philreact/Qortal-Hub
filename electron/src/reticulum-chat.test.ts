@@ -11757,6 +11757,166 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('forwards imported event hints once per immediate group route instead of targeting routed origins', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const targeted: Array<{
+      peers: string[];
+      wire: Record<string, unknown>;
+    }> = [];
+    const fanout: Record<string, unknown>[] = [];
+    const now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+        sendReticulumChatTargetsDetailed: async (
+          peers: string[],
+          wire: Record<string, unknown>
+        ) => {
+          targeted.push({ peers, wire });
+          return {
+            ok: true as const,
+            deliveredPeerHashes: peers,
+            failures: [],
+          };
+        },
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[]
+        ) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const routes = (manager as any).groupInterestRoutes as Map<
+      string,
+      Record<string, unknown>
+    >;
+    const routedOriginA = 'b'.repeat(32);
+    const routedOriginB = 'c'.repeat(32);
+    const sharedNextHop = 'd'.repeat(32);
+    const directSubscriber = 'e'.repeat(32);
+    const inboundSource = 'f'.repeat(32);
+    routes.set(`73:${routedOriginA}`, {
+      groupId: 73,
+      originPeerHash: routedOriginA,
+      reversePeerHash: sharedNextHop,
+      hops: 2,
+      expiresAt: now + 60_000,
+    });
+    routes.set(`73:${routedOriginB}`, {
+      groupId: 73,
+      originPeerHash: routedOriginB,
+      reversePeerHash: sharedNextHop,
+      hops: 1,
+      expiresAt: now + 60_000,
+    });
+    routes.set(`73:${directSubscriber}`, {
+      groupId: 73,
+      originPeerHash: directSubscriber,
+      reversePeerHash: directSubscriber,
+      hops: 0,
+      expiresAt: now + 60_000,
+    });
+    routes.set(`73:${inboundSource}`, {
+      groupId: 73,
+      originPeerHash: inboundSource,
+      reversePeerHash: inboundSource,
+      hops: 0,
+      expiresAt: now + 60_000,
+    });
+
+    await (manager as any).sendEventHintToInterestedPeers(
+      signedEvent({
+        eventId: 'event-routed-import-hint',
+        groupId: 73,
+        timestamp: now,
+      }),
+      [inboundSource]
+    );
+
+    expect(direct).toEqual([]);
+    expect(targeted).toHaveLength(1);
+    expect(targeted[0].peers.sort()).toEqual(
+      [directSubscriber, sharedNextHop].sort()
+    );
+    expect(targeted[0].wire).toMatchObject({
+      k: 'event_notice_v3',
+      g: 73,
+    });
+    expect(targeted[0].peers).not.toContain(routedOriginA);
+    expect(targeted[0].peers).not.toContain(routedOriginB);
+    expect(targeted[0].peers).not.toContain(inboundSource);
+    expect(fanout).toEqual([]);
+    manager.close();
+  });
+
+  it('falls back to fanout when an imported event hint next hop fails', async () => {
+    const fanout: Record<string, unknown>[] = [];
+    const now = 100_000;
+    const nextHop = 'd'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async () => ({
+          ok: false as const,
+          reason: 'packet-send-false' as const,
+        }),
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[]
+        ) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const routes = (manager as any).groupInterestRoutes as Map<
+      string,
+      Record<string, unknown>
+    >;
+    routes.set(`73:${'b'.repeat(32)}`, {
+      groupId: 73,
+      originPeerHash: 'b'.repeat(32),
+      reversePeerHash: nextHop,
+      hops: 1,
+      expiresAt: now + 60_000,
+    });
+
+    await (manager as any).sendEventHintToInterestedPeers(
+      signedEvent({
+        eventId: 'event-routed-import-hint-fallback',
+        groupId: 73,
+        timestamp: now,
+      })
+    );
+
+    expect(fanout).toContainEqual(
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'event_notice_v3',
+        g: 73,
+      })
+    );
+    expect((manager as any).getGroupInterestNextHops(73)).toEqual([]);
+    manager.close();
+  });
+
   it('relays group repair requests through subscribed interest routes before broad fanout', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const fanout: Array<{
@@ -17319,7 +17479,7 @@ describe('reticulum chat manager', () => {
     resourceStore.close();
   });
 
-  it('does not seed resource downloads from the manifest owner presence account', async () => {
+  it('uses event sources for discovery without treating them as resource providers', async () => {
     const tempRoot = fs.mkdtempSync(
       path.join(os.tmpdir(), 'reticulum-resource-owner-peer-')
     );
@@ -17386,6 +17546,8 @@ describe('reticulum chat manager', () => {
         { address: ownerAddress, destinationHash: ownerPeer, lastSeen: 99_000 },
       ],
     });
+    manager.setLocalGroupMemberships([78]);
+    manager.subscribeGroup(78);
     (manager as any).noteEventSourcePeer('event-with-image', relayPeer);
 
     await expect(
@@ -17395,17 +17557,17 @@ describe('reticulum chat manager', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    expect(accepts).toHaveLength(1);
-    expect(accepts[0]).toMatchObject({
-      peerPresenceHash: relayPeer,
-      resourceType: 'reticulum_group_resource_range',
+    expect(accepts).toHaveLength(0);
+    const directFind = direct.find(
+      (item) => item.peer === relayPeer && item.wire.k === 'rf'
+    );
+    expect(directFind?.wire).toMatchObject({
+      k: 'rf',
+      g: 78,
+      f: manifest.fileHash,
+      s: manifest.sizeBytes,
     });
-    expect(accepts.some((item) => item.peerPresenceHash === ownerPeer)).toBe(
-      false
-    );
-    expect((accepts[0].authMessage as Record<string, unknown>)?.type).toBe(
-      'RETICULUM_GROUP_RESOURCE_AUTH'
-    );
+    expect(direct.some((item) => item.peer === ownerPeer)).toBe(false);
     const findFanout = fanouts.find((call) =>
       call.messages.some((wire) => wire.k === 'rf')
     );
@@ -17421,6 +17583,28 @@ describe('reticulum chat manager', () => {
     });
     expect(findWire?.h).toBeUndefined();
     expect(findWire?.m).toBeUndefined();
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_have',
+        g: 78,
+        fh: manifest.fileHash,
+        s: manifest.sizeBytes,
+        rid: directFind?.wire.q,
+      },
+      relayPeer
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(accepts).toHaveLength(1);
+    expect(accepts[0]).toMatchObject({
+      peerPresenceHash: relayPeer,
+      resourceType: 'reticulum_group_resource_range',
+    });
+    expect((accepts[0].authMessage as Record<string, unknown>)?.type).toBe(
+      'RETICULUM_GROUP_RESOURCE_AUTH'
+    );
     manager.close();
     resourceStore.close();
   });
@@ -18195,6 +18379,7 @@ describe('reticulum chat manager', () => {
       now: () => nowMs,
     });
     const contents = Buffer.alloc(RETICULUM_RESOURCE_RANGE_SIZE * 2, 7);
+    const providerPeer = 'a'.repeat(32);
     const manifest = {
       namespace: 'reticulum-chat-image',
       ownerId: '78:sender',
@@ -18211,7 +18396,7 @@ describe('reticulum chat manager', () => {
       off: () => undefined,
       getOverlayLinkSnapshots: () => [
         {
-          peerPresenceHash: 'peer-a',
+          peerPresenceHash: providerPeer,
           lastRxAt: nowMs - 31_000,
         },
       ],
@@ -18225,14 +18410,16 @@ describe('reticulum chat manager', () => {
       signLocalFields: createReticulumChatTestSigner(),
       validateGroupMember: async () => true,
     });
+    manager.setLocalGroupMemberships([78]);
+    manager.subscribeGroup(78);
 
     manager.handleWire(
       { t: 'RCHAT', k: 'group_sub', groups: [78], mode: 'summary' },
-      'peer-a'
+      providerPeer
     );
     (manager as any).noteEventSourcePeer(
       'b5941e04-b24f-4443-bcc7-05271585737b',
-      'peer-a'
+      providerPeer
     );
     await expect(
       manager.requestResource(
@@ -18241,6 +18428,16 @@ describe('reticulum chat manager', () => {
         'b5941e04-b24f-4443-bcc7-05271585737b'
       )
     ).resolves.toMatchObject({ ok: true });
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'resource_have',
+        g: 78,
+        fh: manifest.fileHash,
+        s: manifest.sizeBytes,
+      },
+      providerPeer
+    );
     await new Promise((resolve) => setTimeout(resolve, 25));
     const firstRetryAt = manager.getResourceDownloadStatus(
       manifest.fileHash
