@@ -1,15 +1,15 @@
 """Find hardcoded user-visible strings that should go through i18next.
 
-Complements i18n_checker.py, which catches quoted string literals and JSX text
-but not JSX *attributes*. Accessibility and form strings -- aria-label, label,
-placeholder, title, alt, helperText -- are the category most often missed during
-a migration, and this script reports them alongside the other two.
+Reports quoted string literals, JSX text and JSX *attributes*. Accessibility and
+form strings -- aria-label, label, placeholder, title, alt, helperText -- are the
+category most often missed during a migration, so they are reported alongside the
+other two.
 
 Usage:
-    python3 scripts/i18n_scan_hardcoded.py                       # whole src tree
-    python3 scripts/i18n_scan_hardcoded.py src/components/Chat    # one directory
-    python3 scripts/i18n_scan_hardcoded.py --detail src/components/Chat/ChatGroup.tsx
-    python3 scripts/i18n_scan_hardcoded.py -o report.json src/
+    python3 .agents/skills/i18n/i18n_scan_hardcoded.py                       # whole src tree
+    python3 .agents/skills/i18n/i18n_scan_hardcoded.py src/components/Chat    # one directory
+    python3 .agents/skills/i18n/i18n_scan_hardcoded.py --detail src/components/Chat/ChatGroup.tsx
+    python3 .agents/skills/i18n/i18n_scan_hardcoded.py -o report.json src/
 
 Counts are candidates, not confirmed defects -- a string may legitimately be a
 CSS value, an API field or a log message. Read the hits before acting on them.
@@ -21,7 +21,8 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# .agents/skills/i18n/<this file> -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
 ATTRS = 'aria-label|label|placeholder|title|alt|helperText|tooltip|titleAccess'
 ATTR_RE = re.compile(

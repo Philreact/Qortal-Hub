@@ -35,8 +35,8 @@ so you rarely need to think about it — but never hand-append a key to the end 
 a block.
 
 ```bash
-python3 scripts/i18n_sort.py           # sort every locale file
-python3 scripts/i18n_sort.py --check   # exit 1 if anything is unsorted (CI)
+python3 .agents/skills/i18n/i18n_sort.py           # sort every locale file
+python3 .agents/skills/i18n/i18n_sort.py --check   # exit 1 if anything is unsorted (CI)
 ```
 
 ## Namespaces
@@ -131,26 +131,21 @@ Some short words are genuine cognates and correctly identical to English —
 ## Tooling
 
 Never hand-edit twelve locale files; that is how a key goes missing from one
-language. Scripts in `scripts/`, all run from the repo root and take `--help`:
+language. The scripts live with the `i18n` agent skill in
+`.agents/skills/i18n/`, all run from the repo root and take `--help`:
 
-| Task                               | Command                                                     |
-| ---------------------------------- | ----------------------------------------------------------- |
-| Find hardcoded strings             | `python3 scripts/i18n_scan_hardcoded.py <path>`             |
-| Add new keys to all twelve locales | `python3 scripts/i18n_add_keys.py <namespace> <patch.json>` |
-| Apply reviewed translations        | `python3 scripts/i18n_apply_translations.py <file.json>`    |
-| Audit for English left behind      | `python3 scripts/i18n_apply_translations.py --audit`        |
-| Sort / verify sorting              | `python3 scripts/i18n_sort.py [--check]`                    |
+| Task                               | Command                                                                         |
+| ---------------------------------- | ------------------------------------------------------------------------------- |
+| Find hardcoded strings             | `python3 .agents/skills/i18n/i18n_scan_hardcoded.py <path>`             |
+| Add new keys to all twelve locales | `python3 .agents/skills/i18n/i18n_add_keys.py <namespace> <patch.json>` |
+| Apply reviewed translations        | `python3 .agents/skills/i18n/i18n_apply_translations.py <file.json>`    |
+| Audit for English left behind      | `python3 .agents/skills/i18n/i18n_apply_translations.py --audit`        |
+| Sort / verify sorting              | `python3 .agents/skills/i18n/i18n_sort.py [--check]`                    |
 
 `i18n_add_keys.py` seeds a key into every locale and never overwrites an existing
 value. Both it and `i18n_apply_translations.py` re-sort the file they write, so
 the alphabetical order is maintained automatically. `i18n_apply_translations.py` refuses to write if a translation drops or
 renames a placeholder, or names a key that does not exist.
-
-Two older scripts are also present. `i18n_checker.py` is an earlier scanner that
-misses JSX attributes — prefer `i18n_scan_hardcoded.py`. **Do not run
-`i18n_translate_json.py`** on a namespace that already has reviewed translations:
-it machine-translates the whole file and overwrites the target, discarding human
-work.
 
 Agents working in this repo should follow the `i18n` skill in
 `.agents/skills/i18n/`, which describes the full migrate-then-translate workflow.
