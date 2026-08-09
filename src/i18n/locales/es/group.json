@@ -233,7 +233,7 @@
     "close_receive_qort_modal": "Cerrar modal de recibir QORT",
     "close_send_qort_modal": "Cerrar modal de enviar QORT",
     "community_stun_contribution": "Soporte comunitario para llamadas",
-    "community_stun_contribution_desc": "Ayuda a conectar llamadas directas ofreciendo un pequeño servicio de red. Tu dirección IP pública se comparte de forma anónima con otros usuarios de Hub.",
+    "community_stun_contribution_desc": "Ayuda a conectar llamadas directas ofreciendo un pequeño servicio de red.",
     "community_stun_update_error": "No pudimos actualizar ahora el soporte comunitario para llamadas.",
     "copy_address": "Copiar direccion",
     "copy_key": "Copiar clave",

@@ -233,7 +233,7 @@
     "close_receive_qort_modal": "إغلاق نافذة استقبال QORT",
     "close_send_qort_modal": "إغلاق نافذة إرسال QORT",
     "community_stun_contribution": "دعم مكالمات المجتمع",
-    "community_stun_contribution_desc": "ساعد المكالمات المباشرة على الاتصال من خلال توفير خدمة شبكة صغيرة. تتم مشاركة عنوان IP العام الخاص بك مع مستخدمي Hub الآخرين دون الكشف عن هويتك.",
+    "community_stun_contribution_desc": "ساعد المكالمات المباشرة على الاتصال من خلال توفير خدمة شبكة صغيرة.",
     "community_stun_update_error": "تعذر تحديث دعم مكالمات المجتمع الآن.",
     "copy_address": "نسخ العنوان",
     "copy_key": "نسخ المفتاح",

@@ -233,7 +233,7 @@
     "close_receive_qort_modal": "QORT-Empfangen-Fenster schliessen",
     "close_send_qort_modal": "QORT-Senden-Fenster schliessen",
     "community_stun_contribution": "Community-Anrufunterstützung",
-    "community_stun_contribution_desc": "Hilf direkten Anrufen beim Verbindungsaufbau, indem du einen kleinen Netzwerkdienst bereitstellst. Deine öffentliche IP-Adresse wird anonym mit anderen Hub-Nutzern geteilt.",
+    "community_stun_contribution_desc": "Hilf direkten Anrufen beim Verbindungsaufbau, indem du einen kleinen Netzwerkdienst bereitstellst.",
     "community_stun_update_error": "Die Community-Anrufunterstützung konnte derzeit nicht aktualisiert werden.",
     "copy_address": "Adresse kopieren",
     "copy_key": "Schluessel kopieren",

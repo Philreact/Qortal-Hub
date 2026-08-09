@@ -233,7 +233,7 @@
     "close_receive_qort_modal": "关闭接收 QORT 窗口",
     "close_send_qort_modal": "关闭发送 QORT 窗口",
     "community_stun_contribution": "社区通话支持",
-    "community_stun_contribution_desc": "通过提供一项小型网络服务来帮助直连通话建立连接。你的公网IP地址会匿名分享给其他Hub用户。",
+    "community_stun_contribution_desc": "通过提供一项小型网络服务来帮助直连通话建立连接。",
     "community_stun_update_error": "目前无法更新社区通话支持。",
     "copy_address": "复制地址",
     "copy_key": "复制密钥",

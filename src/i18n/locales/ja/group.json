@@ -233,7 +233,7 @@
     "close_receive_qort_modal": "QORT 受取モーダルを閉じる",
     "close_send_qort_modal": "QORT 送金モーダルを閉じる",
     "community_stun_contribution": "コミュニティ通話サポート",
-    "community_stun_contribution_desc": "小規模なネットワークサービスを提供して、直接通話の接続を支援します。あなたの公開IPアドレスは、他のHubユーザーと匿名で共有されます。",
+    "community_stun_contribution_desc": "小規模なネットワークサービスを提供して、直接通話の接続を支援します。",
     "community_stun_update_error": "現在、コミュニティ通話サポートを更新できませんでした。",
     "copy_address": "アドレスをコピー",
     "copy_key": "鍵をコピー",

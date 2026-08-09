@@ -233,7 +233,7 @@
     "close_receive_qort_modal": "Sulge QORTi vastuvõtmise aken",
     "close_send_qort_modal": "Sulge QORTi saatmise aken",
     "community_stun_contribution": "Kogukonna kõnetugi",
-    "community_stun_contribution_desc": "Aita otsekõnedel ühenduda, pakkudes väikest võrguteenust. Sinu avalikku IP-aadressi jagatakse anonüümselt teiste Hubi kasutajatega.",
+    "community_stun_contribution_desc": "Aita otsekõnedel ühenduda, pakkudes väikest võrguteenust.",
     "community_stun_update_error": "Kogukonna kõnetuge ei saanud praegu uuendada.",
     "copy_address": "Kopeeri aadress",
     "copy_key": "Kopeeri võti",

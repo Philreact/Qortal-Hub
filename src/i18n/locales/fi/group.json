@@ -233,7 +233,7 @@
     "close_receive_qort_modal": "Sulje QORTin vastaanottoikkuna",
     "close_send_qort_modal": "Sulje QORTin lähetysikkuna",
     "community_stun_contribution": "Yhteisön puhelutuki",
-    "community_stun_contribution_desc": "Auta suoria puheluita muodostamaan yhteys tarjoamalla pieni verkkopalvelu. Julkinen IP-osoitteesi jaetaan nimettömästi muiden Hub-käyttäjien kanssa.",
+    "community_stun_contribution_desc": "Auta suoria puheluita muodostamaan yhteys tarjoamalla pieni verkkopalvelu.",
     "community_stun_update_error": "Yhteisön puhelutukea ei voitu päivittää juuri nyt.",
     "copy_address": "Kopioi osoite",
     "copy_key": "Kopioi avain",

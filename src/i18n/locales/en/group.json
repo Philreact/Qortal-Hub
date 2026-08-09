@@ -233,7 +233,7 @@
     "close_receive_qort_modal": "Close receive QORT modal",
     "close_send_qort_modal": "Close send QORT modal",
     "community_stun_contribution": "Community call support",
-    "community_stun_contribution_desc": "Help direct calls connect by offering a small network service. Your public IP is shared anonymously with other Hub users.",
+    "community_stun_contribution_desc": "Help direct calls connect by offering a small network service.",
     "community_stun_update_error": "We could not update community call support right now.",
     "copy_address": "Copy address",
     "copy_key": "Copy key",
