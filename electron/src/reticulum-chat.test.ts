@@ -11876,6 +11876,283 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('forwards signed event notices through non-member intermediaries once per unique next hop', async () => {
+    const now = 100_000;
+    const sourcePeer = 'a'.repeat(32);
+    const inboundPeer = sourcePeer;
+    const sharedNextHop = 'd'.repeat(32);
+    const otherNextHop = 'e'.repeat(32);
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const source = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => sourcePeer,
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const event = signedEvent({
+      eventId: 'event-multihop-forward-notice',
+      groupId: 73,
+      timestamp: now,
+    });
+    const wire = await (source as any).buildEventNoticeWire(event);
+    expect(wire).toBeTruthy();
+
+    const intermediate = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'b'.repeat(32),
+        sendReticulumChatDetailed: async (
+          peer: string,
+          forwardedWire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire: forwardedWire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+    });
+    const routes = (intermediate as any).groupInterestRoutes as Map<
+      string,
+      Record<string, unknown>
+    >;
+    routes.set(`73:${'c'.repeat(32)}`, {
+      groupId: 73,
+      originPeerHash: 'c'.repeat(32),
+      reversePeerHash: sharedNextHop,
+      hops: 1,
+      expiresAt: now + 60_000,
+    });
+    routes.set(`73:${'f'.repeat(32)}`, {
+      groupId: 73,
+      originPeerHash: 'f'.repeat(32),
+      reversePeerHash: sharedNextHop,
+      hops: 2,
+      expiresAt: now + 60_000,
+    });
+    routes.set(`73:${otherNextHop}`, {
+      groupId: 73,
+      originPeerHash: otherNextHop,
+      reversePeerHash: otherNextHop,
+      hops: 0,
+      expiresAt: now + 60_000,
+    });
+
+    intermediate.handleWire(wire, inboundPeer);
+    await flushQueuedWork();
+    expect(direct.map(({ peer }) => peer).sort()).toEqual(
+      [sharedNextHop, otherNextHop].sort()
+    );
+    expect(direct.every(({ wire: sent }) => sent === wire)).toBe(true);
+    expect((intermediate as any).pendingEventPulls.size).toBe(0);
+
+    intermediate.handleWire(wire, inboundPeer);
+    await flushQueuedWork();
+    expect(direct).toHaveLength(2);
+
+    const invalidWire = JSON.parse(JSON.stringify(wire));
+    invalidWire.n.z = `${invalidWire.n.z.slice(0, -1)}${
+      invalidWire.n.z.endsWith('1') ? '2' : '1'
+    }`;
+    intermediate.handleWire(invalidWire, inboundPeer);
+    await flushQueuedWork();
+    expect(direct).toHaveLength(2);
+
+    intermediate.close();
+    source.close();
+  });
+
+  it('requests a forwarded event through its inbound route before trying the original source', async () => {
+    const now = 100_000;
+    const sourcePeer = 'a'.repeat(32);
+    const relayPeer = 'b'.repeat(32);
+    const source = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => sourcePeer,
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const wire = await (source as any).buildEventNoticeWire(
+      signedEvent({
+        eventId: 'event-multihop-reverse-request',
+        groupId: 73,
+        timestamp: now,
+      })
+    );
+    const recipient = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'c'.repeat(32),
+      } as any,
+      now: () => now,
+    });
+    recipient.setLocalGroupMemberships([73]);
+    recipient.subscribeGroup(73);
+
+    recipient.handleWire(wire, relayPeer);
+    const pending = (recipient as any).pendingEventPulls.get(
+      '73:event-multihop-reverse-request'
+    );
+    expect([...pending.peerHashes]).toEqual([relayPeer, sourcePeer]);
+    expect([
+      ...(recipient as any).eventSourcePeers.get(
+        'event-multihop-reverse-request'
+      ).peers,
+    ]).toEqual([sourcePeer]);
+
+    recipient.close();
+    source.close();
+  });
+
+  it('coalesces a transient forwarded event-notice failure into one bounded retry', async () => {
+    const now = 100_000;
+    const sourcePeer = 'a'.repeat(32);
+    const nextHop = 'c'.repeat(32);
+    const source = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => sourcePeer,
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const wire = await (source as any).buildEventNoticeWire(
+      signedEvent({
+        eventId: 'event-multihop-forward-retry',
+        groupId: 73,
+        timestamp: now,
+      })
+    );
+    const sends: string[] = [];
+    const intermediate = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'b'.repeat(32),
+        sendReticulumChatDetailed: async (peer: string) => {
+          sends.push(peer);
+          return { ok: false as const, reason: 'packet-send-false' as const };
+        },
+      } as any,
+      now: () => now,
+    });
+    (intermediate as any).groupInterestRoutes.set(`73:${nextHop}`, {
+      groupId: 73,
+      originPeerHash: nextHop,
+      reversePeerHash: nextHop,
+      hops: 1,
+      expiresAt: now + 60_000,
+    });
+
+    intermediate.handleWire(wire, sourcePeer);
+    intermediate.handleWire(wire, sourcePeer);
+    await flushQueuedWork();
+
+    expect(sends).toEqual([nextHop]);
+    expect((intermediate as any).controlRetryQueue.size).toBe(1);
+    expect([...(intermediate as any).controlRetryQueue.values()][0]).toEqual(
+      expect.objectContaining({
+        peerHash: nextHop,
+        attempts: 0,
+        wire,
+      })
+    );
+
+    intermediate.close();
+    source.close();
+  });
+
+  it('forwards group state digests once per unique next hop without requiring local membership', async () => {
+    const now = 100_000;
+    const inboundPeer = 'a'.repeat(32);
+    const nextHop = 'c'.repeat(32);
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const intermediate = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'b'.repeat(32),
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+    });
+    (intermediate as any).groupInterestRoutes.set(`73:${nextHop}`, {
+      groupId: 73,
+      originPeerHash: nextHop,
+      reversePeerHash: nextHop,
+      hops: 1,
+      expiresAt: now + 60_000,
+    });
+    const wire: ReticulumChatWire = {
+      t: 'RCHAT',
+      v: 3,
+      k: 'group_state_digest_v3',
+      g: 73,
+      d: {
+        latest: { id: 'event-multihop-digest', ts: now },
+        eventHash: 'f'.repeat(64),
+      },
+    };
+
+    intermediate.handleWire(wire, inboundPeer);
+    intermediate.handleWire(wire, inboundPeer);
+    await flushQueuedWork();
+    expect(direct).toEqual([{ peer: nextHop, wire }]);
+
+    const lateNextHop = 'd'.repeat(32);
+    (intermediate as any).groupInterestRoutes.set(`73:${lateNextHop}`, {
+      groupId: 73,
+      originPeerHash: lateNextHop,
+      reversePeerHash: lateNextHop,
+      hops: 1,
+      expiresAt: now + 60_000,
+    });
+    intermediate.handleWire(wire, inboundPeer);
+    await flushQueuedWork();
+    expect(direct).toEqual([
+      { peer: nextHop, wire },
+      { peer: lateNextHop, wire },
+    ]);
+
+    const newerWire: ReticulumChatWire = {
+      ...wire,
+      d: {
+        latest: { id: 'event-multihop-digest-newer', ts: now + 1 },
+        eventHash: 'e'.repeat(64),
+      },
+    };
+    await (intermediate as any).sendGroupRoutedControl(73, newerWire, {
+      fallbackFanout: false,
+    });
+    const sentBeforeEcho = direct.length;
+    intermediate.handleWire(newerWire, inboundPeer);
+    await flushQueuedWork();
+    expect(direct).toHaveLength(sentBeforeEcho);
+
+    intermediate.close();
+  });
+
   it('relays group repair requests through subscribed interest routes before broad fanout', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const fanout: Array<{

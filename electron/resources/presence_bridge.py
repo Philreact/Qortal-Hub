@@ -46,6 +46,28 @@ COMMUNITY_STUN_IDENTITY_MAX_AGE_SECONDS = 24 * 60 * 60
 COMMUNITY_STUN_PORT = 47321
 disable_bootstrap = False
 
+
+def _parse_test_blocked_overlay_peers(raw_value: str) -> Set[str]:
+    """Parse the restart-only overlay denylist used for forwarding tests."""
+    blocked: Set[str] = set()
+    normalized = str(raw_value or "").replace(",", " ").replace(";", " ")
+    for value in normalized.split():
+        peer_key = value.strip().lower()
+        if len(peer_key) != 32:
+            continue
+        try:
+            bytes.fromhex(peer_key)
+        except ValueError:
+            continue
+        blocked.add(peer_key)
+    return blocked
+
+
+_TEST_BLOCKED_OVERLAY_PEERS = _parse_test_blocked_overlay_peers(
+    os.environ.get("QORTAL_RNS_TEST_BLOCK_OVERLAY_PEERS", "")
+)
+_test_blocked_overlay_log_markers: Set[Tuple[str, str]] = set()
+
 _state_lock = threading.RLock()
 _reticulum = None
 _identity = None
@@ -6200,6 +6222,8 @@ def _overlay_peer_available_for_new_outbound(peer_key: str) -> bool:
     peer_key = str(peer_key or "").strip().lower()
     if not peer_key:
         return False
+    if _overlay_peer_is_test_blocked(peer_key):
+        return False
     if _overlay_peer_is_suppressed(peer_key):
         return False
     if (
@@ -6510,6 +6534,25 @@ def _overlay_peer_direct_activity_score(peer_hash: str) -> float:
     return score
 
 
+def _overlay_peer_is_test_blocked(peer_hash: str) -> bool:
+    peer_key = str(peer_hash or "").strip().lower()
+    return bool(peer_key and peer_key in _TEST_BLOCKED_OVERLAY_PEERS)
+
+
+def _log_test_blocked_overlay_peer(peer_hash: str, action: str) -> None:
+    peer_key = str(peer_hash or "").strip().lower()
+    action_key = str(action or "blocked").strip().lower()
+    marker = (peer_key, action_key)
+    with _state_lock:
+        if marker in _test_blocked_overlay_log_markers:
+            return
+        _test_blocked_overlay_log_markers.add(marker)
+    log(
+        "[presence_bridge] target=presence-reticulum "
+        f"test_overlay_peer_blocked peer={peer_key} action={action_key}"
+    )
+
+
 def _resolve_overlay_neighbor_hashes(
     exclude_hashes: Optional[list[str]] = None,
     established_only: bool = False,
@@ -6528,6 +6571,8 @@ def _resolve_overlay_neighbor_hashes(
             continue
         if peer_hash in exclude:
             continue
+        if _overlay_peer_is_test_blocked(peer_hash):
+            continue
         if local_hex and peer_hash == local_hex:
             continue
         if peer_hash not in _known_peers:
@@ -6541,6 +6586,8 @@ def _resolve_overlay_neighbor_hashes(
         out.append(peer_hash)
     for peer_hash in list(_inbound_overlay_neighbors.keys()):
         if peer_hash in exclude or peer_hash in out:
+            continue
+        if _overlay_peer_is_test_blocked(peer_hash):
             continue
         if local_hex and peer_hash == local_hex:
             continue
@@ -6570,6 +6617,8 @@ def _snapshot_established_overlay_neighbor_hashes(
             peer_key = str(peer_hash or "").strip().lower()
             if not peer_key or peer_key in exclude or peer_key in out:
                 continue
+            if _overlay_peer_is_test_blocked(peer_key):
+                continue
             if local_hex and peer_key == local_hex:
                 continue
             if _overlay_peer_is_suppressed(peer_key):
@@ -6588,6 +6637,8 @@ def _snapshot_established_overlay_neighbor_hashes(
 def _overlay_peer_is_admitted(peer_key: str) -> bool:
     peer_key = str(peer_key or "").strip().lower()
     if not peer_key:
+        return False
+    if _overlay_peer_is_test_blocked(peer_key):
         return False
     with _state_lock:
         link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or ""
@@ -10450,6 +10501,10 @@ def _admit_overlay_peer_from_transport(
     peer_key = str(peer_key or "").strip().lower()
     if not _valid_presence_destination_hash_hex(peer_key):
         return False
+    if _overlay_peer_is_test_blocked(peer_key):
+        _log_test_blocked_overlay_peer(peer_key, f"transport:{reason}")
+        _overlay_enqueue_close(link_id, "test_peer_blocked")
+        return False
     previous_peer_hash = _overlay_link_peer_hash(state)
     if previous_peer_hash and previous_peer_hash != peer_key:
         log(
@@ -10791,6 +10846,9 @@ def _admit_overlay_peer_if_allowed(peer_key: str, reason: str, incoming: bool = 
     global _active_overlay_neighbors, _inbound_overlay_neighbors
     peer_key = str(peer_key or "").strip().lower()
     if not peer_key or not _valid_presence_destination_hash_hex(peer_key):
+        return False
+    if _overlay_peer_is_test_blocked(peer_key):
+        _log_test_blocked_overlay_peer(peer_key, f"admission:{reason}")
         return False
     local_hex = _local_presence_hash_hex()
     if local_hex and peer_key == local_hex:
@@ -11145,6 +11203,9 @@ def _ensure_overlay_link(
 ) -> Optional[Dict[str, Any]]:
     peer_key = str(peer_hash or "").strip().lower()
     if not peer_key:
+        return None
+    if _overlay_peer_is_test_blocked(peer_key):
+        _log_test_blocked_overlay_peer(peer_key, f"outbound:{open_reason}")
         return None
     local_hex = _local_presence_hash_hex()
     if local_hex and peer_key == local_hex:
@@ -24414,6 +24475,12 @@ def main() -> None:
     args = parser.parse_args()
 
     _shutdown.clear()
+    if _TEST_BLOCKED_OVERLAY_PEERS:
+        log(
+            "[presence_bridge] target=presence-reticulum "
+            "test_overlay_peer_block_enabled "
+            f"peers={','.join(sorted(_TEST_BLOCKED_OVERLAY_PEERS))}"
+        )
     owner_pid = _owner_pid_from_environment()
     if owner_pid:
         log(

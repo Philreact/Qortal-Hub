@@ -38,6 +38,68 @@ def load_bridge():
     return module
 
 
+class PresenceBridgeOverlayPeerBlockTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.peer_hash = "32" * 16
+
+    def tearDown(self):
+        self.bridge._shutdown.clear()
+
+    def test_test_overlay_peer_block_parser_accepts_only_destination_hashes(self):
+        self.assertEqual(
+            self.bridge._parse_test_blocked_overlay_peers(
+                f" {self.peer_hash.upper()},invalid;{'ab' * 16} "
+            ),
+            {self.peer_hash, "ab" * 16},
+        )
+
+    def test_test_block_prevents_overlay_admission_and_outbound_open(self):
+        with mock.patch.object(
+            self.bridge,
+            "_TEST_BLOCKED_OVERLAY_PEERS",
+            {self.peer_hash},
+        ), mock.patch.object(self.bridge, "log"):
+            self.assertFalse(
+                self.bridge._overlay_peer_available_for_new_outbound(self.peer_hash)
+            )
+            self.assertFalse(
+                self.bridge._admit_overlay_peer_if_allowed(
+                    self.peer_hash,
+                    "test",
+                    incoming=True,
+                )
+            )
+            self.assertIsNone(
+                self.bridge._ensure_overlay_link(
+                    self.peer_hash,
+                    await_path=False,
+                    open_reason="test",
+                )
+            )
+
+    def test_test_block_closes_an_overlay_link_once_peer_is_known(self):
+        state = {"peerPresenceHash": "", "incoming": True}
+        with mock.patch.object(
+            self.bridge,
+            "_TEST_BLOCKED_OVERLAY_PEERS",
+            {self.peer_hash},
+        ), mock.patch.object(self.bridge, "log"), mock.patch.object(
+            self.bridge,
+            "_overlay_enqueue_close",
+        ) as close:
+            self.assertFalse(
+                self.bridge._admit_overlay_peer_from_transport(
+                    self.peer_hash,
+                    "blocked-link",
+                    state,
+                    "overlay_hello",
+                )
+            )
+
+        close.assert_called_once_with("blocked-link", "test_peer_blocked")
+
+
 class PresenceBridgeOwnerLifecycleTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()

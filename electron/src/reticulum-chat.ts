@@ -14682,6 +14682,7 @@ export class ReticulumChatManager extends EventEmitter {
     const kind = typeof wire.k === 'string' ? wire.k : '';
     if (
       kind !== 'group_sub' &&
+      kind !== 'event_notice_v3' &&
       kind !== 'relay_digest' &&
       kind !== 'gkd' &&
       kind !== 'gkq' &&
@@ -16318,13 +16319,21 @@ export class ReticulumChatManager extends EventEmitter {
       case 'event_notice_v3': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
-        this.handleEventNotice(groupId, wire.n, peerHash);
+        this.handleEventNotice(
+          groupId,
+          wire as Extract<ReticulumChatWire, { k: 'event_notice_v3' }>,
+          peerHash
+        );
         return;
       }
       case 'group_state_digest_v3': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
-        this.handleGroupStateDigest(groupId, wire.d, peerHash);
+        this.handleGroupStateDigest(
+          groupId,
+          wire as Extract<ReticulumChatWire, { k: 'group_state_digest_v3' }>,
+          peerHash
+        );
         return;
       }
       case 'metadata_snapshot_offer_v3': {
@@ -17068,6 +17077,32 @@ export class ReticulumChatManager extends EventEmitter {
     return nextHops;
   }
 
+  private rememberForwardedGroupControlEdge(
+    groupId: number,
+    wire: ReticulumChatWire,
+    nextHop: string
+  ): void {
+    if (wire.k !== 'event_notice_v3' && wire.k !== 'group_state_digest_v3') {
+      return;
+    }
+    const peer = this.routePeerHash(nextHop);
+    if (!peer) return;
+    this.pruneGroupControlRoutes();
+    const key = this.groupControlRouteKey(
+      `forward:${wire.k}`,
+      groupId,
+      peer,
+      this.hashControlPayload(wire)
+    );
+    this.forwardedGroupControlKeys.set(
+      key,
+      this.now() +
+        (wire.k === 'group_state_digest_v3'
+          ? RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS
+          : RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS)
+    );
+  }
+
   private async sendGroupRoutedControl(
     groupId: number,
     wire: ReticulumChatWire,
@@ -17094,6 +17129,9 @@ export class ReticulumChatManager extends EventEmitter {
       );
       if (batch.ok === true) {
         delivered = batch.deliveredPeerHashes.length;
+        for (const peerHash of batch.deliveredPeerHashes) {
+          this.rememberForwardedGroupControlEdge(groupId, wire, peerHash);
+        }
         for (const failure of batch.failures) {
           const failed: Exclude<ReticulumSendResult, { ok: true }> = {
             ok: false,
@@ -17140,6 +17178,7 @@ export class ReticulumChatManager extends EventEmitter {
             : await this.sendToPeerOnce(peerHash, wire);
         if (result.ok === true) {
           delivered += 1;
+          this.rememberForwardedGroupControlEdge(groupId, wire, peerHash);
           continue;
         }
         const failed = result as Exclude<ReticulumSendResult, { ok: true }>;
@@ -17320,35 +17359,34 @@ export class ReticulumChatManager extends EventEmitter {
     if (!inbound) return;
     this.pruneGroupInterestRoutes();
     this.pruneGroupControlRoutes();
-    const local = this.localPeerHash();
     const payloadKey = this.hashControlPayload(wire);
-    for (const route of this.groupInterestRoutes.values()) {
-      if (route.groupId !== groupId) continue;
-      if (route.reversePeerHash === inbound) continue;
-      if (local && route.originPeerHash === local) continue;
+    const nextHops = this.getGroupInterestNextHops(groupId, [inbound]);
+    for (const nextHop of nextHops) {
       const key = this.groupControlRouteKey(
-        kind,
+        `forward:${kind}`,
         groupId,
-        route.originPeerHash,
-        `${inbound}:${payloadKey}`
+        nextHop,
+        payloadKey
       );
       if ((this.forwardedGroupControlKeys.get(key) ?? 0) > this.now()) continue;
       this.forwardedGroupControlKeys.set(
         key,
-        this.now() + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
+        this.now() +
+          (kind === 'group_state_digest_v3'
+            ? RETICULUM_CHAT_CONTROL_DEDUP_TTL_MS
+            : RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS)
       );
-      void this.sendToPeer(
-        route.reversePeerHash,
-        wire as ReticulumChatWire
-      ).then((result) => {
-        if (result.ok === false) {
-          this.pruneGroupInterestRoutesForNextHop(
-            groupId,
-            route.reversePeerHash,
-            result.reason
-          );
+      void this.sendToPeer(nextHop, wire as ReticulumChatWire).then(
+        (result) => {
+          if (result.ok === false) {
+            this.pruneGroupInterestRoutesForNextHop(
+              groupId,
+              nextHop,
+              result.reason
+            );
+          }
         }
-      });
+      );
     }
   }
 
@@ -27701,14 +27739,72 @@ export class ReticulumChatManager extends EventEmitter {
     return wireFitsReticulumChat(compactWire) ? compactWire : null;
   }
 
+  private isValidGroupStateDigestForForwarding(digest: unknown): boolean {
+    if (!digest || typeof digest !== 'object' || Array.isArray(digest))
+      return false;
+    const state = digest as Partial<ReticulumChatGroupStateDigestWire>;
+    const cursorFields = [state.latest, state.latestMessageCursor];
+    if (
+      cursorFields.some(
+        (cursor) => cursor != null && this.cursorFromWire(cursor) == null
+      )
+    ) {
+      return false;
+    }
+    const hashFields = [
+      state.eventHash,
+      state.messageStateHash,
+      state.metadataSnapshotHash,
+      state.metadataFullSnapshotHash,
+      state.authorTreeRoot,
+      state.channelHeadsHash,
+    ];
+    if (
+      hashFields.some(
+        (hash) =>
+          hash != null &&
+          (typeof hash !== 'string' || hash.length === 0 || hash.length > 128)
+      )
+    ) {
+      return false;
+    }
+    const countFields = [
+      state.metadataVersion,
+      state.metadataFullVersion,
+      state.authorTreeCount,
+    ];
+    if (
+      countFields.some(
+        (count) =>
+          count != null &&
+          (!Number.isInteger(count) ||
+            !Number.isSafeInteger(count) ||
+            count < 0)
+      )
+    ) {
+      return false;
+    }
+    return (
+      cursorFields.some((cursor) => cursor != null) ||
+      hashFields.some((hash) => hash != null) ||
+      countFields.some((count) => count != null)
+    );
+  }
+
   private handleGroupStateDigest(
     groupId: number,
-    digest: unknown,
+    wire: Extract<ReticulumChatWire, { k: 'group_state_digest_v3' }>,
     peerHash: string
   ): void {
+    if (!this.isValidGroupStateDigestForForwarding(wire.d)) return;
+    void this.forwardGroupControlToInterestRoutes(
+      'group_state_digest_v3',
+      groupId,
+      wire,
+      peerHash
+    );
     if (!this.canExchangeSubscribedGroupState(groupId)) return;
-    if (!digest || typeof digest !== 'object' || Array.isArray(digest)) return;
-    const state = digest as Partial<ReticulumChatGroupStateDigestWire>;
+    const state = wire.d as Partial<ReticulumChatGroupStateDigestWire>;
     const remotePublicMetadataHash =
       typeof state.metadataSnapshotHash === 'string'
         ? state.metadataSnapshotHash.trim().toLowerCase()
@@ -28837,26 +28933,36 @@ export class ReticulumChatManager extends EventEmitter {
 
   private handleEventNotice(
     groupId: number,
-    candidate: unknown,
+    wire: Extract<ReticulumChatWire, { k: 'event_notice_v3' }>,
     peerHash: string
   ): void {
+    const candidate = wire.n;
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate))
-      return;
-    if (!this.subscribedGroups.has(groupId) || !this.localGroupIds.has(groupId))
       return;
     const notice = candidate as ReticulumChatEventNoticeWire;
     if (!verifyReticulumChatEventNotice(notice, groupId, this.now())) {
       this.notePeerViolation(peerHash, 'bad_event_notice_v3');
       return;
     }
+    void this.forwardGroupControlToInterestRoutes(
+      'event_notice_v3',
+      groupId,
+      wire,
+      peerHash
+    );
+    if (!this.subscribedGroups.has(groupId) || !this.localGroupIds.has(groupId))
+      return;
+    if (this.shouldDropDuplicateInboundControlWire(wire, groupId, peerHash))
+      return;
     const eventId = typeof notice.id === 'string' ? notice.id.trim() : '';
     if (!eventId) return;
     if (this.db.hasEvent(eventId)) return;
     const sourcePeerHash =
       this.routePeerHash(notice.sp) ?? peerHash.trim().toLowerCase();
     if (!sourcePeerHash) return;
+    const requestPeerHash = this.routePeerHash(peerHash) ?? sourcePeerHash;
     this.noteEventSourcePeer(eventId, sourcePeerHash);
-    this.enqueueEventPull(sourcePeerHash, {
+    const hint: ReticulumChatEventHint = {
       groupId,
       eventId,
       channelId: RETICULUM_CHAT_ALL_CHANNELS_ID,
@@ -28866,7 +28972,18 @@ export class ReticulumChatManager extends EventEmitter {
       eventType: 'message',
       timestamp: this.now(),
       mentionAddressHashes: [],
-    });
+    };
+    // Ask the peer that delivered the notice first. If it is an intermediary,
+    // event_req follows the reverse group-interest route to the source and the
+    // resulting offer comes back along that route. The resource itself remains
+    // a direct, recipient-authorized transfer from the original source.
+    this.enqueueEventPull(requestPeerHash, hint);
+    if (sourcePeerHash !== requestPeerHash) {
+      // Preserve the direct source as a sequential fallback. The pull queue
+      // sends to only one candidate per attempt, so this adds resilience
+      // without creating parallel request traffic.
+      this.enqueueEventPull(sourcePeerHash, hint);
+    }
   }
 
   private eventPullKey(groupId: number, eventId: string): string {
@@ -29369,6 +29486,11 @@ export class ReticulumChatManager extends EventEmitter {
       q: signedRequest,
     });
     item.inFlight = false;
+    if (item.peerHashes.size > 1 && item.peerHashes.delete(peerKey)) {
+      // Try alternate notice routes sequentially if this request does not
+      // produce an offer. Never fan the same pull out in parallel.
+      item.peerHashes.add(peerKey);
+    }
     if (this.db.hasEvent(hint.eventId)) {
       this.pendingEventPulls.delete(
         this.eventPullKey(hint.groupId, hint.eventId)
@@ -37383,6 +37505,7 @@ export class ReticulumChatManager extends EventEmitter {
     switch (wire.k) {
       case 'land_auth':
       case 'land_route_v1':
+      case 'event_notice_v3':
       case 'group_state_digest_v3':
       case 'feed_req':
       case 'range_req':
