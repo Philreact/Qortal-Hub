@@ -31,9 +31,9 @@ if _BRIDGE_RESOURCE_DIR not in sys.path:
     sys.path.insert(0, _BRIDGE_RESOURCE_DIR)
 from qortalland_games import QortalLandGameManager, _b58decode, _b58encode, derive_qortal_address
 
-APP_NAMESPACE = "qortal-hub-v2"
+APP_NAMESPACE = "qortal-hub-v3"
 PRESENCE_ASPECT = "presence"
-PRESENCE_VERSION = "v2"
+PRESENCE_VERSION = "v3"
 IDENTITY_FILENAME = "presence-bridge.identity"
 COMMUNITY_STUN_ASPECT = "community-stun"
 COMMUNITY_STUN_VERSION = "v1"
@@ -104,7 +104,11 @@ _active_overlay_neighbors: Dict[str, float] = {}
 # Inbound peers that chose us. They are included in publish fanout too, but
 # have their own cap so inbound reciprocity is not blocked by outbound fill.
 _inbound_overlay_neighbors: Dict[str, float] = {}
-# Per-peer metadata: last_seen_inbound, last_send_ok, last_request_path_at, ts_seed_until (epoch seconds).
+# Per-peer metadata (epoch seconds):
+# - last_seen_inbound: identity/liveness seen by any authenticated route, including relays.
+# - last_direct_rx_at / last_direct_link_send_at: authenticated Link activity with this peer.
+# Route freshness must never be inferred from last_seen_inbound because a relayed envelope
+# identifies its origin without proving that we currently have a usable direct path to it.
 _peer_lifecycle: Dict[str, Dict[str, Any]] = {}
 # Recent presence senders (destination hash hex, lowercased) for recall retries on publish.
 _recent_presence_senders: "deque[str]" = deque(maxlen=128)
@@ -191,6 +195,7 @@ _OVERLAY_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 5.0
 _OVERLAY_LINK_PATH_AWAIT_SECONDS = 2.0
 _OVERLAY_LINK_CACHED_PATH_SETTLE_SECONDS = 1.5
 _DIRECT_LINK_PATH_PROVEN_SECONDS = 30.0
+_DIRECT_ACTIVITY_RECORD_MIN_INTERVAL_SECONDS = 1.0
 _UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS = 30.0
 _UNESTABLISHED_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 60.0
 _UNESTABLISHED_LINK_HARD_REFRESH_FAILURES = 3
@@ -6004,10 +6009,18 @@ def _register_peer(
             "ts_seed_until": None,
         }
     st = _peer_lifecycle[peer_key]
-    if source in ("inbound", "announce", "wire_kr", "gcall_join"):
+    if source in (
+        "inbound",
+        "announce",
+        "wire_kr",
+        "gcall_join",
+        "presence",
+        "relayed",
+        "direct_link_identity",
+    ):
         st["last_seen_inbound"] = now
-    if source in ("inbound", "wire_kr", "gcall_join"):
-        _note_overlay_peer_alive(peer_key, source)
+    if source == "direct_link_identity":
+        _note_peer_direct_activity(peer_key, "rx", source, now=now)
     if source in ("ts_seed", "recall"):
         st["ts_seed_until"] = now + _PEER_TS_SEED_LEASE_SECONDS
     if is_new:
@@ -6344,6 +6357,15 @@ def _set_verified_overlay_peers(
             prev_seen = st.get("last_seen_inbound")
             if not isinstance(prev_seen, (int, float)) or last_seen_seconds > float(prev_seen):
                 st["last_seen_inbound"] = last_seen_seconds
+            prev_direct_rx = st.get("last_direct_rx_at")
+            if (
+                not isinstance(prev_direct_rx, (int, float))
+                or last_seen_seconds > float(prev_direct_rx)
+            ):
+                # Electron's verifiedPeers collection contains transport-verified
+                # peers only. Relayed account endpoint leases are supplied through
+                # account_endpoint_leases and must not enter this field.
+                st["last_direct_rx_at"] = last_seen_seconds
         next_verified[peer_hash] = {
             "last_seen": float(last_seen),
         }
@@ -6510,26 +6532,42 @@ def _coerce_epoch_seconds(value: Any) -> Optional[float]:
     return ts
 
 
+def _epoch_timestamp_is_recent(
+    value: Any,
+    now: float,
+    max_age_seconds: float,
+) -> bool:
+    timestamp = _coerce_epoch_seconds(value)
+    if timestamp is None:
+        return False
+    age = float(now) - timestamp
+    # A wall-clock correction after sleep can leave an activity timestamp in
+    # the future. It must not prove a route indefinitely; the bounded path
+    # refresh is safer until fresh direct activity replaces it.
+    return 0.0 <= age <= max(0.0, float(max_age_seconds))
+
+
 def _overlay_peer_recently_rx_active(peer_hash: str, now: Optional[float] = None) -> bool:
     peer_key = str(peer_hash or "").strip().lower()
     if not peer_key:
         return False
     st = _peer_lifecycle.get(peer_key) or {}
-    last_in = st.get("last_seen_inbound")
-    last_in_seconds = _coerce_epoch_seconds(last_in)
-    if last_in_seconds is None:
-        return False
     if now is None:
         now = time.time()
-    return (float(now) - last_in_seconds) <= _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS
+    return _epoch_timestamp_is_recent(
+        st.get("last_direct_rx_at"),
+        float(now),
+        _OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS,
+    )
 
 
 def _overlay_peer_direct_activity_score(peer_hash: str) -> float:
     st = _peer_lifecycle.get(str(peer_hash or "").strip().lower()) or {}
     score = 0.0
-    for key in ("last_seen_inbound", "last_send_ok"):
+    now = time.time()
+    for key in ("last_direct_rx_at", "last_direct_link_send_at"):
         value = _coerce_epoch_seconds(st.get(key))
-        if value is not None:
+        if value is not None and value <= now:
             score = max(score, value)
     return score
 
@@ -6820,12 +6858,14 @@ def _overlay_bootstrap_peer_sort_key(peer_key: str) -> tuple[int, float, str]:
     st = _peer_lifecycle.get(peer_key) or {}
     now = time.time()
     lease = st.get("ts_seed_until")
-    last_in = st.get("last_seen_inbound")
-    last_ok = st.get("last_send_ok")
-    if isinstance(last_in, (int, float)):
-        return (0, -float(last_in), peer_key)
-    if isinstance(last_ok, (int, float)):
-        return (1, -float(last_ok), peer_key)
+    direct_score = _overlay_peer_direct_activity_score(peer_key)
+    last_seen = st.get("last_seen_inbound")
+    if direct_score > 0:
+        return (0, -direct_score, peer_key)
+    if isinstance(last_seen, (int, float)):
+        # A relayed sighting remains useful for selecting a recovery candidate,
+        # but ranks below a route proven by authenticated Link traffic.
+        return (1, -float(last_seen), peer_key)
     if isinstance(lease, (int, float)) and float(lease) > now:
         # TS seed leases prove Electron wants the peer, not that we recently
         # heard from it. Prefer real RX/send activity when recovering fanout.
@@ -6901,8 +6941,11 @@ def _recover_zero_overlay_fanout(reason: str) -> int:
     now = time.time()
     if (
         _last_overlay_zero_fanout_recovery_at > 0
-        and now - _last_overlay_zero_fanout_recovery_at
-        < _OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS
+        and _epoch_timestamp_is_recent(
+            _last_overlay_zero_fanout_recovery_at,
+            now,
+            _OVERLAY_ZERO_FANOUT_RECOVERY_COOLDOWN_SECONDS,
+        )
     ):
         return 0
     local_hex = _local_presence_hash_hex()
@@ -6957,11 +7000,11 @@ def _request_path_if_eligible(peer_key: str, h: bytes, nudge_budget: list[int]) 
     st = _peer_lifecycle.get(peer_key) or {}
     now = time.time()
     last_rp = st.get("last_request_path_at")
-    if isinstance(last_rp, (int, float)) and (now - float(last_rp)) < _REQUEST_PATH_COOLDOWN_SECONDS:
+    if _epoch_timestamp_is_recent(last_rp, now, _REQUEST_PATH_COOLDOWN_SECONDS):
         return
     has_path = _reticulum_has_path(h)
-    last_ok = st.get("last_send_ok")
-    recently_sent = isinstance(last_ok, (int, float)) and (now - float(last_ok)) < 180.0
+    last_ok = st.get("last_direct_link_send_at")
+    recently_sent = _epoch_timestamp_is_recent(last_ok, now, 180.0)
     if has_path and recently_sent:
         return
     try:
@@ -7251,8 +7294,7 @@ def _force_overlay_peer_path_refresh(
     st = _lifecycle_state_for_peer(peer)
     last_refresh = st.get("last_overlay_link_hard_refresh_at") if st is not None else None
     if (
-        isinstance(last_refresh, (int, float))
-        and now - float(last_refresh) < cooldown_seconds
+        _epoch_timestamp_is_recent(last_refresh, now, cooldown_seconds)
     ):
         log(
             f"[presence_bridge] target={target} overlay_hard_path_refresh_skipped "
@@ -7317,11 +7359,63 @@ def _peer_has_recent_direct_activity(peer_key: str, now: Optional[float] = None)
     if now is None:
         now = time.time()
     st = _peer_lifecycle.get(peer) or {}
-    for key in ("last_seen_inbound", "last_send_ok"):
-        value = st.get(key)
-        if isinstance(value, (int, float)) and now - float(value) <= _DIRECT_LINK_PATH_PROVEN_SECONDS:
+    for key in ("last_direct_rx_at", "last_direct_link_send_at"):
+        if _epoch_timestamp_is_recent(
+            st.get(key),
+            float(now),
+            _DIRECT_LINK_PATH_PROVEN_SECONDS,
+        ):
             return True
     return False
+
+
+def _note_peer_direct_activity(
+    peer_key: str,
+    direction: str,
+    source: str,
+    *,
+    now: Optional[float] = None,
+) -> None:
+    """Record only activity proven by an authenticated Link to ``peer_key``.
+
+    Signed relayed payloads deliberately do not call this helper. They prove the
+    origin's identity and liveness, but the Link proves transport only to the
+    immediate peer that delivered the payload.
+    """
+    peer = str(peer_key or "").strip().lower()
+    if not _valid_presence_destination_hash_hex(peer) or direction not in ("rx", "tx"):
+        return
+    if now is None:
+        now = time.time()
+    state = _peer_lifecycle.setdefault(
+        peer,
+        {
+            "last_seen_inbound": None,
+            "last_send_ok": None,
+            "last_request_path_at": None,
+            "ts_seed_until": None,
+        },
+    )
+    activity_key = (
+        "last_direct_rx_at" if direction == "rx" else "last_direct_link_send_at"
+    )
+    previous = state.get(activity_key)
+    has_pending_failure_state = (
+        peer in _overlay_peer_failures
+        or int(state.get("unestablished_link_failures") or 0) > 0
+    )
+    if (
+        isinstance(previous, (int, float))
+        and 0.0 <= now - float(previous) < _DIRECT_ACTIVITY_RECORD_MIN_INTERVAL_SECONDS
+        and not has_pending_failure_state
+    ):
+        return
+    state["last_seen_inbound"] = now
+    if direction == "rx":
+        state["last_direct_rx_at"] = now
+    elif direction == "tx":
+        state["last_direct_link_send_at"] = now
+    _note_overlay_peer_alive(peer, source)
 
 
 def _request_fresh_link_path(
@@ -7424,8 +7518,7 @@ def _peer_has_recent_unestablished_link_failure(
     failed_at = st.get("last_unestablished_link_failure_at")
     return (
         failures > 0
-        and isinstance(failed_at, (int, float))
-        and time.time() - float(failed_at) <= within_seconds
+        and _epoch_timestamp_is_recent(failed_at, time.time(), within_seconds)
     )
 
 
@@ -7441,7 +7534,7 @@ def _nudge_cached_reticulum_path(
     now = time.time()
     st = _lifecycle_state_for_peer(peer)
     last_nudge = st.get("last_cached_path_nudge_at") if st is not None else None
-    if isinstance(last_nudge, (int, float)) and now - float(last_nudge) < cooldown_seconds:
+    if _epoch_timestamp_is_recent(last_nudge, now, cooldown_seconds):
         return False
     try:
         RNS.Transport.request_path(destination_hash)
@@ -7476,7 +7569,7 @@ def _nudge_overlay_path_for_peer(peer_key: str) -> None:
     now = time.time()
     st = _peer_lifecycle.get(peer_key) or {}
     last_rp = st.get("last_request_path_at")
-    if isinstance(last_rp, (int, float)) and (now - float(last_rp)) < _REQUEST_PATH_COOLDOWN_SECONDS:
+    if _epoch_timestamp_is_recent(last_rp, now, _REQUEST_PATH_COOLDOWN_SECONDS):
         return
     try:
         RNS.Transport.request_path(h)
@@ -7631,8 +7724,7 @@ def _ensure_call_media_path(
         else _PACKET_PATH_IDLE_REQUEST_COOLDOWN_SECONDS
     )
     should_request = force_refresh_cached_path or not (
-        isinstance(last_rp, (int, float))
-        and (now - float(last_rp)) < request_cooldown
+        _epoch_timestamp_is_recent(last_rp, now, request_cooldown)
     )
     requested = False
     used_request_await = False
@@ -7842,8 +7934,11 @@ def _nudge_overlay_link_path(
     st = _peer_lifecycle.get(peer_key) or {}
     last_rp = st.get("last_request_path_at")
     should_request = not (
-        isinstance(last_rp, (int, float))
-        and (now - float(last_rp)) < _OVERLAY_LINK_PATH_REQUEST_COOLDOWN_SECONDS
+        _epoch_timestamp_is_recent(
+            last_rp,
+            now,
+            _OVERLAY_LINK_PATH_REQUEST_COOLDOWN_SECONDS,
+        )
     )
     if should_request:
         if await_seconds > 0:
@@ -9289,8 +9384,11 @@ def _maybe_request_path_after_unestablished_link_close(
         else _UNESTABLISHED_LINK_HARD_REFRESH_COOLDOWN_SECONDS
     )
     hard_refresh_cooling_down = (
-        isinstance(last_hard_refresh, (int, float))
-        and now - float(last_hard_refresh) < hard_refresh_cooldown
+        _epoch_timestamp_is_recent(
+            last_hard_refresh,
+            now,
+            hard_refresh_cooldown,
+        )
     )
     if hard_refresh_due:
         if hard_refresh_cooling_down:
@@ -9351,8 +9449,11 @@ def _maybe_request_path_after_unestablished_link_close(
         st.get("last_unestablished_link_path_request_at") if st is not None else None
     )
     if (
-        isinstance(last_request, (int, float))
-        and now - float(last_request) < _UNESTABLISHED_LINK_PATH_REQUEST_COOLDOWN_SECONDS
+        _epoch_timestamp_is_recent(
+            last_request,
+            now,
+            _UNESTABLISHED_LINK_PATH_REQUEST_COOLDOWN_SECONDS,
+        )
     ):
         log(
             f"[presence_bridge] target={target} cached_path_refresh_skipped "
@@ -9867,6 +9968,13 @@ def _send_overlay_transport_control(
     if ok:
         now = time.time()
         state["last_send_ok_at"] = now
+        if peer_key != "unknown":
+            _note_peer_direct_activity(
+                peer_key,
+                "tx",
+                "overlay_transport_control",
+                now=now,
+            )
         state["last_transport_control_sent_at"] = now
         state["last_transport_control_type"] = message_type
         if message_type == _OVERLAY_HELLO_WIRE_TYPE:
@@ -10523,7 +10631,7 @@ def _admit_overlay_peer_from_transport(
         state["overlay_transport_admitted"] = authenticated
         if authenticated:
             state["overlay_transport_admitted_at"] = now
-            _note_overlay_peer_alive(peer_key, reason)
+            _note_peer_direct_activity(peer_key, "rx", reason, now=now)
         log(
             "[presence_bridge] target=presence-reticulum overlay_migration_candidate_admitted "
             f"peer={peer_key} link={link_id} "
@@ -10533,7 +10641,7 @@ def _admit_overlay_peer_from_transport(
         return authenticated
     state["overlay_transport_admitted"] = True
     state["overlay_transport_admitted_at"] = now
-    _note_overlay_peer_alive(peer_key, reason)
+    _note_peer_direct_activity(peer_key, "rx", reason, now=now)
     admitted_state = _register_active_overlay_for_peer(peer_key, link_id)
     if admitted_state is None:
         return False
@@ -11799,7 +11907,7 @@ def _resolve_sender_peer_destination_hash(sender_hex: str) -> str:
         return sender_hex
     # Register via recall (same as presence inbound). Previously we only recalled and
     # looked up find_peer_hash_for_identity, which stayed empty until another path registered.
-    if ensure_known_peer_from_recall(sender_hex, "inbound"):
+    if ensure_known_peer_from_recall(sender_hex, "recall"):
         return sender_hex
     return ""
 
@@ -11913,7 +12021,6 @@ def _emit_presence_message(message: Dict[str, Any], link_id: Optional[str] = Non
     if origin_peer_hash not in _known_peers:
         ensure_known_peer_from_wire_kr(public_key, origin_peer_hash)
     if origin_peer_hash in _known_peers:
-        _note_overlay_peer_alive(origin_peer_hash, "presence")
         st = _peer_lifecycle.setdefault(
             origin_peer_hash,
             {
@@ -11923,6 +12030,8 @@ def _emit_presence_message(message: Dict[str, Any], link_id: Optional[str] = Non
                 "ts_seed_until": None,
             },
         )
+        # Presence may have arrived through another overlay peer. It proves
+        # signed liveness for the origin, not a direct transport path to it.
         st["last_seen_inbound"] = now
         lease = st.get("ts_seed_until")
         if isinstance(lease, (int, float)) and now < float(lease):
@@ -12195,7 +12304,10 @@ def _emit_call_bridge_message(
     sender_r = message.get("r")
     sender_call_hash = sender_r if isinstance(sender_r, str) else ""
     if sender_call_hash:
-        ensure_known_peer_from_recall(sender_call_hash.strip().lower(), "inbound")
+        # The wire's original sender can differ from the authenticated Link peer
+        # when the message was forwarded. Recall its identity without claiming
+        # direct transport activity.
+        ensure_known_peer_from_recall(sender_call_hash.strip().lower(), "recall")
     resolved_presence_hash = (
         peer_presence_hash
         if isinstance(peer_presence_hash, str) and peer_presence_hash
@@ -12445,7 +12557,7 @@ def on_overlay_link_remote_identified(link, identity) -> None:
     else:
         peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
         if peer_hash and _valid_presence_destination_hash_hex(peer_hash):
-            _register_peer(peer_hash, identity, "inbound")
+            _register_peer(peer_hash, identity, "direct_link_identity")
             log(
                 "[presence_bridge] target=presence-reticulum overlay_remote_identified "
                 f"link={link_id} peer={peer_hash} source=inbound_identity"
@@ -12458,7 +12570,7 @@ def on_overlay_link_remote_identified(link, identity) -> None:
     emit_overlay_link_state(link_id, state, "identified")
     ph_reg = str(state.get("peerPresenceHash") or "").strip().lower()
     if ph_reg and _valid_presence_destination_hash_hex(ph_reg):
-        _note_overlay_peer_alive(ph_reg, "remote_identified")
+        _note_peer_direct_activity(ph_reg, "rx", "remote_identified")
         _register_active_overlay_for_peer(ph_reg, link_id)
         _overlay_enqueue_dedup(ph_reg, reason="dedup_same_peer")
         if migration_candidate and state.get("incoming") is True:
@@ -13084,6 +13196,16 @@ def _handle_overlay_link_packet(message, packet) -> None:
     state = get_overlay_link_state(link_id)
     if state is None:
         return
+    immediate_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    if (
+        state.get("overlay_transport_admitted") is True
+        and _valid_presence_destination_hash_hex(immediate_peer_hash)
+    ):
+        _note_peer_direct_activity(
+            immediate_peer_hash,
+            "rx",
+            "overlay_link_packet",
+        )
     decoded_audio = _decode_group_audio_wire(message)
     if decoded_audio is not None:
         _room_id, sender_destination_hash, _raw_audio = decoded_audio
@@ -13178,7 +13300,7 @@ def _handle_overlay_link_packet(message, packet) -> None:
             if peer_hash:
                 previous_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
                 state["peerPresenceHash"] = peer_hash
-                _note_overlay_peer_alive(peer_hash, "rx_presence")
+                _note_peer_direct_activity(peer_hash, "rx", "rx_presence")
                 if state.get("incoming") is not True:
                     _note_good_outbound_overlay_rx(peer_hash)
                 _register_active_overlay_for_peer(peer_hash, link_id)
@@ -16435,6 +16557,9 @@ def on_outgoing_overlay_link_established(link) -> None:
         return
     if ph_out and _valid_presence_destination_hash_hex(ph_out):
         _register_active_overlay_for_peer(ph_out, link_id)
+        # An established outbound SINGLE Link is cryptographically bound to the
+        # destination identity and therefore proves a direct transport route.
+        _note_peer_direct_activity(ph_out, "tx", "outgoing_link_established")
     _send_overlay_hello_for_link(link_id, "link_established")
     if ph_out and _valid_presence_destination_hash_hex(ph_out):
         _schedule_delayed_presence_announce_replay(ph_out, link_id, "link_established")
@@ -16473,6 +16598,7 @@ def _send_wire_to_overlay_peer(
         if ok:
             now = time.time()
             state["last_send_ok_at"] = now
+            _note_peer_direct_activity(peer_key, "tx", "overlay_link_send", now=now)
         else:
             if queue_if_pending:
                 _queue_overlay_packet(state, traffic, wire_bytes)
@@ -16528,6 +16654,7 @@ def _send_wire_to_established_overlay_peer(
     if ok and _overlay_link_is_current(link_id, link):
         now = time.time()
         state["last_send_ok_at"] = now
+        _note_peer_direct_activity(peer_key, "tx", "overlay_link_send", now=now)
         emit_overlay_link_state(link_id, state, traffic)
         return True
     if _overlay_link_is_current(link_id, link):

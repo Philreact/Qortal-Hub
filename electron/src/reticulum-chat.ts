@@ -17077,6 +17077,18 @@ export class ReticulumChatManager extends EventEmitter {
     return nextHops;
   }
 
+  private getGroupInterestTransitNextHops(groupId: number): Set<string> {
+    this.pruneGroupInterestRoutes();
+    const nextHops = new Set<string>();
+    for (const route of this.groupInterestRoutes.values()) {
+      if (route.groupId !== groupId || route.hops <= 0) continue;
+      const nextHop = this.routePeerHash(route.reversePeerHash);
+      const origin = this.routePeerHash(route.originPeerHash);
+      if (nextHop && origin && origin !== nextHop) nextHops.add(nextHop);
+    }
+    return nextHops;
+  }
+
   private rememberForwardedGroupControlEdge(
     groupId: number,
     wire: ReticulumChatWire,
@@ -22736,9 +22748,21 @@ export class ReticulumChatManager extends EventEmitter {
       }
     }
     const notice = await this.buildEventNoticeWire(event, eventSizeBytes);
+    const transitNextHops = this.getGroupInterestTransitNextHops(
+      event.groupId
+    );
+    const noticeExcludePeerHashes = directlyNotifiedPeers.filter(
+      (peerHash) => {
+        const normalized = this.routePeerHash(peerHash);
+        return !normalized || !transitNextHops.has(normalized);
+      }
+    );
     const noticeResult = notice
       ? await this.sendGroupRoutedControl(event.groupId, notice, {
-          excludePeerHashes: directlyNotifiedPeers,
+          // Do not duplicate notices to direct leaf recipients, but preserve
+          // any successful recipient that is also the sole next hop for an
+          // indirect group member.
+          excludePeerHashes: noticeExcludePeerHashes,
           fallbackFanout: true,
           useRetryQueue: true,
           context: 'published-event-notice-v3',
@@ -28960,8 +28984,22 @@ export class ReticulumChatManager extends EventEmitter {
     const sourcePeerHash =
       this.routePeerHash(notice.sp) ?? peerHash.trim().toLowerCase();
     if (!sourcePeerHash) return;
-    const requestPeerHash = this.routePeerHash(peerHash) ?? sourcePeerHash;
     this.noteEventSourcePeer(eventId, sourcePeerHash);
+    // A transit peer may receive both the direct event offer and this notice.
+    // Keep a recovery item for that event, but hold it in-flight while the
+    // accepted resource is being received so no duplicate pull is sent.
+    let hasActiveEventOffer = false;
+    for (const offer of this.resourceOffers.values()) {
+      if (
+        offer.relayStore !== true &&
+        offer.groupId === groupId &&
+        offer.eventId === eventId
+      ) {
+        hasActiveEventOffer = true;
+        break;
+      }
+    }
+    const requestPeerHash = this.routePeerHash(peerHash) ?? sourcePeerHash;
     const hint: ReticulumChatEventHint = {
       groupId,
       eventId,
@@ -28983,6 +29021,12 @@ export class ReticulumChatManager extends EventEmitter {
       // sends to only one candidate per attempt, so this adds resilience
       // without creating parallel request traffic.
       this.enqueueEventPull(sourcePeerHash, hint);
+    }
+    if (hasActiveEventOffer) {
+      const pending = this.pendingEventPulls.get(
+        this.eventPullKey(groupId, eventId)
+      );
+      if (pending) pending.inFlight = true;
     }
   }
 

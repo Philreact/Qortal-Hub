@@ -11706,6 +11706,134 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('keeps a directly notified peer available as the next hop for an indirect group member', async () => {
+    const now = 100_000;
+    const localPeer = 'a'.repeat(32);
+    const middlePeer = 'b'.repeat(32);
+    const indirectPeer = 'c'.repeat(32);
+    const leafPeer = 'd'.repeat(32);
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const fanout: Array<{
+      wires: Record<string, unknown>[];
+      excluded: string[];
+    }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => localPeer,
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          if (wire.k === 'event_offer' && peer === indirectPeer) {
+            return {
+              ok: false as const,
+              reason: 'packet-send-false' as const,
+            };
+          }
+          return { ok: true as const };
+        },
+        fanoutReticulumChatDetailed: async (
+          wires: Record<string, unknown>[],
+          excluded: string[] = []
+        ) => {
+          fanout.push({ wires, excluded });
+          return { ok: true as const };
+        },
+        sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+
+    const subscriptions = (manager as any).peerSubscriptions as Map<
+      string,
+      Map<number, number>
+    >;
+    subscriptions.set(middlePeer, new Map([[73, now + 60_000]]));
+    subscriptions.set(indirectPeer, new Map([[73, now + 60_000]]));
+    subscriptions.set(leafPeer, new Map([[73, now + 60_000]]));
+    const routes = (manager as any).groupInterestRoutes as Map<
+      string,
+      Record<string, unknown>
+    >;
+    routes.set(`73:${middlePeer}`, {
+      groupId: 73,
+      originPeerHash: middlePeer,
+      reversePeerHash: middlePeer,
+      hops: 0,
+      expiresAt: now + 60_000,
+    });
+    routes.set(`73:${indirectPeer}`, {
+      groupId: 73,
+      originPeerHash: indirectPeer,
+      reversePeerHash: middlePeer,
+      hops: 1,
+      expiresAt: now + 60_000,
+    });
+    routes.set(`73:${leafPeer}`, {
+      groupId: 73,
+      originPeerHash: leafPeer,
+      reversePeerHash: leafPeer,
+      hops: 0,
+      expiresAt: now + 60_000,
+    });
+
+    const result = await manager.publishEvent(
+      signedEvent({
+        eventId: 'event-middle-peer-remains-forwarder',
+        groupId: 73,
+        timestamp: now,
+      })
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: middlePeer,
+        wire: expect.objectContaining({
+          k: 'event_offer',
+          g: 73,
+        }),
+      })
+    );
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: leafPeer,
+        wire: expect.objectContaining({
+          k: 'event_offer',
+          g: 73,
+        }),
+      })
+    );
+    expect(
+      direct.some(
+        ({ peer, wire }) => peer === leafPeer && wire.k === 'event_notice_v3'
+      )
+    ).toBe(false);
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: middlePeer,
+        wire: expect.objectContaining({
+          k: 'event_notice_v3',
+          g: 73,
+        }),
+      })
+    );
+    expect(
+      fanout.some(({ wires }) =>
+        wires.some((wire) => wire.k === 'event_notice_v3')
+      )
+    ).toBe(false);
+    manager.close();
+  });
+
   it('prunes failed group interest next hops and falls back to broad fanout', async () => {
     const fanout: Record<string, unknown>[] = [];
     const manager = new ReticulumChatManager({
@@ -11962,6 +12090,84 @@ describe('reticulum chat manager', () => {
     intermediate.handleWire(invalidWire, inboundPeer);
     await flushQueuedWork();
     expect(direct).toHaveLength(2);
+
+    intermediate.close();
+    source.close();
+  });
+
+  it('forwards an event notice without starting a duplicate pull while its direct offer is active', async () => {
+    const now = 100_000;
+    const sourcePeer = 'a'.repeat(32);
+    const intermediatePeer = 'b'.repeat(32);
+    const downstreamPeer = 'c'.repeat(32);
+    const event = signedEvent({
+      eventId: 'event-active-direct-offer-forward',
+      groupId: 73,
+      timestamp: now,
+    });
+    const source = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => sourcePeer,
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const wire = await (source as any).buildEventNoticeWire(event);
+    expect(wire).toBeTruthy();
+
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const intermediate = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => intermediatePeer,
+        sendReticulumChatDetailed: async (
+          peer: string,
+          forwardedWire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire: forwardedWire });
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+    });
+    intermediate.setLocalGroupMemberships([73]);
+    intermediate.subscribeGroup(73);
+    (intermediate as any).groupInterestRoutes.set(`73:${downstreamPeer}`, {
+      groupId: 73,
+      originPeerHash: downstreamPeer,
+      reversePeerHash: downstreamPeer,
+      hops: 1,
+      expiresAt: now + 60_000,
+    });
+    (intermediate as any).resourceOffers.set('active-event-transfer', {
+      transferId: 'active-event-transfer',
+      eventId: event.eventId,
+      groupId: event.groupId,
+      payloadHash: event.payloadHash,
+      wireHash: 'f'.repeat(64),
+      sizeBytes: 512,
+      sourcePeerHash: sourcePeer,
+    });
+
+    intermediate.handleWire(wire, sourcePeer);
+    await flushQueuedWork();
+
+    expect(direct).toContainEqual({ peer: downstreamPeer, wire });
+    expect(direct.some(({ wire: sent }) => sent.k === 'event_req')).toBe(false);
+    expect((intermediate as any).pendingEventPulls.size).toBe(1);
+    expect(
+      (intermediate as any).pendingEventPulls.get(
+        `73:${event.eventId}`
+      ).inFlight
+    ).toBe(true);
+    expect([
+      ...(intermediate as any).eventSourcePeers.get(event.eventId).peers,
+    ]).toEqual([sourcePeer]);
 
     intermediate.close();
     source.close();

@@ -378,6 +378,217 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
         )
         nudge.assert_not_called()
 
+    def test_relayed_liveness_does_not_prove_a_direct_path(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_seen_inbound": now,
+            "last_send_ok": now,
+            "last_request_path_at": None,
+            "ts_seed_until": None,
+        }
+
+        self.assertFalse(
+            self.bridge._peer_has_recent_direct_activity(peer_hash, now=now)
+        )
+
+    def test_authenticated_link_activity_proves_a_direct_path(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._note_peer_direct_activity(
+            peer_hash,
+            "rx",
+            "test_authenticated_link",
+            now=now,
+        )
+
+        self.assertTrue(
+            self.bridge._peer_has_recent_direct_activity(peer_hash, now=now)
+        )
+        self.assertEqual(
+            self.bridge._peer_lifecycle[peer_hash]["last_direct_rx_at"],
+            now,
+        )
+
+    def test_future_direct_activity_does_not_prove_a_path_after_clock_rollback(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_direct_rx_at": now + 3600,
+            "last_direct_link_send_at": now + 3600,
+        }
+
+        self.assertFalse(
+            self.bridge._peer_has_recent_direct_activity(peer_hash, now=now)
+        )
+        self.assertFalse(
+            self.bridge._overlay_peer_recently_rx_active(peer_hash, now=now)
+        )
+
+    def test_direct_activity_replaces_future_timestamp_after_clock_rollback(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_direct_rx_at": now + 3600,
+        }
+
+        self.bridge._note_peer_direct_activity(
+            peer_hash,
+            "rx",
+            "post_clock_rollback_packet",
+            now=now,
+        )
+
+        self.assertEqual(
+            self.bridge._peer_lifecycle[peer_hash]["last_direct_rx_at"],
+            now,
+        )
+        self.assertTrue(
+            self.bridge._peer_has_recent_direct_activity(peer_hash, now=now)
+        )
+
+    def test_future_cached_path_nudge_does_not_block_route_recovery(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_cached_path_nudge_at": now + 3600,
+        }
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path:
+            self.assertTrue(
+                self.bridge._nudge_cached_reticulum_path(
+                    self.destination_hash,
+                    peer_hash,
+                    target="presence-reticulum",
+                    reason="post_clock_rollback",
+                    cooldown_seconds=30.0,
+                )
+            )
+
+        request_path.assert_called_once_with(self.destination_hash)
+        self.assertEqual(
+            self.bridge._peer_lifecycle[peer_hash]["last_cached_path_nudge_at"],
+            mock.ANY,
+        )
+        self.assertLessEqual(
+            self.bridge._peer_lifecycle[peer_hash]["last_cached_path_nudge_at"],
+            time.time(),
+        )
+
+    def test_recent_direct_activity_still_clears_a_new_failure(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._note_peer_direct_activity(
+            peer_hash,
+            "rx",
+            "first_packet",
+            now=now,
+        )
+        self.bridge._overlay_peer_failures[peer_hash] = {
+            "count": 1,
+            "last_reason": "stale_path",
+        }
+
+        self.bridge._note_peer_direct_activity(
+            peer_hash,
+            "rx",
+            "second_packet",
+            now=now + 0.1,
+        )
+
+        self.assertNotIn(peer_hash, self.bridge._overlay_peer_failures)
+        self.assertEqual(
+            self.bridge._peer_lifecycle[peer_hash]["last_direct_rx_at"],
+            now + 0.1,
+        )
+
+    def test_unproven_cached_overlay_path_is_nudged_once(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_seen_inbound": now,
+            "last_send_ok": now,
+            "last_request_path_at": None,
+            "ts_seed_until": None,
+        }
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_has_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_nudge_cached_reticulum_path",
+            return_value=True,
+        ) as nudge:
+            self.assertTrue(
+                self.bridge._nudge_overlay_link_path(
+                    peer_hash,
+                    self.destination_hash,
+                )
+            )
+
+        nudge.assert_called_once_with(
+            self.destination_hash,
+            peer_hash,
+            target="presence-reticulum",
+            reason="overlay_link_cached_path_unproven",
+            cooldown_seconds=self.bridge._UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
+        )
+
+    def test_proven_cached_overlay_path_avoids_redundant_nudge(self):
+        peer_hash = self.destination_hash.hex()
+        self.bridge._note_peer_direct_activity(
+            peer_hash,
+            "tx",
+            "test_authenticated_link",
+        )
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_has_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_nudge_cached_reticulum_path",
+        ) as nudge:
+            self.assertTrue(
+                self.bridge._nudge_overlay_link_path(
+                    peer_hash,
+                    self.destination_hash,
+                )
+            )
+
+        nudge.assert_not_called()
+
+    def test_unproven_cached_path_requests_are_cooled_down(self):
+        peer_hash = self.destination_hash.hex()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_seen_inbound": time.time(),
+            "last_request_path_at": None,
+            "ts_seed_until": None,
+        }
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_has_path",
+            return_value=True,
+        ), mock.patch.object(RNS.Transport, "request_path") as request_path:
+            self.assertTrue(
+                self.bridge._nudge_overlay_link_path(
+                    peer_hash,
+                    self.destination_hash,
+                )
+            )
+            self.assertTrue(
+                self.bridge._nudge_overlay_link_path(
+                    peer_hash,
+                    self.destination_hash,
+                )
+            )
+
+        request_path.assert_called_once_with(self.destination_hash)
+
     def test_recent_media_success_avoids_route_rpc(self):
         peer_hash = self.destination_hash.hex()
         state = self.bridge._get_call_media_state(peer_hash)
@@ -682,6 +893,11 @@ class PresenceBridgeWireEncodingTest(unittest.TestCase):
 
     def test_route_bound_presence_recovers_signed_origin_from_relay(self):
         origin_raw = bytes.fromhex("55" * 16)
+        self.bridge._known_peers[origin_raw.hex()] = object()
+        self.bridge._overlay_peer_failures[origin_raw.hex()] = {
+            "count": 2,
+            "last_reason": "test",
+        }
         route = base64.urlsafe_b64encode(origin_raw).decode("ascii").rstrip("=")
         emitted = []
         message = {
@@ -716,6 +932,35 @@ class PresenceBridgeWireEncodingTest(unittest.TestCase):
                 "linkId": "relay-link",
             },
         )
+        origin = "55" * 16
+        relay = "44" * 16
+        self.assertIn(origin, self.bridge._peer_lifecycle)
+        self.assertNotIn(
+            "last_direct_rx_at",
+            self.bridge._peer_lifecycle[origin],
+        )
+        self.assertFalse(self.bridge._peer_has_recent_direct_activity(origin))
+        self.assertIn(origin, self.bridge._overlay_peer_failures)
+        self.assertNotEqual(origin, relay)
+
+    def test_relayed_call_sender_is_recalled_without_direct_route_claim(self):
+        origin = "55" * 16
+        relay = "44" * 16
+        with mock.patch.object(
+            self.bridge,
+            "ensure_known_peer_from_recall",
+            return_value=True,
+        ) as recall, mock.patch.object(self.bridge, "emit_event"):
+            self.assertTrue(
+                self.bridge._emit_call_bridge_message(
+                    {"t": "CR", "r": origin},
+                    relay,
+                    "relay-link",
+                )
+            )
+
+        recall.assert_called_once_with(origin, "recall")
+        self.assertFalse(self.bridge._peer_has_recent_direct_activity(origin))
 
 
 class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
