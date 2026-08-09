@@ -102,6 +102,12 @@ import {
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const RETICULUM_CALL_GREEN = '#22c55e';
+const GROUP_RAIL_TOOLTIP_MODIFIERS = [
+  {
+    name: 'flip',
+    enabled: false,
+  },
+];
 
 /** Atom values, doubling as key suffixes under group:reticulum.settings.text_size */
 const reticulumTextScaleOptions = ['default', 'medium', 'high'] as const;
@@ -1742,6 +1748,11 @@ const GroupItem = memo(
             </Box>
           }
           slotProps={{
+            popper: {
+              // -7r15: Keep this tooltip fixed on the rail's right side to
+              // prevent Popper placement changes from causing an update loop.
+              modifiers: GROUP_RAIL_TOOLTIP_MODIFIERS,
+            },
             tooltip: {
               sx: {
                 backgroundColor:
