@@ -74,6 +74,50 @@ describe('community STUN endpoint validation', () => {
     await coordinator.waitForStop();
   });
 
+  it('re-queries discovery when a call asks for an empty verified pool', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const bridge = new FakeBridge();
+    const coordinator = makeCoordinator();
+    await coordinator.start(bridge as unknown as ReticulumBridge, {
+      stunCacheDbPath: '',
+      contributionEnabled: false,
+    });
+    await Promise.resolve();
+    expect(bridge.getCommunityStunEndpoints).toHaveBeenCalledTimes(1);
+
+    // The startup query is still within the dedupe window.
+    expect(coordinator.getIceServersForRenderer()).toEqual([]);
+    expect(bridge.getCommunityStunEndpoints).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(coordinator.getIceServersForRenderer()).toEqual([]);
+    await Promise.resolve();
+    expect(bridge.getCommunityStunEndpoints).toHaveBeenCalledTimes(2);
+
+    coordinator.stop();
+    await coordinator.waitForStop();
+  });
+
+  it('refreshes anonymous discovery before verified probes can expire', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const bridge = new FakeBridge();
+    const coordinator = makeCoordinator();
+    await coordinator.start(bridge as unknown as ReticulumBridge, {
+      stunCacheDbPath: '',
+      contributionEnabled: false,
+    });
+    await Promise.resolve();
+    expect(bridge.getCommunityStunEndpoints).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    expect(bridge.getCommunityStunEndpoints).toHaveBeenCalledTimes(2);
+
+    coordinator.stop();
+    await coordinator.waitForStop();
+  });
+
   it('retries contribution after another local instance owns the UDP port', async () => {
     vi.useFakeTimers();
     const tryBind = vi

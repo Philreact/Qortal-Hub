@@ -5039,35 +5039,35 @@ export class GroupCallManager extends EventEmitter {
     const value = input as Partial<DmCallLinkControlInput>;
     return Boolean(
       value.version === 1 &&
-        (value.kind === 'hangup' || value.kind === 'hangup-ack') &&
-        typeof value.roomId === 'string' &&
-        value.roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
-        typeof value.callSessionId === 'string' &&
-        value.callSessionId.length > 0 &&
-        value.callSessionId.length <= 128 &&
-        Number.isInteger(value.mediaSessionGeneration) &&
-        typeof value.callId === 'string' &&
-        value.callId.length > 0 &&
-        value.callId.length <= 64 &&
-        typeof value.chatId === 'string' &&
-        value.chatId.startsWith('direct:') &&
-        value.chatId.length <= 256 &&
-        typeof value.controlId === 'string' &&
-        value.controlId.length > 0 &&
-        value.controlId.length <= 128 &&
-        typeof value.fromAddress === 'string' &&
-        value.fromAddress.length > 0 &&
-        value.fromAddress.length <= 128 &&
-        typeof value.toAddress === 'string' &&
-        value.toAddress.length > 0 &&
-        value.toAddress.length <= 128 &&
-        typeof value.timestamp === 'number' &&
-        Number.isFinite(value.timestamp) &&
-        (value.kind === 'hangup-ack' ||
-          (typeof value.publicKey === 'string' &&
-            value.publicKey.length > 0 &&
-            typeof value.signature === 'string' &&
-            value.signature.length > 0))
+      (value.kind === 'hangup' || value.kind === 'hangup-ack') &&
+      typeof value.roomId === 'string' &&
+      value.roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
+      typeof value.callSessionId === 'string' &&
+      value.callSessionId.length > 0 &&
+      value.callSessionId.length <= 128 &&
+      Number.isInteger(value.mediaSessionGeneration) &&
+      typeof value.callId === 'string' &&
+      value.callId.length > 0 &&
+      value.callId.length <= 64 &&
+      typeof value.chatId === 'string' &&
+      value.chatId.startsWith('direct:') &&
+      value.chatId.length <= 256 &&
+      typeof value.controlId === 'string' &&
+      value.controlId.length > 0 &&
+      value.controlId.length <= 128 &&
+      typeof value.fromAddress === 'string' &&
+      value.fromAddress.length > 0 &&
+      value.fromAddress.length <= 128 &&
+      typeof value.toAddress === 'string' &&
+      value.toAddress.length > 0 &&
+      value.toAddress.length <= 128 &&
+      typeof value.timestamp === 'number' &&
+      Number.isFinite(value.timestamp) &&
+      (value.kind === 'hangup-ack' ||
+        (typeof value.publicKey === 'string' &&
+          value.publicKey.length > 0 &&
+          typeof value.signature === 'string' &&
+          value.signature.length > 0))
     );
   }
 
@@ -5090,10 +5090,24 @@ export class GroupCallManager extends EventEmitter {
     ) {
       return;
     }
+    const authenticatedDmPeerHash =
+      this.resolveAuthenticatedDmMediaPeerDestinationHash(
+        room,
+        input.fromAddress,
+        input.toAddress
+      );
     const source = room.participants.get(input.fromAddress);
     const target = room.participants.get(input.toAddress);
-    if (!source || !target) return;
-    const expectedHash = source.reticulumDestinationHash.trim().toLowerCase();
+    if (!target || (!source && !authenticatedDmPeerHash)) return;
+    const sourceHash = source?.reticulumDestinationHash.trim().toLowerCase();
+    if (
+      authenticatedDmPeerHash &&
+      sourceHash &&
+      sourceHash !== authenticatedDmPeerHash
+    ) {
+      return;
+    }
+    const expectedHash = authenticatedDmPeerHash || sourceHash || '';
     const transportHash = resolveGroupCallSourcePeerHash(
       senderDestinationHash,
       peerPresenceHash
@@ -5103,7 +5117,7 @@ export class GroupCallManager extends EventEmitter {
       !transportHash ||
       expectedHash !== transportHash ||
       (room.dmVoicePeerDestinationHash &&
-        room.dmVoicePeerDestinationHash !== expectedHash)
+        room.dmVoicePeerDestinationHash.trim().toLowerCase() !== expectedHash)
     ) {
       return;
     }
@@ -5132,11 +5146,25 @@ export class GroupCallManager extends EventEmitter {
     ) {
       return;
     }
+    const authenticatedDmPeerHash =
+      this.resolveAuthenticatedDmMediaPeerDestinationHash(
+        room,
+        input.fromAddress,
+        input.toAddress
+      );
     const source = room.participants.get(input.fromAddress);
     const target = room.participants.get(input.toAddress);
-    if (!source || !target) return;
-    if (source.publicKey && source.publicKey !== input.publicKey) return;
-    const expectedHash = source.reticulumDestinationHash.trim().toLowerCase();
+    if (!target || (!source && !authenticatedDmPeerHash)) return;
+    if (source?.publicKey && source.publicKey !== input.publicKey) return;
+    const sourceHash = source?.reticulumDestinationHash.trim().toLowerCase();
+    if (
+      authenticatedDmPeerHash &&
+      sourceHash &&
+      sourceHash !== authenticatedDmPeerHash
+    ) {
+      return;
+    }
+    const expectedHash = authenticatedDmPeerHash || sourceHash || '';
     const transportHash = resolveGroupCallSourcePeerHash(
       senderDestinationHash,
       peerPresenceHash
@@ -5861,15 +5889,20 @@ export class GroupCallManager extends EventEmitter {
         candidate.dmVoiceCallId === input.callId &&
         candidate.chatId === input.chatId &&
         this.localAddresses.has(input.fromAddress) &&
-        candidate.participants.has(input.fromAddress) &&
-        candidate.participants.has(input.toAddress)
+        candidate.participants.has(input.fromAddress)
     );
     if (!room) return { success: false, error: 'dm-call-room-not-found' };
-    const expectedPeerHash = room.dmVoicePeerDestinationHash?.trim().toLowerCase();
+    const expectedPeerHash =
+      this.resolveAuthenticatedDmMediaPeerDestinationHash(
+        room,
+        input.fromAddress,
+        input.toAddress
+      );
     const peer = room.participants.get(input.toAddress);
     if (
       !expectedPeerHash ||
-      peer?.reticulumDestinationHash.trim().toLowerCase() !== expectedPeerHash
+      (peer &&
+        peer.reticulumDestinationHash.trim().toLowerCase() !== expectedPeerHash)
     ) {
       return { success: false, error: 'dm-call-peer-mismatch' };
     }
@@ -5903,17 +5936,20 @@ export class GroupCallManager extends EventEmitter {
     if (compressed.length > GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES) {
       return { success: false, error: 'dm-call-control-too-large' };
     }
-    const result = await this.reticulumBridge?.sendGroupAudioLinkControlDetailed({
-      roomId: room.roomId,
-      payload: compressed,
-      signalType: 'call-control',
-      signalId: input.controlId,
-      callSessionId: room.callSessionId,
-      linkId: linkState.linkId,
-      peerPresenceHash: linkState.peerPresenceHash,
-    });
+    const result =
+      await this.reticulumBridge?.sendGroupAudioLinkControlDetailed({
+        roomId: room.roomId,
+        payload: compressed,
+        signalType: 'call-control',
+        signalId: input.controlId,
+        callSessionId: room.callSessionId,
+        linkId: linkState.linkId,
+        peerPresenceHash: linkState.peerPresenceHash,
+      });
     if (!result?.ok) {
-      const failure = result as Extract<ReticulumSendResult, { ok: false }> | undefined;
+      const failure = result as
+        | Extract<ReticulumSendResult, { ok: false }>
+        | undefined;
       return {
         success: false,
         error: failure?.error ?? failure?.reason ?? 'direct-link-send-failed',
@@ -5935,13 +5971,19 @@ export class GroupCallManager extends EventEmitter {
     if (!this.localAddresses.has(input.fromAddress)) {
       return { success: false, error: 'sender-not-local' };
     }
+    const authenticatedDmPeerHash =
+      this.resolveAuthenticatedDmMediaPeerDestinationHash(
+        room,
+        input.fromAddress,
+        input.toAddress
+      );
+    const source = room.participants.get(input.fromAddress);
     if (
-      !room.participants.has(input.fromAddress) ||
-      !room.participants.has(input.toAddress)
+      !source ||
+      (!authenticatedDmPeerHash && !room.participants.has(input.toAddress))
     ) {
       return { success: false, error: 'participant-not-found' };
     }
-    const source = room.participants.get(input.fromAddress)!;
     if (source.publicKey && source.publicKey !== input.publicKey) {
       return { success: false, error: 'sender-public-key-mismatch' };
     }
@@ -5992,11 +6034,15 @@ export class GroupCallManager extends EventEmitter {
       bridge?.getState() === 'ready' &&
       linkState?.established &&
       linkState.linkId &&
+      (!authenticatedDmPeerHash || linkState.rooms.has(input.roomId)) &&
       this.isReticulumAudioLinkVerifiedForAddress(
         input.toAddress,
         linkState.peerPresenceHash,
         linkState.peerDestinationHash
-      )
+      ) &&
+      (!authenticatedDmPeerHash ||
+        linkState.peerPresenceHash.trim().toLowerCase() ===
+          authenticatedDmPeerHash)
     ) {
       const channelResult = await bridge.sendGroupAudioLinkControlDetailed({
         roomId: input.roomId,
@@ -6026,6 +6072,42 @@ export class GroupCallManager extends EventEmitter {
       };
     }
     return { success: false, error: 'direct-link-not-ready' };
+  }
+
+  /**
+   * A direct-call media room is bound by main to the exact device selected by
+   * CallManager. That binding remains authoritative while a relayed GC_JOIN is
+   * delayed, so DM RTC setup must not depend on the remote participant row.
+   */
+  private resolveAuthenticatedDmMediaPeerDestinationHash(
+    room: GroupRoom,
+    fromAddress: string,
+    toAddress: string
+  ): string | null {
+    if (
+      !room.roomId.startsWith(DM_VOICE_ROOM_PREFIX) ||
+      !room.dmVoiceCallId ||
+      !room.chatId.startsWith('direct:')
+    ) {
+      return null;
+    }
+    const addresses = room.chatId
+      .slice('direct:'.length)
+      .split(':')
+      .filter(Boolean);
+    if (
+      addresses.length !== 2 ||
+      fromAddress === toAddress ||
+      !addresses.includes(fromAddress) ||
+      !addresses.includes(toAddress)
+    ) {
+      return null;
+    }
+    const fromIsLocal = this.localAddresses.has(fromAddress);
+    const toIsLocal = this.localAddresses.has(toAddress);
+    if (fromIsLocal === toIsLocal) return null;
+    const pinned = room.dmVoicePeerDestinationHash?.trim().toLowerCase() ?? '';
+    return isRnsDestinationHashHex(pinned) ? pinned : null;
   }
 
   private computeReticulumAudioTargetsForRoom(room: GroupRoom): Set<string> {

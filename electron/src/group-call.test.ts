@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as nodeCrypto from 'node:crypto';
 import * as nodeZlib from 'node:zlib';
 import {
   GroupCallManager,
@@ -251,6 +252,33 @@ describe('DM call terminal control', () => {
     return manager;
   }
 
+  function rtcSignal(
+    fromAddress = localAddress,
+    toAddress = peerAddress,
+    signalId = 'rtc-signal-1'
+  ) {
+    const payload = JSON.stringify({ version: 1, audio: 'native-track' });
+    return {
+      roomId,
+      callSessionId: 'media-session',
+      mediaSessionGeneration: 3,
+      fromAddress,
+      toAddress,
+      connectionId: 'call-1:native-audio-v1',
+      signalId,
+      signalType: 'capability' as const,
+      payload,
+      payloadHash: nodeCrypto
+        .createHash('sha256')
+        .update(payload, 'utf8')
+        .digest('hex'),
+      timestamp: Date.now(),
+      signature: 'signature',
+      publicKey:
+        fromAddress === localAddress ? 'local-public-key' : 'peer-public-key',
+    };
+  }
+
   it('sends hangup on the exact authenticated DM media link', async () => {
     const manager = controlManager();
     const send = vi.fn(async () => ({ ok: true }));
@@ -293,6 +321,29 @@ describe('DM call terminal control', () => {
     });
   });
 
+  it('sends hangup when the authenticated DM link exists before the peer join row', async () => {
+    const manager = controlManager();
+    manager.rooms.get(roomId).participants.delete(peerAddress);
+    const send = vi.fn(async () => ({ ok: true }));
+    manager.reticulumBridge = { sendGroupAudioLinkControlDetailed: send };
+
+    await expect(
+      manager.sendDmCallLinkControl({
+        kind: 'hangup',
+        callId: 'call-1',
+        chatId,
+        controlId: 'control-without-peer-row',
+        fromAddress: localAddress,
+        toAddress: peerAddress,
+        timestamp: Date.now(),
+        publicKey: 'local-public-key',
+        signature: 'signature',
+      })
+    ).resolves.toEqual({ success: true });
+
+    expect(send).toHaveBeenCalledOnce();
+  });
+
   it('rejects terminal control delivered by a different endpoint', () => {
     const manager = controlManager();
     const received = vi.fn();
@@ -328,6 +379,121 @@ describe('DM call terminal control', () => {
       Date.now()
     );
     expect(received).toHaveBeenCalledOnce();
+  });
+
+  it('accepts terminal control from the pinned DM link before the peer join row', () => {
+    const manager = controlManager();
+    manager.rooms.get(roomId).participants.delete(peerAddress);
+    const received = vi.fn();
+    manager.on('gcall:dm-call-control', received);
+
+    manager.verifyAndDeliverDmCallLinkControl(
+      {
+        version: 1,
+        kind: 'hangup',
+        roomId,
+        callSessionId: 'media-session',
+        mediaSessionGeneration: 3,
+        callId: 'call-1',
+        chatId,
+        controlId: 'incoming-without-peer-row',
+        fromAddress: peerAddress,
+        toAddress: localAddress,
+        timestamp: Date.now(),
+        publicKey: 'peer-public-key',
+        signature: 'signature',
+      },
+      peerHash,
+      peerHash,
+      Date.now()
+    );
+
+    expect(received).toHaveBeenCalledOnce();
+  });
+
+  it('sends signed RTC signaling over the pinned DM link before the peer join row', async () => {
+    const manager = controlManager();
+    manager.rooms.get(roomId).participants.delete(peerAddress);
+    manager.verifyPool = { verify: vi.fn(async () => true) };
+    const send = vi.fn(async () => ({ ok: true }));
+    manager.reticulumBridge = {
+      getState: () => 'ready',
+      sendGroupAudioLinkControlDetailed: send,
+    };
+
+    await expect(manager.sendRtcSignal(rtcSignal())).resolves.toEqual({
+      success: true,
+    });
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0][0]).toMatchObject({
+      roomId,
+      linkId: 'audio-link-1',
+      peerPresenceHash: peerHash,
+      signalType: 'capability',
+    });
+  });
+
+  it('accepts signed RTC signaling from the pinned DM link before the peer join row', async () => {
+    const manager = controlManager();
+    manager.rooms.get(roomId).participants.delete(peerAddress);
+    manager.verifyPool = { verify: vi.fn(async () => true) };
+    const received = vi.fn();
+    manager.on('gcall:rtc-signal', received);
+
+    await manager.verifyAndDeliverRtcSignal(
+      rtcSignal(peerAddress, localAddress, 'incoming-rtc-without-peer-row'),
+      peerHash,
+      peerHash,
+      Date.now()
+    );
+
+    expect(received).toHaveBeenCalledOnce();
+    expect(received.mock.calls[0][0]).toMatchObject({ verified: true });
+  });
+
+  it('does not relax missing-participant validation for group calls', async () => {
+    const manager = controlManager();
+    const room = manager.rooms.get(roomId);
+    manager.rooms.delete(roomId);
+    room.roomId = 'gcall-qortal-1144';
+    room.chatId = 'group:1144';
+    room.dmVoiceCallId = undefined;
+    room.dmVoicePeerDestinationHash = undefined;
+    room.participants.delete(peerAddress);
+    manager.rooms.set(room.roomId, room);
+    manager.verifyPool = { verify: vi.fn(async () => true) };
+    const input = rtcSignal();
+    input.roomId = room.roomId;
+
+    await expect(manager.sendRtcSignal(input)).resolves.toEqual({
+      success: false,
+      error: 'participant-not-found',
+    });
+  });
+
+  it('preserves group RTC signaling over an authenticated shared peer link', async () => {
+    const manager = controlManager();
+    const room = manager.rooms.get(roomId);
+    manager.rooms.delete(roomId);
+    room.roomId = 'gcall-qortal-1144';
+    room.chatId = 'group:1144';
+    room.dmVoiceCallId = undefined;
+    room.dmVoicePeerDestinationHash = undefined;
+    manager.rooms.set(room.roomId, room);
+    manager.reticulumAudioPeersByAddress.get(peerAddress).rooms.clear();
+    manager.verifyPool = { verify: vi.fn(async () => true) };
+    const send = vi.fn(async () => ({ ok: true }));
+    manager.reticulumBridge = {
+      getState: () => 'ready',
+      sendGroupAudioLinkControlDetailed: send,
+    };
+    const input = rtcSignal();
+    input.roomId = room.roomId;
+
+    await expect(manager.sendRtcSignal(input)).resolves.toEqual({
+      success: true,
+    });
+    expect(send).toHaveBeenCalledOnce();
   });
 });
 

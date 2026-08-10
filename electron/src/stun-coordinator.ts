@@ -29,6 +29,11 @@ const PROBES_PER_MINUTE = 18;
 const MAX_CONCURRENT_PROBES = 3;
 const MAX_PROBE_QUEUE = 128;
 const PROBE_TICK_MS = 2_000;
+// Keep discovery warmer than the eight-minute local probe lease. This makes
+// call setup a cache hit in the normal case while retaining an on-demand
+// refresh when the app starts before any contributor has answered.
+const DISCOVERY_REFRESH_INTERVAL_MS = 4 * 60_000;
+const DISCOVERY_REQUEST_MIN_INTERVAL_MS = 5_000;
 const ADVERTISE_INTERVAL_MS = 2 * 60_000;
 const ADVERTISE_TTL_MS = 10 * 60_000;
 const CONTRIBUTION_RETRY_BASE_MS = 30_000;
@@ -89,6 +94,7 @@ export class StunCoordinator {
   private contributionTask: Promise<void> = Promise.resolve();
   private publicHost: string | null = null;
   private probeTimer: ReturnType<typeof setInterval> | null = null;
+  private discoveryTimer: ReturnType<typeof setInterval> | null = null;
   private advertiseTimer: ReturnType<typeof setInterval> | null = null;
   private contributionRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private contributionRetryAttempt = 0;
@@ -102,11 +108,12 @@ export class StunCoordinator {
   private running = false;
   private lastServedIceServers: { urls: string }[] = [];
   private lastLoggedIceUrlsKey: string | null = null;
+  private lastDiscoveryRequestAt = 0;
   private readonly onDiscoveredEndpoint = (payload: CommunityStunEndpoint) => {
     this.acceptDiscoveredEndpoint(payload);
   };
   private readonly onBridgeReady = () => {
-    if (this.bridge) this.requestBridgeEndpoints(this.bridge);
+    if (this.bridge) this.requestBridgeEndpoints(this.bridge, true);
     if (this.publicHost) void this.advertiseContribution();
   };
 
@@ -130,13 +137,18 @@ export class StunCoordinator {
     this.bindBridge(bridge);
     this.contributionEnabled = opts.contributionEnabled !== false;
     this.cache.open();
-    this.requestBridgeEndpoints(bridge);
+    this.requestBridgeEndpoints(bridge, true);
 
     this.probeTimer = setInterval(() => {
       this.refillProbeBudget();
       this.drainProbeQueue();
     }, PROBE_TICK_MS);
     this.probeTimer.unref?.();
+
+    this.discoveryTimer = setInterval(() => {
+      if (this.bridge) this.requestBridgeEndpoints(this.bridge);
+    }, DISCOVERY_REFRESH_INTERVAL_MS);
+    this.discoveryTimer.unref?.();
 
     this.queueContributionRefresh();
     loggerLog(
@@ -149,8 +161,10 @@ export class StunCoordinator {
     this.contributionGeneration += 1;
     this.probeGeneration += 1;
     if (this.probeTimer) clearInterval(this.probeTimer);
+    if (this.discoveryTimer) clearInterval(this.discoveryTimer);
     if (this.advertiseTimer) clearInterval(this.advertiseTimer);
     this.probeTimer = null;
+    this.discoveryTimer = null;
     this.advertiseTimer = null;
     this.clearContributionRetry();
     this.stopLocalUdpImmediately();
@@ -162,6 +176,7 @@ export class StunCoordinator {
     this.probeQueue = [];
     this.probing.clear();
     this.activeProbes = 0;
+    this.lastDiscoveryRequestAt = 0;
     this.lastLoggedIceUrlsKey = null;
     if (coordinatorInstance === this) coordinatorInstance = null;
     loggerLog('[STUN] Community coordinator stopped');
@@ -190,7 +205,7 @@ export class StunCoordinator {
   setBridge(bridge: ReticulumBridge): void {
     if (!this.running || this.bridge === bridge) return;
     this.bindBridge(bridge);
-    this.requestBridgeEndpoints(bridge);
+    this.requestBridgeEndpoints(bridge, true);
     if (this.publicHost) void this.advertiseContribution();
   }
 
@@ -201,6 +216,12 @@ export class StunCoordinator {
       out = this.cache.selectTopIceServers(ICE_STUN_SERVER_CAP);
     } catch {
       out = [];
+    }
+    // Discovery replies arrive asynchronously after the bridge returns its
+    // current snapshot. An empty pool must therefore trigger another bounded,
+    // deduplicated query instead of becoming a permanent result for calls.
+    if (out.length === 0 && this.bridge) {
+      this.requestBridgeEndpoints(this.bridge);
     }
     this.lastServedIceServers = out.map((server) => ({ ...server }));
     const urlsKey = out.map((server) => server.urls).join('|');
@@ -453,7 +474,15 @@ export class StunCoordinator {
     bridge.on('ready', this.onBridgeReady);
   }
 
-  private requestBridgeEndpoints(bridge: ReticulumBridge): void {
+  private requestBridgeEndpoints(bridge: ReticulumBridge, force = false): void {
+    const now = Date.now();
+    if (
+      !force &&
+      now - this.lastDiscoveryRequestAt < DISCOVERY_REQUEST_MIN_INTERVAL_MS
+    ) {
+      return;
+    }
+    this.lastDiscoveryRequestAt = now;
     void bridge
       .getCommunityStunEndpoints()
       .then((endpoints) => {

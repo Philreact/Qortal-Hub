@@ -887,6 +887,8 @@ const ZERO_INBOUND_MEDIA_RECOVERY_COOLDOWN_MS = 3_000;
 // RNS Channel retries accepted capability messages itself. A short periodic
 // resend only creates head-of-line blocking for SDP and ICE on slower links.
 const GROUP_RTC_CAPABILITY_RETRY_MS = 12_000;
+const GROUP_RTC_EMPTY_ICE_RETRY_MS = 3_000;
+const GROUP_RTC_ICE_REFRESH_MS = 4 * 60_000;
 const LOW_INBOUND_MEDIA_RECOVERY_MIN_OUTBOUND_FRAMES = 300;
 const LOW_INBOUND_MEDIA_RECOVERY_MAX_INBOUND_TO_OUTBOUND_RATIO = 0.35;
 const LOW_INBOUND_MEDIA_RECOVERY_UNDERTARGET_MIN = 0.12;
@@ -1079,6 +1081,9 @@ export class GroupCallAudioEngineRuntime {
   private readonly groupRtcCapabilityLastSentAt = new Map<string, number>();
   private groupRtcIceServers: RTCIceServer[] = [];
   private groupRtcIceServersLoaded = false;
+  private groupRtcIceServersLookupGeneration: number | null = null;
+  private groupRtcIceServersLastLookupAt = 0;
+  private groupRtcIceServersGeneration = 0;
   private groupRtcMaintenanceTimer: ReturnType<typeof setInterval> | null =
     null;
   private roomKey: Uint8Array | null = null;
@@ -5113,6 +5118,7 @@ export class GroupCallAudioEngineRuntime {
     this.callSessionId = '';
     this.mediaSessionGeneration = 1;
     this.topology = null;
+    this.resetGroupRtcIceServers();
     this.closeAllGroupRtcTransports('joining-new-room');
     this.stopGroupRtcMaintenance();
     this.lastObservedTopologyEpoch = 0;
@@ -5439,6 +5445,7 @@ export class GroupCallAudioEngineRuntime {
     this.callSessionId = '';
     this.mediaSessionGeneration = 1;
     this.topology = null;
+    this.resetGroupRtcIceServers();
     this.closeAllGroupRtcTransports('left-room');
     this.stopGroupRtcMaintenance();
     this.lastObservedTopologyEpoch = 0;
@@ -6122,19 +6129,7 @@ export class GroupCallAudioEngineRuntime {
       return;
     }
     this.ensureGroupRtcMaintenance();
-    if (!this.groupRtcIceServersLoaded) {
-      this.groupRtcIceServersLoaded = true;
-      try {
-        const servers = await window.hub?.getIceServers?.();
-        if (Array.isArray(servers)) {
-          this.groupRtcIceServers = servers
-            .filter((server) => typeof server?.urls === 'string')
-            .map((server) => ({ urls: server.urls }));
-        }
-      } catch {
-        // Host candidates still support LAN calls when STUN discovery is unavailable.
-      }
-    }
+    await this.refreshGroupRtcIceServers();
     const targets = new Set(
       getReticulumTransportTargets(this.userInfo.address, this.topology)
         .map((address) => address.trim())
@@ -6171,6 +6166,76 @@ export class GroupCallAudioEngineRuntime {
             }
           );
         });
+      }
+    }
+  }
+
+  private resetGroupRtcIceServers(): void {
+    this.groupRtcIceServersGeneration += 1;
+    this.groupRtcIceServers = [];
+    this.groupRtcIceServersLoaded = false;
+    this.groupRtcIceServersLastLookupAt = 0;
+  }
+
+  private async refreshGroupRtcIceServers(): Promise<void> {
+    const generation = this.groupRtcIceServersGeneration;
+    if (this.groupRtcIceServersLookupGeneration === generation) return;
+    const now = Date.now();
+    const retryAfterMs = this.groupRtcIceServersLoaded
+      ? GROUP_RTC_ICE_REFRESH_MS
+      : GROUP_RTC_EMPTY_ICE_RETRY_MS;
+    if (now - this.groupRtcIceServersLastLookupAt < retryAfterMs) return;
+    this.groupRtcIceServersLastLookupAt = now;
+    this.groupRtcIceServersLookupGeneration = generation;
+    const roomId = this.snapshot.roomId;
+    const callSessionId = this.callSessionId;
+    try {
+      const servers = await window.hub?.getIceServers?.();
+      if (
+        generation !== this.groupRtcIceServersGeneration ||
+        roomId !== this.snapshot.roomId ||
+        callSessionId !== this.callSessionId
+      ) {
+        return;
+      }
+      const next = Array.isArray(servers)
+        ? servers
+            .filter((server) => typeof server?.urls === 'string')
+            .map((server) => ({ urls: server.urls }))
+        : [];
+      if (next.length === 0) {
+        // Do not feed expired URLs into a newly-created PeerConnection. An
+        // existing edge keeps its immutable configuration and remains free to
+        // finish connecting while discovery is retried.
+        this.groupRtcIceServers = [];
+        this.groupRtcIceServersLoaded = false;
+        // Host candidates still support LAN calls. Keep retrying the verified
+        // community pool in the background so an asynchronous discovery reply
+        // can upgrade an internet call without requiring the user to rejoin.
+        return;
+      }
+      const previousKey = this.groupRtcIceServers
+        .map((server) => String(server.urls))
+        .join('|');
+      const nextKey = next.map((server) => String(server.urls)).join('|');
+      this.groupRtcIceServers = next;
+      this.groupRtcIceServersLoaded = true;
+      if (previousKey === nextKey) return;
+      // PeerConnections copy their ICE configuration at construction. Replace
+      // only edges that have not opened; an already-working LAN/WebRTC edge
+      // must never be interrupted merely because discovery completed later.
+      for (const [peerAddress, transport] of [
+        ...this.groupRtcTransports.entries(),
+      ]) {
+        if (!transport.isOpen()) {
+          this.closeGroupRtcTransport(peerAddress, 'ice-servers-refreshed');
+        }
+      }
+    } catch {
+      // A transient host/bridge failure remains retryable on maintenance.
+    } finally {
+      if (this.groupRtcIceServersLookupGeneration === generation) {
+        this.groupRtcIceServersLookupGeneration = null;
       }
     }
   }
