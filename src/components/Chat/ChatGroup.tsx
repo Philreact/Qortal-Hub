@@ -558,7 +558,13 @@ function ReticulumChannelExpiryField({
   onChange: (durationMs: number | undefined) => void;
   value?: number;
 }) {
-  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
+  const { t } = useTranslation([
+    'auth',
+    'core',
+    'group',
+    'question',
+    'reticulum',
+  ]);
   const normalizedValue =
     Number.isFinite(value) && Number(value) > 0 ? Number(value) : '';
   const hasCustomValue =
@@ -599,7 +605,7 @@ function ReticulumChannelExpiryField({
             const durationMs = Number(selected);
             return Number.isFinite(durationMs) && durationMs > 0
               ? formatReticulumExpiryDuration(durationMs)
-              : t('group:reticulum.expiry.no_expiry', {
+              : t('reticulum:expiry.no_expiry', {
                   postProcess: 'capitalizeEachFirstChar',
                 });
           },
@@ -608,7 +614,7 @@ function ReticulumChannelExpiryField({
         value={normalizedValue}
       >
         <MenuItem value="">
-          {t('group:reticulum.expiry.no_expiry', {
+          {t('reticulum:expiry.no_expiry', {
             postProcess: 'capitalizeEachFirstChar',
           })}
         </MenuItem>
@@ -1875,7 +1881,13 @@ export const ChatGroup = ({
   const [isResizingQManager, setIsResizingQManager] = useState(false);
   const qManagerResizeInitialSizeRef = useRef(qManagerSize);
 
-  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
+  const { t } = useTranslation([
+    'auth',
+    'core',
+    'group',
+    'question',
+    'reticulum',
+  ]);
 
   const maxQManagerWidth = Math.max(Q_MANAGER_MIN_WIDTH, windowSize.width);
   const maxQManagerHeight = Math.max(
@@ -2870,7 +2882,7 @@ export const ChatGroup = ({
         if (!result?.success) {
           throw new Error(
             result?.error ||
-              t('group:reticulum.hide_user.error_unhide', {
+              t('reticulum:hide_user.error_unhide', {
                 postProcess: 'capitalizeFirstChar',
               })
           );
@@ -2885,7 +2897,7 @@ export const ChatGroup = ({
         setReticulumHiddenUsersError(
           error instanceof Error
             ? error.message
-            : t('group:reticulum.hide_user.error_unhide', {
+            : t('reticulum:hide_user.error_unhide', {
                 postProcess: 'capitalizeFirstChar',
               })
         );
@@ -4286,7 +4298,7 @@ export const ChatGroup = ({
       if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0) {
         return {
           success: false,
-          error: t('group:chat_group.reticulum_disabled'),
+          error: t('reticulum:chat_group.disabled'),
         };
       }
       const timestamp = Date.now();
@@ -4311,7 +4323,7 @@ export const ChatGroup = ({
         !Number.isInteger(authorSequence.authorSeq) ||
         authorSequence.authorSeq <= 0
       ) {
-        throw new Error(t('group:chat_group.reticulum_reserve_seq_failed'));
+        throw new Error(t('reticulum:chat_group.reserve_seq_failed'));
       }
       let sequenceCommitted = false;
       try {
@@ -4338,11 +4350,11 @@ export const ChatGroup = ({
         );
         if (!signed || signed.error) {
           throw new Error(
-            signed?.error || t('group:chat_group.reticulum_sign_failed')
+            signed?.error || t('reticulum:chat_group.sign_failed')
           );
         }
         if (signed.authorAddress !== myAddress) {
-          throw new Error(t('group:chat_group.reticulum_author_mismatch'));
+          throw new Error(t('reticulum:chat_group.author_mismatch'));
         }
         const event = {
           ...baseFields,
@@ -4353,7 +4365,7 @@ export const ChatGroup = ({
         const result = await publishReticulumChatEvent(event);
         if (!result?.success) {
           throw new Error(
-            result?.error || t('group:chat_group.reticulum_publish_failed')
+            result?.error || t('reticulum:chat_group.publish_failed')
           );
         }
         sequenceCommitted = true;
@@ -4369,7 +4381,7 @@ export const ChatGroup = ({
             );
           } catch (releaseError) {
             console.warn(
-              t('group:chat_group.reticulum_release_seq_failed'),
+              t('reticulum:chat_group.release_seq_failed'),
               releaseError
             );
           }
@@ -4502,7 +4514,7 @@ export const ChatGroup = ({
         });
         if (!result?.success) {
           throw new Error(
-            result?.error || t('group:chat_group.reticulum_welcome_failed')
+            result?.error || t('reticulum:chat_group.welcome_failed')
           );
         }
         try {
@@ -6709,7 +6721,7 @@ export const ChatGroup = ({
         });
         if (!result?.success) {
           throw new Error(
-            result?.error || t('group:chat_group.reticulum_delete_failed')
+            result?.error || t('reticulum:chat_group.delete_failed')
           );
         }
         const eventId =
@@ -7592,12 +7604,12 @@ export const ChatGroup = ({
   ) => (
     <InputAdornment position="end">
       <Tooltip
-        title={t('group:reticulum.discussion.choose_emoji', {
+        title={t('reticulum:discussion.choose_emoji', {
           postProcess: 'capitalizeFirstChar',
         })}
       >
         <IconButton
-          aria-label={t('group:reticulum.discussion.choose_emoji', {
+          aria-label={t('reticulum:discussion.choose_emoji', {
             postProcess: 'capitalizeFirstChar',
           })}
           edge="end"
@@ -10107,7 +10119,7 @@ export const ChatGroup = ({
                     {reticulumChatEnabled && (
                       <>
                         <Tooltip
-                          title={t('group:reticulum.discussion.choose_emoji', {
+                          title={t('reticulum:discussion.choose_emoji', {
                             postProcess: 'capitalizeEachFirstChar',
                           })}
                         >
@@ -13014,7 +13026,7 @@ export const ChatGroup = ({
                       )}
                     </Box>
                     <Tooltip
-                      title={t('group:reticulum.hide_user.unhide', {
+                      title={t('reticulum:hide_user.unhide', {
                         postProcess: 'capitalizeFirstChar',
                       })}
                     >

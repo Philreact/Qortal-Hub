@@ -139,7 +139,7 @@ function InvalidInvitePreview() {
 
 function InviteCard({ groupId }: { groupId: string }) {
   const theme = useTheme();
-  const { t } = useTranslation(['core', 'group']);
+  const { t } = useTranslation(['core', 'group', 'reticulum']);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const memberGroups = useAtomValue(memberGroupsAtom);
   const [state, setState] = useState<'loading' | 'ready' | 'invalid' | 'error'>(
@@ -240,10 +240,10 @@ function InviteCard({ groupId }: { groupId: string }) {
       const fee = await getFee('JOIN_GROUP');
       await show({
         message: isOpen
-          ? t('group:reticulum.join_group_question', {
+          ? t('reticulum:join_group_question', {
               postProcess: 'capitalizeFirstChar',
             })
-          : t('group:reticulum.invite.apply_question', {
+          : t('reticulum:invite.apply_question', {
               postProcess: 'capitalizeFirstChar',
             }),
         publishFee: `${fee.fee} QORT`,
@@ -310,18 +310,18 @@ function InviteCard({ groupId }: { groupId: string }) {
 
   const actionLabel =
     isMember || actionState === 'joined'
-      ? t('group:reticulum.invite.joined', {
+      ? t('reticulum:invite.joined', {
           postProcess: 'capitalizeFirstChar',
         })
       : actionState === 'pending'
-        ? t('group:reticulum.invite.pending', {
+        ? t('reticulum:invite.pending', {
             postProcess: 'capitalizeFirstChar',
           })
         : isOpen
           ? t('group:action.join_group', {
               postProcess: 'capitalizeFirstChar',
             })
-          : t('group:reticulum.invite.apply', {
+          : t('reticulum:invite.apply', {
               postProcess: 'capitalizeFirstChar',
             });
   const actionDisabled = isMember || actionState !== 'idle' || isJoining;
@@ -445,14 +445,14 @@ function InviteCard({ groupId }: { groupId: string }) {
               </Typography>
               {isOpen ? (
                 <PublicRoundedIcon
-                  aria-label={t('group:reticulum.invite.open_group', {
+                  aria-label={t('reticulum:invite.open_group', {
                     postProcess: 'capitalizeFirstChar',
                   })}
                   sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 16 }}
                 />
               ) : (
                 <LockRoundedIcon
-                  aria-label={t('group:reticulum.invite.closed_group', {
+                  aria-label={t('reticulum:invite.closed_group', {
                     postProcess: 'capitalizeFirstChar',
                   })}
                   sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 16 }}

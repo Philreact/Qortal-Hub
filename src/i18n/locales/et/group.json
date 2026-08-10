@@ -184,14 +184,6 @@
     "remove_file": "Eemalda fail",
     "remove_image": "Eemalda pilt",
     "resize_channel_list": "Muuda kanalite loendi suurust",
-    "reticulum_author_mismatch": "Allkirjastatud Reticulumi vestluse autor ei ühti",
-    "reticulum_delete_failed": "Reticulumi vestluse kustutamine ebaõnnestus",
-    "reticulum_disabled": "Reticulumi vestlus on välja lülitatud",
-    "reticulum_publish_failed": "Reticulumi vestluse avaldamine ebaõnnestus",
-    "reticulum_release_seq_failed": "Reticulumi vestluse sündmuste jada ei õnnestunud vabastada",
-    "reticulum_reserve_seq_failed": "Reticulumi vestluse sündmuste jada ei õnnestunud reserveerida",
-    "reticulum_sign_failed": "Reticulumi vestluse sündmust ei õnnestunud allkirjastada",
-    "reticulum_welcome_failed": "Reticulumi tervituse avaldamine ebaõnnestus",
     "save_changes": "Salvesta muudatused",
     "search_chat": "Otsi vestlusest",
     "search_failed": "Otsing ebaõnnestus",
@@ -431,7 +423,6 @@
     "message_failed": "Reticulumi otsesõnum ebaõnnestus",
     "missing_participants": "Otsevestluse osalejad puuduvad",
     "missing_public_key": "Kohalik Qortali avalik võti puudub",
-    "reticulum_required_for_attachments": "Otsemanuste jaoks on vajalik Reticulumi otsevestlus",
     "select_valid_name": "Vali kehtiv Qortali nimi või aadress",
     "selected_file": "Valitud fail",
     "send_placeholder": "Saada sõnum...",
@@ -607,10 +598,6 @@
     "requests_empty_description": "Hallatavate gruppide liitumistaotlused ilmuvad siia.",
     "requests_empty_title": "Ootel taotlusi pole",
     "restore": "Restore",
-    "reticulum_mentions_one": "{{count}} mainimine",
-    "reticulum_mentions_other": "{{count}} mainimist",
-    "reticulum_new_messages_one": "{{count}} uus sõnum",
-    "reticulum_new_messages_other": "{{count}} uut sõnumit",
     "select_admin_group": "Vali grupp, mille administraator sa oled",
     "show_ignored": "Show ignored",
     "tab_invites": "Kutsed",
@@ -800,203 +787,6 @@
     "try_again": "Proovi uuesti",
     "unencrypted": "Krüpteerimata",
     "verification_failed": "Kontrollimine ebaõnnestus"
-  },
-  "reticulum": {
-    "about": {
-      "copied": "kopeeritud",
-      "created": "loodud",
-      "group_invite_link": "rühma kutselink"
-    },
-    "call_history": {
-      "answered": "kõne",
-      "cancelled": "tühistatud kõne",
-      "declined": "tagasi lükatud kõne",
-      "missed": "vastamata kõne",
-      "no_answer": "vastust ei tulnud"
-    },
-    "copy_invite_link": "kopeeri kutselink",
-    "discussion": {
-      "choose_emoji": "choose emoji",
-      "close": "close discussion",
-      "initial_post": "initial post",
-      "remove_attachment": "remove attachment",
-      "remove_file": "remove {{fileName}}",
-      "replies": "replies:",
-      "reply_placeholder": "reply to discussion...",
-      "wait_until_ready": "wait until the discussion is ready"
-    },
-    "event_preview": {
-      "all_day": "all day",
-      "calendar_unavailable": "calendar is unavailable",
-      "join_failed": "unable to join this group. Please try again.",
-      "loading": "loading event preview",
-      "member_required": "you must be a member of the source group to view this event.",
-      "not_found": "event not found",
-      "request_join_question": "request to join this group?",
-      "unavailable": "event unavailable",
-      "unavailable_temporarily": "event preview is temporarily unavailable",
-      "view_group": "view group"
-    },
-    "expiry": {
-      "channel_default": "kanali vaikeseade",
-      "channel_default_no_expiry": "kanali vaikeseade (aegumiseta)",
-      "channel_default_with": "kanali vaikeseade ({{duration}})",
-      "do_not_auto_delete": "ära kustuta automaatselt",
-      "maximum": "kuni {{duration}}",
-      "no_expiry": "aegumiseta",
-      "set": "määra sõnumi aegumine",
-      "title": "sõnumi aegumine",
-      "tooltip_value": "sõnumi aegumine: {{value}}",
-      "unavailable": "sõnumi aegumine pole saadaval"
-    },
-    "group_fallback_name": "Rühm",
-    "group_type": {
-      "closed": "suletud",
-      "open": "avatud"
-    },
-    "hide_user": {
-      "error_hide": "kasutajat ei saa peita",
-      "error_unhide": "kasutajat ei saa uuesti kuvada",
-      "for_1_hour": "peida 1 tunniks",
-      "for_24_hours": "peida 24 tunniks",
-      "hide": "peida",
-      "unhide": "kuva",
-      "until_unhidden": "peida kuni uuesti kuvamiseni"
-    },
-    "image_viewer": {
-      "actions": "image actions",
-      "chat_image": "chat image",
-      "clipboard_unavailable": "image clipboard is unavailable",
-      "close": "close image viewer",
-      "copied": "image copied",
-      "copy": "copy image",
-      "copy_failed": "unable to copy image",
-      "download": "download image",
-      "download_failed": "unable to download image",
-      "prepare_failed": "unable to prepare image for clipboard",
-      "read_failed": "unable to read image",
-      "zoom_in": "zoom in",
-      "zoom_out": "zoom out"
-    },
-    "invite": {
-      "apply": "apply",
-      "apply_question": "apply to join this group?",
-      "closed_group": "suletud rühm",
-      "joined": "joined",
-      "open_group": "avatud rühm",
-      "pending": "pending"
-    },
-    "join_group_question": "join this group?",
-    "mention": {
-      "channels": "kanalid",
-      "empty": "vasteid ei leitud",
-      "people": "inimesed",
-      "special": "erimainimised",
-      "suggestions": "mainimissoovitused"
-    },
-    "mode_pill": {
-      "chat": "Vestlus",
-      "enter_qortal_land": "Sisene Qortal Landi",
-      "return_to_chat": "Tagasi vestlusesse"
-    },
-    "onboarding": {
-      "find_communities": "Leia kogukondi",
-      "invite_error_invalid": "See ei tundu olevat kehtiv Qortali rühma kutselink.",
-      "invite_input_label": "Rühma kutselink",
-      "invite_input_placeholder": "Kleebi rühma kutselink...",
-      "or": "või",
-      "subtitle": "Tundub, et sa ei kuulu veel ühessegi kogukonda. Muudame seda.",
-      "title": "Tere tulemast uude ja paremasse Q-Chati",
-      "whats_new_button": "Mis on uut?"
-    },
-    "qapp_preview": {
-      "check_again": "check again",
-      "no_resource": "no Q-App resource was found for this link.",
-      "open_in_quitter": "open this post in Quitter.",
-      "open_publication": "open this publication to read the full article.",
-      "preview_failed": "the resource exists, but its preview could not be loaded right now.",
-      "preview_unavailable": "preview unavailable",
-      "resource_not_found": "resource not found",
-      "shared_photo": "shared a photo",
-      "shared_video": "shared a video",
-      "shared_video_titled": "shared a video: {{title}}",
-      "view_on_quitter": "view this post on Quitter",
-      "watch_on_qtube": "watch this video on Q-Tube."
-    },
-    "rail": {
-      "find_groups": "Otsi gruppe",
-      "group_settings": "Grupi seaded",
-      "whats_new": "Ava uudised"
-    },
-    "settings": {
-      "category": {
-        "accessibility": "Ligipääsetavus",
-        "legacy": "Vana versioon"
-      },
-      "legacy": {
-        "description": "Näita Q-Chati päises vanu Threadsi ja Admini juhtnuppe.",
-        "title": "Threads",
-        "toggle": {
-          "aria": "Näita vana Threadsi",
-          "description": "Kuvab vanad Threadsi ja Admini ikoonid.",
-          "label": "Threads"
-        },
-        "warning": "Threads eemaldatakse tulevases versioonis. Vii oluline lõimede teave enne uuendamist turvalisse kohta või uude Q-Chati kanalisse."
-      },
-      "messages": {
-        "description": "Kohanda, kuidas sinu enda sõnumid Reticulum Q-Chatis kuvatakse.",
-        "highlight_own": {
-          "description": "Lisab sinu saadetud sõnumitele õrna tausta.",
-          "label": "Tõsta minu sõnumid esile"
-        },
-        "title": "Sõnumid"
-      },
-      "nav": {
-        "mentions": "Mainimised",
-        "messages": "Sõnumid",
-        "text_size": "Teksti suurus",
-        "threads": "Threads"
-      },
-      "notifications": {
-        "description": "Näita Reticulum Q-Chati mainimisi Hubi teavituspaneelil. Tavalised lugemata sõnumid Hubi teavitusi ei tekita.",
-        "mentions": {
-          "description": "Teavita mind, kui keegi mind kanalis mainib.",
-          "label": "Mainimiste teavitused"
-        },
-        "title": "Teavitused"
-      },
-      "text_size": {
-        "default": {
-          "detail": "Praegune vestluse teksti suurus",
-          "label": "Vaikimisi"
-        },
-        "description": "Vali lugemissuurus Reticulumi sõnumitele, kanalisiltidele ja liikmete loendile. Kutsete eelvaated säilitavad oma kindla paigutuse.",
-        "high": {
-          "detail": "Suurim loetav vestlusteksti suurus",
-          "label": "Suur"
-        },
-        "medium": {
-          "detail": "Mugav suurendus",
-          "label": "Keskmine"
-        },
-        "title": "Teksti suurus"
-      }
-    },
-    "user_card": {
-      "address_copied": "aadress kopeeritud",
-      "copy_address": "kopeeri aadress",
-      "copy_full_address": "kopeeri täielik qortali aadress",
-      "hide_user": "peida kasutaja",
-      "message": "sõnum",
-      "minter_level": "minteri tase",
-      "minter_level_value": "tase {{level}}",
-      "qort_balance": "qorti saldo",
-      "qort_balance_value": "{{amount}} QORT",
-      "qortal_address": "qortali aadress",
-      "send_qort": "saada QORT",
-      "view_profile": "vaata profiili",
-      "view_profile_of": "vaata kasutaja {{name}} profiili"
-    }
   },
   "subscription": {
     "actions_badge_one": "{{count}} toiming",

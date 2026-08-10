@@ -32,7 +32,7 @@ type FirstTimeQChatEmptyStateProps = {
 export function FirstTimeQChatEmptyState({
   onFindCommunities,
 }: FirstTimeQChatEmptyStateProps) {
-  const { t } = useTranslation(['core', 'group']);
+  const { t } = useTranslation(['core', 'reticulum']);
   const [inviteLink, setInviteLink] = useState('');
   const [submittedInvite, setSubmittedInvite] = useState('');
   const [isCheckingInvite, setIsCheckingInvite] = useState(false);
@@ -142,7 +142,7 @@ export function FirstTimeQChatEmptyState({
       if (isValid) {
         setSubmittedInvite(normalizedLink);
       } else {
-        setInviteError(t('group:reticulum.onboarding.invite_error_invalid'));
+        setInviteError(t('reticulum:onboarding.invite_error_invalid'));
       }
       setIsCheckingInvite(false);
     }, 0);
@@ -184,7 +184,7 @@ export function FirstTimeQChatEmptyState({
           },
         }}
       >
-        {t('group:reticulum.onboarding.whats_new_button')}
+        {t('reticulum:onboarding.whats_new_button')}
       </Button>
 
       <Box
@@ -298,7 +298,7 @@ export function FirstTimeQChatEmptyState({
             mb: 1.25,
           }}
         >
-          {t('group:reticulum.onboarding.title')}
+          {t('reticulum:onboarding.title')}
         </Typography>
         <Typography
           sx={{
@@ -308,7 +308,7 @@ export function FirstTimeQChatEmptyState({
             mb: 4,
           }}
         >
-          {t('group:reticulum.onboarding.subtitle')}
+          {t('reticulum:onboarding.subtitle')}
         </Typography>
 
         <Button
@@ -344,7 +344,7 @@ export function FirstTimeQChatEmptyState({
             },
           }}
         >
-          {t('group:reticulum.onboarding.find_communities')}
+          {t('reticulum:onboarding.find_communities')}
         </Button>
 
         <Box
@@ -362,7 +362,7 @@ export function FirstTimeQChatEmptyState({
           <Typography
             sx={{ color: 'text.secondary', fontSize: 14, fontWeight: 600 }}
           >
-            {t('group:reticulum.onboarding.or')}
+            {t('reticulum:onboarding.or')}
           </Typography>
           <Divider sx={{ borderColor: 'rgba(255,255,255,0.13)', flex: 1 }} />
         </Box>
@@ -385,16 +385,14 @@ export function FirstTimeQChatEmptyState({
             }}
           >
             <TextField
-              aria-label={t('group:reticulum.onboarding.invite_input_label')}
+              aria-label={t('reticulum:onboarding.invite_input_label')}
               autoComplete="off"
               disabled={isCheckingInvite}
               onChange={(event) => {
                 setInviteLink(event.target.value);
                 if (inviteError) setInviteError('');
               }}
-              placeholder={t(
-                'group:reticulum.onboarding.invite_input_placeholder'
-              )}
+              placeholder={t('reticulum:onboarding.invite_input_placeholder')}
               value={inviteLink}
               variant="standard"
               sx={{

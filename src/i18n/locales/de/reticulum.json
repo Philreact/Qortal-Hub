@@ -1,0 +1,216 @@
+{
+  "about": {
+    "copied": "kopiert",
+    "created": "erstellt",
+    "group_invite_link": "Gruppen-Einladungslink"
+  },
+  "call_history": {
+    "answered": "sprachanruf",
+    "cancelled": "abgebrochener sprachanruf",
+    "declined": "abgelehnter sprachanruf",
+    "missed": "verpasster sprachanruf",
+    "no_answer": "keine antwort"
+  },
+  "chat_group": {
+    "author_mismatch": "Signierter Reticulum-Chat-Autor stimmt nicht überein",
+    "delete_failed": "Reticulum-Chat-Löschung fehlgeschlagen",
+    "disabled": "Reticulum-Chat ist deaktiviert",
+    "publish_failed": "Reticulum-Chat-Veröffentlichung fehlgeschlagen",
+    "release_seq_failed": "Reticulum-Chat-Ereignissequenz konnte nicht freigegeben werden",
+    "reserve_seq_failed": "Reticulum-Chat-Ereignissequenz konnte nicht reserviert werden",
+    "sign_failed": "Reticulum-Chat-Ereignis konnte nicht signiert werden",
+    "welcome_failed": "Reticulum-Willkommensnachricht konnte nicht veröffentlicht werden"
+  },
+  "copy_invite_link": "Einladungslink kopieren",
+  "discussion": {
+    "choose_emoji": "choose emoji",
+    "close": "close discussion",
+    "initial_post": "initial post",
+    "remove_attachment": "remove attachment",
+    "remove_file": "remove {{fileName}}",
+    "replies": "replies:",
+    "reply_placeholder": "reply to discussion...",
+    "wait_until_ready": "wait until the discussion is ready"
+  },
+  "dm": {
+    "required_for_attachments": "Für direkte Anhänge ist ein Reticulum-Direktchat erforderlich"
+  },
+  "event_preview": {
+    "all_day": "all day",
+    "calendar_unavailable": "calendar is unavailable",
+    "join_failed": "unable to join this group. Please try again.",
+    "loading": "loading event preview",
+    "member_required": "you must be a member of the source group to view this event.",
+    "not_found": "event not found",
+    "request_join_question": "request to join this group?",
+    "unavailable": "event unavailable",
+    "unavailable_temporarily": "event preview is temporarily unavailable",
+    "view_group": "view group"
+  },
+  "expiry": {
+    "channel_default": "kanalstandard",
+    "channel_default_no_expiry": "kanalstandard (kein ablauf)",
+    "channel_default_with": "kanalstandard ({{duration}})",
+    "do_not_auto_delete": "nicht automatisch löschen",
+    "maximum": "maximal {{duration}}",
+    "no_expiry": "kein ablauf",
+    "set": "ablaufzeit der nachricht festlegen",
+    "title": "nachrichtenablauf",
+    "tooltip_value": "nachrichtenablauf: {{value}}",
+    "unavailable": "nachrichtenablauf ist nicht verfügbar"
+  },
+  "group_fallback_name": "Gruppe",
+  "group_type": {
+    "closed": "geschlossen",
+    "open": "offen"
+  },
+  "groups_widget": {
+    "mentions_one": "{{count}} Erwähnung",
+    "mentions_other": "{{count}} Erwähnungen",
+    "new_messages_one": "{{count}} neue Nachricht",
+    "new_messages_other": "{{count}} neue Nachrichten"
+  },
+  "hide_user": {
+    "error_hide": "benutzer kann nicht ausgeblendet werden",
+    "error_unhide": "benutzer kann nicht wieder eingeblendet werden",
+    "for_1_hour": "für 1 stunde ausblenden",
+    "for_24_hours": "für 24 stunden ausblenden",
+    "hide": "ausblenden",
+    "unhide": "einblenden",
+    "until_unhidden": "ausblenden bis zur wiedereinblendung"
+  },
+  "image_viewer": {
+    "actions": "image actions",
+    "chat_image": "chat image",
+    "clipboard_unavailable": "image clipboard is unavailable",
+    "close": "close image viewer",
+    "copied": "image copied",
+    "copy": "copy image",
+    "copy_failed": "unable to copy image",
+    "download": "download image",
+    "download_failed": "unable to download image",
+    "prepare_failed": "unable to prepare image for clipboard",
+    "read_failed": "unable to read image",
+    "zoom_in": "zoom in",
+    "zoom_out": "zoom out"
+  },
+  "invite": {
+    "apply": "apply",
+    "apply_question": "apply to join this group?",
+    "closed_group": "geschlossene Gruppe",
+    "joined": "joined",
+    "open_group": "offene Gruppe",
+    "pending": "pending"
+  },
+  "join_group_question": "join this group?",
+  "mention": {
+    "channels": "kanäle",
+    "empty": "keine treffer gefunden",
+    "people": "personen",
+    "special": "besondere erwähnungen",
+    "suggestions": "erwähnungsvorschläge"
+  },
+  "mode_pill": {
+    "chat": "Chat",
+    "enter_qortal_land": "Qortal Land betreten",
+    "return_to_chat": "Zurück zum Chat"
+  },
+  "onboarding": {
+    "find_communities": "Communitys finden",
+    "invite_error_invalid": "Das sieht nicht nach einem gültigen Qortal-Gruppeneinladungslink aus.",
+    "invite_input_label": "Gruppen-Einladungslink",
+    "invite_input_placeholder": "Gruppen-Einladungslink einfügen …",
+    "or": "oder",
+    "subtitle": "Sieht so aus, als wärst du noch in keiner Community. Ändern wir das.",
+    "title": "Willkommen beim neuen, verbesserten Q-Chat",
+    "whats_new_button": "Was ist neu?"
+  },
+  "qapp_preview": {
+    "check_again": "check again",
+    "no_resource": "no Q-App resource was found for this link.",
+    "open_in_quitter": "open this post in Quitter.",
+    "open_publication": "open this publication to read the full article.",
+    "preview_failed": "the resource exists, but its preview could not be loaded right now.",
+    "preview_unavailable": "preview unavailable",
+    "resource_not_found": "resource not found",
+    "shared_photo": "shared a photo",
+    "shared_video": "shared a video",
+    "shared_video_titled": "shared a video: {{title}}",
+    "view_on_quitter": "view this post on Quitter",
+    "watch_on_qtube": "watch this video on Q-Tube."
+  },
+  "rail": {
+    "find_groups": "Gruppen finden",
+    "group_settings": "Gruppeneinstellungen",
+    "whats_new": "Neuigkeiten öffnen"
+  },
+  "settings": {
+    "category": {
+      "accessibility": "Barrierefreiheit",
+      "legacy": "Legacy"
+    },
+    "legacy": {
+      "description": "Zeige die alten Threads- und Admin-Steuerelemente in der Q-Chat-Kopfzeile an.",
+      "title": "Threads",
+      "toggle": {
+        "aria": "Alte Threads anzeigen",
+        "description": "Zeigt die alten Threads- und Admin-Symbole an.",
+        "label": "Threads"
+      },
+      "warning": "Threads werden in der kommenden Version entfernt. Verschiebe wichtige Thread-Informationen vor dem Update an einen sicheren Ort oder in einen neuen Kanal in Q-Chat."
+    },
+    "messages": {
+      "description": "Passe an, wie deine eigenen Nachrichten in Reticulum Q-Chat erscheinen.",
+      "highlight_own": {
+        "description": "Fügt Nachrichten, die du sendest, einen dezenten Hintergrund hinzu.",
+        "label": "Meine Nachrichten hervorheben"
+      },
+      "title": "Nachrichten"
+    },
+    "nav": {
+      "mentions": "Erwähnungen",
+      "messages": "Nachrichten",
+      "text_size": "Textgröße",
+      "threads": "Threads"
+    },
+    "notifications": {
+      "description": "Zeige Reticulum-Q-Chat-Erwähnungen im Benachrichtigungsbereich des Hubs an. Normale ungelesene Nachrichten erzeugen keine Hub-Benachrichtigungen.",
+      "mentions": {
+        "description": "Benachrichtige mich, wenn mich jemand in einem Kanal erwähnt.",
+        "label": "Erwähnungsbenachrichtigungen"
+      },
+      "title": "Benachrichtigungen"
+    },
+    "text_size": {
+      "default": {
+        "detail": "Aktuelle Chat-Textgröße",
+        "label": "Standard"
+      },
+      "description": "Wähle eine Lesegröße für Reticulum-Nachrichten, Kanalbezeichnungen und die Mitgliederliste. Einladungsvorschauen behalten ihr festes Layout.",
+      "high": {
+        "detail": "Größter gut lesbarer Chat-Text",
+        "label": "Hoch"
+      },
+      "medium": {
+        "detail": "Eine angenehme Vergrößerung",
+        "label": "Mittel"
+      },
+      "title": "Textgröße"
+    }
+  },
+  "user_card": {
+    "address_copied": "adresse kopiert",
+    "copy_address": "adresse kopieren",
+    "copy_full_address": "vollständige qortal-adresse kopieren",
+    "hide_user": "benutzer ausblenden",
+    "message": "nachricht",
+    "minter_level": "minter-level",
+    "minter_level_value": "level {{level}}",
+    "qort_balance": "qort-guthaben",
+    "qort_balance_value": "{{amount}} QORT",
+    "qortal_address": "qortal-adresse",
+    "send_qort": "QORT senden",
+    "view_profile": "profil ansehen",
+    "view_profile_of": "profil von {{name}} ansehen"
+  }
+}

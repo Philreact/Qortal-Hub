@@ -1,0 +1,216 @@
+{
+  "about": {
+    "copied": "已复制",
+    "created": "创建时间",
+    "group_invite_link": "群组邀请链接"
+  },
+  "call_history": {
+    "answered": "语音通话",
+    "cancelled": "已取消的语音通话",
+    "declined": "已拒绝的语音通话",
+    "missed": "未接语音通话",
+    "no_answer": "无人接听"
+  },
+  "chat_group": {
+    "author_mismatch": "已签名的 Reticulum 聊天作者不匹配",
+    "delete_failed": "Reticulum 聊天删除失败",
+    "disabled": "Reticulum 聊天已停用",
+    "publish_failed": "Reticulum 聊天发布失败",
+    "release_seq_failed": "无法释放 Reticulum 聊天事件序列",
+    "reserve_seq_failed": "无法预留 Reticulum 聊天事件序列",
+    "sign_failed": "无法签名 Reticulum 聊天事件",
+    "welcome_failed": "Reticulum 欢迎消息发布失败"
+  },
+  "copy_invite_link": "复制邀请链接",
+  "discussion": {
+    "choose_emoji": "choose emoji",
+    "close": "close discussion",
+    "initial_post": "initial post",
+    "remove_attachment": "remove attachment",
+    "remove_file": "remove {{fileName}}",
+    "replies": "replies:",
+    "reply_placeholder": "reply to discussion...",
+    "wait_until_ready": "wait until the discussion is ready"
+  },
+  "dm": {
+    "required_for_attachments": "直接附件需要 Reticulum 私聊"
+  },
+  "event_preview": {
+    "all_day": "all day",
+    "calendar_unavailable": "calendar is unavailable",
+    "join_failed": "unable to join this group. Please try again.",
+    "loading": "loading event preview",
+    "member_required": "you must be a member of the source group to view this event.",
+    "not_found": "event not found",
+    "request_join_question": "request to join this group?",
+    "unavailable": "event unavailable",
+    "unavailable_temporarily": "event preview is temporarily unavailable",
+    "view_group": "view group"
+  },
+  "expiry": {
+    "channel_default": "频道默认设置",
+    "channel_default_no_expiry": "频道默认设置（永不过期）",
+    "channel_default_with": "频道默认设置（{{duration}}）",
+    "do_not_auto_delete": "不自动删除",
+    "maximum": "最长 {{duration}}",
+    "no_expiry": "永不过期",
+    "set": "设置消息过期时间",
+    "title": "消息过期时间",
+    "tooltip_value": "消息过期时间：{{value}}",
+    "unavailable": "消息过期功能不可用"
+  },
+  "group_fallback_name": "群组",
+  "group_type": {
+    "closed": "封闭",
+    "open": "公开"
+  },
+  "groups_widget": {
+    "mentions_one": "{{count}} 条提及",
+    "mentions_other": "{{count}} 条提及",
+    "new_messages_one": "{{count}} 条新消息",
+    "new_messages_other": "{{count}} 条新消息"
+  },
+  "hide_user": {
+    "error_hide": "无法隐藏该用户",
+    "error_unhide": "无法取消隐藏该用户",
+    "for_1_hour": "隐藏 1 小时",
+    "for_24_hours": "隐藏 24 小时",
+    "hide": "隐藏",
+    "unhide": "取消隐藏",
+    "until_unhidden": "隐藏至手动取消"
+  },
+  "image_viewer": {
+    "actions": "image actions",
+    "chat_image": "chat image",
+    "clipboard_unavailable": "image clipboard is unavailable",
+    "close": "close image viewer",
+    "copied": "image copied",
+    "copy": "copy image",
+    "copy_failed": "unable to copy image",
+    "download": "download image",
+    "download_failed": "unable to download image",
+    "prepare_failed": "unable to prepare image for clipboard",
+    "read_failed": "unable to read image",
+    "zoom_in": "zoom in",
+    "zoom_out": "zoom out"
+  },
+  "invite": {
+    "apply": "apply",
+    "apply_question": "apply to join this group?",
+    "closed_group": "封闭群组",
+    "joined": "joined",
+    "open_group": "公开群组",
+    "pending": "pending"
+  },
+  "join_group_question": "join this group?",
+  "mention": {
+    "channels": "频道",
+    "empty": "未找到匹配项",
+    "people": "成员",
+    "special": "特殊提及",
+    "suggestions": "提及建议"
+  },
+  "mode_pill": {
+    "chat": "聊天",
+    "enter_qortal_land": "进入 Qortal Land",
+    "return_to_chat": "返回聊天"
+  },
+  "onboarding": {
+    "find_communities": "寻找社区",
+    "invite_error_invalid": "这似乎不是有效的 Qortal 群组邀请链接。",
+    "invite_input_label": "群组邀请链接",
+    "invite_input_placeholder": "粘贴群组邀请链接...",
+    "or": "或",
+    "subtitle": "看来你还没有加入任何社区。现在就开始吧。",
+    "title": "欢迎使用全新升级的 Q-Chat",
+    "whats_new_button": "新功能"
+  },
+  "qapp_preview": {
+    "check_again": "check again",
+    "no_resource": "no Q-App resource was found for this link.",
+    "open_in_quitter": "open this post in Quitter.",
+    "open_publication": "open this publication to read the full article.",
+    "preview_failed": "the resource exists, but its preview could not be loaded right now.",
+    "preview_unavailable": "preview unavailable",
+    "resource_not_found": "resource not found",
+    "shared_photo": "shared a photo",
+    "shared_video": "shared a video",
+    "shared_video_titled": "shared a video: {{title}}",
+    "view_on_quitter": "view this post on Quitter",
+    "watch_on_qtube": "watch this video on Q-Tube."
+  },
+  "rail": {
+    "find_groups": "查找群组",
+    "group_settings": "群组设置",
+    "whats_new": "打开新功能介绍"
+  },
+  "settings": {
+    "category": {
+      "accessibility": "无障碍",
+      "legacy": "旧版"
+    },
+    "legacy": {
+      "description": "在 Q-Chat 顶栏显示旧版的 Threads 和 Admin 控件。",
+      "title": "Threads",
+      "toggle": {
+        "aria": "显示旧版 Threads",
+        "description": "显示旧版的 Threads 和 Admin 图标。",
+        "label": "Threads"
+      },
+      "warning": "Threads 将在下一个版本中移除。更新前请把重要的主题信息转移到安全的位置或 Q-Chat 的新频道。"
+    },
+    "messages": {
+      "description": "调整你自己的消息在 Reticulum Q-Chat 中的显示方式。",
+      "highlight_own": {
+        "description": "为你发送的消息添加淡淡的背景。",
+        "label": "突出显示我的消息"
+      },
+      "title": "消息"
+    },
+    "nav": {
+      "mentions": "提及",
+      "messages": "消息",
+      "text_size": "文字大小",
+      "threads": "Threads"
+    },
+    "notifications": {
+      "description": "在 Hub 通知面板中显示 Reticulum Q-Chat 的提及。普通未读消息不会产生 Hub 通知。",
+      "mentions": {
+        "description": "当有人在频道中提及我时通知我。",
+        "label": "提及通知"
+      },
+      "title": "通知"
+    },
+    "text_size": {
+      "default": {
+        "detail": "当前的聊天文字大小",
+        "label": "默认"
+      },
+      "description": "为 Reticulum 消息、频道标签和成员列表选择阅读大小。邀请预览保持其固定布局。",
+      "high": {
+        "detail": "在保持易读的前提下最大的聊天文字",
+        "label": "大"
+      },
+      "medium": {
+        "detail": "适度放大",
+        "label": "中"
+      },
+      "title": "文字大小"
+    }
+  },
+  "user_card": {
+    "address_copied": "地址已复制",
+    "copy_address": "复制地址",
+    "copy_full_address": "复制完整的 qortal 地址",
+    "hide_user": "隐藏用户",
+    "message": "消息",
+    "minter_level": "铸造者等级",
+    "minter_level_value": "等级 {{level}}",
+    "qort_balance": "qort 余额",
+    "qort_balance_value": "{{amount}} QORT",
+    "qortal_address": "qortal 地址",
+    "send_qort": "发送 QORT",
+    "view_profile": "查看资料",
+    "view_profile_of": "查看 {{name}} 的资料"
+  }
+}

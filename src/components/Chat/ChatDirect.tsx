@@ -427,7 +427,13 @@ export const ChatDirect = ({
     signCallRequest,
   ]);
 
-  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
+  const { t } = useTranslation([
+    'auth',
+    'core',
+    'group',
+    'question',
+    'reticulum',
+  ]);
   const p2pHealthBadTooltip = t('core:p2p_health_bad_call_tooltip');
   const { queueChats, addToQueue, processWithNewMessages } = useMessageQueue();
   const [isFocusedParent, setIsFocusedParent] = useState(false);
@@ -686,7 +692,7 @@ export const ChatDirect = ({
       if (!result?.success) {
         throw new Error(
           result?.error ||
-            t('group:reticulum.hide_user.error_unhide', {
+            t('reticulum:hide_user.error_unhide', {
               postProcess: 'capitalizeFirstChar',
             })
         );
@@ -701,7 +707,7 @@ export const ChatDirect = ({
         message:
           error instanceof Error
             ? error.message
-            : t('group:reticulum.hide_user.error_unhide', {
+            : t('reticulum:hide_user.error_unhide', {
                 postProcess: 'capitalizeFirstChar',
               }),
       });
@@ -2414,7 +2420,7 @@ export const ChatDirect = ({
       if (!reticulumDirectEnabled) {
         setInfoSnack({
           type: 'error',
-          message: t('group:dm.reticulum_required_for_attachments'),
+          message: t('reticulum:dm.required_for_attachments'),
         });
         setOpenSnack(true);
         return;
@@ -2965,13 +2971,13 @@ export const ChatDirect = ({
           >
             {reticulumDirectUiEnabled && reticulumPeerSilence?.active && (
               <Tooltip
-                title={t('group:reticulum.hide_user.unhide', {
+                title={t('reticulum:hide_user.unhide', {
                   postProcess: 'capitalizeFirstChar',
                 })}
               >
                 <span>
                   <IconButton
-                    aria-label={t('group:reticulum.hide_user.unhide', {
+                    aria-label={t('reticulum:hide_user.unhide', {
                       postProcess: 'capitalizeFirstChar',
                     })}
                     disabled={reticulumSilenceBusy}

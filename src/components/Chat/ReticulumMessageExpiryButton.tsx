@@ -70,54 +70,54 @@ export function ReticulumMessageExpiryButton({
   segmented = false,
   value,
 }: ReticulumMessageExpiryButtonProps) {
-  const { t } = useTranslation(['group']);
+  const { t } = useTranslation(['reticulum']);
   const theme = useTheme();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const effectiveExpiryDurationMs =
     value === null ? undefined : (value ?? channelExpiryDurationMs);
   const indicatorLabel = expiryIndicatorLabel(effectiveExpiryDurationMs);
   const channelDefaultSummary = channelExpiryDurationMs
-    ? t('group:reticulum.expiry.maximum', {
+    ? t('reticulum:expiry.maximum', {
         duration: formatReticulumExpiryDuration(channelExpiryDurationMs),
         postProcess: 'capitalizeFirstChar',
       })
-    : t('group:reticulum.expiry.no_expiry', {
+    : t('reticulum:expiry.no_expiry', {
         postProcess: 'capitalizeFirstChar',
       });
   const channelDefaultLabel = useMemo(
     () =>
       channelExpiryDurationMs
-        ? t('group:reticulum.expiry.channel_default_with', {
+        ? t('reticulum:expiry.channel_default_with', {
             duration: formatReticulumExpiryDuration(channelExpiryDurationMs),
             postProcess: 'capitalizeFirstChar',
           })
-        : t('group:reticulum.expiry.channel_default_no_expiry', {
+        : t('reticulum:expiry.channel_default_no_expiry', {
             postProcess: 'capitalizeFirstChar',
           }),
     [channelExpiryDurationMs, t]
   );
   const tooltip = disabled
     ? disabledReason ||
-      t('group:reticulum.expiry.unavailable', {
+      t('reticulum:expiry.unavailable', {
         postProcess: 'capitalizeFirstChar',
       })
     : segmented
-      ? t('group:reticulum.expiry.title', {
+      ? t('reticulum:expiry.title', {
           postProcess: 'capitalizeFirstChar',
         })
       : value === null
-        ? t('group:reticulum.expiry.tooltip_value', {
+        ? t('reticulum:expiry.tooltip_value', {
             postProcess: 'capitalizeFirstChar',
-            value: t('group:reticulum.expiry.no_expiry', {
+            value: t('reticulum:expiry.no_expiry', {
               postProcess: 'capitalizeFirstChar',
             }),
           })
         : value
-          ? t('group:reticulum.expiry.tooltip_value', {
+          ? t('reticulum:expiry.tooltip_value', {
               postProcess: 'capitalizeFirstChar',
               value: formatReticulumExpiryDuration(value),
             })
-          : t('group:reticulum.expiry.tooltip_value', {
+          : t('reticulum:expiry.tooltip_value', {
               postProcess: 'capitalizeFirstChar',
               value: channelDefaultLabel,
             });
@@ -146,7 +146,7 @@ export function ReticulumMessageExpiryButton({
           }
         >
           <IconButton
-            aria-label={t('group:reticulum.expiry.set', {
+            aria-label={t('reticulum:expiry.set', {
               postProcess: 'capitalizeFirstChar',
             })}
             aria-haspopup="menu"
@@ -212,7 +212,7 @@ export function ReticulumMessageExpiryButton({
             ) : (
               <AllInclusiveRoundedIcon
                 sx={{ color: 'inherit' }}
-                titleAccess={t('group:reticulum.expiry.no_expiry', {
+                titleAccess={t('reticulum:expiry.no_expiry', {
                   postProcess: 'capitalizeFirstChar',
                 })}
               />
@@ -254,16 +254,16 @@ export function ReticulumMessageExpiryButton({
             <ListItemText
               primary={
                 direct
-                  ? t('group:reticulum.expiry.no_expiry', {
+                  ? t('reticulum:expiry.no_expiry', {
                       postProcess: 'capitalizeFirstChar',
                     })
-                  : t('group:reticulum.expiry.channel_default', {
+                  : t('reticulum:expiry.channel_default', {
                       postProcess: 'capitalizeFirstChar',
                     })
               }
               secondary={
                 direct
-                  ? t('group:reticulum.expiry.do_not_auto_delete', {
+                  ? t('reticulum:expiry.do_not_auto_delete', {
                       postProcess: 'capitalizeFirstChar',
                     })
                   : channelDefaultSummary

@@ -84,7 +84,7 @@ export const normalizeQTubeDescription = (
     .trim();
   return (
     description ||
-    t('group:reticulum.qapp_preview.watch_on_qtube', {
+    t('reticulum:qapp_preview.watch_on_qtube', {
       postProcess: 'capitalizeFirstChar',
     })
   );
@@ -105,20 +105,20 @@ export const getQuitterPostSummary = (
   const text = safeString(documentValue.text);
   if (text) return text;
   if (hasMediaItems(documentValue.images))
-    return t('group:reticulum.qapp_preview.shared_photo', {
+    return t('reticulum:qapp_preview.shared_photo', {
       postProcess: 'capitalizeFirstChar',
     });
   if (hasMediaItems(documentValue.videos)) {
     return mediaTitle
-      ? t('group:reticulum.qapp_preview.shared_video_titled', {
+      ? t('reticulum:qapp_preview.shared_video_titled', {
           postProcess: 'capitalizeFirstChar',
           title: mediaTitle,
         })
-      : t('group:reticulum.qapp_preview.shared_video', {
+      : t('reticulum:qapp_preview.shared_video', {
           postProcess: 'capitalizeFirstChar',
         });
   }
-  return t('group:reticulum.qapp_preview.view_on_quitter', {
+  return t('reticulum:qapp_preview.view_on_quitter', {
     postProcess: 'capitalizeFirstChar',
   });
 };
@@ -679,7 +679,7 @@ function PreviewFailure({
   link: ReticulumQAppLink;
   onRetry: () => void;
 }) {
-  const { t } = useTranslation(['core', 'group']);
+  const { t } = useTranslation(['core', 'reticulum']);
   const layout = previewShellLayout(link.kind);
   const notFound = failure === 'not-found';
   return (
@@ -703,10 +703,10 @@ function PreviewFailure({
           <AppHeader link={link} />
           <Typography sx={{ fontSize: 14, fontWeight: 750, mt: 1.6 }}>
             {notFound
-              ? t('group:reticulum.qapp_preview.resource_not_found', {
+              ? t('reticulum:qapp_preview.resource_not_found', {
                   postProcess: 'capitalizeFirstChar',
                 })
-              : t('group:reticulum.qapp_preview.preview_unavailable', {
+              : t('reticulum:qapp_preview.preview_unavailable', {
                   postProcess: 'capitalizeFirstChar',
                 })}
           </Typography>
@@ -719,10 +719,10 @@ function PreviewFailure({
             }}
           >
             {notFound
-              ? t('group:reticulum.qapp_preview.no_resource', {
+              ? t('reticulum:qapp_preview.no_resource', {
                   postProcess: 'capitalizeFirstChar',
                 })
-              : t('group:reticulum.qapp_preview.preview_failed', {
+              : t('reticulum:qapp_preview.preview_failed', {
                   postProcess: 'capitalizeFirstChar',
                 })}
           </Typography>
@@ -738,7 +738,7 @@ function PreviewFailure({
               sx={{ borderRadius: '6px', minHeight: 32, textTransform: 'none' }}
             >
               {notFound
-                ? t('group:reticulum.qapp_preview.check_again', {
+                ? t('reticulum:qapp_preview.check_again', {
                     postProcess: 'capitalizeFirstChar',
                   })
                 : t('core:retry', { postProcess: 'capitalizeFirstChar' })}
@@ -986,7 +986,7 @@ function QuitterPreview({
   data: QAppPreviewData;
   link: ReticulumQAppLink;
 }) {
-  const { t } = useTranslation(['core', 'group']);
+  const { t } = useTranslation(['core', 'reticulum']);
   const date = formatPreviewDate(data.createdAt);
   const layout = previewShellLayout(link.kind);
   return (
@@ -1079,7 +1079,7 @@ function QuitterPreview({
               }}
             >
               {data.body ||
-                t('group:reticulum.qapp_preview.open_in_quitter', {
+                t('reticulum:qapp_preview.open_in_quitter', {
                   postProcess: 'capitalizeFirstChar',
                 })}
             </Typography>
@@ -1107,7 +1107,7 @@ function SubWirePreview({
   data: QAppPreviewData;
   link: ReticulumQAppLink;
 }) {
-  const { t } = useTranslation(['core', 'group']);
+  const { t } = useTranslation(['core', 'reticulum']);
   const date = formatPreviewDate(data.createdAt);
   const [mediaFailed, setMediaFailed] = useState(false);
 
@@ -1176,7 +1176,7 @@ function SubWirePreview({
               }}
             >
               {data.body ||
-                t('group:reticulum.qapp_preview.open_publication', {
+                t('reticulum:qapp_preview.open_publication', {
                   postProcess: 'capitalizeFirstChar',
                 })}
             </Typography>
