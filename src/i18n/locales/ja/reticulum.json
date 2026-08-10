@@ -144,6 +144,36 @@
     "group_settings": "グループ設定",
     "whats_new": "新着情報を開く"
   },
+  "search": {
+    "chip": {
+      "date": "日付: {{value}}",
+      "from": "送信者: {{value}}",
+      "has": "含む: {{value}}",
+      "in": "対象: {{value}}",
+      "sort": "並び順: {{value}}"
+    },
+    "date_any": "指定なし",
+    "date_range": "{{after}}〜{{before}}",
+    "facet": {
+      "date": "日付:",
+      "from": "送信者:",
+      "has": "含む:",
+      "in": "対象:",
+      "sort": "並び順:"
+    },
+    "has": {
+      "any": "すべて",
+      "attachment": "添付ファイル",
+      "link": "リンク"
+    },
+    "placeholder_channel": "{{channel}}を検索",
+    "placeholder_messages": "メッセージを検索",
+    "sort": {
+      "newest": "新しい順",
+      "oldest": "古い順",
+      "relevance": "関連度順"
+    }
+  },
   "settings": {
     "category": {
       "accessibility": "アクセシビリティ",

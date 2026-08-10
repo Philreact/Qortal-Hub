@@ -144,6 +144,36 @@
     "group_settings": "Grupi seaded",
     "whats_new": "Ava uudised"
   },
+  "search": {
+    "chip": {
+      "date": "kuupäev: {{value}}",
+      "from": "kellelt: {{value}}",
+      "has": "sisaldab: {{value}}",
+      "in": "kus: {{value}}",
+      "sort": "sortimine: {{value}}"
+    },
+    "date_any": "ükskõik milline",
+    "date_range": "{{after}} kuni {{before}}",
+    "facet": {
+      "date": "kuupäev:",
+      "from": "kellelt:",
+      "has": "sisaldab:",
+      "in": "kus:",
+      "sort": "sortimine:"
+    },
+    "has": {
+      "any": "ükskõik mida",
+      "attachment": "manus",
+      "link": "link"
+    },
+    "placeholder_channel": "Otsi kanalist {{channel}}",
+    "placeholder_messages": "Otsi sõnumeid",
+    "sort": {
+      "newest": "uusimad",
+      "oldest": "vanimad",
+      "relevance": "asjakohasemad"
+    }
+  },
   "settings": {
     "category": {
       "accessibility": "Ligipääsetavus",

@@ -144,6 +144,36 @@
     "group_settings": "Ryhmän asetukset",
     "whats_new": "Avaa uutuudet"
   },
+  "search": {
+    "chip": {
+      "date": "päivä: {{value}}",
+      "from": "lähettäjä: {{value}}",
+      "has": "sisältää: {{value}}",
+      "in": "kanava: {{value}}",
+      "sort": "järjestys: {{value}}"
+    },
+    "date_any": "mikä tahansa",
+    "date_range": "{{after}} – {{before}}",
+    "facet": {
+      "date": "päivä:",
+      "from": "lähettäjä:",
+      "has": "sisältää:",
+      "in": "kanava:",
+      "sort": "järjestys:"
+    },
+    "has": {
+      "any": "mitä tahansa",
+      "attachment": "liite",
+      "link": "linkki"
+    },
+    "placeholder_channel": "Hae kanavalta {{channel}}",
+    "placeholder_messages": "Hae viestejä",
+    "sort": {
+      "newest": "uusimmat",
+      "oldest": "vanhimmat",
+      "relevance": "osuvimmat"
+    }
+  },
   "settings": {
     "category": {
       "accessibility": "Saavutettavuus",

@@ -144,6 +144,36 @@
     "group_settings": "إعدادات المجموعة",
     "whats_new": "فتح ما الجديد"
   },
+  "search": {
+    "chip": {
+      "date": "التاريخ: {{value}}",
+      "from": "من: {{value}}",
+      "has": "يحتوي: {{value}}",
+      "in": "في: {{value}}",
+      "sort": "الترتيب: {{value}}"
+    },
+    "date_any": "أي تاريخ",
+    "date_range": "{{after}} إلى {{before}}",
+    "facet": {
+      "date": "التاريخ:",
+      "from": "من:",
+      "has": "يحتوي:",
+      "in": "في:",
+      "sort": "الترتيب:"
+    },
+    "has": {
+      "any": "أي شيء",
+      "attachment": "مرفق",
+      "link": "رابط"
+    },
+    "placeholder_channel": "ابحث في {{channel}}",
+    "placeholder_messages": "ابحث في الرسائل",
+    "sort": {
+      "newest": "الأحدث",
+      "oldest": "الأقدم",
+      "relevance": "الأكثر صلة"
+    }
+  },
   "settings": {
     "category": {
       "accessibility": "إمكانية الوصول",

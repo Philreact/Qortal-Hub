@@ -144,6 +144,36 @@
     "group_settings": "群组设置",
     "whats_new": "打开新功能介绍"
   },
+  "search": {
+    "chip": {
+      "date": "日期：{{value}}",
+      "from": "来自：{{value}}",
+      "has": "包含：{{value}}",
+      "in": "范围：{{value}}",
+      "sort": "排序：{{value}}"
+    },
+    "date_any": "不限",
+    "date_range": "{{after}} 至 {{before}}",
+    "facet": {
+      "date": "日期：",
+      "from": "来自：",
+      "has": "包含：",
+      "in": "范围：",
+      "sort": "排序："
+    },
+    "has": {
+      "any": "任何内容",
+      "attachment": "附件",
+      "link": "链接"
+    },
+    "placeholder_channel": "搜索 {{channel}}",
+    "placeholder_messages": "搜索消息",
+    "sort": {
+      "newest": "最新",
+      "oldest": "最早",
+      "relevance": "相关度"
+    }
+  },
   "settings": {
     "category": {
       "accessibility": "无障碍",

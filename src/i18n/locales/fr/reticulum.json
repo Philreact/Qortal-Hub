@@ -144,6 +144,36 @@
     "group_settings": "Paramètres du groupe",
     "whats_new": "Ouvrir les nouveautés"
   },
+  "search": {
+    "chip": {
+      "date": "date : {{value}}",
+      "from": "de : {{value}}",
+      "has": "contient : {{value}}",
+      "in": "dans : {{value}}",
+      "sort": "tri : {{value}}"
+    },
+    "date_any": "indifférent",
+    "date_range": "{{after}} à {{before}}",
+    "facet": {
+      "date": "date :",
+      "from": "de :",
+      "has": "contient :",
+      "in": "dans :",
+      "sort": "tri :"
+    },
+    "has": {
+      "any": "n'importe quoi",
+      "attachment": "pièce jointe",
+      "link": "lien"
+    },
+    "placeholder_channel": "Rechercher dans {{channel}}",
+    "placeholder_messages": "Rechercher des messages",
+    "sort": {
+      "newest": "plus récents",
+      "oldest": "plus anciens",
+      "relevance": "plus pertinents"
+    }
+  },
   "settings": {
     "category": {
       "accessibility": "Accessibilité",

@@ -144,6 +144,36 @@
     "group_settings": "Gruppeneinstellungen",
     "whats_new": "Neuigkeiten öffnen"
   },
+  "search": {
+    "chip": {
+      "date": "Datum: {{value}}",
+      "from": "von: {{value}}",
+      "has": "enthält: {{value}}",
+      "in": "in: {{value}}",
+      "sort": "Sortierung: {{value}}"
+    },
+    "date_any": "beliebig",
+    "date_range": "{{after}} bis {{before}}",
+    "facet": {
+      "date": "Datum:",
+      "from": "von:",
+      "has": "enthält:",
+      "in": "in:",
+      "sort": "Sortierung:"
+    },
+    "has": {
+      "any": "alles",
+      "attachment": "Anhang",
+      "link": "Link"
+    },
+    "placeholder_channel": "{{channel}} durchsuchen",
+    "placeholder_messages": "Nachrichten durchsuchen",
+    "sort": {
+      "newest": "neueste",
+      "oldest": "älteste",
+      "relevance": "relevanteste"
+    }
+  },
   "settings": {
     "category": {
       "accessibility": "Barrierefreiheit",

@@ -144,6 +144,36 @@
     "group_settings": "Настройки группы",
     "whats_new": "Открыть новинки"
   },
+  "search": {
+    "chip": {
+      "date": "дата: {{value}}",
+      "from": "от: {{value}}",
+      "has": "содержит: {{value}}",
+      "in": "в: {{value}}",
+      "sort": "сортировка: {{value}}"
+    },
+    "date_any": "любая",
+    "date_range": "{{after}} — {{before}}",
+    "facet": {
+      "date": "дата:",
+      "from": "от:",
+      "has": "содержит:",
+      "in": "в:",
+      "sort": "сортировка:"
+    },
+    "has": {
+      "any": "что угодно",
+      "attachment": "вложение",
+      "link": "ссылку"
+    },
+    "placeholder_channel": "Поиск в {{channel}}",
+    "placeholder_messages": "Поиск сообщений",
+    "sort": {
+      "newest": "сначала новые",
+      "oldest": "сначала старые",
+      "relevance": "по релевантности"
+    }
+  },
   "settings": {
     "category": {
       "accessibility": "Доступность",
