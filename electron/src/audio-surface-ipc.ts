@@ -169,6 +169,19 @@ export type AudioSurfaceEvent =
       roomId: string;
       peerAddress: string;
       state: 'connecting' | 'open' | 'closed' | 'failed';
+    }
+  | {
+      type: 'group-call-rtc-state';
+      roomId: string;
+      peerAddress: string;
+      state:
+        | 'new'
+        | 'connecting'
+        | 'connected'
+        | 'disconnected'
+        | 'failed'
+        | 'closed'
+        | 'open';
     };
 
 export interface AudioSurfaceBridgeStateLike {

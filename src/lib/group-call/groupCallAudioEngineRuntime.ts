@@ -6071,6 +6071,11 @@ export class GroupCallAudioEngineRuntime {
     const offerer = this.topology
       ? shouldOfferGroupRtcTransport(localAddress, peerAddress, this.topology)
       : true;
+    let lastReportedState:
+      | RTCPeerConnectionState
+      | 'open'
+      | 'closed'
+      | null = null;
     const transport = new GroupCallWebRtcDataChannelTransport({
       peerAddress,
       // Preserve the original topology direction: participants dial their
@@ -6091,6 +6096,15 @@ export class GroupCallAudioEngineRuntime {
         });
       },
       onState: (state) => {
+        if (state !== lastReportedState) {
+          lastReportedState = state;
+          this.emit({
+            type: 'group-call-rtc-state',
+            roomId: this.snapshot.roomId,
+            peerAddress,
+            state,
+          });
+        }
         this.recordDiagEvent('group-rtc-state', {
           peerAddress: truncateGcallDiagAddress(peerAddress),
           state,

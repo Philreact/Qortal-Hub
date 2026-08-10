@@ -51,6 +51,7 @@ export function QortalGroupVoiceCallNavWidget() {
     roomId,
     participants,
     activeSpeakers,
+    topologyLabel,
     leaveGroupCall,
     setMuted,
     muted,
@@ -167,7 +168,9 @@ export function QortalGroupVoiceCallNavWidget() {
         }}
       >
         <Chip
-          label="Q-CALL"
+          label={t('core:group_call_short_label', {
+            postProcess: 'capitalizeAll',
+          })}
           size="small"
           sx={{
             bgcolor: alpha(theme.palette.primary.main, 0.16),
@@ -197,6 +200,43 @@ export function QortalGroupVoiceCallNavWidget() {
           {title}
         </Typography>
       </ButtonBase>
+
+      {roomState === 'connected' ? (
+        <Tooltip
+          title={
+            topologyLabel === 'WebRTC'
+              ? t('core:group_call_transport_webrtc_tooltip')
+              : t('core:group_call_transport_reticulum_tooltip')
+          }
+          arrow
+        >
+          <Typography
+            component="span"
+            sx={{
+              color:
+                topologyLabel === 'WebRTC'
+                  ? theme.palette.primary.light
+                  : theme.palette.warning.main,
+              display: { xs: 'none', md: 'block' },
+              flexShrink: 0,
+              fontSize: 9,
+              fontWeight: 900,
+              letterSpacing: '0.04em',
+              lineHeight: '16px',
+              textAlign: 'center',
+              width: 62,
+            }}
+          >
+            {topologyLabel === 'WebRTC'
+              ? t('core:group_call_transport_webrtc', {
+                  postProcess: 'capitalizeAll',
+                })
+              : t('core:group_call_transport_reticulum', {
+                  postProcess: 'capitalizeAll',
+                })}
+          </Typography>
+        </Tooltip>
+      ) : null}
 
       <Box
         sx={{
