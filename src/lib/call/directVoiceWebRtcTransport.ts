@@ -8,6 +8,10 @@ export type DirectVoiceRtcSignal =
       kind: 'ice';
       generation: string;
       candidate: RTCIceCandidateInit | null;
+    }
+  | {
+      kind: 'ice-refresh-request';
+      generation: string;
     };
 
 export type DirectVoiceRtcState =
@@ -31,6 +35,8 @@ const ICE_DISCONNECT_GRACE_MS = 3_000;
 const ICE_RESTART_MIN_INTERVAL_MS = 6_000;
 const ICE_RESTART_MAX_ATTEMPTS = 2;
 const ICE_RESTART_COOLDOWN_MS = 30_000;
+const ICE_SERVER_REFRESH_INTERVAL_MS = 750;
+const ICE_SERVER_REFRESH_WINDOW_MS = 12_000;
 
 function nextGeneration(): string {
   return crypto.randomUUID();
@@ -59,6 +65,18 @@ export class DirectVoiceWebRtcTransport {
   private configuredIceServerUrls: string[] = [];
   private localCandidateCounts = new Map<string, number>();
   private remoteCandidateCounts = new Map<string, number>();
+  private iceServerRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private iceServerRefreshDeadline = 0;
+  private iceServerRefreshInFlight = false;
+  private lateIceRestartIssued = false;
+  private iceRefreshRequestSent = false;
+  private pendingIceRefreshRequest = false;
+  private pendingLateIceRestart = false;
+  private localDescriptionSignalPending = false;
+  private bufferedLocalCandidates: Array<{
+    generation: string;
+    candidate: RTCIceCandidateInit;
+  }> = [];
 
   constructor(private readonly options: DirectVoiceWebRtcTransportOptions) {}
 
@@ -114,6 +132,20 @@ export class DirectVoiceWebRtcTransport {
     let pc = this.pc;
     if (!pc) return;
 
+    if (signal.kind === 'ice-refresh-request') {
+      if (
+        !this.options.offerer ||
+        !signal.generation ||
+        signal.generation !== this.generation ||
+        this.isOpen()
+      ) {
+        return;
+      }
+      await this.refreshIceServersOnce();
+      await this.requestLateIceRestart('peer-refresh-request');
+      return;
+    }
+
     if (signal.kind === 'description') {
       const description = signal.description;
       if (description.type !== 'offer' && description.type !== 'answer') return;
@@ -137,20 +169,17 @@ export class DirectVoiceWebRtcTransport {
         await pc.setRemoteDescription(description);
         await this.flushPendingCandidates();
         const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        if (pc.localDescription) {
-          this.options.onSignal({
-            kind: 'description',
-            generation: this.generation,
-            description: pc.localDescription.toJSON(),
-          });
-        }
+        await this.setLocalDescriptionAndSignal(pc, answer);
         return;
       }
       if (!this.options.offerer || signal.generation !== this.generation)
         return;
       await pc.setRemoteDescription(description);
       await this.flushPendingCandidates();
+      if (this.pendingLateIceRestart) {
+        this.pendingLateIceRestart = false;
+        await this.requestLateIceRestart('answer-applied');
+      }
       return;
     }
 
@@ -193,8 +222,11 @@ export class DirectVoiceWebRtcTransport {
     if (this.closed) return;
     this.closed = true;
     this.clearDisconnectTimer();
+    this.clearIceServerRefreshTimer();
     this.pendingCandidates = [];
     this.earlyCandidatesByGeneration.clear();
+    this.bufferedLocalCandidates = [];
+    this.pendingIceRefreshRequest = false;
     this.releasePeerConnection();
     this.setState('closed');
   }
@@ -220,6 +252,7 @@ export class DirectVoiceWebRtcTransport {
       role: this.options.offerer ? 'offerer' : 'answerer',
       iceServerCount: iceServers.length,
     });
+    if (iceServers.length === 0) this.scheduleIceServerRefresh();
     this.setState('connecting');
     for (const track of this.options.localStream.getAudioTracks()) {
       pc.addTrack(track, this.options.localStream);
@@ -247,11 +280,17 @@ export class DirectVoiceWebRtcTransport {
         event.candidate.protocol
       );
       if (!this.generation || this.closed) return;
-      this.options.onSignal({
-        kind: 'ice',
-        generation: this.generation,
-        candidate: event.candidate.toJSON(),
-      });
+      const candidate = event.candidate.toJSON();
+      if (this.localDescriptionSignalPending) {
+        if (this.bufferedLocalCandidates.length < 128) {
+          this.bufferedLocalCandidates.push({
+            generation: this.generation,
+            candidate,
+          });
+        }
+        return;
+      }
+      this.emitLocalCandidate(this.generation, candidate);
     };
     pc.oniceconnectionstatechange = () => {
       if (this.pc !== pc || this.closed) return;
@@ -289,13 +328,7 @@ export class DirectVoiceWebRtcTransport {
       this.pendingCandidates = [];
     }
     const offer = await pc.createOffer({ iceRestart });
-    await pc.setLocalDescription(offer);
-    if (!pc.localDescription || this.closed) return;
-    this.options.onSignal({
-      kind: 'description',
-      generation: this.generation,
-      description: pc.localDescription.toJSON(),
-    });
+    await this.setLocalDescriptionAndSignal(pc, offer);
   }
 
   private handleConnectionState(): void {
@@ -303,6 +336,7 @@ export class DirectVoiceWebRtcTransport {
     if (state === 'connected') {
       this.restartAttempts = 0;
       this.clearDisconnectTimer();
+      this.clearIceServerRefreshTimer();
       this.setState(this.remoteAudioTrackSeen ? 'open' : 'connecting');
       return;
     }
@@ -382,6 +416,8 @@ export class DirectVoiceWebRtcTransport {
     const pc = this.pc;
     this.pc = null;
     this.remoteAudioTrackSeen = false;
+    this.localDescriptionSignalPending = false;
+    this.bufferedLocalCandidates = [];
     if (pc) {
       pc.ontrack = null;
       pc.onicecandidate = null;
@@ -393,6 +429,203 @@ export class DirectVoiceWebRtcTransport {
         // Best effort during transport replacement/teardown.
       }
     }
+  }
+
+  private async setLocalDescriptionAndSignal(
+    pc: RTCPeerConnection,
+    description: RTCSessionDescriptionInit
+  ): Promise<void> {
+    const generation = this.generation;
+    let descriptionSignaled = false;
+    this.localDescriptionSignalPending = true;
+    this.bufferedLocalCandidates = [];
+    try {
+      await pc.setLocalDescription(description);
+      if (
+        !pc.localDescription ||
+        this.closed ||
+        this.pc !== pc ||
+        this.generation !== generation
+      ) {
+        return;
+      }
+      // SDP must enter the reliable signaling channel before the candidates
+      // it describes. Some browsers emit candidates synchronously while
+      // setLocalDescription() is pending.
+      this.options.onSignal({
+        kind: 'description',
+        generation,
+        description: pc.localDescription.toJSON(),
+      });
+      descriptionSignaled = true;
+      if (
+        description.type === 'answer' &&
+        this.pendingIceRefreshRequest
+      ) {
+        this.pendingIceRefreshRequest = false;
+        this.sendIceRefreshRequest();
+      }
+    } finally {
+      this.localDescriptionSignalPending = false;
+      const buffered = this.bufferedLocalCandidates.splice(0);
+      if (descriptionSignaled && !this.closed && this.pc === pc) {
+        for (const entry of buffered) {
+          if (entry.generation === this.generation) {
+            this.emitLocalCandidate(entry.generation, entry.candidate);
+          }
+        }
+      }
+    }
+  }
+
+  private emitLocalCandidate(
+    generation: string,
+    candidate: RTCIceCandidateInit
+  ): void {
+    this.options.onSignal({ kind: 'ice', generation, candidate });
+  }
+
+  private scheduleIceServerRefresh(): void {
+    if (
+      this.closed ||
+      this.isOpen() ||
+      this.configuredIceServerCount > 0 ||
+      this.iceServerRefreshTimer ||
+      this.iceServerRefreshInFlight
+    ) {
+      return;
+    }
+    if (this.iceServerRefreshDeadline === 0) {
+      this.iceServerRefreshDeadline = Date.now() + ICE_SERVER_REFRESH_WINDOW_MS;
+    }
+    if (Date.now() >= this.iceServerRefreshDeadline) {
+      this.emitDiagnostic('ice-server-refresh-expired', {});
+      return;
+    }
+    this.iceServerRefreshTimer = setTimeout(() => {
+      this.iceServerRefreshTimer = null;
+      void this.refreshIceServersOnce();
+    }, ICE_SERVER_REFRESH_INTERVAL_MS);
+  }
+
+  private async refreshIceServersOnce(): Promise<boolean> {
+    if (
+      this.closed ||
+      this.isOpen() ||
+      this.configuredIceServerCount > 0 ||
+      this.iceServerRefreshInFlight
+    ) {
+      return this.configuredIceServerCount > 0;
+    }
+    this.iceServerRefreshInFlight = true;
+    let iceServers: RTCIceServer[] = [];
+    try {
+      iceServers = await this.options.getIceServers();
+    } catch {
+      iceServers = [];
+    } finally {
+      this.iceServerRefreshInFlight = false;
+    }
+    if (this.closed || this.isOpen()) return false;
+    if (iceServers.length === 0) {
+      this.scheduleIceServerRefresh();
+      return false;
+    }
+    const pc = this.pc;
+    if (!pc) return false;
+    try {
+      pc.setConfiguration({ ...pc.getConfiguration(), iceServers });
+    } catch (error) {
+      this.emitDiagnostic('ice-server-refresh-apply-failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.scheduleIceServerRefresh();
+      return false;
+    }
+    this.configuredIceServerCount = iceServers.length;
+    this.configuredIceServerUrls = iceServers.flatMap((server) =>
+      Array.isArray(server.urls) ? server.urls : [server.urls]
+    );
+    this.clearIceServerRefreshTimer();
+    this.emitDiagnostic('ice-servers-refreshed', {
+      role: this.options.offerer ? 'offerer' : 'answerer',
+      iceServerCount: iceServers.length,
+    });
+
+    if (this.options.offerer) {
+      try {
+        await this.requestLateIceRestart('late-ice-servers');
+      } catch (error) {
+        // A failed proactive restart must not surface as an unhandled timer
+        // rejection. Reticulum remains active and the normal ICE failure
+        // watchdog can still perform its bounded recovery attempts.
+        this.emitDiagnostic('ice-restart-request-failed', {
+          reason: 'late-ice-servers',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } else if (this.generation) {
+      if (this.localDescriptionSignalPending) {
+        this.pendingIceRefreshRequest = true;
+      } else if (pc.localDescription) {
+        this.sendIceRefreshRequest();
+      }
+    }
+    return true;
+  }
+
+  private async requestLateIceRestart(reason: string): Promise<void> {
+    const pc = this.pc;
+    if (
+      !pc ||
+      this.closed ||
+      !this.options.offerer ||
+      this.isOpen() ||
+      this.lateIceRestartIssued
+    ) {
+      return;
+    }
+    if (pc.signalingState && pc.signalingState !== 'stable') {
+      this.pendingLateIceRestart = true;
+      return;
+    }
+    this.lateIceRestartIssued = true;
+    this.pendingLateIceRestart = false;
+    this.emitDiagnostic('ice-restart-requested', { reason });
+    try {
+      await this.sendOffer(true);
+    } catch (error) {
+      // Do not consume the one proactive restart when negotiation itself
+      // failed. The normal bounded recovery path retries without spinning.
+      this.lateIceRestartIssued = false;
+      this.scheduleRecovery();
+      throw error;
+    }
+  }
+
+  private sendIceRefreshRequest(): void {
+    if (
+      this.closed ||
+      this.options.offerer ||
+      this.iceRefreshRequestSent ||
+      !this.generation
+    ) {
+      return;
+    }
+    this.iceRefreshRequestSent = true;
+    this.emitDiagnostic('ice-refresh-request-sent', {});
+    this.options.onSignal({
+      kind: 'ice-refresh-request',
+      generation: this.generation,
+    });
+  }
+
+  private clearIceServerRefreshTimer(): void {
+    if (this.iceServerRefreshTimer) {
+      clearTimeout(this.iceServerRefreshTimer);
+      this.iceServerRefreshTimer = null;
+    }
+    this.iceServerRefreshDeadline = 0;
   }
 
   private async flushPendingCandidates(): Promise<void> {

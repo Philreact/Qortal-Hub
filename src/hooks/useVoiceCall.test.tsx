@@ -483,6 +483,30 @@ describe('useVoiceCall', () => {
         }),
       });
     });
+    await act(async () => {
+      await groupCallEventHandler?.('gcall:rtc-signal', {
+        verified: true,
+        roomId,
+        callSessionId: 'dm-media-session',
+        mediaSessionGeneration: 1,
+        fromAddress: 'Qpeer',
+        toAddress: 'Qme',
+        signalType: 'reconnect',
+        payload: JSON.stringify({
+          kind: 'ice-refresh-request',
+          generation: 'generation_1234',
+        }),
+      });
+    });
+    expect(audioSurfaceSendCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'apply-direct-voice-rtc-signal',
+        signal: {
+          kind: 'ice-refresh-request',
+          generation: 'generation_1234',
+        },
+      })
+    );
   });
 
   it('auto-rejects direct call:incoming when caller is on blocked address list', async () => {

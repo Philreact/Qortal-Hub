@@ -6,7 +6,11 @@ import {
 
 class MockPeerConnection {
   static instances: MockPeerConnection[] = [];
+  static emitCandidateDuringSetLocal = false;
+  static deferSetLocalDescription = false;
+  static releaseSetLocalDescription: (() => void) | null = null;
   connectionState: RTCPeerConnectionState = 'new';
+  signalingState: RTCSignalingState = 'stable';
   remoteDescription: RTCSessionDescription | null = null;
   localDescription: RTCSessionDescription | null = null;
   ontrack: ((event: RTCTrackEvent) => void) | null = null;
@@ -34,17 +38,39 @@ class MockPeerConnection {
         sdp: description.sdp ?? '',
         toJSON: () => description,
       } as RTCSessionDescription;
+      this.signalingState =
+        description.type === 'offer' ? 'have-remote-offer' : 'stable';
     }
   );
   setLocalDescription = vi.fn(
     async (description: RTCSessionDescriptionInit) => {
+      if (MockPeerConnection.emitCandidateDuringSetLocal) {
+        this.onicecandidate?.({
+          candidate: {
+            type: 'host',
+            protocol: 'udp',
+            toJSON: () => ({
+              candidate: 'candidate:1 1 UDP 1 127.0.0.1 9 typ host',
+            }),
+          } as RTCIceCandidate,
+        } as RTCPeerConnectionIceEvent);
+      }
       this.localDescription = {
         type: description.type,
         sdp: description.sdp ?? '',
         toJSON: () => description,
       } as RTCSessionDescription;
+      this.signalingState =
+        description.type === 'offer' ? 'have-local-offer' : 'stable';
+      if (MockPeerConnection.deferSetLocalDescription) {
+        await new Promise<void>((resolve) => {
+          MockPeerConnection.releaseSetLocalDescription = resolve;
+        });
+      }
     }
   );
+  setConfiguration = vi.fn();
+  getConfiguration = vi.fn(() => ({ iceServers: [] }));
   close = vi.fn();
 
   constructor(_configuration?: RTCConfiguration) {
@@ -56,6 +82,9 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   MockPeerConnection.instances = [];
+  MockPeerConnection.emitCandidateDuringSetLocal = false;
+  MockPeerConnection.deferSetLocalDescription = false;
+  MockPeerConnection.releaseSetLocalDescription = null;
 });
 
 describe('DirectVoiceWebRtcTransport', () => {
@@ -277,6 +306,192 @@ describe('DirectVoiceWebRtcTransport', () => {
 
     expect(transport.isOpen()).toBe(true);
     expect(pc.createOffer).toHaveBeenCalledTimes(2);
+    transport.close();
+  });
+
+  it('adopts late ICE servers and requests a bounded restart from the offerer', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      MockPeerConnection as unknown as typeof RTCPeerConnection
+    );
+    const emitted: DirectVoiceRtcSignal[] = [];
+    const getIceServers = vi
+      .fn<() => Promise<RTCIceServer[]>>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{ urls: 'stun:community.test:3478' }]);
+    const transport = new DirectVoiceWebRtcTransport({
+      offerer: true,
+      getIceServers,
+      localStream,
+      onSignal: (signal) => emitted.push(signal),
+      onRemoteStream: vi.fn(),
+    });
+
+    await transport.start();
+    const pc = MockPeerConnection.instances[0]!;
+    const firstOffer = emitted.find(
+      (signal) =>
+        signal.kind === 'description' && signal.description.type === 'offer'
+    );
+    expect(firstOffer?.kind).toBe('description');
+
+    await vi.advanceTimersByTimeAsync(750);
+    expect(pc.setConfiguration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        iceServers: [{ urls: 'stun:community.test:3478' }],
+      })
+    );
+    // The first offer is still outstanding, so the refresh waits for a stable
+    // signaling state instead of causing offer glare.
+    expect(pc.createOffer).toHaveBeenCalledTimes(1);
+
+    await transport.handleSignal({
+      kind: 'description',
+      generation: firstOffer!.generation,
+      description: { type: 'answer', sdp: 'answer' },
+    });
+    expect(pc.createOffer).toHaveBeenCalledTimes(2);
+    expect(pc.createOffer).toHaveBeenLastCalledWith({ iceRestart: true });
+    transport.close();
+  });
+
+  it('asks the offerer to restart when the answerer discovers ICE servers late', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      MockPeerConnection as unknown as typeof RTCPeerConnection
+    );
+    const emitted: DirectVoiceRtcSignal[] = [];
+    const getIceServers = vi
+      .fn<() => Promise<RTCIceServer[]>>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{ urls: 'stun:community.test:3478' }]);
+    const transport = new DirectVoiceWebRtcTransport({
+      offerer: false,
+      getIceServers,
+      localStream,
+      onSignal: (signal) => emitted.push(signal),
+      onRemoteStream: vi.fn(),
+    });
+
+    await transport.start();
+    await transport.handleSignal({
+      kind: 'description',
+      generation: 'generation_1234',
+      description: { type: 'offer', sdp: 'offer' },
+    });
+    await vi.advanceTimersByTimeAsync(750);
+
+    expect(emitted).toContainEqual({
+      kind: 'ice-refresh-request',
+      generation: 'generation_1234',
+    });
+    transport.close();
+  });
+
+  it('signals an answer before a refresh that arrives while the answer is pending', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      MockPeerConnection as unknown as typeof RTCPeerConnection
+    );
+    const emitted: DirectVoiceRtcSignal[] = [];
+    const getIceServers = vi
+      .fn<() => Promise<RTCIceServer[]>>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{ urls: 'stun:community.test:3478' }]);
+    const transport = new DirectVoiceWebRtcTransport({
+      offerer: false,
+      getIceServers,
+      localStream,
+      onSignal: (signal) => emitted.push(signal),
+      onRemoteStream: vi.fn(),
+    });
+
+    await transport.start();
+    MockPeerConnection.deferSetLocalDescription = true;
+    const handling = transport.handleSignal({
+      kind: 'description',
+      generation: 'generation_1234',
+      description: { type: 'offer', sdp: 'offer' },
+    });
+    await vi.waitFor(() => {
+      expect(MockPeerConnection.releaseSetLocalDescription).toBeTypeOf(
+        'function'
+      );
+    });
+    await vi.advanceTimersByTimeAsync(750);
+    MockPeerConnection.releaseSetLocalDescription?.();
+    await handling;
+
+    expect(emitted.map((signal) => signal.kind)).toEqual([
+      'description',
+      'ice-refresh-request',
+    ]);
+    transport.close();
+  });
+
+  it('keeps bounded recovery available when a proactive restart fails', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      MockPeerConnection as unknown as typeof RTCPeerConnection
+    );
+    const getIceServers = vi
+      .fn<() => Promise<RTCIceServer[]>>()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{ urls: 'stun:community.test:3478' }]);
+    const emitted: DirectVoiceRtcSignal[] = [];
+    const transport = new DirectVoiceWebRtcTransport({
+      offerer: true,
+      getIceServers,
+      localStream,
+      onSignal: (signal) => emitted.push(signal),
+      onRemoteStream: vi.fn(),
+    });
+
+    await transport.start();
+    const pc = MockPeerConnection.instances[0]!;
+    const initialOffer = emitted.find(
+      (signal) =>
+        signal.kind === 'description' && signal.description.type === 'offer'
+    );
+    expect(initialOffer?.kind).toBe('description');
+    await vi.advanceTimersByTimeAsync(750);
+    pc.createOffer.mockRejectedValueOnce(new Error('restart-failed'));
+    await expect(
+      transport.handleSignal({
+        kind: 'description',
+        generation: initialOffer!.generation,
+        description: { type: 'answer', sdp: 'answer' },
+      })
+    ).rejects.toThrow('restart-failed');
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(pc.createOffer).toHaveBeenCalledTimes(3);
+    transport.close();
+  });
+
+  it('signals SDP before candidates emitted during local description setup', async () => {
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      MockPeerConnection as unknown as typeof RTCPeerConnection
+    );
+    const emitted: DirectVoiceRtcSignal[] = [];
+    const transport = new DirectVoiceWebRtcTransport({
+      offerer: true,
+      getIceServers: async () => [{ urls: 'stun:example.test:3478' }],
+      localStream,
+      onSignal: (signal) => emitted.push(signal),
+      onRemoteStream: vi.fn(),
+    });
+    MockPeerConnection.emitCandidateDuringSetLocal = true;
+    await transport.start();
+    expect(emitted.map((signal) => signal.kind)).toEqual([
+      'description',
+      'ice',
+    ]);
     transport.close();
   });
 });

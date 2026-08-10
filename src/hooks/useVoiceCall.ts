@@ -2843,15 +2843,10 @@ export function useVoiceCall(
         });
         return;
       }
-      // `reconnect` is the reliable-channel carrier for screen-stop. Keeping
-      // it distinct prevents the bridge's capability coalescing from dropping
-      // a stop that races the native-audio capability announcement.
-      const directSignalType =
-        p.signalType === 'reconnect' ? 'capability' : p.signalType;
       await callIpcHandlerRef.current('call:rtc-signal', {
         callId,
         generation: signalGeneration,
-        signalType: directSignalType!,
+        signalType: p.signalType!,
         payload: p.payload,
       });
       if (
@@ -3062,9 +3057,11 @@ export function useVoiceCall(
         const signalType =
           event.signal.kind === 'ice'
             ? 'candidate'
-            : event.signal.description.type === 'offer'
-              ? 'offer'
-              : 'answer';
+            : event.signal.kind === 'ice-refresh-request'
+              ? 'reconnect'
+              : event.signal.description.type === 'offer'
+                ? 'offer'
+                : 'answer';
         await sendAuthenticatedDirectVoiceRtcPayload({
           generation: event.signal.generation,
           signalType,
@@ -3107,7 +3104,7 @@ export function useVoiceCall(
               decoded.kind === 'screen-ice'
                 ? 'candidate'
                 : decoded.kind === 'screen-stop'
-                  ? 'capability'
+                  ? 'reconnect'
                   : decoded.description.type;
             if (
               decoded.generation !== p.generation ||
@@ -3163,6 +3160,8 @@ export function useVoiceCall(
             signal.generation === p.generation;
           const validKind =
             (p.signalType === 'candidate' && signal?.kind === 'ice') ||
+            (p.signalType === 'reconnect' &&
+              signal?.kind === 'ice-refresh-request') ||
             ((p.signalType === 'offer' || p.signalType === 'answer') &&
               signal?.kind === 'description' &&
               signal.description?.type === p.signalType);

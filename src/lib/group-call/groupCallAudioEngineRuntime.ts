@@ -1653,10 +1653,22 @@ export class GroupCallAudioEngineRuntime {
       }
       this.directVoiceRtcLocalStream = localStream;
       this.directVoiceRtcMediaReadyEmitted = false;
-      const iceServers = command.iceServers.map((server) => ({ ...server }));
+      const initialIceServers = command.iceServers.map((server) => ({
+        ...server,
+      }));
       this.directVoiceRtcTransport = new DirectVoiceWebRtcTransport({
         offerer: command.initiator,
-        getIceServers: async () => iceServers,
+        getIceServers: async () => {
+          try {
+            const live = await window.hub?.getIceServers?.();
+            if (Array.isArray(live) && live.length > 0) {
+              return live.map((server) => ({ ...server }));
+            }
+          } catch {
+            // The initial snapshot still permits host-only negotiation.
+          }
+          return initialIceServers.map((server) => ({ ...server }));
+        },
         localStream,
         onSignal: (signal) => {
           if (
