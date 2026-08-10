@@ -7427,6 +7427,13 @@ ipcMain.on('audio-surface:host-event', (event, payload: AudioSurfaceEvent) => {
           room: payload.roomId.slice(0, 24),
           peer: payload.peerAddress.slice(0, 8),
         });
+      } else if (payload.type === 'direct-voice-rtc-diagnostic') {
+        loggerLog('[Call][RTC] ICE diagnostic', {
+          stage: payload.stage,
+          room: payload.roomId.slice(0, 24),
+          peer: payload.peerAddress.slice(0, 8),
+          ...payload.detail,
+        });
       } else if (payload.type === 'group-call-rtc-state') {
         loggerLog('[GCall][RTC] transport state', {
           state: payload.state,

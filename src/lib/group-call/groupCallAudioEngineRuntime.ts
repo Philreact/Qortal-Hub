@@ -1708,6 +1708,21 @@ export class GroupCallAudioEngineRuntime {
             state: projected,
           });
         },
+        onDiagnostic: (stage, detail) => {
+          if (
+            this.directVoiceRoomId !== roomId ||
+            this.directVoicePeerAddress !== peerAddress
+          ) {
+            return;
+          }
+          this.emit({
+            type: 'direct-voice-rtc-diagnostic',
+            roomId,
+            peerAddress,
+            stage,
+            detail,
+          });
+        },
       });
     }
     try {

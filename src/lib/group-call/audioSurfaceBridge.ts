@@ -195,6 +195,13 @@ export type AudioSurfaceEvent =
       roomId: string;
       peerAddress: string;
       state: 'connecting' | 'open' | 'closed' | 'failed';
+    }
+  | {
+      type: 'direct-voice-rtc-diagnostic';
+      roomId: string;
+      peerAddress: string;
+      stage: string;
+      detail: Record<string, unknown>;
     };
 
 export function buildDefaultGroupCallControllerSnapshot(): GroupCallControllerSnapshot {

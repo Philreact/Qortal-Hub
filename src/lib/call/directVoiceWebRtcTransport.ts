@@ -24,6 +24,7 @@ type DirectVoiceWebRtcTransportOptions = {
   onSignal: (signal: DirectVoiceRtcSignal) => void;
   onRemoteStream: (stream: MediaStream) => void;
   onState?: (state: DirectVoiceRtcState) => void;
+  onDiagnostic?: (stage: string, detail: Record<string, unknown>) => void;
 };
 
 const ICE_DISCONNECT_GRACE_MS = 3_000;
@@ -54,6 +55,10 @@ export class DirectVoiceWebRtcTransport {
   private lastRestartAt = 0;
   private remoteAudioTrackSeen = false;
   private closed = false;
+  private configuredIceServerCount = 0;
+  private configuredIceServerUrls: string[] = [];
+  private localCandidateCounts = new Map<string, number>();
+  private remoteCandidateCounts = new Map<string, number>();
 
   constructor(private readonly options: DirectVoiceWebRtcTransportOptions) {}
 
@@ -180,6 +185,7 @@ export class DirectVoiceWebRtcTransport {
       }
       return;
     }
+    this.recordRemoteCandidate(signal.candidate);
     await pc.addIceCandidate(signal.candidate);
   }
 
@@ -202,8 +208,18 @@ export class DirectVoiceWebRtcTransport {
       iceServers = [];
     }
     if (this.closed) return;
+    this.configuredIceServerCount = iceServers.length;
+    this.configuredIceServerUrls = iceServers.flatMap((server) =>
+      Array.isArray(server.urls) ? server.urls : [server.urls]
+    );
+    this.localCandidateCounts.clear();
+    this.remoteCandidateCounts.clear();
     const pc = new RTCPeerConnection({ iceServers });
     this.pc = pc;
+    this.emitDiagnostic('peer-connection-created', {
+      role: this.options.offerer ? 'offerer' : 'answerer',
+      iceServerCount: iceServers.length,
+    });
     this.setState('connecting');
     for (const track of this.options.localStream.getAudioTracks()) {
       pc.addTrack(track, this.options.localStream);
@@ -218,14 +234,51 @@ export class DirectVoiceWebRtcTransport {
     pc.onicecandidate = (event) => {
       // End-of-candidates carries no address and costs another signed,
       // fragmented Reticulum signal, so it is intentionally omitted.
-      if (!this.generation || this.closed || !event.candidate) return;
+      if (!event.candidate) {
+        this.emitDiagnostic('local-candidate-gathering-complete', {
+          candidates: this.candidateCountSnapshot(this.localCandidateCounts),
+        });
+        void this.emitCandidatePairSnapshot(pc, 'gathering-complete');
+        return;
+      }
+      this.incrementCandidateCount(
+        this.localCandidateCounts,
+        event.candidate.type,
+        event.candidate.protocol
+      );
+      if (!this.generation || this.closed) return;
       this.options.onSignal({
         kind: 'ice',
         generation: this.generation,
         candidate: event.candidate.toJSON(),
       });
     };
-    pc.onconnectionstatechange = () => this.handleConnectionState();
+    pc.oniceconnectionstatechange = () => {
+      if (this.pc !== pc || this.closed) return;
+      this.emitDiagnostic('ice-state', {
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+        iceGatheringState: pc.iceGatheringState,
+        signalingState: pc.signalingState,
+      });
+      if (
+        pc.iceConnectionState === 'connected' ||
+        pc.iceConnectionState === 'completed' ||
+        pc.iceConnectionState === 'failed'
+      ) {
+        void this.emitCandidatePairSnapshot(pc, `ice-${pc.iceConnectionState}`);
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      if (this.pc !== pc || this.closed) return;
+      this.emitDiagnostic('connection-state', {
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+        iceGatheringState: pc.iceGatheringState,
+        signalingState: pc.signalingState,
+      });
+      this.handleConnectionState();
+    };
   }
 
   private async sendOffer(iceRestart: boolean): Promise<void> {
@@ -299,10 +352,7 @@ export class DirectVoiceWebRtcTransport {
     this.restartAttempts += 1;
     this.lastRestartAt = now;
     try {
-      if (
-        !this.pc ||
-        this.pc.connectionState === 'failed'
-      ) {
+      if (!this.pc || this.pc.connectionState === 'failed') {
         this.releasePeerConnection();
         this.generation = nextGeneration();
         await this.createPeerConnection();
@@ -335,6 +385,7 @@ export class DirectVoiceWebRtcTransport {
     if (pc) {
       pc.ontrack = null;
       pc.onicecandidate = null;
+      pc.oniceconnectionstatechange = null;
       pc.onconnectionstatechange = null;
       try {
         pc.close();
@@ -350,11 +401,114 @@ export class DirectVoiceWebRtcTransport {
     const pending = this.pendingCandidates.splice(0);
     for (const candidate of pending) {
       try {
+        this.recordRemoteCandidate(candidate);
         await pc.addIceCandidate(candidate);
       } catch {
         // A stale candidate must not abort the rest of negotiation.
       }
     }
+  }
+
+  private recordRemoteCandidate(candidate: RTCIceCandidateInit): void {
+    const line = String(candidate.candidate || '');
+    const type = /\btyp\s+([a-z0-9-]+)/i.exec(line)?.[1] ?? 'unknown';
+    const protocol = /^candidate:\S+\s+\d+\s+([a-z0-9-]+)/i.exec(line)?.[1];
+    this.incrementCandidateCount(this.remoteCandidateCounts, type, protocol);
+  }
+
+  private incrementCandidateCount(
+    target: Map<string, number>,
+    type?: string | null,
+    protocol?: string | null
+  ): void {
+    const key = `${String(type || 'unknown').toLowerCase()}/${String(
+      protocol || 'unknown'
+    ).toLowerCase()}`;
+    target.set(key, (target.get(key) ?? 0) + 1);
+  }
+
+  private candidateCountSnapshot(
+    source: Map<string, number>
+  ): Record<string, number> {
+    return Object.fromEntries(
+      [...source.entries()].sort(([a], [b]) => a.localeCompare(b))
+    );
+  }
+
+  private async emitCandidatePairSnapshot(
+    pc: RTCPeerConnection,
+    reason: string
+  ): Promise<void> {
+    if (typeof pc.getStats !== 'function') return;
+    try {
+      const report = await pc.getStats();
+      if (this.pc !== pc || this.closed) return;
+      const entries = new Map<string, Record<string, unknown>>();
+      let selectedPair: Record<string, unknown> | null = null;
+      let nominatedPair: Record<string, unknown> | null = null;
+      report.forEach((raw) => {
+        const stat = raw as unknown as Record<string, unknown>;
+        const id = typeof stat.id === 'string' ? stat.id : '';
+        if (id) entries.set(id, stat);
+        if (
+          stat.type === 'candidate-pair' &&
+          stat.state === 'succeeded' &&
+          (stat.nominated === true || stat.selected === true)
+        ) {
+          nominatedPair = stat;
+        }
+      });
+      for (const stat of entries.values()) {
+        if (stat.type !== 'transport') continue;
+        const pairId = stat.selectedCandidatePairId;
+        if (typeof pairId === 'string') {
+          selectedPair = entries.get(pairId) ?? null;
+          if (selectedPair) break;
+        }
+      }
+      selectedPair ??= nominatedPair;
+      const summarizeCandidate = (
+        id: unknown
+      ): Record<string, unknown> | null => {
+        if (typeof id !== 'string') return null;
+        const stat = entries.get(id);
+        if (!stat) return null;
+        const sourceServerIndex =
+          typeof stat.url === 'string'
+            ? this.configuredIceServerUrls.indexOf(stat.url)
+            : -1;
+        return {
+          candidateType: stat.candidateType ?? 'unknown',
+          protocol: stat.protocol ?? 'unknown',
+          relayProtocol: stat.relayProtocol ?? null,
+          networkType: stat.networkType ?? null,
+          sourceServerIndex: sourceServerIndex >= 0 ? sourceServerIndex : null,
+        };
+      };
+      this.emitDiagnostic('candidate-pair', {
+        reason,
+        iceServerCount: this.configuredIceServerCount,
+        localCandidates: this.candidateCountSnapshot(this.localCandidateCounts),
+        remoteCandidates: this.candidateCountSnapshot(
+          this.remoteCandidateCounts
+        ),
+        selected: selectedPair
+          ? {
+              local: summarizeCandidate(selectedPair.localCandidateId),
+              remote: summarizeCandidate(selectedPair.remoteCandidateId),
+            }
+          : null,
+      });
+    } catch (error) {
+      this.emitDiagnostic('candidate-pair-stats-failed', {
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private emitDiagnostic(stage: string, detail: Record<string, unknown>): void {
+    this.options.onDiagnostic?.(stage, detail);
   }
 
   private clearDisconnectTimer(): void {

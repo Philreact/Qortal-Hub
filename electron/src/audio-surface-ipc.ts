@@ -171,6 +171,13 @@ export type AudioSurfaceEvent =
       state: 'connecting' | 'open' | 'closed' | 'failed';
     }
   | {
+      type: 'direct-voice-rtc-diagnostic';
+      roomId: string;
+      peerAddress: string;
+      stage: string;
+      detail: Record<string, unknown>;
+    }
+  | {
       type: 'group-call-rtc-state';
       roomId: string;
       peerAddress: string;
