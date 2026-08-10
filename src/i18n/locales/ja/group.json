@@ -206,6 +206,14 @@
     "write_not_allowed": "このチャンネルには書き込めません"
   },
   "context_menu": {
+    "about_group": "グループについて",
+    "change_group_avatar": "グループのアバターを変更",
+    "create_category": "カテゴリを作成",
+    "create_channel": "チャンネルを作成",
+    "hidden_users": "非表示のユーザー",
+    "invite_link_copied": "招待リンクをコピーしました",
+    "invite_link_copy_failed": "招待リンクをコピーできませんでした",
+    "leave_group": "グループを退出",
     "mark_all_read": "すべて既読にする",
     "mark_as_read": "既読にする",
     "mute_push_notifications": "プッシュ通知をオフ",
@@ -659,6 +667,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "あなた",
   "latest_mails": "最新のQメール",
+  "member_category": {
+    "admins": "管理者",
+    "collapse": "{{category}}を折りたたむ",
+    "expand": "{{category}}を展開",
+    "lounge": "ラウンジ",
+    "members": "メンバー",
+    "offline": "オフライン",
+    "park": "パーク"
+  },
   "message": {
     "error": {
       "access_name": "名前にアクセスできないため、メッセージを送信できません",
@@ -785,6 +802,11 @@
     "verification_failed": "検証に失敗しました"
   },
   "reticulum": {
+    "about": {
+      "copied": "コピーしました",
+      "created": "作成日",
+      "group_invite_link": "グループ招待リンク"
+    },
     "call_history": {
       "answered": "音声通話",
       "cancelled": "キャンセルされた音声通話",
@@ -792,6 +814,7 @@
       "missed": "不在の音声通話",
       "no_answer": "応答なし"
     },
+    "copy_invite_link": "招待リンクをコピー",
     "discussion": {
       "choose_emoji": "choose emoji",
       "close": "close discussion",
@@ -826,6 +849,11 @@
       "tooltip_value": "メッセージの有効期限: {{value}}",
       "unavailable": "メッセージの有効期限は利用できません"
     },
+    "group_fallback_name": "グループ",
+    "group_type": {
+      "closed": "非公開",
+      "open": "公開"
+    },
     "hide_user": {
       "error_hide": "ユーザーを非表示にできません",
       "error_unhide": "ユーザーを再表示できません",
@@ -853,9 +881,9 @@
     "invite": {
       "apply": "apply",
       "apply_question": "apply to join this group?",
-      "closed_group": "closed group",
+      "closed_group": "非公開グループ",
       "joined": "joined",
-      "open_group": "open group",
+      "open_group": "公開グループ",
       "pending": "pending"
     },
     "join_group_question": "join this group?",
@@ -870,6 +898,16 @@
       "chat": "チャット",
       "enter_qortal_land": "Qortal Landに入る",
       "return_to_chat": "チャットに戻る"
+    },
+    "onboarding": {
+      "find_communities": "コミュニティを探す",
+      "invite_error_invalid": "これは有効なQortalグループの招待リンクではないようです。",
+      "invite_input_label": "グループ招待リンク",
+      "invite_input_placeholder": "グループ招待リンクを貼り付け...",
+      "or": "または",
+      "subtitle": "まだどのコミュニティにも参加していないようです。さっそく参加しましょう。",
+      "title": "新しく生まれ変わったQ-Chatへようこそ",
+      "whats_new_button": "新着情報"
     },
     "qapp_preview": {
       "check_again": "check again",

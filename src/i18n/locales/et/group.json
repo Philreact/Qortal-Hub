@@ -206,6 +206,14 @@
     "write_not_allowed": "Sa ei saa selles kanalis kirjutada"
   },
   "context_menu": {
+    "about_group": "Rühma teave",
+    "change_group_avatar": "Muuda rühma avatari",
+    "create_category": "Loo kategooria",
+    "create_channel": "Loo kanal",
+    "hidden_users": "Peidetud kasutajad",
+    "invite_link_copied": "Kutselink kopeeritud",
+    "invite_link_copy_failed": "Kutselinki ei õnnestunud kopeerida",
+    "leave_group": "Lahku rühmast",
     "mark_all_read": "Märgi kõik loetuks",
     "mark_as_read": "Märgi loetuks",
     "mute_push_notifications": "Summuta tõuketeavitused",
@@ -659,6 +667,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Sina",
   "latest_mails": "viimased Q-kirjad",
+  "member_category": {
+    "admins": "adminid",
+    "collapse": "ahenda {{category}}",
+    "expand": "laienda {{category}}",
+    "lounge": "puhkeala",
+    "members": "liikmed",
+    "offline": "võrgust väljas",
+    "park": "park"
+  },
   "message": {
     "error": {
       "access_name": "ei saa saata sõnumit ilma juurdepääsuta sinu nimele",
@@ -785,6 +802,11 @@
     "verification_failed": "Kontrollimine ebaõnnestus"
   },
   "reticulum": {
+    "about": {
+      "copied": "kopeeritud",
+      "created": "loodud",
+      "group_invite_link": "rühma kutselink"
+    },
     "call_history": {
       "answered": "kõne",
       "cancelled": "tühistatud kõne",
@@ -792,6 +814,7 @@
       "missed": "vastamata kõne",
       "no_answer": "vastust ei tulnud"
     },
+    "copy_invite_link": "kopeeri kutselink",
     "discussion": {
       "choose_emoji": "choose emoji",
       "close": "close discussion",
@@ -826,6 +849,11 @@
       "tooltip_value": "sõnumi aegumine: {{value}}",
       "unavailable": "sõnumi aegumine pole saadaval"
     },
+    "group_fallback_name": "Rühm",
+    "group_type": {
+      "closed": "suletud",
+      "open": "avatud"
+    },
     "hide_user": {
       "error_hide": "kasutajat ei saa peita",
       "error_unhide": "kasutajat ei saa uuesti kuvada",
@@ -853,9 +881,9 @@
     "invite": {
       "apply": "apply",
       "apply_question": "apply to join this group?",
-      "closed_group": "closed group",
+      "closed_group": "suletud rühm",
       "joined": "joined",
-      "open_group": "open group",
+      "open_group": "avatud rühm",
       "pending": "pending"
     },
     "join_group_question": "join this group?",
@@ -870,6 +898,16 @@
       "chat": "Vestlus",
       "enter_qortal_land": "Sisene Qortal Landi",
       "return_to_chat": "Tagasi vestlusesse"
+    },
+    "onboarding": {
+      "find_communities": "Leia kogukondi",
+      "invite_error_invalid": "See ei tundu olevat kehtiv Qortali rühma kutselink.",
+      "invite_input_label": "Rühma kutselink",
+      "invite_input_placeholder": "Kleebi rühma kutselink...",
+      "or": "või",
+      "subtitle": "Tundub, et sa ei kuulu veel ühessegi kogukonda. Muudame seda.",
+      "title": "Tere tulemast uude ja paremasse Q-Chati",
+      "whats_new_button": "Mis on uut?"
     },
     "qapp_preview": {
       "check_again": "check again",

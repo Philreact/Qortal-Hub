@@ -7,13 +7,8 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type FormEvent,
-} from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useTranslation } from 'react-i18next';
 import qortalOfficialLogo from '../../assets/sidebar/qortal-logo-official.webp';
 import chatBubbleDots from '../../assets/qchat/caught-up-chat-dots.webp';
 import chatBubbleLines from '../../assets/qchat/caught-up-chat-lines.webp';
@@ -37,6 +32,7 @@ type FirstTimeQChatEmptyStateProps = {
 export function FirstTimeQChatEmptyState({
   onFindCommunities,
 }: FirstTimeQChatEmptyStateProps) {
+  const { t } = useTranslation(['core', 'group']);
   const [inviteLink, setInviteLink] = useState('');
   const [submittedInvite, setSubmittedInvite] = useState('');
   const [isCheckingInvite, setIsCheckingInvite] = useState(false);
@@ -146,9 +142,7 @@ export function FirstTimeQChatEmptyState({
       if (isValid) {
         setSubmittedInvite(normalizedLink);
       } else {
-        setInviteError(
-          "This doesn't look like a valid Qortal group invite link."
-        );
+        setInviteError(t('group:reticulum.onboarding.invite_error_invalid'));
       }
       setIsCheckingInvite(false);
     }, 0);
@@ -190,7 +184,7 @@ export function FirstTimeQChatEmptyState({
           },
         }}
       >
-        What's New?
+        {t('group:reticulum.onboarding.whats_new_button')}
       </Button>
 
       <Box
@@ -302,10 +296,9 @@ export function FirstTimeQChatEmptyState({
             letterSpacing: '-0.025em',
             lineHeight: 1.18,
             mb: 1.25,
-            whiteSpace: 'nowrap',
           }}
         >
-          Welcome to the new, improved Q-Chat
+          {t('group:reticulum.onboarding.title')}
         </Typography>
         <Typography
           sx={{
@@ -315,7 +308,7 @@ export function FirstTimeQChatEmptyState({
             mb: 4,
           }}
         >
-          Looks like you're not part of any communities yet. Let's change that.
+          {t('group:reticulum.onboarding.subtitle')}
         </Typography>
 
         <Button
@@ -351,18 +344,34 @@ export function FirstTimeQChatEmptyState({
             },
           }}
         >
-          Find Communities
+          {t('group:reticulum.onboarding.find_communities')}
         </Button>
 
-        <Box sx={{ alignItems: 'center', color: 'text.secondary', display: 'flex', gap: 1.5, mb: 3, maxWidth: 440, width: '100%' }}>
+        <Box
+          sx={{
+            alignItems: 'center',
+            color: 'text.secondary',
+            display: 'flex',
+            gap: 1.5,
+            mb: 3,
+            maxWidth: 440,
+            width: '100%',
+          }}
+        >
           <Divider sx={{ borderColor: 'rgba(255,255,255,0.13)', flex: 1 }} />
-          <Typography sx={{ color: 'text.secondary', fontSize: 14, fontWeight: 600 }}>
-            or
+          <Typography
+            sx={{ color: 'text.secondary', fontSize: 14, fontWeight: 600 }}
+          >
+            {t('group:reticulum.onboarding.or')}
           </Typography>
           <Divider sx={{ borderColor: 'rgba(255,255,255,0.13)', flex: 1 }} />
         </Box>
 
-        <Box component="form" onSubmit={handleInviteSubmit} sx={{ maxWidth: 440, width: '100%' }}>
+        <Box
+          component="form"
+          onSubmit={handleInviteSubmit}
+          sx={{ maxWidth: 440, width: '100%' }}
+        >
           <Box
             sx={{
               alignItems: 'stretch',
@@ -376,14 +385,16 @@ export function FirstTimeQChatEmptyState({
             }}
           >
             <TextField
-              aria-label="Group invite link"
+              aria-label={t('group:reticulum.onboarding.invite_input_label')}
               autoComplete="off"
               disabled={isCheckingInvite}
               onChange={(event) => {
                 setInviteLink(event.target.value);
                 if (inviteError) setInviteError('');
               }}
-              placeholder="Paste a Group Invite Link..."
+              placeholder={t(
+                'group:reticulum.onboarding.invite_input_placeholder'
+              )}
               value={inviteLink}
               variant="standard"
               sx={{
@@ -394,7 +405,9 @@ export function FirstTimeQChatEmptyState({
                   px: 2,
                   py: 1.65,
                 },
-                '& .MuiInputBase-root::before, & .MuiInputBase-root::after': { display: 'none' },
+                '& .MuiInputBase-root::before, & .MuiInputBase-root::after': {
+                  display: 'none',
+                },
               }}
             />
             <Button
@@ -412,11 +425,18 @@ export function FirstTimeQChatEmptyState({
                 textTransform: 'none',
               }}
             >
-              {isCheckingInvite ? <CircularProgress size={18} color="inherit" /> : 'Join'}
+              {isCheckingInvite ? (
+                <CircularProgress size={18} color="inherit" />
+              ) : (
+                t('core:action.join', { postProcess: 'capitalizeFirstChar' })
+              )}
             </Button>
           </Box>
           {inviteError && (
-            <Typography role="alert" sx={{ color: '#e07a85', fontSize: 13, mt: 1, textAlign: 'left' }}>
+            <Typography
+              role="alert"
+              sx={{ color: '#e07a85', fontSize: 13, mt: 1, textAlign: 'left' }}
+            >
               {inviteError}
             </Typography>
           )}
