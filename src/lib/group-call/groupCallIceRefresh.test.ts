@@ -8,7 +8,13 @@ type TestRuntime = {
   groupRtcIceServers: RTCIceServer[];
   groupRtcIceServersLoaded: boolean;
   groupRtcIceServersLastLookupAt: number;
-  groupRtcTransports: Map<string, { isOpen: () => boolean }>;
+  groupRtcTransports: Map<
+    string,
+    {
+      isOpen: () => boolean;
+      updateIceServers: (servers: RTCIceServer[]) => Promise<void>;
+    }
+  >;
   closeGroupRtcTransport: (peerAddress: string, reason: string) => void;
   refreshGroupRtcIceServers: () => Promise<void>;
   resetGroupRtcIceServers: () => void;
@@ -30,14 +36,17 @@ afterEach(() => {
 });
 
 describe('group-call community ICE refresh', () => {
-  it('keeps an empty result retryable and replaces only unopened edges after discovery', async () => {
+  it('keeps an empty result retryable and upgrades unopened edges after discovery', async () => {
     const getIceServers = vi
       .fn()
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ urls: 'stun:8.8.8.8:47321' }]);
     window.hub = { ...originalHub, getIceServers };
     const runtime = makeRuntime();
-    const unopened = { isOpen: () => false };
+    const unopened = {
+      isOpen: () => false,
+      updateIceServers: vi.fn(async () => {}),
+    };
     runtime.groupRtcTransports.set('Q-peer', unopened);
     runtime.closeGroupRtcTransport = vi.fn();
 
@@ -52,10 +61,9 @@ describe('group-call community ICE refresh', () => {
     expect(runtime.groupRtcIceServers).toEqual([
       { urls: 'stun:8.8.8.8:47321' },
     ]);
-    expect(runtime.closeGroupRtcTransport).toHaveBeenCalledWith(
-      'Q-peer',
-      'ice-servers-refreshed'
-    );
+    expect(unopened.updateIceServers).toHaveBeenCalledWith([
+      { urls: 'stun:8.8.8.8:47321' },
+    ]);
 
     runtime.dispose();
   });
@@ -70,7 +78,11 @@ describe('group-call community ICE refresh', () => {
       getIceServers,
     };
     const runtime = makeRuntime();
-    runtime.groupRtcTransports.set('Q-peer', { isOpen: () => true });
+    const opened = {
+      isOpen: () => true,
+      updateIceServers: vi.fn(async () => {}),
+    };
+    runtime.groupRtcTransports.set('Q-peer', opened);
     runtime.closeGroupRtcTransport = vi.fn();
 
     vi.spyOn(Date, 'now').mockReturnValue(10_000);
@@ -78,6 +90,7 @@ describe('group-call community ICE refresh', () => {
 
     expect(runtime.groupRtcIceServersLoaded).toBe(true);
     expect(runtime.closeGroupRtcTransport).not.toHaveBeenCalled();
+    expect(opened.updateIceServers).not.toHaveBeenCalled();
 
     vi.spyOn(Date, 'now').mockReturnValue(10_000 + 4 * 60_000);
     await runtime.refreshGroupRtcIceServers();

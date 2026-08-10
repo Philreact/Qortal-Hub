@@ -6000,15 +6000,18 @@ export class GroupCallAudioEngineRuntime {
     signal: GroupCallRtcSignal
   ): Promise<void> {
     const fromAddress = this.userInfo?.address?.trim() ?? '';
+    const fromPublicKey = this.userInfo?.publicKey ?? '';
     const roomId = this.snapshot.roomId;
+    const callSessionId = this.callSessionId;
+    const mediaSessionGeneration = this.mediaSessionGeneration >>> 0;
     if (
       isReticulumGroupCallEnabled ||
       !fromAddress ||
       !roomId ||
-      !this.callSessionId ||
+      !callSessionId ||
       !window.groupCall?.sendRtcSignal
     ) {
-      return;
+      throw new Error('group-rtc-signal-session-unavailable');
     }
     const payload = JSON.stringify(signal);
     const digest = await crypto.subtle.digest(
@@ -6026,15 +6029,15 @@ export class GroupCallAudioEngineRuntime {
       signature = await signGroupCallFields({
         type: 'GC_RTC_SIGNAL',
         roomId,
-        callSessionId: this.callSessionId,
-        mediaSessionGeneration: this.mediaSessionGeneration >>> 0,
+        callSessionId,
+        mediaSessionGeneration,
         fromAddress,
         toAddress: peerAddress,
         connectionId,
         signalId,
         signalType: signal.type,
         payloadHash,
-        fromPublicKey: this.userInfo?.publicKey ?? '',
+        fromPublicKey,
         timestamp,
       });
     } catch (error) {
@@ -6054,13 +6057,22 @@ export class GroupCallAudioEngineRuntime {
           error: detail,
         }
       );
-      return;
+      throw error;
+    }
+    if (
+      this.snapshot.roomId !== roomId ||
+      this.callSessionId !== callSessionId ||
+      this.mediaSessionGeneration >>> 0 !== mediaSessionGeneration ||
+      this.userInfo?.address?.trim() !== fromAddress ||
+      this.userInfo?.publicKey !== fromPublicKey
+    ) {
+      throw new Error('group-rtc-signal-session-changed');
     }
     const result = await window.groupCall
       .sendRtcSignal({
         roomId,
-        callSessionId: this.callSessionId,
-        mediaSessionGeneration: this.mediaSessionGeneration >>> 0,
+        callSessionId,
+        mediaSessionGeneration,
         fromAddress,
         toAddress: peerAddress,
         connectionId,
@@ -6070,7 +6082,7 @@ export class GroupCallAudioEngineRuntime {
         payloadHash,
         timestamp,
         signature,
-        publicKey: this.userInfo?.publicKey ?? '',
+        publicKey: fromPublicKey,
       })
       .catch((error) => ({
         success: false,
@@ -6086,6 +6098,7 @@ export class GroupCallAudioEngineRuntime {
           error: result?.error,
         }
       );
+      throw new Error(result?.error || 'group-rtc-signal-send-failed');
     }
   }
 
@@ -6098,11 +6111,8 @@ export class GroupCallAudioEngineRuntime {
     const offerer = this.topology
       ? shouldOfferGroupRtcTransport(localAddress, peerAddress, this.topology)
       : true;
-    let lastReportedState:
-      | RTCPeerConnectionState
-      | 'open'
-      | 'closed'
-      | null = null;
+    let lastReportedState: RTCPeerConnectionState | 'open' | 'closed' | null =
+      null;
     const transport = new GroupCallWebRtcDataChannelTransport({
       peerAddress,
       // Preserve the original topology direction: participants dial their
@@ -6194,7 +6204,7 @@ export class GroupCallAudioEngineRuntime {
         void this.sendGroupRtcSignal(peerAddress, {
           type: 'capability',
           version: 1,
-        });
+        }).catch(() => {});
       }
       if (this.groupRtcCapabilities.has(peerAddress)) {
         void transport.enableNegotiation().catch((error) => {
@@ -6262,16 +6272,14 @@ export class GroupCallAudioEngineRuntime {
       this.groupRtcIceServers = next;
       this.groupRtcIceServersLoaded = true;
       if (previousKey === nextKey) return;
-      // PeerConnections copy their ICE configuration at construction. Replace
-      // only edges that have not opened; an already-working LAN/WebRTC edge
-      // must never be interrupted merely because discovery completed later.
-      for (const [peerAddress, transport] of [
-        ...this.groupRtcTransports.entries(),
-      ]) {
-        if (!transport.isOpen()) {
-          this.closeGroupRtcTransport(peerAddress, 'ice-servers-refreshed');
-        }
-      }
+      // Upgrade only unopened edges in place. Keeping the same transport lets
+      // its negotiation generation reject delayed candidates from before the
+      // refresh, rather than racing a destroyed edge against a replacement.
+      await Promise.allSettled(
+        [...this.groupRtcTransports.values()]
+          .filter((transport) => !transport.isOpen())
+          .map((transport) => transport.updateIceServers(next))
+      );
     } catch {
       // A transient host/bridge failure remains retryable on maintenance.
     } finally {
@@ -6304,7 +6312,8 @@ export class GroupCallAudioEngineRuntime {
       input.toAddress !== this.userInfo?.address ||
       input.connectionId !== this.groupRtcConnectionId(peerAddress) ||
       !peerAddress ||
-      typeof input.payload !== 'string'
+      typeof input.payload !== 'string' ||
+      input.payload.length > 64 * 1024
     ) {
       return;
     }
@@ -6335,6 +6344,30 @@ export class GroupCallAudioEngineRuntime {
       return;
     }
     if (
+      'generation' in signal &&
+      signal.generation !== undefined &&
+      (typeof signal.generation !== 'string' ||
+        !/^[A-Za-z0-9_-]{8,64}$/.test(signal.generation))
+    ) {
+      return;
+    }
+    if (
+      (signal.type === 'offer' || signal.type === 'answer') &&
+      (!signal.description ||
+        typeof signal.description !== 'object' ||
+        signal.description.type !== signal.type ||
+        typeof signal.description.sdp !== 'string')
+    ) {
+      return;
+    }
+    if (
+      signal.type === 'candidate' &&
+      signal.candidate !== null &&
+      (!signal.candidate || typeof signal.candidate !== 'object')
+    ) {
+      return;
+    }
+    if (
       signal.type === 'candidates' &&
       (!Array.isArray(signal.candidates) ||
         signal.candidates.length === 0 ||
@@ -6354,7 +6387,7 @@ export class GroupCallAudioEngineRuntime {
         await this.sendGroupRtcSignal(peerAddress, {
           type: 'capability',
           version: 1,
-        });
+        }).catch(() => {});
       }
       await transport.enableNegotiation().catch((error) => {
         this.recordThrottledDiagEvent(

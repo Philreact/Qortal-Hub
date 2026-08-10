@@ -10,6 +10,11 @@ export type DirectVoiceRtcSignal =
       candidate: RTCIceCandidateInit | null;
     }
   | {
+      kind: 'ice-candidates';
+      generation: string;
+      candidates: RTCIceCandidateInit[];
+    }
+  | {
       kind: 'ice-refresh-request';
       generation: string;
     };
@@ -38,11 +43,11 @@ const ICE_RESTART_COOLDOWN_MS = 30_000;
 const ICE_SERVER_REFRESH_INTERVAL_MS = 750;
 const ICE_SERVER_REFRESH_WINDOW_MS = 12_000;
 // The authenticated Reticulum control path has a much higher per-bundle cost
-// than a conventional WebSocket signaler. Give normal host/srflx gathering a
-// short bounded window so those candidates ride inside the SDP instead of
-// becoming many separately fragmented signals. Candidates discovered after
-// the window still use the existing trickle path.
-const ICE_GATHER_BEFORE_DESCRIPTION_SIGNAL_MS = 1_500;
+// than a conventional WebSocket signaler. Coalesce candidates discovered near
+// each other while still sending the SDP immediately, so negotiation is not
+// delayed and candidates are never assumed to be embedded in that SDP.
+const LOCAL_ICE_CANDIDATE_BATCH_MS = 75;
+const MAX_PENDING_ICE_CANDIDATES = 128;
 
 function nextGeneration(): string {
   return crypto.randomUUID();
@@ -83,6 +88,9 @@ export class DirectVoiceWebRtcTransport {
     generation: string;
     candidate: RTCIceCandidateInit;
   }> = [];
+  private localCandidateBatchTimer: ReturnType<typeof setTimeout> | null = null;
+  private operationChain: Promise<void> = Promise.resolve();
+  private retiredGenerations = new Set<string>();
 
   constructor(private readonly options: DirectVoiceWebRtcTransportOptions) {}
 
@@ -133,6 +141,12 @@ export class DirectVoiceWebRtcTransport {
   }
 
   async handleSignal(signal: DirectVoiceRtcSignal): Promise<void> {
+    return this.enqueueOperation(() => this.handleSignalInternal(signal));
+  }
+
+  private async handleSignalInternal(
+    signal: DirectVoiceRtcSignal
+  ): Promise<void> {
     if (this.closed) return;
     if (!this.pc) await this.createPeerConnection();
     let pc = this.pc;
@@ -158,6 +172,7 @@ export class DirectVoiceWebRtcTransport {
       if (description.type === 'offer') {
         if (this.options.offerer) return;
         if (!signal.generation) return;
+        if (this.retiredGenerations.has(signal.generation)) return;
         if (pc.signalingState === 'closed' || pc.connectionState === 'failed') {
           this.releasePeerConnection();
           await this.createPeerConnection();
@@ -165,6 +180,7 @@ export class DirectVoiceWebRtcTransport {
           if (!pc) return;
         }
         if (this.generation && this.generation !== signal.generation) {
+          this.retireGeneration(this.generation);
           this.pendingCandidates = [];
         }
         this.generation = signal.generation;
@@ -190,8 +206,22 @@ export class DirectVoiceWebRtcTransport {
     }
 
     if (!signal.generation) return;
-    if (!signal.candidate) return;
+    const candidates =
+      signal.kind === 'ice-candidates'
+        ? Array.isArray(signal.candidates)
+          ? signal.candidates
+              .filter(
+                (candidate): candidate is RTCIceCandidateInit =>
+                  !!candidate && typeof candidate === 'object'
+              )
+              .slice(-MAX_PENDING_ICE_CANDIDATES)
+          : []
+        : signal.candidate
+          ? [signal.candidate]
+          : [];
+    if (candidates.length === 0) return;
     if (signal.generation !== this.generation) {
+      if (this.retiredGenerations.has(signal.generation)) return;
       // Direct Reticulum frames are independently delivered, so a candidate
       // may legitimately beat its offer. Buffer a bounded number by ICE
       // generation on the answerer instead of silently losing it.
@@ -202,8 +232,9 @@ export class DirectVoiceWebRtcTransport {
           (sum, candidates) => sum + candidates.length,
           0
         );
-        if (queued.length < 64 && total < 128) {
-          queued.push(signal.candidate);
+        const available = Math.max(0, MAX_PENDING_ICE_CANDIDATES - total);
+        if (available > 0) {
+          queued.push(...candidates.slice(0, available));
           this.earlyCandidatesByGeneration.set(signal.generation, queued);
           while (this.earlyCandidatesByGeneration.size > 4) {
             const oldest = this.earlyCandidatesByGeneration.keys().next().value;
@@ -214,14 +245,22 @@ export class DirectVoiceWebRtcTransport {
       }
       return;
     }
-    if (!pc.remoteDescription) {
-      if (this.pendingCandidates.length < 128) {
-        this.pendingCandidates.push(signal.candidate);
+    for (const candidate of candidates) {
+      if (!pc.remoteDescription) {
+        if (this.pendingCandidates.length >= MAX_PENDING_ICE_CANDIDATES) {
+          this.pendingCandidates.shift();
+        }
+        this.pendingCandidates.push(candidate);
+        continue;
       }
-      return;
+      try {
+        this.recordRemoteCandidate(candidate);
+        await pc.addIceCandidate(candidate);
+      } catch {
+        // A delayed candidate from an earlier ICE restart must not prevent
+        // the remaining candidates in this authenticated batch from applying.
+      }
     }
-    this.recordRemoteCandidate(signal.candidate);
-    await pc.addIceCandidate(signal.candidate);
   }
 
   close(): void {
@@ -231,7 +270,8 @@ export class DirectVoiceWebRtcTransport {
     this.clearIceServerRefreshTimer();
     this.pendingCandidates = [];
     this.earlyCandidatesByGeneration.clear();
-    this.bufferedLocalCandidates = [];
+    this.retiredGenerations.clear();
+    this.clearLocalCandidateBatch();
     this.pendingIceRefreshRequest = false;
     this.releasePeerConnection();
     this.setState('closed');
@@ -288,7 +328,7 @@ export class DirectVoiceWebRtcTransport {
       if (!this.generation || this.closed) return;
       const candidate = event.candidate.toJSON();
       if (this.localDescriptionSignalPending) {
-        if (this.bufferedLocalCandidates.length < 128) {
+        if (this.bufferedLocalCandidates.length < MAX_PENDING_ICE_CANDIDATES) {
           this.bufferedLocalCandidates.push({
             generation: this.generation,
             candidate,
@@ -296,7 +336,7 @@ export class DirectVoiceWebRtcTransport {
         }
         return;
       }
-      this.emitLocalCandidate(this.generation, candidate);
+      this.queueLocalCandidate(this.generation, candidate);
     };
     pc.oniceconnectionstatechange = () => {
       if (this.pc !== pc || this.closed) return;
@@ -330,6 +370,7 @@ export class DirectVoiceWebRtcTransport {
     const pc = this.pc;
     if (!pc || this.closed || !this.options.offerer) return;
     if (iceRestart) {
+      this.retireGeneration(this.generation);
       this.generation = nextGeneration();
       this.pendingCandidates = [];
     }
@@ -394,6 +435,7 @@ export class DirectVoiceWebRtcTransport {
     try {
       if (!this.pc || this.pc.connectionState === 'failed') {
         this.releasePeerConnection();
+        this.retireGeneration(this.generation);
         this.generation = nextGeneration();
         await this.createPeerConnection();
         if (!this.pc) return;
@@ -423,7 +465,7 @@ export class DirectVoiceWebRtcTransport {
     this.pc = null;
     this.remoteAudioTrackSeen = false;
     this.localDescriptionSignalPending = false;
-    this.bufferedLocalCandidates = [];
+    this.clearLocalCandidateBatch();
     if (pc) {
       pc.ontrack = null;
       pc.onicecandidate = null;
@@ -442,12 +484,11 @@ export class DirectVoiceWebRtcTransport {
     description: RTCSessionDescriptionInit
   ): Promise<void> {
     const generation = this.generation;
-    const gatheringStartedAt = Date.now();
+    let descriptionSignaled = false;
     this.localDescriptionSignalPending = true;
-    this.bufferedLocalCandidates = [];
+    this.clearLocalCandidateBatch();
     try {
       await pc.setLocalDescription(description);
-      await this.waitForInitialIceGathering(pc, generation);
       if (
         !pc.localDescription ||
         this.closed ||
@@ -464,76 +505,58 @@ export class DirectVoiceWebRtcTransport {
         generation,
         description: pc.localDescription.toJSON(),
       });
+      descriptionSignaled = true;
       this.emitDiagnostic('local-description-signaled', {
         type: description.type,
         gatheringState: pc.iceGatheringState,
-        gatheringWaitMs: Date.now() - gatheringStartedAt,
-        embeddedCandidateCount: this.bufferedLocalCandidates.length,
+        bufferedCandidateCount: this.bufferedLocalCandidates.length,
       });
-      if (
-        description.type === 'answer' &&
-        this.pendingIceRefreshRequest
-      ) {
+      if (description.type === 'answer' && this.pendingIceRefreshRequest) {
         this.pendingIceRefreshRequest = false;
         this.sendIceRefreshRequest();
       }
     } finally {
       this.localDescriptionSignalPending = false;
-      // Every candidate emitted before the SDP snapshot is represented in
-      // pc.localDescription. Discard those buffered copies so they are not
-      // signed and fragmented again. A candidate emitted after this synchronous
-      // section sees localDescriptionSignalPending=false and is trickled.
-      this.bufferedLocalCandidates = [];
+      // Never infer candidate delivery from onicecandidate firing. Flush every
+      // gathered candidate after the SDP has entered the ordered signaling
+      // path. WebRTC accepts harmless SDP/trickle overlap, while preserving
+      // every candidate avoids losing a route that was not in the SDP sent.
+      if (descriptionSignaled) this.flushLocalCandidateBatch();
+      else this.clearLocalCandidateBatch();
     }
   }
 
-  private async waitForInitialIceGathering(
-    pc: RTCPeerConnection,
-    generation: string
-  ): Promise<void> {
-    if (
-      pc.iceGatheringState === 'complete' ||
-      this.closed ||
-      this.pc !== pc ||
-      this.generation !== generation
-    ) {
-      return;
-    }
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        pc.removeEventListener('icegatheringstatechange', onStateChange);
-        resolve();
-      };
-      const onStateChange = () => {
-        if (
-          pc.iceGatheringState === 'complete' ||
-          this.closed ||
-          this.pc !== pc ||
-          this.generation !== generation
-        ) {
-          finish();
-        }
-      };
-      const timer = setTimeout(
-        finish,
-        ICE_GATHER_BEFORE_DESCRIPTION_SIGNAL_MS
-      );
-      pc.addEventListener('icegatheringstatechange', onStateChange);
-      // Recheck after installing the listener so a completion transition
-      // between the first check and listener registration cannot cost 1.5 s.
-      onStateChange();
-    });
-  }
-
-  private emitLocalCandidate(
+  private queueLocalCandidate(
     generation: string,
     candidate: RTCIceCandidateInit
   ): void {
-    this.options.onSignal({ kind: 'ice', generation, candidate });
+    if (this.closed || generation !== this.generation) return;
+    if (this.bufferedLocalCandidates.length >= MAX_PENDING_ICE_CANDIDATES) {
+      this.bufferedLocalCandidates.shift();
+    }
+    this.bufferedLocalCandidates.push({ generation, candidate });
+    if (this.localDescriptionSignalPending || this.localCandidateBatchTimer) {
+      return;
+    }
+    this.localCandidateBatchTimer = setTimeout(() => {
+      this.localCandidateBatchTimer = null;
+      this.flushLocalCandidateBatch();
+    }, LOCAL_ICE_CANDIDATE_BATCH_MS);
+  }
+
+  private flushLocalCandidateBatch(): void {
+    if (this.localCandidateBatchTimer) {
+      clearTimeout(this.localCandidateBatchTimer);
+      this.localCandidateBatchTimer = null;
+    }
+    if (this.closed || this.bufferedLocalCandidates.length === 0) return;
+    const generation = this.generation;
+    const candidates = this.bufferedLocalCandidates
+      .splice(0)
+      .filter((entry) => entry.generation === generation)
+      .map((entry) => entry.candidate);
+    if (candidates.length === 0) return;
+    this.options.onSignal({ kind: 'ice-candidates', generation, candidates });
   }
 
   private scheduleIceServerRefresh(): void {
@@ -690,6 +713,34 @@ export class DirectVoiceWebRtcTransport {
       } catch {
         // A stale candidate must not abort the rest of negotiation.
       }
+    }
+  }
+
+  private clearLocalCandidateBatch(): void {
+    if (this.localCandidateBatchTimer) {
+      clearTimeout(this.localCandidateBatchTimer);
+      this.localCandidateBatchTimer = null;
+    }
+    this.bufferedLocalCandidates = [];
+  }
+
+  private enqueueOperation(operation: () => Promise<void>): Promise<void> {
+    const next = this.operationChain.then(async () => {
+      if (this.closed) return;
+      await operation();
+    });
+    this.operationChain = next.catch(() => {});
+    return next;
+  }
+
+  private retireGeneration(generation: string): void {
+    if (!generation) return;
+    this.retiredGenerations.delete(generation);
+    this.retiredGenerations.add(generation);
+    while (this.retiredGenerations.size > 16) {
+      const oldest = this.retiredGenerations.values().next().value;
+      if (typeof oldest !== 'string') break;
+      this.retiredGenerations.delete(oldest);
     }
   }
 

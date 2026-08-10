@@ -154,6 +154,65 @@ describe('DirectVoiceWebRtcTransport', () => {
     transport.close();
   });
 
+  it('applies every candidate in an authenticated candidate batch', async () => {
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      MockPeerConnection as unknown as typeof RTCPeerConnection
+    );
+    const transport = new DirectVoiceWebRtcTransport({
+      offerer: false,
+      getIceServers: async () => [],
+      localStream,
+      onSignal: vi.fn(),
+      onRemoteStream: vi.fn(),
+    });
+    await transport.start();
+    await transport.handleSignal({
+      kind: 'description',
+      generation: 'generation_batch',
+      description: { type: 'offer', sdp: 'offer' },
+    });
+    await transport.handleSignal({
+      kind: 'ice-candidates',
+      generation: 'generation_batch',
+      candidates: [{ candidate: 'candidate-1' }, { candidate: 'candidate-2' }],
+    });
+
+    expect(
+      MockPeerConnection.instances[0]!.addIceCandidate
+    ).toHaveBeenCalledTimes(2);
+    transport.close();
+  });
+
+  it('does not let a retired offer generation replace the current one', async () => {
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      MockPeerConnection as unknown as typeof RTCPeerConnection
+    );
+    const transport = new DirectVoiceWebRtcTransport({
+      offerer: false,
+      getIceServers: async () => [],
+      localStream,
+      onSignal: vi.fn(),
+      onRemoteStream: vi.fn(),
+    });
+    await transport.start();
+    const offer = (generation: string) =>
+      transport.handleSignal({
+        kind: 'description' as const,
+        generation,
+        description: { type: 'offer' as const, sdp: generation },
+      });
+    await offer('generation_old');
+    await offer('generation_new');
+    await offer('generation_old');
+
+    expect(
+      MockPeerConnection.instances[0]!.setRemoteDescription
+    ).toHaveBeenCalledTimes(2);
+    transport.close();
+  });
+
   it('opens native media when the peer connection connects', async () => {
     vi.stubGlobal(
       'RTCPeerConnection',
@@ -486,7 +545,7 @@ describe('DirectVoiceWebRtcTransport', () => {
     transport.close();
   });
 
-  it('embeds candidates gathered during local description setup in SDP', async () => {
+  it('signals candidates gathered during local description setup after SDP', async () => {
     vi.stubGlobal(
       'RTCPeerConnection',
       MockPeerConnection as unknown as typeof RTCPeerConnection
@@ -501,11 +560,18 @@ describe('DirectVoiceWebRtcTransport', () => {
     });
     MockPeerConnection.emitCandidateDuringSetLocal = true;
     await transport.start();
-    expect(emitted.map((signal) => signal.kind)).toEqual(['description']);
+    expect(emitted.map((signal) => signal.kind)).toEqual([
+      'description',
+      'ice-candidates',
+    ]);
+    expect(emitted[1]).toMatchObject({
+      kind: 'ice-candidates',
+      candidates: [{ candidate: 'candidate:1 1 UDP 1 127.0.0.1 9 typ host' }],
+    });
     transport.close();
   });
 
-  it('waits briefly for ICE gathering and only trickles later candidates', async () => {
+  it('signals SDP promptly and batches candidates gathered later', async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
       'RTCPeerConnection',
@@ -538,10 +604,11 @@ describe('DirectVoiceWebRtcTransport', () => {
     MockPeerConnection.releaseSetLocalDescription?.();
     await vi.advanceTimersByTimeAsync(0);
 
-    pc.iceGatheringState = 'complete';
-    pc.emitEvent('icegatheringstatechange');
     await startPromise;
-    expect(emitted.map((signal) => signal.kind)).toEqual(['description']);
+    expect(emitted.map((signal) => signal.kind)).toEqual([
+      'description',
+      'ice-candidates',
+    ]);
 
     pc.onicecandidate?.({
       candidate: {
@@ -552,14 +619,16 @@ describe('DirectVoiceWebRtcTransport', () => {
         }),
       } as RTCIceCandidate,
     } as RTCPeerConnectionIceEvent);
+    await vi.advanceTimersByTimeAsync(75);
     expect(emitted.map((signal) => signal.kind)).toEqual([
       'description',
-      'ice',
+      'ice-candidates',
+      'ice-candidates',
     ]);
     transport.close();
   });
 
-  it('bounds the ICE gathering wait when a server never completes', async () => {
+  it('does not delay SDP when ICE gathering never completes', async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
       'RTCPeerConnection',
@@ -580,9 +649,6 @@ describe('DirectVoiceWebRtcTransport', () => {
     const pc = MockPeerConnection.instances[0]!;
     pc.iceGatheringState = 'gathering';
     MockPeerConnection.releaseSetLocalDescription?.();
-    await vi.advanceTimersByTimeAsync(1_499);
-    expect(emitted).toEqual([]);
-    await vi.advanceTimersByTimeAsync(1);
     await startPromise;
     expect(emitted.map((signal) => signal.kind)).toEqual(['description']);
 
@@ -595,9 +661,10 @@ describe('DirectVoiceWebRtcTransport', () => {
         }),
       } as RTCIceCandidate,
     } as RTCPeerConnectionIceEvent);
+    await vi.advanceTimersByTimeAsync(75);
     expect(emitted.map((signal) => signal.kind)).toEqual([
       'description',
-      'ice',
+      'ice-candidates',
     ]);
     transport.close();
   });

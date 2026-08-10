@@ -109,6 +109,15 @@ export type AudioSurfaceCommand =
             kind: 'ice';
             generation: string;
             candidate: RTCIceCandidateInit | null;
+          }
+        | {
+            kind: 'ice-candidates';
+            generation: string;
+            candidates: RTCIceCandidateInit[];
+          }
+        | {
+            kind: 'ice-refresh-request';
+            generation: string;
           };
     }
   | { type: 'stop-direct-voice-rtc' }
@@ -188,6 +197,15 @@ export type AudioSurfaceEvent =
             kind: 'ice';
             generation: string;
             candidate: RTCIceCandidateInit | null;
+          }
+        | {
+            kind: 'ice-candidates';
+            generation: string;
+            candidates: RTCIceCandidateInit[];
+          }
+        | {
+            kind: 'ice-refresh-request';
+            generation: string;
           };
     }
   | {

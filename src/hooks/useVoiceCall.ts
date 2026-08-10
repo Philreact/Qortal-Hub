@@ -611,6 +611,7 @@ export function useVoiceCall(
     capabilityId: string;
     acknowledged: boolean;
   } | null>(null);
+  const dmRtcSignalSendChainRef = useRef<Promise<void>>(Promise.resolve());
   const screenShareTransportRef =
     useRef<DirectScreenShareWebRtcTransport | null>(null);
   const screenShareStateRef = useRef<DirectScreenShareState>('idle');
@@ -774,6 +775,12 @@ export function useVoiceCall(
       ) {
         if (callStateRef.current === 'connected') {
           const pending = pendingDirectVoiceRtcSignalsRef.current;
+          const candidateCount = (entry: DirectVoiceRtcSignal): number =>
+            entry.kind === 'ice-candidates'
+              ? entry.candidates.length
+              : entry.kind === 'ice'
+                ? 1
+                : 0;
           if (signal.kind === 'description') {
             const duplicate = pending.some(
               (entry) =>
@@ -784,14 +791,44 @@ export function useVoiceCall(
             if (!duplicate) {
               if (pending.length >= 128) {
                 const candidateIndex = pending.findIndex(
-                  (entry) => entry.kind === 'ice'
+                  (entry) => candidateCount(entry) > 0
                 );
-                pending.splice(candidateIndex >= 0 ? candidateIndex : 0, 1);
+                const refreshIndex = pending.findIndex(
+                  (entry) => entry.kind === 'ice-refresh-request'
+                );
+                pending.splice(
+                  candidateIndex >= 0
+                    ? candidateIndex
+                    : refreshIndex >= 0
+                      ? refreshIndex
+                      : 0,
+                  1
+                );
               }
               pending.push(signal);
             }
-          } else if (pending.length < 128) {
-            pending.push(signal);
+          } else {
+            const incomingCount = candidateCount(signal);
+            let queuedCount = pending.reduce(
+              (total, entry) => total + candidateCount(entry),
+              0
+            );
+            while (
+              queuedCount + incomingCount > 128 &&
+              pending.some((entry) => candidateCount(entry) > 0)
+            ) {
+              const candidateIndex = pending.findIndex(
+                (entry) => candidateCount(entry) > 0
+              );
+              const [removed] = pending.splice(candidateIndex, 1);
+              queuedCount -= candidateCount(removed);
+            }
+            if (
+              incomingCount <= 128 &&
+              (incomingCount > 0 || pending.length < 128)
+            ) {
+              pending.push(signal);
+            }
           }
         }
         return false;
@@ -880,6 +917,7 @@ export function useVoiceCall(
 
   const stopDirectVoiceRtcOnAudioSurface = useCallback(async () => {
     dmRtcLifecycleGenerationRef.current += 1;
+    dmRtcSignalSendChainRef.current = Promise.resolve();
     pendingDirectVoiceRtcSignalsRef.current = [];
     pendingDirectVoiceLinkSignalsRef.current = [];
     dmRtcStartPromiseRef.current = null;
@@ -3052,10 +3090,22 @@ export function useVoiceCall(
         return;
       }
       if (event.type !== 'direct-voice-rtc-signal') return;
-      void (async () => {
+      const lifecycleGeneration = dmRtcLifecycleGenerationRef.current;
+      const expectedCallId = callIdRef.current;
+      const expectedRoomId = dmRoomIdRef.current;
+      const expectedPeerAddress = peerAddressRef.current;
+      const sendTask = dmRtcSignalSendChainRef.current.then(async () => {
+        if (
+          lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
+          expectedCallId !== callIdRef.current ||
+          expectedRoomId !== dmRoomIdRef.current ||
+          expectedPeerAddress !== peerAddressRef.current
+        ) {
+          return;
+        }
         const payload = JSON.stringify(event.signal);
         const signalType =
-          event.signal.kind === 'ice'
+          event.signal.kind === 'ice' || event.signal.kind === 'ice-candidates'
             ? 'candidate'
             : event.signal.kind === 'ice-refresh-request'
               ? 'reconnect'
@@ -3067,7 +3117,9 @@ export function useVoiceCall(
           signalType,
           payload,
         });
-      })().catch((error) => {
+      });
+      dmRtcSignalSendChainRef.current = sendTask.catch(() => {});
+      void sendTask.catch((error) => {
         pushDirectVoiceUiLog('warn', 'WebRTC signaling failed', {
           error: error instanceof Error ? error.message : String(error),
         });
@@ -3159,7 +3211,8 @@ export function useVoiceCall(
             /^[A-Za-z0-9_-]{8,64}$/.test(signal.generation) &&
             signal.generation === p.generation;
           const validKind =
-            (p.signalType === 'candidate' && signal?.kind === 'ice') ||
+            (p.signalType === 'candidate' &&
+              (signal?.kind === 'ice' || signal?.kind === 'ice-candidates')) ||
             (p.signalType === 'reconnect' &&
               signal?.kind === 'ice-refresh-request') ||
             ((p.signalType === 'offer' || p.signalType === 'answer') &&
