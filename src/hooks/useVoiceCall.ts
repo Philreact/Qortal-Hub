@@ -135,7 +135,13 @@ type GcallDirectRtcEventPayload = {
   mediaSessionGeneration?: number;
   fromAddress?: string;
   toAddress?: string;
-  signalType?: 'capability' | 'offer' | 'answer' | 'candidate' | 'reconnect';
+  signalType?:
+    | 'capability'
+    | 'offer'
+    | 'answer'
+    | 'candidate'
+    | 'ack'
+    | 'reconnect';
   payload?: string;
   verified?: boolean;
 };
@@ -154,13 +160,28 @@ function createDirectVoiceRtcSignalId(): string {
 }
 
 const DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION = 'native_audio_v1';
-const DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_PAYLOAD = JSON.stringify({
+const DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY = {
   kind: 'capability',
   audio: 'native-track',
   screen: 'video-track',
   screenVersion: 1,
   version: 1,
-});
+} as const;
+
+type DirectVoiceCapabilityPayload = {
+  kind: 'capability';
+  audio: 'native-track';
+  screen: 'video-track';
+  screenVersion: 1;
+  version: 1;
+  capabilityId: string;
+};
+
+type DirectVoiceCapabilityAckPayload = {
+  kind: 'capability-ack';
+  generation: typeof DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION;
+  capabilityId: string;
+};
 
 function isDirectScreenShareRtcSignal(
   value: unknown
@@ -585,6 +606,11 @@ export function useVoiceCall(
   const dmRtcLifecycleGenerationRef = useRef(0);
   const dmRtcStartPromiseRef = useRef<Promise<boolean> | null>(null);
   const dmRtcPeerNativeCapabilityCallIdRef = useRef<string | null>(null);
+  const dmRtcLocalCapabilityRef = useRef<{
+    callId: string;
+    capabilityId: string;
+    acknowledged: boolean;
+  } | null>(null);
   const screenShareTransportRef =
     useRef<DirectScreenShareWebRtcTransport | null>(null);
   const screenShareStateRef = useRef<DirectScreenShareState>('idle');
@@ -858,6 +884,7 @@ export function useVoiceCall(
     pendingDirectVoiceLinkSignalsRef.current = [];
     dmRtcStartPromiseRef.current = null;
     dmRtcPeerNativeCapabilityCallIdRef.current = null;
+    dmRtcLocalCapabilityRef.current = null;
     dmRtcOnAudioSurfaceRef.current = false;
     dmRtcOpenRef.current = false;
     for (const resolve of dmRtcOpenWaitersRef.current) resolve(false);
@@ -871,7 +898,13 @@ export function useVoiceCall(
   const sendAuthenticatedDirectVoiceRtcPayload = useCallback(
     async (input: {
       generation: string;
-      signalType: 'capability' | 'offer' | 'answer' | 'candidate' | 'reconnect';
+      signalType:
+        | 'capability'
+        | 'offer'
+        | 'answer'
+        | 'candidate'
+        | 'ack'
+        | 'reconnect';
       payload: string;
     }): Promise<boolean> => {
       const callId = callIdRef.current;
@@ -995,27 +1028,52 @@ export function useVoiceCall(
   const announceDirectVoiceNativeAudioCapability = useCallback(async () => {
     const expectedCallId = callIdRef.current;
     if (!expectedCallId) return false;
-    // GC_JOIN and the authenticated audio link complete independently. Keep
-    // the capability pending until the reliable link channel is ready, but
-    // stop immediately if this call is replaced or torn down.
-    for (let attempt = 0; attempt < 60; attempt += 1) {
+    const existing = dmRtcLocalCapabilityRef.current;
+    const capability =
+      existing?.callId === expectedCallId
+        ? existing
+        : {
+            callId: expectedCallId,
+            capabilityId: crypto.randomUUID(),
+            acknowledged: false,
+          };
+    dmRtcLocalCapabilityRef.current = capability;
+    const payload: DirectVoiceCapabilityPayload = {
+      ...DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY,
+      capabilityId: capability.capabilityId,
+    };
+    // A successful enqueue only proves that the local bridge accepted the
+    // bundle. Retry until the remote application confirms that it accepted
+    // this exact, session-bound capability. The bounded backoff avoids control
+    // churn while recovering room/link initialization races.
+    const retryDelaysMs = [1_000, 1_500, 2_500, 4_000, 6_000, 8_000, 10_000];
+    for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
       if (
         callIdRef.current !== expectedCallId ||
         callStateRef.current !== 'connected'
       ) {
         return false;
       }
+      if (capability.acknowledged || dmRtcOpenRef.current) return true;
       const queued = await sendAuthenticatedDirectVoiceRtcPayload({
         generation: DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION,
         signalType: 'capability',
-        payload: DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_PAYLOAD,
+        payload: JSON.stringify(payload),
       });
-      if (queued) return true;
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      if (queued) {
+        pushDirectVoiceUiLog('log', 'WebRTC capability awaiting peer ack', {
+          callTrunc: expectedCallId.slice(0, 8),
+          attempt: attempt + 1,
+        });
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, retryDelaysMs[attempt])
+      );
     }
+    if (capability.acknowledged || dmRtcOpenRef.current) return true;
     pushDirectVoiceUiLog(
       'warn',
-      'WebRTC capability was not queued before the direct-link deadline',
+      'WebRTC capability was not acknowledged before the retry deadline',
       { callTrunc: expectedCallId.slice(0, 8) }
     );
     return false;
@@ -2720,6 +2778,7 @@ export function useVoiceCall(
         p.signalType === 'offer' ||
         p.signalType === 'answer' ||
         p.signalType === 'candidate' ||
+        p.signalType === 'ack' ||
         p.signalType === 'reconnect';
       const invalidActiveCallRoute =
         p.verified !== true ||
@@ -2745,6 +2804,7 @@ export function useVoiceCall(
         return;
       }
       let signalGeneration = '';
+      let decodedPayload: Record<string, unknown>;
       try {
         const decoded = JSON.parse(p.payload) as {
           kind?: unknown;
@@ -2752,6 +2812,7 @@ export function useVoiceCall(
           version?: unknown;
           generation?: unknown;
         };
+        decodedPayload = decoded;
         signalGeneration =
           typeof decoded.generation === 'string'
             ? decoded.generation
@@ -2764,6 +2825,24 @@ export function useVoiceCall(
         return;
       }
       if (!signalGeneration) return;
+      if (p.signalType === 'ack') {
+        const localCapability = dmRtcLocalCapabilityRef.current;
+        if (
+          decodedPayload.kind !== 'capability-ack' ||
+          signalGeneration !==
+            DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION ||
+          typeof decodedPayload.capabilityId !== 'string' ||
+          localCapability?.callId !== callId ||
+          decodedPayload.capabilityId !== localCapability.capabilityId
+        ) {
+          return;
+        }
+        localCapability.acknowledged = true;
+        pushDirectVoiceUiLog('log', 'WebRTC capability acknowledged', {
+          callTrunc: callId.slice(0, 8),
+        });
+        return;
+      }
       // `reconnect` is the reliable-channel carrier for screen-stop. Keeping
       // it distinct prevents the bridge's capability coalescing from dropping
       // a stop that races the native-audio capability announcement.
@@ -2775,6 +2854,28 @@ export function useVoiceCall(
         signalType: directSignalType!,
         payload: p.payload,
       });
+      if (
+        p.signalType === 'capability' &&
+        decodedPayload.kind === 'capability' &&
+        decodedPayload.audio === 'native-track' &&
+        decodedPayload.version === 1 &&
+        typeof decodedPayload.capabilityId === 'string' &&
+        decodedPayload.capabilityId.length > 0 &&
+        decodedPayload.capabilityId.length <= 128 &&
+        dmRtcPeerNativeCapabilityCallIdRef.current === callId &&
+        dmRtcOnAudioSurfaceRef.current
+      ) {
+        const ack: DirectVoiceCapabilityAckPayload = {
+          kind: 'capability-ack',
+          generation: DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION,
+          capabilityId: decodedPayload.capabilityId,
+        };
+        await sendAuthenticatedDirectVoiceRtcPayload({
+          generation: DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION,
+          signalType: 'ack',
+          payload: JSON.stringify(ack),
+        });
+      }
       return;
     }
 

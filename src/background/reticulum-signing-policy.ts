@@ -776,6 +776,7 @@ function assertSafeGroupRtcSignal(payload: Record<string, unknown>): void {
       'answer',
       'candidate',
       'candidates',
+      'ack',
       'reconnect',
     ].includes(
       String(payload.signalType)

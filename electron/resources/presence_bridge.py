@@ -23842,6 +23842,7 @@ def handle_send_group_audio_link_control(req_id: str, payload: Dict[str, Any]) -
             "answer",
             "candidate",
             "candidates",
+            "ack",
             "reconnect",
             "call-control",
         }

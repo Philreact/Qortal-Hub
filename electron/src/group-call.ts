@@ -1205,6 +1205,7 @@ export interface GroupCallRtcSignalInput {
     | 'answer'
     | 'candidate'
     | 'candidates'
+    | 'ack'
     | 'reconnect';
   payload: string;
   payloadHash: string;
@@ -5237,6 +5238,7 @@ export class GroupCallManager extends EventEmitter {
         'answer',
         'candidate',
         'candidates',
+        'ack',
         'reconnect',
       ].includes(input.signalType) &&
       typeof input.payload === 'string' &&

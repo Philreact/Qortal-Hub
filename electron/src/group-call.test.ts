@@ -451,6 +451,59 @@ describe('DM call terminal control', () => {
     expect(received.mock.calls[0][0]).toMatchObject({ verified: true });
   });
 
+  it('sends and accepts capability acknowledgements on the pinned DM link', async () => {
+    const manager = controlManager();
+    manager.rooms.get(roomId).participants.delete(peerAddress);
+    manager.verifyPool = { verify: vi.fn(async () => true) };
+    const send = vi.fn(async () => ({ ok: true }));
+    manager.reticulumBridge = {
+      getState: () => 'ready',
+      sendGroupAudioLinkControlDetailed: send,
+    };
+    const payload = JSON.stringify({
+      kind: 'capability-ack',
+      generation: 'native_audio_v1',
+      capabilityId: 'capability-1',
+    });
+    const outgoing = {
+      ...rtcSignal(),
+      signalType: 'ack' as const,
+      payload,
+      payloadHash: nodeCrypto
+        .createHash('sha256')
+        .update(payload, 'utf8')
+        .digest('hex'),
+    };
+
+    await expect(manager.sendRtcSignal(outgoing)).resolves.toEqual({
+      success: true,
+    });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ signalType: 'ack' })
+    );
+
+    const received = vi.fn();
+    manager.on('gcall:rtc-signal', received);
+    await manager.verifyAndDeliverRtcSignal(
+      {
+        ...outgoing,
+        fromAddress: peerAddress,
+        toAddress: localAddress,
+        signalId: '00000000-0000-4000-8000-000000000001',
+        publicKey: 'peer-public-key',
+      },
+      peerHash,
+      peerHash,
+      Date.now()
+    );
+
+    expect(received).toHaveBeenCalledOnce();
+    expect(received.mock.calls[0][0]).toMatchObject({
+      signalType: 'ack',
+      verified: true,
+    });
+  });
+
   it('does not relax missing-participant validation for group calls', async () => {
     const manager = controlManager();
     const room = manager.rooms.get(roomId);

@@ -1996,6 +1996,39 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
             ("call-control", "control-1"),
         )
 
+    def test_reliable_control_accepts_dm_webrtc_capability_ack(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ) as enqueue:
+            self.bridge.handle_send_group_audio_link_control(
+                "req-capability-ack",
+                {
+                    "linkId": "current-audio-link",
+                    "roomId": "dmv:room-1",
+                    "payload": base64.b64encode(b"capability-ack").decode("ascii"),
+                    "signalType": "ack",
+                    "callSessionId": "call-session-1",
+                    "signalId": "capability-ack-1",
+                },
+            )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertTrue(responses[0].get("ok"))
+        self.assertEqual(enqueue.call_count, 1)
+        self.assertEqual(
+            enqueue.call_args.args[6:8],
+            ("ack", "capability-ack-1"),
+        )
+
     def test_reliable_control_coalesces_pending_capability(self):
         link = FakeChannelLink()
         self.install_audio_state("current-audio-link", link=link)

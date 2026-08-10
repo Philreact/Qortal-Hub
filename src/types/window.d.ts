@@ -1547,6 +1547,7 @@ declare global {
           | 'answer'
           | 'candidate'
           | 'candidates'
+          | 'ack'
           | 'reconnect';
         payload: string;
         payloadHash: string;

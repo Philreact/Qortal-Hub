@@ -397,6 +397,7 @@ describe('useVoiceCall', () => {
           screen: 'video-track',
           screenVersion: 1,
           version: 1,
+          capabilityId: 'peer-capability-id',
         }),
       });
     });
@@ -451,6 +452,37 @@ describe('useVoiceCall', () => {
       })
     );
     expect(result.current.screenShareSupported).toBe(true);
+    await waitFor(() =>
+      expect(sendRtcSignal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          signalType: 'ack',
+          roomId,
+          callSessionId: 'dm-media-session',
+          payload: expect.stringContaining('peer-capability-id'),
+        })
+      )
+    );
+
+    const localCapabilityId = JSON.parse(
+      advertisedCapability?.payload ?? '{}'
+    ).capabilityId;
+    expect(localCapabilityId).toEqual(expect.any(String));
+    await act(async () => {
+      await groupCallEventHandler?.('gcall:rtc-signal', {
+        verified: true,
+        roomId,
+        callSessionId: 'dm-media-session',
+        mediaSessionGeneration: 1,
+        fromAddress: 'Qpeer',
+        toAddress: 'Qme',
+        signalType: 'ack',
+        payload: JSON.stringify({
+          kind: 'capability-ack',
+          generation: 'native_audio_v1',
+          capabilityId: localCapabilityId,
+        }),
+      });
+    });
   });
 
   it('auto-rejects direct call:incoming when caller is on blocked address list', async () => {

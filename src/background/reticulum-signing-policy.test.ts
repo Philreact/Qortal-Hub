@@ -259,6 +259,10 @@ describe('Reticulum wallet signing policy', () => {
       ...rtcSignal,
       signalType: 'candidates',
     });
+    expectAllowed(assertAllowedPresenceSigningPayload, {
+      ...rtcSignal,
+      signalType: 'ack',
+    });
     expect(() =>
       assertAllowedPresenceSigningPayload({
         type: 'CALL_REJECT',
