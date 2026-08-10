@@ -893,7 +893,7 @@ export function useVoiceCall(
         return false;
       }
       const payloadHash = await sha256HexUtf8(input.payload);
-      const signalId = createDirectVoiceRtcSignalId();
+      const signalId = crypto.randomUUID();
       const timestamp = Date.now();
       // This must match the canonical, session-bound connection identifier
       // enforced by the wallet signing policy and used by group-call WebRTC.
@@ -919,7 +919,17 @@ export function useVoiceCall(
         fromPublicKey: userInfo?.publicKey ?? '',
         timestamp,
       };
-      const signature = await signGroupCallFields(fields).catch(() => '');
+      let signature = '';
+      try {
+        signature = await signGroupCallFields(fields);
+      } catch (error) {
+        pushDirectVoiceUiLog('warn', 'WebRTC signal signing failed', {
+          signalType: input.signalType,
+          callTrunc: callId.slice(0, 8),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
       const publicKey = userInfo?.publicKey ?? '';
       if (
         callIdRef.current !== callId ||
@@ -934,6 +944,7 @@ export function useVoiceCall(
         pushDirectVoiceUiLog('warn', 'WebRTC signal signing failed', {
           signalType: input.signalType,
           callTrunc: callId.slice(0, 8),
+          error: !signature ? 'missing-signature' : 'missing-public-key',
         });
         return false;
       }
