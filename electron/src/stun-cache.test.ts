@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isEligibleStunEndpointRow,
+  STUN_PROBE_FAILURE_THRESHOLD,
   STUN_PROBE_FRESHNESS_MS,
   type StunEndpointRow,
 } from './stun-cache';
@@ -45,13 +46,25 @@ describe('community STUN cache eligibility', () => {
     ).toBe(false);
   });
 
-  it('rejects an endpoint after a newer failed probe', () => {
+  it('tolerates one lost probe but rejects repeated newer failures', () => {
     expect(
       isEligibleStunEndpointRow(
         row({
           stun_server_capable: 1,
           probe_success_at: now - 2_000,
           probe_fail_at: now - 1_000,
+          probe_fail_streak: STUN_PROBE_FAILURE_THRESHOLD - 1,
+        }),
+        now
+      )
+    ).toBe(true);
+    expect(
+      isEligibleStunEndpointRow(
+        row({
+          stun_server_capable: 1,
+          probe_success_at: now - 2_000,
+          probe_fail_at: now - 1_000,
+          probe_fail_streak: STUN_PROBE_FAILURE_THRESHOLD,
         }),
         now
       )

@@ -18,6 +18,7 @@ import {
   createNatApiClient,
   destroyNatClient,
   mapUdpPort,
+  refreshUdpPortMapping,
   unmapUdpPort,
   type NatApiClient,
 } from './upnp-nat';
@@ -36,6 +37,8 @@ const DISCOVERY_REFRESH_INTERVAL_MS = 4 * 60_000;
 const DISCOVERY_REQUEST_MIN_INTERVAL_MS = 5_000;
 const ADVERTISE_INTERVAL_MS = 2 * 60_000;
 const ADVERTISE_TTL_MS = 10 * 60_000;
+const MAPPING_MAINTENANCE_INTERVAL_MS = 60_000;
+const MAPPING_REFRESH_FAILURE_THRESHOLD = 2;
 const CONTRIBUTION_RETRY_BASE_MS = 30_000;
 const CONTRIBUTION_RETRY_MAX_MS = 5 * 60_000;
 const CONTRIBUTION_RETRY_JITTER_MS = 5_000;
@@ -93,9 +96,13 @@ export class StunCoordinator {
   private contributionGeneration = 0;
   private contributionTask: Promise<void> = Promise.resolve();
   private publicHost: string | null = null;
+  private contributionMappingHealthy = false;
+  private mappingRefreshFailures = 0;
+  private mappingRefreshInFlight: Promise<void> | null = null;
   private probeTimer: ReturnType<typeof setInterval> | null = null;
   private discoveryTimer: ReturnType<typeof setInterval> | null = null;
   private advertiseTimer: ReturnType<typeof setInterval> | null = null;
+  private mappingMaintenanceTimer: ReturnType<typeof setInterval> | null = null;
   private contributionRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private contributionRetryAttempt = 0;
   private probeBudget = PROBES_PER_MINUTE;
@@ -163,9 +170,12 @@ export class StunCoordinator {
     if (this.probeTimer) clearInterval(this.probeTimer);
     if (this.discoveryTimer) clearInterval(this.discoveryTimer);
     if (this.advertiseTimer) clearInterval(this.advertiseTimer);
+    if (this.mappingMaintenanceTimer)
+      clearInterval(this.mappingMaintenanceTimer);
     this.probeTimer = null;
     this.discoveryTimer = null;
     this.advertiseTimer = null;
+    this.mappingMaintenanceTimer = null;
     this.clearContributionRetry();
     this.stopLocalUdpImmediately();
     this.bridge?.off('community-stun-endpoint', this.onDiscoveredEndpoint);
@@ -195,7 +205,10 @@ export class StunCoordinator {
     this.queueContributionRefresh();
     if (!enabled) {
       if (this.advertiseTimer) clearInterval(this.advertiseTimer);
+      if (this.mappingMaintenanceTimer)
+        clearInterval(this.mappingMaintenanceTimer);
       this.advertiseTimer = null;
+      this.mappingMaintenanceTimer = null;
       this.stopLocalUdpImmediately();
       void this.bridge?.configureCommunityStun(null).catch(() => {});
     }
@@ -334,6 +347,7 @@ export class StunCoordinator {
           loggerLog('[STUN][probe]', {
             ok: result.ok,
             rttMs: result.rttMs ?? null,
+            failureReason: result.failureReason ?? null,
           });
         })
         .catch((error) => {
@@ -433,6 +447,8 @@ export class StunCoordinator {
       this.localStunUdpBound = true;
       this.natClient = client;
       this.publicHost = externalIp;
+      this.contributionMappingHealthy = true;
+      this.mappingRefreshFailures = 0;
       this.contributionRetryAttempt = 0;
       this.clearContributionRetry();
       await this.advertiseContribution();
@@ -441,6 +457,11 @@ export class StunCoordinator {
         ADVERTISE_INTERVAL_MS
       );
       this.advertiseTimer.unref?.();
+      this.mappingMaintenanceTimer = setInterval(
+        () => void this.maintainContributionMapping(),
+        MAPPING_MAINTENANCE_INTERVAL_MS
+      );
+      this.mappingMaintenanceTimer.unref?.();
       loggerLog(
         '[STUN] Community contribution active endpoint=verified-public'
       );
@@ -529,7 +550,13 @@ export class StunCoordinator {
   }
 
   private async advertiseContribution(): Promise<void> {
-    if (!this.running || !this.contributionEnabled || !this.publicHost) return;
+    if (
+      !this.running ||
+      !this.contributionEnabled ||
+      !this.publicHost ||
+      !this.contributionMappingHealthy
+    )
+      return;
     try {
       const client = this.natClient;
       if (client && typeof client.externalIp === 'function') {
@@ -538,7 +565,12 @@ export class StunCoordinator {
           this.publicHost = refreshedHost;
         }
       }
-      if (!this.running || !this.contributionEnabled || !this.publicHost) {
+      if (
+        !this.running ||
+        !this.contributionEnabled ||
+        !this.publicHost ||
+        !this.contributionMappingHealthy
+      ) {
         return;
       }
       const advertised = await this.bridge?.configureCommunityStun({
@@ -558,10 +590,82 @@ export class StunCoordinator {
     }
   }
 
+  private maintainContributionMapping(): Promise<void> {
+    if (this.mappingRefreshInFlight) return this.mappingRefreshInFlight;
+    const refresh = this.refreshContributionMapping();
+    const tracked = refresh.finally(() => {
+      if (this.mappingRefreshInFlight === tracked) {
+        this.mappingRefreshInFlight = null;
+      }
+    });
+    this.mappingRefreshInFlight = tracked;
+    return tracked;
+  }
+
+  private async refreshContributionMapping(): Promise<void> {
+    const client = this.natClient;
+    if (
+      !this.running ||
+      !this.contributionEnabled ||
+      !client ||
+      !this.udpServer
+    ) {
+      return;
+    }
+
+    const refreshed = await refreshUdpPortMapping(client, {
+      publicPort: STUN_FIXED_UDP_PORT,
+      privatePort: STUN_FIXED_UDP_PORT,
+      description: 'Qortal Hub Community STUN',
+    });
+    if (
+      !this.running ||
+      !this.contributionEnabled ||
+      client !== this.natClient
+    ) {
+      return;
+    }
+
+    if (!refreshed) {
+      this.mappingRefreshFailures += 1;
+      loggerLog(
+        `[STUN] Community mapping refresh failed attempts=${this.mappingRefreshFailures}`
+      );
+      if (
+        this.mappingRefreshFailures >= MAPPING_REFRESH_FAILURE_THRESHOLD &&
+        this.contributionMappingHealthy
+      ) {
+        this.contributionMappingHealthy = false;
+        await this.bridge?.configureCommunityStun(null).catch(() => false);
+        loggerLog('[STUN] Community advertisement paused mapping=unavailable');
+      }
+      return;
+    }
+
+    const wasHealthy = this.contributionMappingHealthy;
+    this.mappingRefreshFailures = 0;
+    this.contributionMappingHealthy = true;
+    if (!wasHealthy) {
+      loggerLog('[STUN] Community mapping restored');
+      await this.advertiseContribution();
+    }
+  }
+
   private async stopContributionResources(): Promise<void> {
+    if (this.mappingMaintenanceTimer) {
+      clearInterval(this.mappingMaintenanceTimer);
+      this.mappingMaintenanceTimer = null;
+    }
+    const mappingRefresh = this.mappingRefreshInFlight;
+    this.mappingRefreshInFlight = null;
+    if (mappingRefresh) {
+      await mappingRefresh.catch(() => {});
+    }
     const client = this.natClient;
     this.natClient = null;
     this.publicHost = null;
+    this.contributionMappingHealthy = false;
+    this.mappingRefreshFailures = 0;
     this.stopLocalUdpImmediately();
     if (client) {
       await unmapUdpPort(client, STUN_FIXED_UDP_PORT, STUN_FIXED_UDP_PORT);

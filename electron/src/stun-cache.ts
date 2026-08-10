@@ -21,6 +21,8 @@ export const STUN_CACHE_MAX_ROWS = 32;
 // Shorter than the 10-minute anonymous advertisement lease so a vanished or
 // opted-out contributor cannot remain eligible beyond its advertised life.
 export const STUN_PROBE_FRESHNESS_MS = 8 * 60 * 1000;
+/** A single lost UDP response must not evict an otherwise fresh endpoint. */
+export const STUN_PROBE_FAILURE_THRESHOLD = 2;
 
 export interface StunEndpointRow {
   stun_key: string;
@@ -61,7 +63,8 @@ export function isEligibleStunEndpointRow(
     row.stun_server_capable === 1 &&
     row.probe_success_at != null &&
     row.probe_success_at >= now - STUN_PROBE_FRESHNESS_MS &&
-    (!row.probe_fail_at || row.probe_success_at > row.probe_fail_at)
+    (row.probe_success_at > (row.probe_fail_at ?? 0) ||
+      row.probe_fail_streak < STUN_PROBE_FAILURE_THRESHOLD)
   );
 }
 
@@ -352,7 +355,7 @@ export class StunCache {
       probeFailStreak: r.probe_fail_streak ?? 0,
       recentProbeOk:
         !!r.probe_success_at &&
-        (!r.probe_fail_at || r.probe_success_at > r.probe_fail_at),
+        r.probe_success_at > (r.probe_fail_at ?? 0),
     }));
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, maxOut);

@@ -223,6 +223,45 @@ export async function mapUdpPort(
   return ok;
 }
 
+/**
+ * Refresh an existing UDP mapping without adding a duplicate entry to the
+ * nat-api client's internal open-port list. Some routers discard UDP leases
+ * before their requested TTL, so long-lived services refresh proactively.
+ */
+export async function refreshUdpPortMapping(
+  client: NatApiClient,
+  params: {
+    publicPort: number;
+    privatePort: number;
+    description: string;
+    ttl?: number;
+  }
+): Promise<boolean> {
+  const mapping: NatMapping = {
+    publicPort: params.publicPort,
+    privatePort: params.privatePort,
+    protocol: 'UDP',
+    ttl: normalizedTtl(params.ttl),
+    description: params.description,
+  };
+  const opts = { ...mapping };
+
+  try {
+    const result =
+      typeof client._map === 'function'
+        ? await client._map(opts)
+        : await client.map(opts);
+    const ok = Array.isArray(result) ? result[0] !== false : result !== false;
+    const managed = managedNatClients.get(client);
+    if (ok && managed && !managed.destroyed) {
+      scheduleManagedRenewal(client, mapping);
+    }
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function unmapUdpPort(
   client: NatApiClient,
   publicPort: number,
