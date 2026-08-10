@@ -37,6 +37,12 @@ const ICE_RESTART_MAX_ATTEMPTS = 2;
 const ICE_RESTART_COOLDOWN_MS = 30_000;
 const ICE_SERVER_REFRESH_INTERVAL_MS = 750;
 const ICE_SERVER_REFRESH_WINDOW_MS = 12_000;
+// The authenticated Reticulum control path has a much higher per-bundle cost
+// than a conventional WebSocket signaler. Give normal host/srflx gathering a
+// short bounded window so those candidates ride inside the SDP instead of
+// becoming many separately fragmented signals. Candidates discovered after
+// the window still use the existing trickle path.
+const ICE_GATHER_BEFORE_DESCRIPTION_SIGNAL_MS = 1_500;
 
 function nextGeneration(): string {
   return crypto.randomUUID();
@@ -436,11 +442,12 @@ export class DirectVoiceWebRtcTransport {
     description: RTCSessionDescriptionInit
   ): Promise<void> {
     const generation = this.generation;
-    let descriptionSignaled = false;
+    const gatheringStartedAt = Date.now();
     this.localDescriptionSignalPending = true;
     this.bufferedLocalCandidates = [];
     try {
       await pc.setLocalDescription(description);
+      await this.waitForInitialIceGathering(pc, generation);
       if (
         !pc.localDescription ||
         this.closed ||
@@ -457,7 +464,12 @@ export class DirectVoiceWebRtcTransport {
         generation,
         description: pc.localDescription.toJSON(),
       });
-      descriptionSignaled = true;
+      this.emitDiagnostic('local-description-signaled', {
+        type: description.type,
+        gatheringState: pc.iceGatheringState,
+        gatheringWaitMs: Date.now() - gatheringStartedAt,
+        embeddedCandidateCount: this.bufferedLocalCandidates.length,
+      });
       if (
         description.type === 'answer' &&
         this.pendingIceRefreshRequest
@@ -467,15 +479,54 @@ export class DirectVoiceWebRtcTransport {
       }
     } finally {
       this.localDescriptionSignalPending = false;
-      const buffered = this.bufferedLocalCandidates.splice(0);
-      if (descriptionSignaled && !this.closed && this.pc === pc) {
-        for (const entry of buffered) {
-          if (entry.generation === this.generation) {
-            this.emitLocalCandidate(entry.generation, entry.candidate);
-          }
-        }
-      }
+      // Every candidate emitted before the SDP snapshot is represented in
+      // pc.localDescription. Discard those buffered copies so they are not
+      // signed and fragmented again. A candidate emitted after this synchronous
+      // section sees localDescriptionSignalPending=false and is trickled.
+      this.bufferedLocalCandidates = [];
     }
+  }
+
+  private async waitForInitialIceGathering(
+    pc: RTCPeerConnection,
+    generation: string
+  ): Promise<void> {
+    if (
+      pc.iceGatheringState === 'complete' ||
+      this.closed ||
+      this.pc !== pc ||
+      this.generation !== generation
+    ) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        pc.removeEventListener('icegatheringstatechange', onStateChange);
+        resolve();
+      };
+      const onStateChange = () => {
+        if (
+          pc.iceGatheringState === 'complete' ||
+          this.closed ||
+          this.pc !== pc ||
+          this.generation !== generation
+        ) {
+          finish();
+        }
+      };
+      const timer = setTimeout(
+        finish,
+        ICE_GATHER_BEFORE_DESCRIPTION_SIGNAL_MS
+      );
+      pc.addEventListener('icegatheringstatechange', onStateChange);
+      // Recheck after installing the listener so a completion transition
+      // between the first check and listener registration cannot cost 1.5 s.
+      onStateChange();
+    });
   }
 
   private emitLocalCandidate(
