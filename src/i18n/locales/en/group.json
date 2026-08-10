@@ -206,6 +206,14 @@
     "write_not_allowed": "You cannot write in this channel"
   },
   "context_menu": {
+    "about_group": "About group",
+    "change_group_avatar": "Change group avatar",
+    "create_category": "Create category",
+    "create_channel": "Create channel",
+    "hidden_users": "Hidden users",
+    "invite_link_copied": "Invite link copied",
+    "invite_link_copy_failed": "Could not copy invite link",
+    "leave_group": "Leave group",
     "mark_all_read": "Mark all as read",
     "mark_as_read": "Mark as read",
     "mute_push_notifications": "Mute push notifications",
@@ -659,6 +667,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "You",
   "latest_mails": "latest Q-Mails",
+  "member_category": {
+    "admins": "admins",
+    "collapse": "collapse {{category}}",
+    "expand": "expand {{category}}",
+    "lounge": "lounge",
+    "members": "members",
+    "offline": "offline",
+    "park": "park"
+  },
   "message": {
     "error": {
       "access_name": "cannot send a message without a access to your name",
@@ -785,6 +802,11 @@
     "verification_failed": "Verification failed"
   },
   "reticulum": {
+    "about": {
+      "copied": "copied",
+      "created": "created",
+      "group_invite_link": "group invite link"
+    },
     "call_history": {
       "answered": "voice call",
       "cancelled": "cancelled voice call",
@@ -792,6 +814,7 @@
       "missed": "missed voice call",
       "no_answer": "no answer"
     },
+    "copy_invite_link": "copy invite link",
     "discussion": {
       "choose_emoji": "choose emoji",
       "close": "close discussion",
@@ -825,6 +848,11 @@
       "title": "message expiry",
       "tooltip_value": "message expiry: {{value}}",
       "unavailable": "message expiry is unavailable"
+    },
+    "group_fallback_name": "Group",
+    "group_type": {
+      "closed": "closed",
+      "open": "open"
     },
     "hide_user": {
       "error_hide": "unable to hide user",
@@ -870,6 +898,16 @@
       "chat": "Chat",
       "enter_qortal_land": "Enter Qortal Land",
       "return_to_chat": "Return to Chat"
+    },
+    "onboarding": {
+      "find_communities": "Find Communities",
+      "invite_error_invalid": "This doesn't look like a valid Qortal group invite link.",
+      "invite_input_label": "Group invite link",
+      "invite_input_placeholder": "Paste a Group Invite Link...",
+      "or": "or",
+      "subtitle": "Looks like you're not part of any communities yet. Let's change that.",
+      "title": "Welcome to the new, improved Q-Chat",
+      "whats_new_button": "What's New?"
     },
     "qapp_preview": {
       "check_again": "check again",

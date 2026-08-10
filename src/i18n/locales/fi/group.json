@@ -206,6 +206,14 @@
     "write_not_allowed": "Et voi kirjoittaa tähän kanavaan"
   },
   "context_menu": {
+    "about_group": "Tietoja ryhmästä",
+    "change_group_avatar": "Vaihda ryhmän profiilikuva",
+    "create_category": "Luo kategoria",
+    "create_channel": "Luo kanava",
+    "hidden_users": "Piilotetut käyttäjät",
+    "invite_link_copied": "Kutsulinkki kopioitu",
+    "invite_link_copy_failed": "Kutsulinkin kopiointi epäonnistui",
+    "leave_group": "Poistu ryhmästä",
     "mark_all_read": "Merkitse kaikki luetuksi",
     "mark_as_read": "Merkitse luetuksi",
     "mute_push_notifications": "Mykistä push-ilmoitukset",
@@ -659,6 +667,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Sinä",
   "latest_mails": "uusimmat Q-Mailit",
+  "member_category": {
+    "admins": "ylläpitäjät",
+    "collapse": "tiivistä {{category}}",
+    "expand": "laajenna {{category}}",
+    "lounge": "oleskelutila",
+    "members": "jäsenet",
+    "offline": "ei verkossa",
+    "park": "puisto"
+  },
   "message": {
     "error": {
       "access_name": "viestiä ei voi lähettää ilman pääsyä nimeesi",
@@ -785,6 +802,11 @@
     "verification_failed": "Vahvistus epäonnistui"
   },
   "reticulum": {
+    "about": {
+      "copied": "kopioitu",
+      "created": "luotu",
+      "group_invite_link": "ryhmän kutsulinkki"
+    },
     "call_history": {
       "answered": "puhelu",
       "cancelled": "peruttu puhelu",
@@ -792,6 +814,7 @@
       "missed": "vastaamaton puhelu",
       "no_answer": "ei vastausta"
     },
+    "copy_invite_link": "kopioi kutsulinkki",
     "discussion": {
       "choose_emoji": "choose emoji",
       "close": "close discussion",
@@ -826,6 +849,11 @@
       "tooltip_value": "viestin vanheneminen: {{value}}",
       "unavailable": "viestin vanheneminen ei ole käytettävissä"
     },
+    "group_fallback_name": "Ryhmä",
+    "group_type": {
+      "closed": "suljettu",
+      "open": "avoin"
+    },
     "hide_user": {
       "error_hide": "käyttäjän piilottaminen epäonnistui",
       "error_unhide": "käyttäjän näyttäminen epäonnistui",
@@ -853,9 +881,9 @@
     "invite": {
       "apply": "apply",
       "apply_question": "apply to join this group?",
-      "closed_group": "closed group",
+      "closed_group": "suljettu ryhmä",
       "joined": "joined",
-      "open_group": "open group",
+      "open_group": "avoin ryhmä",
       "pending": "pending"
     },
     "join_group_question": "join this group?",
@@ -870,6 +898,16 @@
       "chat": "Keskustelu",
       "enter_qortal_land": "Siirry Qortal Landiin",
       "return_to_chat": "Palaa keskusteluun"
+    },
+    "onboarding": {
+      "find_communities": "Etsi yhteisöjä",
+      "invite_error_invalid": "Tämä ei näytä kelvolliselta Qortal-ryhmän kutsulinkiltä.",
+      "invite_input_label": "Ryhmän kutsulinkki",
+      "invite_input_placeholder": "Liitä ryhmän kutsulinkki...",
+      "or": "tai",
+      "subtitle": "Näyttää siltä, ettet kuulu vielä mihinkään yhteisöön. Korjataan se.",
+      "title": "Tervetuloa uuteen, parannettuun Q-Chatiin",
+      "whats_new_button": "Mitä uutta?"
     },
     "qapp_preview": {
       "check_again": "check again",

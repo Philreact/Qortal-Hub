@@ -206,6 +206,14 @@
     "write_not_allowed": "你无法在此频道发言"
   },
   "context_menu": {
+    "about_group": "关于群组",
+    "change_group_avatar": "更改群组头像",
+    "create_category": "创建分类",
+    "create_channel": "创建频道",
+    "hidden_users": "已隐藏的用户",
+    "invite_link_copied": "已复制邀请链接",
+    "invite_link_copy_failed": "无法复制邀请链接",
+    "leave_group": "退出群组",
     "mark_all_read": "全部标为已读",
     "mark_as_read": "标记为已读",
     "mute_push_notifications": "静音推送通知",
@@ -659,6 +667,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "你",
   "latest_mails": "最新 Q 邮件",
+  "member_category": {
+    "admins": "管理员",
+    "collapse": "收起{{category}}",
+    "expand": "展开{{category}}",
+    "lounge": "休息区",
+    "members": "成员",
+    "offline": "离线",
+    "park": "公园"
+  },
   "message": {
     "error": {
       "access_name": "无法发送消息：缺少姓名访问权限",
@@ -785,6 +802,11 @@
     "verification_failed": "验证失败"
   },
   "reticulum": {
+    "about": {
+      "copied": "已复制",
+      "created": "创建时间",
+      "group_invite_link": "群组邀请链接"
+    },
     "call_history": {
       "answered": "语音通话",
       "cancelled": "已取消的语音通话",
@@ -792,6 +814,7 @@
       "missed": "未接语音通话",
       "no_answer": "无人接听"
     },
+    "copy_invite_link": "复制邀请链接",
     "discussion": {
       "choose_emoji": "choose emoji",
       "close": "close discussion",
@@ -826,6 +849,11 @@
       "tooltip_value": "消息过期时间：{{value}}",
       "unavailable": "消息过期功能不可用"
     },
+    "group_fallback_name": "群组",
+    "group_type": {
+      "closed": "封闭",
+      "open": "公开"
+    },
     "hide_user": {
       "error_hide": "无法隐藏该用户",
       "error_unhide": "无法取消隐藏该用户",
@@ -853,9 +881,9 @@
     "invite": {
       "apply": "apply",
       "apply_question": "apply to join this group?",
-      "closed_group": "closed group",
+      "closed_group": "封闭群组",
       "joined": "joined",
-      "open_group": "open group",
+      "open_group": "公开群组",
       "pending": "pending"
     },
     "join_group_question": "join this group?",
@@ -870,6 +898,16 @@
       "chat": "聊天",
       "enter_qortal_land": "进入 Qortal Land",
       "return_to_chat": "返回聊天"
+    },
+    "onboarding": {
+      "find_communities": "寻找社区",
+      "invite_error_invalid": "这似乎不是有效的 Qortal 群组邀请链接。",
+      "invite_input_label": "群组邀请链接",
+      "invite_input_placeholder": "粘贴群组邀请链接...",
+      "or": "或",
+      "subtitle": "看来你还没有加入任何社区。现在就开始吧。",
+      "title": "欢迎使用全新升级的 Q-Chat",
+      "whats_new_button": "新功能"
     },
     "qapp_preview": {
       "check_again": "check again",

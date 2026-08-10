@@ -206,6 +206,14 @@
     "write_not_allowed": "Vous ne pouvez pas écrire dans ce canal"
   },
   "context_menu": {
+    "about_group": "À propos du groupe",
+    "change_group_avatar": "Changer l'avatar du groupe",
+    "create_category": "Créer une catégorie",
+    "create_channel": "Créer un canal",
+    "hidden_users": "Utilisateurs masqués",
+    "invite_link_copied": "Lien d'invitation copié",
+    "invite_link_copy_failed": "Impossible de copier le lien d'invitation",
+    "leave_group": "Quitter le groupe",
     "mark_all_read": "Tout marquer comme lu",
     "mark_as_read": "Marquer comme lu",
     "mute_push_notifications": "Couper les notifications push",
@@ -659,6 +667,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Vous",
   "latest_mails": "derniers Q-Mails",
+  "member_category": {
+    "admins": "administrateurs",
+    "collapse": "réduire {{category}}",
+    "expand": "développer {{category}}",
+    "lounge": "salon",
+    "members": "membres",
+    "offline": "hors ligne",
+    "park": "parc"
+  },
   "message": {
     "error": {
       "access_name": "impossible d’envoyer un message sans accès à votre nom",
@@ -785,6 +802,11 @@
     "verification_failed": "Échec de la vérification"
   },
   "reticulum": {
+    "about": {
+      "copied": "copié",
+      "created": "créé",
+      "group_invite_link": "lien d'invitation au groupe"
+    },
     "call_history": {
       "answered": "appel vocal",
       "cancelled": "appel vocal annulé",
@@ -792,6 +814,7 @@
       "missed": "appel vocal manqué",
       "no_answer": "sans réponse"
     },
+    "copy_invite_link": "copier le lien d'invitation",
     "discussion": {
       "choose_emoji": "choose emoji",
       "close": "close discussion",
@@ -826,6 +849,11 @@
       "tooltip_value": "expiration du message : {{value}}",
       "unavailable": "l'expiration des messages est indisponible"
     },
+    "group_fallback_name": "Groupe",
+    "group_type": {
+      "closed": "fermé",
+      "open": "ouvert"
+    },
     "hide_user": {
       "error_hide": "impossible de masquer l'utilisateur",
       "error_unhide": "impossible d'afficher l'utilisateur",
@@ -853,9 +881,9 @@
     "invite": {
       "apply": "apply",
       "apply_question": "apply to join this group?",
-      "closed_group": "closed group",
+      "closed_group": "groupe fermé",
       "joined": "joined",
-      "open_group": "open group",
+      "open_group": "groupe ouvert",
       "pending": "pending"
     },
     "join_group_question": "join this group?",
@@ -870,6 +898,16 @@
       "chat": "Chat",
       "enter_qortal_land": "Entrer dans Qortal Land",
       "return_to_chat": "Retour au chat"
+    },
+    "onboarding": {
+      "find_communities": "Trouver des communautés",
+      "invite_error_invalid": "Cela ne ressemble pas à un lien d'invitation de groupe Qortal valide.",
+      "invite_input_label": "Lien d'invitation au groupe",
+      "invite_input_placeholder": "Collez un lien d'invitation au groupe...",
+      "or": "ou",
+      "subtitle": "On dirait que vous ne faites encore partie d'aucune communauté. Changeons cela.",
+      "title": "Bienvenue dans le nouveau Q-Chat amélioré",
+      "whats_new_button": "Quoi de neuf ?"
     },
     "qapp_preview": {
       "check_again": "check again",

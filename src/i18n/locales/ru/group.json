@@ -206,6 +206,14 @@
     "write_not_allowed": "Вы не можете писать в этом канале"
   },
   "context_menu": {
+    "about_group": "О группе",
+    "change_group_avatar": "Изменить аватар группы",
+    "create_category": "Создать категорию",
+    "create_channel": "Создать канал",
+    "hidden_users": "Скрытые пользователи",
+    "invite_link_copied": "Ссылка-приглашение скопирована",
+    "invite_link_copy_failed": "Не удалось скопировать ссылку-приглашение",
+    "leave_group": "Покинуть группу",
     "mark_all_read": "Отметить все как прочитанные",
     "mark_as_read": "Отметить как прочитанное",
     "mute_push_notifications": "Отключить push-уведомления",
@@ -659,6 +667,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Вы",
   "latest_mails": "последние Q-сообщения",
+  "member_category": {
+    "admins": "администраторы",
+    "collapse": "свернуть {{category}}",
+    "expand": "развернуть {{category}}",
+    "lounge": "лаунж",
+    "members": "участники",
+    "offline": "не в сети",
+    "park": "парк"
+  },
   "message": {
     "error": {
       "access_name": "нельзя отправить сообщение без доступа к вашему имени",
@@ -785,6 +802,11 @@
     "verification_failed": "Проверка не пройдена"
   },
   "reticulum": {
+    "about": {
+      "copied": "скопировано",
+      "created": "создана",
+      "group_invite_link": "ссылка-приглашение в группу"
+    },
     "call_history": {
       "answered": "голосовой вызов",
       "cancelled": "отменённый голосовой вызов",
@@ -792,6 +814,7 @@
       "missed": "пропущенный голосовой вызов",
       "no_answer": "нет ответа"
     },
+    "copy_invite_link": "скопировать ссылку-приглашение",
     "discussion": {
       "choose_emoji": "choose emoji",
       "close": "close discussion",
@@ -826,6 +849,11 @@
       "tooltip_value": "срок хранения сообщения: {{value}}",
       "unavailable": "срок хранения сообщений недоступен"
     },
+    "group_fallback_name": "Группа",
+    "group_type": {
+      "closed": "закрытая",
+      "open": "открытая"
+    },
     "hide_user": {
       "error_hide": "не удалось скрыть пользователя",
       "error_unhide": "не удалось показать пользователя",
@@ -853,9 +881,9 @@
     "invite": {
       "apply": "apply",
       "apply_question": "apply to join this group?",
-      "closed_group": "closed group",
+      "closed_group": "закрытая группа",
       "joined": "joined",
-      "open_group": "open group",
+      "open_group": "открытая группа",
       "pending": "pending"
     },
     "join_group_question": "join this group?",
@@ -870,6 +898,16 @@
       "chat": "Чат",
       "enter_qortal_land": "Войти в Qortal Land",
       "return_to_chat": "Вернуться в чат"
+    },
+    "onboarding": {
+      "find_communities": "Найти сообщества",
+      "invite_error_invalid": "Это не похоже на действительную ссылку-приглашение в группу Qortal.",
+      "invite_input_label": "Ссылка-приглашение в группу",
+      "invite_input_placeholder": "Вставьте ссылку-приглашение в группу...",
+      "or": "или",
+      "subtitle": "Похоже, вы ещё не состоите ни в одном сообществе. Давайте это исправим.",
+      "title": "Добро пожаловать в новый, улучшенный Q-Chat",
+      "whats_new_button": "Что нового?"
     },
     "qapp_preview": {
       "check_again": "check again",
