@@ -417,6 +417,7 @@ describe('useVoiceCall', () => {
           signalType: 'capability',
           roomId: expect.stringMatching(/^dmv:/),
           callSessionId: 'dm-media-session',
+          connectionId: 'dm-media-session:1:Qme:Qpeer',
         })
       )
     );

@@ -895,7 +895,16 @@ export function useVoiceCall(
       const payloadHash = await sha256HexUtf8(input.payload);
       const signalId = createDirectVoiceRtcSignalId();
       const timestamp = Date.now();
-      const connectionId = `${callId}:${input.generation}`;
+      // This must match the canonical, session-bound connection identifier
+      // enforced by the wallet signing policy and used by group-call WebRTC.
+      // The native RTC generation remains inside the authenticated payload;
+      // it must not replace the media-session identity here.
+      const connectionId = `${callSessionId}:${mediaSessionGeneration}:${[
+        fromAddress,
+        toAddress,
+      ]
+        .sort()
+        .join(':')}`;
       const fields = {
         type: 'GC_RTC_SIGNAL',
         roomId,
