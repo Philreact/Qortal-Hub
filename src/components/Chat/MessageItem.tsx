@@ -128,12 +128,12 @@ const normalizeReticulumExpiryMs = (value: unknown): number | null => {
 
 const formatReticulumExpiry = (value: number | null): string => {
   if (!value)
-    return i18n.t('group:reticulum.expiry.no_expiry', {
+    return i18n.t('reticulum:expiry.no_expiry', {
       postProcess: 'capitalizeEachFirstChar',
     });
   const date = new Date(value);
   if (Number.isNaN(date.getTime()))
-    return i18n.t('group:reticulum.expiry.no_expiry', {
+    return i18n.t('reticulum:expiry.no_expiry', {
       postProcess: 'capitalizeEachFirstChar',
     });
   const pad = (part: number) => String(part).padStart(2, '0');
@@ -673,7 +673,13 @@ export const MessageItemComponent = ({
     userInfo >= 0
       ? Math.trunc(userInfo)
       : null;
-  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
+  const { t } = useTranslation([
+    'auth',
+    'core',
+    'group',
+    'question',
+    'reticulum',
+  ]);
   const hasUnsafeSenderName = Boolean(
     message?.senderName && hasInvisibleCharacters(message.senderName)
   );
@@ -4491,7 +4497,7 @@ export const MessageItemComponent = ({
           aria-label={
             hasReticulumExpiry
               ? `Message expires ${reticulumExpiryText}`
-              : t('group:reticulum.expiry.no_expiry', {
+              : t('reticulum:expiry.no_expiry', {
                   postProcess: 'capitalizeEachFirstChar',
                 })
           }

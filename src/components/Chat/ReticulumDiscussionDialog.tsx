@@ -107,7 +107,7 @@ export const ReticulumDiscussionDialog = ({
   selectedGroup,
 }: ReticulumDiscussionDialogProps) => {
   const theme = useTheme();
-  const { t } = useTranslation(['core', 'group']);
+  const { t } = useTranslation(['core', 'reticulum']);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [expiryDurationMs, setExpiryDurationMs] = useState<
     number | undefined
@@ -285,7 +285,7 @@ export const ReticulumDiscussionDialog = ({
           </Box>
         </Box>
         <IconButton
-          aria-label={t('group:reticulum.discussion.close', {
+          aria-label={t('reticulum:discussion.close', {
             postProcess: 'capitalizeFirstChar',
           })}
           disabled={closeDisabled}
@@ -374,10 +374,10 @@ export const ReticulumDiscussionDialog = ({
                       }}
                     >
                       {index === 0
-                        ? t('group:reticulum.discussion.initial_post', {
+                        ? t('reticulum:discussion.initial_post', {
                             postProcess: 'capitalizeEachFirstChar',
                           })
-                        : t('group:reticulum.discussion.replies', {
+                        : t('reticulum:discussion.replies', {
                             postProcess: 'capitalizeFirstChar',
                           })}
                     </Typography>
@@ -550,12 +550,12 @@ export const ReticulumDiscussionDialog = ({
                   {file.fileName}
                 </Typography>
                 <Tooltip
-                  title={t('group:reticulum.discussion.remove_attachment', {
+                  title={t('reticulum:discussion.remove_attachment', {
                     postProcess: 'capitalizeFirstChar',
                   })}
                 >
                   <IconButton
-                    aria-label={t('group:reticulum.discussion.remove_file', {
+                    aria-label={t('reticulum:discussion.remove_file', {
                       fileName: file.fileName,
                       postProcess: 'capitalizeFirstChar',
                     })}
@@ -593,14 +593,14 @@ export const ReticulumDiscussionDialog = ({
               onTypingChange(Boolean(nextEditor.getText().trim()));
             }}
             onEnter={send}
-            placeholder={t('group:reticulum.discussion.reply_placeholder', {
+            placeholder={t('reticulum:discussion.reply_placeholder', {
               postProcess: 'capitalizeFirstChar',
             })}
             setEditorRef={setEditor}
             setIsFocusedParent={setFocused}
           />
           <Tooltip
-            title={t('group:reticulum.discussion.choose_emoji', {
+            title={t('reticulum:discussion.choose_emoji', {
               postProcess: 'capitalizeFirstChar',
             })}
           >
@@ -636,7 +636,7 @@ export const ReticulumDiscussionDialog = ({
             <ReticulumMessageExpiryButton
               channelExpiryDurationMs={channelExpiryDurationMs}
               disabled={loading || closeDisabled}
-              disabledReason={t('group:reticulum.discussion.wait_until_ready', {
+              disabledReason={t('reticulum:discussion.wait_until_ready', {
                 postProcess: 'capitalizeFirstChar',
               })}
               onChange={setExpiryDurationMs}

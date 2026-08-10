@@ -31,7 +31,7 @@ export const ReticulumHideUserAction = ({
   initiallyShowDurations = false,
   menuItemSx,
 }: ReticulumHideUserActionProps) => {
-  const { t } = useTranslation(['group']);
+  const { t } = useTranslation(['reticulum']);
   const [silence, setSilence] = useState<any>(null);
   const [showDurations, setShowDurations] = useState(initiallyShowDurations);
   const [isLoading, setIsLoading] = useState(false);
@@ -77,7 +77,7 @@ export const ReticulumHideUserAction = ({
           <VisibilityOffRoundedIcon />
         </ListItemIcon>
         <ListItemText
-          primary={t('group:reticulum.hide_user.hide', {
+          primary={t('reticulum:hide_user.hide', {
             postProcess: 'capitalizeFirstChar',
           })}
         />
@@ -99,7 +99,7 @@ export const ReticulumHideUserAction = ({
       if (!result?.success) {
         throw new Error(
           result?.error ||
-            t('group:reticulum.hide_user.error_hide', {
+            t('reticulum:hide_user.error_hide', {
               postProcess: 'capitalizeFirstChar',
             })
         );
@@ -125,7 +125,7 @@ export const ReticulumHideUserAction = ({
       if (!result?.success) {
         throw new Error(
           result?.error ||
-            t('group:reticulum.hide_user.error_unhide', {
+            t('reticulum:hide_user.error_unhide', {
               postProcess: 'capitalizeFirstChar',
             })
         );
@@ -149,7 +149,7 @@ export const ReticulumHideUserAction = ({
           )}
         </ListItemIcon>
         <ListItemText
-          primary={t('group:reticulum.hide_user.unhide', {
+          primary={t('reticulum:hide_user.unhide', {
             postProcess: 'capitalizeFirstChar',
           })}
         />
@@ -171,7 +171,7 @@ export const ReticulumHideUserAction = ({
           <VisibilityOffRoundedIcon />
         </ListItemIcon>
         <ListItemText
-          primary={t('group:reticulum.hide_user.hide', {
+          primary={t('reticulum:hide_user.hide', {
             postProcess: 'capitalizeFirstChar',
           })}
         />
@@ -190,7 +190,7 @@ export const ReticulumHideUserAction = ({
           <VisibilityOffRoundedIcon />
         </ListItemIcon>
         <ListItemText
-          primary={t('group:reticulum.hide_user.for_1_hour', {
+          primary={t('reticulum:hide_user.for_1_hour', {
             postProcess: 'capitalizeFirstChar',
           })}
         />
@@ -204,7 +204,7 @@ export const ReticulumHideUserAction = ({
           <VisibilityOffRoundedIcon />
         </ListItemIcon>
         <ListItemText
-          primary={t('group:reticulum.hide_user.for_24_hours', {
+          primary={t('reticulum:hide_user.for_24_hours', {
             postProcess: 'capitalizeFirstChar',
           })}
         />
@@ -222,7 +222,7 @@ export const ReticulumHideUserAction = ({
           )}
         </ListItemIcon>
         <ListItemText
-          primary={t('group:reticulum.hide_user.until_unhidden', {
+          primary={t('reticulum:hide_user.until_unhidden', {
             postProcess: 'capitalizeFirstChar',
           })}
         />

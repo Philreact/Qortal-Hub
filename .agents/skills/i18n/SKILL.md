@@ -122,11 +122,9 @@ Write a patch file mirroring the locale structure, values in English:
 
 ```json
 {
-  "reticulum": {
-    "expiry": {
-      "no_expiry": "no expiry",
-      "maximum": "maximum {{duration}}"
-    }
+  "expiry": {
+    "no_expiry": "no expiry",
+    "maximum": "maximum {{duration}}"
   }
 }
 ```
@@ -134,17 +132,19 @@ Write a patch file mirroring the locale structure, values in English:
 Then seed all 12 locales at once:
 
 ```bash
-python3 .agents/skills/i18n/i18n_add_keys.py group /tmp/new-keys.json --dry-run   # preview
-python3 .agents/skills/i18n/i18n_add_keys.py group /tmp/new-keys.json
+python3 .agents/skills/i18n/i18n_add_keys.py reticulum /tmp/new-keys.json --dry-run   # preview
+python3 .agents/skills/i18n/i18n_add_keys.py reticulum /tmp/new-keys.json
 ```
 
 It never overwrites an existing value, so it is safe to re-run as the patch
 grows, and it re-sorts the file on write — never hand-append a key to the end of
 a block. Nest values by topic. Pick the namespace by domain:
-`core` for shared UI vocabulary and generic messages, `group` for
-group/chat/Reticulum features and the onboarding/home dashboard, `auth`, `node`,
-`question` for their own areas. A _new_ namespace also has to be registered in the `namespaces` array
-in `src/i18n/i18n.ts`.
+`core` for shared UI vocabulary and generic messages, `reticulum` for the
+Reticulum Q-Chat surface (channels, calls, invites, image viewer, user card,
+chat settings), `group` for everything else about Qortal groups and the
+onboarding/home dashboard, `auth`, `node`, `question` for their own areas.
+A _new_ namespace also has to be registered in the `namespaces` array in
+`src/i18n/i18n.ts` and in `NAMESPACES` in `i18n_add_keys.py`.
 
 At this point all 12 locales hold English. That is a deliberate, temporary state
 — it keeps the key set complete so nothing crashes mid-task. Keep the list of
@@ -168,9 +168,9 @@ ways in one locale. Write them as namespace → language → dotted key → valu
 
 ```json
 {
-  "group": {
-    "de": { "reticulum.expiry.no_expiry": "kein ablauf" },
-    "fi": { "reticulum.expiry.no_expiry": "ei vanhenemista" }
+  "reticulum": {
+    "de": { "expiry.no_expiry": "kein ablauf" },
+    "fi": { "expiry.no_expiry": "ei vanhenemista" }
   }
 }
 ```

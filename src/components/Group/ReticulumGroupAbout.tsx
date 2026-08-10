@@ -99,7 +99,7 @@ const formatCreatedDate = (
 
 export const ReticulumGroupAboutModal = () => {
   const theme = useTheme();
-  const { t } = useTranslation(['core', 'group']);
+  const { t } = useTranslation(['core', 'group', 'reticulum']);
   const userInfo = useAtomValue(userInfoAtom);
   const [requestedGroup, setRequestedGroup] = useState<any>(null);
   const [details, setDetails] = useState<any>(null);
@@ -140,7 +140,7 @@ export const ReticulumGroupAboutModal = () => {
   const ownerAddress = String(data?.owner || '').trim();
   const groupId = data?.groupId;
   const groupName =
-    data?.groupName || data?.name || t('group:reticulum.group_fallback_name');
+    data?.groupName || data?.name || t('reticulum:group_fallback_name');
   const memberCount = data?.memberCount;
   const created = data?.created ?? data?.creationTimestamp ?? data?.createdAt;
   const legacyLevel = getLegacyLevel(created);
@@ -197,15 +197,13 @@ export const ReticulumGroupAboutModal = () => {
       id: 'group-type',
       label: t('group:group.type'),
       value: t(
-        isOpen
-          ? 'group:reticulum.group_type.open'
-          : 'group:reticulum.group_type.closed',
+        isOpen ? 'reticulum:group_type.open' : 'reticulum:group_type.closed',
         { postProcess: 'capitalizeFirstChar' }
       ),
     },
     {
       id: 'created',
-      label: t('group:reticulum.about.created'),
+      label: t('reticulum:about.created'),
       value: formatCreatedDate(created, t),
     },
   ];
@@ -315,8 +313,8 @@ export const ReticulumGroupAboutModal = () => {
                 <Typography sx={{ fontSize: 13 }}>
                   {t(
                     isOpen
-                      ? 'group:reticulum.invite.open_group'
-                      : 'group:reticulum.invite.closed_group',
+                      ? 'reticulum:invite.open_group'
+                      : 'reticulum:invite.closed_group',
                     { postProcess: 'capitalizeFirstChar' }
                   )}
                 </Typography>
@@ -447,7 +445,7 @@ export const ReticulumGroupAboutModal = () => {
                     letterSpacing: '0.08em',
                   }}
                 >
-                  {t('group:reticulum.about.group_invite_link', {
+                  {t('reticulum:about.group_invite_link', {
                     postProcess: 'capitalizeAll',
                   })}
                 </Typography>
@@ -467,8 +465,8 @@ export const ReticulumGroupAboutModal = () => {
               <Tooltip
                 title={t(
                   copied
-                    ? 'group:reticulum.about.copied'
-                    : 'group:reticulum.copy_invite_link',
+                    ? 'reticulum:about.copied'
+                    : 'reticulum:copy_invite_link',
                   { postProcess: 'capitalizeFirstChar' }
                 )}
               >

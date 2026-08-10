@@ -1,0 +1,246 @@
+{
+  "about": {
+    "copied": "تم النسخ",
+    "created": "تاريخ الإنشاء",
+    "group_invite_link": "رابط دعوة الجروب"
+  },
+  "call_history": {
+    "answered": "مكالمة صوتية",
+    "cancelled": "مكالمة صوتية ملغاة",
+    "declined": "مكالمة صوتية مرفوضة",
+    "missed": "مكالمة صوتية فائتة",
+    "no_answer": "لا يوجد رد"
+  },
+  "chat_group": {
+    "author_mismatch": "كاتب دردشة Reticulum الموقّع غير مطابق",
+    "delete_failed": "فشل حذف دردشة Reticulum",
+    "disabled": "دردشة Reticulum معطّلة",
+    "publish_failed": "فشل نشر دردشة Reticulum",
+    "release_seq_failed": "تعذّر تحرير تسلسل أحداث دردشة Reticulum",
+    "reserve_seq_failed": "تعذّر حجز تسلسل أحداث دردشة Reticulum",
+    "sign_failed": "تعذّر توقيع حدث دردشة Reticulum",
+    "welcome_failed": "فشل نشر ترحيب Reticulum"
+  },
+  "copy_invite_link": "نسخ رابط الدعوة",
+  "discussion": {
+    "choose_emoji": "choose emoji",
+    "close": "close discussion",
+    "initial_post": "initial post",
+    "remove_attachment": "remove attachment",
+    "remove_file": "remove {{fileName}}",
+    "replies": "replies:",
+    "reply_placeholder": "reply to discussion...",
+    "wait_until_ready": "wait until the discussion is ready"
+  },
+  "dm": {
+    "required_for_attachments": "دردشة Reticulum المباشرة مطلوبة للمرفقات المباشرة"
+  },
+  "event_preview": {
+    "all_day": "all day",
+    "calendar_unavailable": "calendar is unavailable",
+    "join_failed": "unable to join this group. Please try again.",
+    "loading": "loading event preview",
+    "member_required": "you must be a member of the source group to view this event.",
+    "not_found": "event not found",
+    "request_join_question": "request to join this group?",
+    "unavailable": "event unavailable",
+    "unavailable_temporarily": "event preview is temporarily unavailable",
+    "view_group": "view group"
+  },
+  "expiry": {
+    "channel_default": "الإعداد الافتراضي للقناة",
+    "channel_default_no_expiry": "الإعداد الافتراضي للقناة (بدون انتهاء)",
+    "channel_default_with": "الإعداد الافتراضي للقناة ({{duration}})",
+    "do_not_auto_delete": "عدم الحذف التلقائي",
+    "maximum": "الحد الأقصى {{duration}}",
+    "no_expiry": "بدون انتهاء",
+    "set": "تعيين مدة انتهاء الرسالة",
+    "title": "انتهاء الرسالة",
+    "tooltip_value": "انتهاء الرسالة: {{value}}",
+    "unavailable": "انتهاء الرسائل غير متاح"
+  },
+  "group_fallback_name": "الجروب",
+  "group_type": {
+    "closed": "مغلق",
+    "open": "مفتوح"
+  },
+  "groups_widget": {
+    "mentions_one": "{{count}} إشارة",
+    "mentions_other": "{{count}} إشارات",
+    "new_messages_one": "{{count}} رسالة جديدة",
+    "new_messages_other": "{{count}} رسائل جديدة"
+  },
+  "hide_user": {
+    "error_hide": "تعذّر إخفاء المستخدم",
+    "error_unhide": "تعذّر إظهار المستخدم",
+    "for_1_hour": "إخفاء لمدة ساعة واحدة",
+    "for_24_hours": "إخفاء لمدة 24 ساعة",
+    "hide": "إخفاء",
+    "unhide": "إظهار",
+    "until_unhidden": "إخفاء حتى الإظهار"
+  },
+  "image_viewer": {
+    "actions": "image actions",
+    "chat_image": "chat image",
+    "clipboard_unavailable": "image clipboard is unavailable",
+    "close": "close image viewer",
+    "copied": "image copied",
+    "copy": "copy image",
+    "copy_failed": "unable to copy image",
+    "download": "download image",
+    "download_failed": "unable to download image",
+    "prepare_failed": "unable to prepare image for clipboard",
+    "read_failed": "unable to read image",
+    "zoom_in": "zoom in",
+    "zoom_out": "zoom out"
+  },
+  "invite": {
+    "apply": "apply",
+    "apply_question": "apply to join this group?",
+    "closed_group": "جروب مغلق",
+    "joined": "joined",
+    "open_group": "جروب مفتوح",
+    "pending": "pending"
+  },
+  "join_group_question": "join this group?",
+  "mention": {
+    "channels": "القنوات",
+    "empty": "لا توجد نتائج",
+    "people": "الأشخاص",
+    "special": "إشارات خاصة",
+    "suggestions": "اقتراحات الإشارة"
+  },
+  "mode_pill": {
+    "chat": "المحادثة",
+    "enter_qortal_land": "ادخل إلى Qortal Land",
+    "return_to_chat": "العودة إلى المحادثة"
+  },
+  "onboarding": {
+    "find_communities": "اكتشف المجتمعات",
+    "invite_error_invalid": "لا يبدو أن هذا رابط دعوة صالح إلى جروب Qortal.",
+    "invite_input_label": "رابط دعوة الجروب",
+    "invite_input_placeholder": "الصق رابط دعوة الجروب...",
+    "or": "أو",
+    "subtitle": "يبدو أنك لست عضوًا في أي مجتمع بعد. لنغيّر ذلك.",
+    "title": "مرحبًا بك في Q-Chat الجديد والمحسّن",
+    "whats_new_button": "ما الجديد؟"
+  },
+  "qapp_preview": {
+    "check_again": "check again",
+    "no_resource": "no Q-App resource was found for this link.",
+    "open_in_quitter": "open this post in Quitter.",
+    "open_publication": "open this publication to read the full article.",
+    "preview_failed": "the resource exists, but its preview could not be loaded right now.",
+    "preview_unavailable": "preview unavailable",
+    "resource_not_found": "resource not found",
+    "shared_photo": "shared a photo",
+    "shared_video": "shared a video",
+    "shared_video_titled": "shared a video: {{title}}",
+    "view_on_quitter": "view this post on Quitter",
+    "watch_on_qtube": "watch this video on Q-Tube."
+  },
+  "rail": {
+    "find_groups": "البحث عن مجموعات",
+    "group_settings": "إعدادات المجموعة",
+    "whats_new": "فتح ما الجديد"
+  },
+  "search": {
+    "chip": {
+      "date": "التاريخ: {{value}}",
+      "from": "من: {{value}}",
+      "has": "يحتوي: {{value}}",
+      "in": "في: {{value}}",
+      "sort": "الترتيب: {{value}}"
+    },
+    "date_any": "أي تاريخ",
+    "date_range": "{{after}} إلى {{before}}",
+    "facet": {
+      "date": "التاريخ:",
+      "from": "من:",
+      "has": "يحتوي:",
+      "in": "في:",
+      "sort": "الترتيب:"
+    },
+    "has": {
+      "any": "أي شيء",
+      "attachment": "مرفق",
+      "link": "رابط"
+    },
+    "placeholder_channel": "ابحث في {{channel}}",
+    "placeholder_messages": "ابحث في الرسائل",
+    "sort": {
+      "newest": "الأحدث",
+      "oldest": "الأقدم",
+      "relevance": "الأكثر صلة"
+    }
+  },
+  "settings": {
+    "category": {
+      "accessibility": "إمكانية الوصول",
+      "legacy": "الإصدار السابق"
+    },
+    "legacy": {
+      "description": "إظهار عناصر Threads وAdmin القديمة في ترويسة Q-Chat.",
+      "title": "Threads",
+      "toggle": {
+        "aria": "إظهار Threads القديمة",
+        "description": "يعرض أيقونتَي Threads وAdmin القديمتين.",
+        "label": "Threads"
+      },
+      "warning": "ستتم إزالة Threads في الإصدار القادم. انقل أي معلومات مهمة من المواضيع إلى مكان آمن أو إلى قناة جديدة في Q-Chat قبل التحديث."
+    },
+    "messages": {
+      "description": "اضبط طريقة ظهور رسائلك في Reticulum Q-Chat.",
+      "highlight_own": {
+        "description": "يضيف خلفية خفيفة للرسائل التي ترسلها.",
+        "label": "إبراز رسائلي"
+      },
+      "title": "الرسائل"
+    },
+    "nav": {
+      "mentions": "الإشارات",
+      "messages": "الرسائل",
+      "text_size": "حجم النص",
+      "threads": "Threads"
+    },
+    "notifications": {
+      "description": "إظهار إشارات Reticulum Q-Chat في لوحة إشعارات Hub. الرسائل غير المقروءة العادية لا تنشئ إشعارات في Hub.",
+      "mentions": {
+        "description": "نبّهني عندما يشير إليّ أحد في قناة.",
+        "label": "إشعارات الإشارات"
+      },
+      "title": "الإشعارات"
+    },
+    "text_size": {
+      "default": {
+        "detail": "حجم نص المحادثة الحالي",
+        "label": "افتراضي"
+      },
+      "description": "اختر حجم قراءة لرسائل Reticulum وتسميات القنوات وقائمة الأعضاء. تحتفظ معاينات الدعوات بتخطيطها الثابت.",
+      "high": {
+        "detail": "أكبر نص محادثة يبقى مقروءًا",
+        "label": "كبير"
+      },
+      "medium": {
+        "detail": "زيادة مريحة",
+        "label": "متوسط"
+      },
+      "title": "حجم النص"
+    }
+  },
+  "user_card": {
+    "address_copied": "تم نسخ العنوان",
+    "copy_address": "نسخ العنوان",
+    "copy_full_address": "نسخ عنوان qortal كاملاً",
+    "hide_user": "إخفاء المستخدم",
+    "message": "رسالة",
+    "minter_level": "مستوى المُعدِّن",
+    "minter_level_value": "المستوى {{level}}",
+    "qort_balance": "رصيد qort",
+    "qort_balance_value": "{{amount}} QORT",
+    "qortal_address": "عنوان qortal",
+    "send_qort": "إرسال QORT",
+    "view_profile": "عرض الملف الشخصي",
+    "view_profile_of": "عرض الملف الشخصي لـ {{name}}"
+  }
+}

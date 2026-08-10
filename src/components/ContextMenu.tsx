@@ -112,7 +112,7 @@ export const ContextMenu = ({
   const [mutedGroups] = useAtom(mutedGroupsAtom);
   const setTxList = useSetAtom(txListAtom);
   const { show } = useContext(QORTAL_APP_CONTEXT);
-  const { t } = useTranslation(['core', 'group']);
+  const { t } = useTranslation(['core', 'group', 'reticulum']);
   const isMenuOpen = Boolean(menuPosition);
 
   const isMuted = useMemo(() => {
@@ -288,7 +288,7 @@ export const ContextMenu = ({
         groupInfo?.groupName ??
         reticulumGroup?.groupName ??
         reticulumGroup?.name ??
-        t('group:reticulum.group_fallback_name'),
+        t('reticulum:group_fallback_name'),
       memberCount: groupInfo?.memberCount ?? reticulumGroup?.memberCount ?? '-',
     }),
     [groupId, groupInfo, reticulumGroup, t]
@@ -305,9 +305,7 @@ export const ContextMenu = ({
     Number(displayedGroupInfo?.groupType) === 1 ||
     displayedGroupInfo?.groupType === 'CLOSED';
   const groupTypeLabel = t(
-    isClosedGroup
-      ? 'group:reticulum.group_type.closed'
-      : 'group:reticulum.group_type.open',
+    isClosedGroup ? 'reticulum:group_type.closed' : 'reticulum:group_type.open',
     { postProcess: 'capitalizeFirstChar' }
   );
 
@@ -472,7 +470,7 @@ export const ContextMenu = ({
               <ContentCopyRoundedIcon fontSize="small" />
             </ListItemIcon>
             <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-              {t('group:reticulum.copy_invite_link', {
+              {t('reticulum:copy_invite_link', {
                 postProcess: 'capitalizeFirstChar',
               })}
             </Typography>

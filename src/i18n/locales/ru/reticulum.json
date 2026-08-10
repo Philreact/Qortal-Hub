@@ -1,0 +1,246 @@
+{
+  "about": {
+    "copied": "скопировано",
+    "created": "создана",
+    "group_invite_link": "ссылка-приглашение в группу"
+  },
+  "call_history": {
+    "answered": "голосовой вызов",
+    "cancelled": "отменённый голосовой вызов",
+    "declined": "отклонённый голосовой вызов",
+    "missed": "пропущенный голосовой вызов",
+    "no_answer": "нет ответа"
+  },
+  "chat_group": {
+    "author_mismatch": "Подписанный автор чата Reticulum не совпадает",
+    "delete_failed": "Не удалось удалить сообщение в чате Reticulum",
+    "disabled": "Чат Reticulum отключён",
+    "publish_failed": "Не удалось опубликовать сообщение в чате Reticulum",
+    "release_seq_failed": "Не удалось освободить последовательность событий чата Reticulum",
+    "reserve_seq_failed": "Не удалось зарезервировать последовательность событий чата Reticulum",
+    "sign_failed": "Не удалось подписать событие чата Reticulum",
+    "welcome_failed": "Не удалось опубликовать приветствие Reticulum"
+  },
+  "copy_invite_link": "скопировать ссылку-приглашение",
+  "discussion": {
+    "choose_emoji": "choose emoji",
+    "close": "close discussion",
+    "initial_post": "initial post",
+    "remove_attachment": "remove attachment",
+    "remove_file": "remove {{fileName}}",
+    "replies": "replies:",
+    "reply_placeholder": "reply to discussion...",
+    "wait_until_ready": "wait until the discussion is ready"
+  },
+  "dm": {
+    "required_for_attachments": "Для прямых вложений требуется личный чат Reticulum"
+  },
+  "event_preview": {
+    "all_day": "all day",
+    "calendar_unavailable": "calendar is unavailable",
+    "join_failed": "unable to join this group. Please try again.",
+    "loading": "loading event preview",
+    "member_required": "you must be a member of the source group to view this event.",
+    "not_found": "event not found",
+    "request_join_question": "request to join this group?",
+    "unavailable": "event unavailable",
+    "unavailable_temporarily": "event preview is temporarily unavailable",
+    "view_group": "view group"
+  },
+  "expiry": {
+    "channel_default": "настройка канала по умолчанию",
+    "channel_default_no_expiry": "настройка канала по умолчанию (без срока)",
+    "channel_default_with": "настройка канала по умолчанию ({{duration}})",
+    "do_not_auto_delete": "не удалять автоматически",
+    "maximum": "максимум {{duration}}",
+    "no_expiry": "без срока",
+    "set": "задать срок хранения сообщения",
+    "title": "срок хранения сообщения",
+    "tooltip_value": "срок хранения сообщения: {{value}}",
+    "unavailable": "срок хранения сообщений недоступен"
+  },
+  "group_fallback_name": "Группа",
+  "group_type": {
+    "closed": "закрытая",
+    "open": "открытая"
+  },
+  "groups_widget": {
+    "mentions_one": "{{count}} упоминание",
+    "mentions_other": "{{count}} упоминаний",
+    "new_messages_one": "{{count}} новое сообщение",
+    "new_messages_other": "{{count}} новых сообщений"
+  },
+  "hide_user": {
+    "error_hide": "не удалось скрыть пользователя",
+    "error_unhide": "не удалось показать пользователя",
+    "for_1_hour": "скрыть на 1 час",
+    "for_24_hours": "скрыть на 24 часа",
+    "hide": "скрыть",
+    "unhide": "показать",
+    "until_unhidden": "скрыть до отмены"
+  },
+  "image_viewer": {
+    "actions": "image actions",
+    "chat_image": "chat image",
+    "clipboard_unavailable": "image clipboard is unavailable",
+    "close": "close image viewer",
+    "copied": "image copied",
+    "copy": "copy image",
+    "copy_failed": "unable to copy image",
+    "download": "download image",
+    "download_failed": "unable to download image",
+    "prepare_failed": "unable to prepare image for clipboard",
+    "read_failed": "unable to read image",
+    "zoom_in": "zoom in",
+    "zoom_out": "zoom out"
+  },
+  "invite": {
+    "apply": "apply",
+    "apply_question": "apply to join this group?",
+    "closed_group": "закрытая группа",
+    "joined": "joined",
+    "open_group": "открытая группа",
+    "pending": "pending"
+  },
+  "join_group_question": "join this group?",
+  "mention": {
+    "channels": "каналы",
+    "empty": "совпадений не найдено",
+    "people": "люди",
+    "special": "особые упоминания",
+    "suggestions": "подсказки упоминаний"
+  },
+  "mode_pill": {
+    "chat": "Чат",
+    "enter_qortal_land": "Войти в Qortal Land",
+    "return_to_chat": "Вернуться в чат"
+  },
+  "onboarding": {
+    "find_communities": "Найти сообщества",
+    "invite_error_invalid": "Это не похоже на действительную ссылку-приглашение в группу Qortal.",
+    "invite_input_label": "Ссылка-приглашение в группу",
+    "invite_input_placeholder": "Вставьте ссылку-приглашение в группу...",
+    "or": "или",
+    "subtitle": "Похоже, вы ещё не состоите ни в одном сообществе. Давайте это исправим.",
+    "title": "Добро пожаловать в новый, улучшенный Q-Chat",
+    "whats_new_button": "Что нового?"
+  },
+  "qapp_preview": {
+    "check_again": "check again",
+    "no_resource": "no Q-App resource was found for this link.",
+    "open_in_quitter": "open this post in Quitter.",
+    "open_publication": "open this publication to read the full article.",
+    "preview_failed": "the resource exists, but its preview could not be loaded right now.",
+    "preview_unavailable": "preview unavailable",
+    "resource_not_found": "resource not found",
+    "shared_photo": "shared a photo",
+    "shared_video": "shared a video",
+    "shared_video_titled": "shared a video: {{title}}",
+    "view_on_quitter": "view this post on Quitter",
+    "watch_on_qtube": "watch this video on Q-Tube."
+  },
+  "rail": {
+    "find_groups": "Поиск групп",
+    "group_settings": "Настройки группы",
+    "whats_new": "Открыть новинки"
+  },
+  "search": {
+    "chip": {
+      "date": "дата: {{value}}",
+      "from": "от: {{value}}",
+      "has": "содержит: {{value}}",
+      "in": "в: {{value}}",
+      "sort": "сортировка: {{value}}"
+    },
+    "date_any": "любая",
+    "date_range": "{{after}} — {{before}}",
+    "facet": {
+      "date": "дата:",
+      "from": "от:",
+      "has": "содержит:",
+      "in": "в:",
+      "sort": "сортировка:"
+    },
+    "has": {
+      "any": "что угодно",
+      "attachment": "вложение",
+      "link": "ссылку"
+    },
+    "placeholder_channel": "Поиск в {{channel}}",
+    "placeholder_messages": "Поиск сообщений",
+    "sort": {
+      "newest": "сначала новые",
+      "oldest": "сначала старые",
+      "relevance": "по релевантности"
+    }
+  },
+  "settings": {
+    "category": {
+      "accessibility": "Доступность",
+      "legacy": "Прежняя версия"
+    },
+    "legacy": {
+      "description": "Показывать прежние элементы Threads и Admin в заголовке Q-Chat.",
+      "title": "Threads",
+      "toggle": {
+        "aria": "Показывать прежние Threads",
+        "description": "Отображает прежние значки Threads и Admin.",
+        "label": "Threads"
+      },
+      "warning": "Threads будут удалены в следующем выпуске. Перед обновлением перенесите важную информацию из тем в надёжное место или в новый канал Q-Chat."
+    },
+    "messages": {
+      "description": "Настройте вид ваших собственных сообщений в Reticulum Q-Chat.",
+      "highlight_own": {
+        "description": "Добавляет слабый фон к отправленным вами сообщениям.",
+        "label": "Выделять мои сообщения"
+      },
+      "title": "Сообщения"
+    },
+    "nav": {
+      "mentions": "Упоминания",
+      "messages": "Сообщения",
+      "text_size": "Размер текста",
+      "threads": "Threads"
+    },
+    "notifications": {
+      "description": "Показывать упоминания из Reticulum Q-Chat на панели уведомлений Hub. Обычные непрочитанные сообщения не создают уведомлений Hub.",
+      "mentions": {
+        "description": "Уведомлять меня, когда кто-то упоминает меня в канале.",
+        "label": "Уведомления об упоминаниях"
+      },
+      "title": "Уведомления"
+    },
+    "text_size": {
+      "default": {
+        "detail": "Текущий размер текста чата",
+        "label": "По умолчанию"
+      },
+      "description": "Выберите размер для чтения сообщений Reticulum, названий каналов и списка участников. Предпросмотр приглашений сохраняет фиксированную вёрстку.",
+      "high": {
+        "detail": "Самый крупный читаемый текст чата",
+        "label": "Крупный"
+      },
+      "medium": {
+        "detail": "Комфортное увеличение",
+        "label": "Средний"
+      },
+      "title": "Размер текста"
+    }
+  },
+  "user_card": {
+    "address_copied": "адрес скопирован",
+    "copy_address": "копировать адрес",
+    "copy_full_address": "копировать полный адрес qortal",
+    "hide_user": "скрыть пользователя",
+    "message": "сообщение",
+    "minter_level": "уровень минтера",
+    "minter_level_value": "уровень {{level}}",
+    "qort_balance": "баланс qort",
+    "qort_balance_value": "{{amount}} QORT",
+    "qortal_address": "адрес qortal",
+    "send_qort": "отправить QORT",
+    "view_profile": "открыть профиль",
+    "view_profile_of": "открыть профиль {{name}}"
+  }
+}

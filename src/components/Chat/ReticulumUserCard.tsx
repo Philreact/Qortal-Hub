@@ -93,7 +93,7 @@ export const ReticulumUserCard = ({
   onClose,
   silenceContext,
 }: ReticulumUserCardProps) => {
-  const { t } = useTranslation(['core', 'group']);
+  const { t } = useTranslation(['core', 'reticulum']);
   const theme = useTheme();
   const open = Boolean(anchorEl || anchorPosition);
   const [profile, setProfile] = useState<CardProfile | null>(null);
@@ -410,7 +410,7 @@ export const ReticulumUserCard = ({
               </Box>
               <Box sx={{ transform: 'translateY(16px)' }}>
                 <Typography sx={cardLabelSx}>
-                  {t('group:reticulum.user_card.qortal_address', {
+                  {t('reticulum:user_card.qortal_address', {
                     postProcess: 'capitalizeAll',
                   })}
                 </Typography>
@@ -439,21 +439,18 @@ export const ReticulumUserCard = ({
                   <Tooltip
                     title={
                       copyState === 'copied'
-                        ? t('group:reticulum.user_card.address_copied', {
+                        ? t('reticulum:user_card.address_copied', {
                             postProcess: 'capitalizeFirstChar',
                           })
-                        : t('group:reticulum.user_card.copy_address', {
+                        : t('reticulum:user_card.copy_address', {
                             postProcess: 'capitalizeFirstChar',
                           })
                     }
                   >
                     <IconButton
-                      aria-label={t(
-                        'group:reticulum.user_card.copy_full_address',
-                        {
-                          postProcess: 'capitalizeFirstChar',
-                        }
-                      )}
+                      aria-label={t('reticulum:user_card.copy_full_address', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
                       onClick={handleCopy}
                       size="small"
                       sx={{
@@ -472,12 +469,12 @@ export const ReticulumUserCard = ({
               </Box>
             </Box>
             <Tooltip
-              title={t('group:reticulum.user_card.view_profile', {
+              title={t('reticulum:user_card.view_profile', {
                 postProcess: 'capitalizeFirstChar',
               })}
             >
               <IconButton
-                aria-label={t('group:reticulum.user_card.view_profile_of', {
+                aria-label={t('reticulum:user_card.view_profile_of', {
                   name: displayName,
                   postProcess: 'capitalizeFirstChar',
                 })}
@@ -515,7 +512,7 @@ export const ReticulumUserCard = ({
             }}
           >
             <CardStat
-              label={t('group:reticulum.user_card.qort_balance', {
+              label={t('reticulum:user_card.qort_balance', {
                 postProcess: 'capitalizeAll',
               })}
               value={
@@ -525,14 +522,14 @@ export const ReticulumUserCard = ({
                     })
                   : wholeBalance === null
                     ? t('core:not_available', { postProcess: 'capitalizeAll' })
-                    : t('group:reticulum.user_card.qort_balance_value', {
+                    : t('reticulum:user_card.qort_balance_value', {
                         amount: wholeBalance,
                       })
               }
             />
             <CardStat
               bordered
-              label={t('group:reticulum.user_card.minter_level', {
+              label={t('reticulum:user_card.minter_level', {
                 postProcess: 'capitalizeAll',
               })}
               value={
@@ -542,7 +539,7 @@ export const ReticulumUserCard = ({
                     })
                   : !isMinter
                     ? t('core:not_available', { postProcess: 'capitalizeAll' })
-                    : t('group:reticulum.user_card.minter_level_value', {
+                    : t('reticulum:user_card.minter_level_value', {
                         level: resolvedMinterLevel,
                         postProcess: 'capitalizeFirstChar',
                       })
@@ -575,7 +572,7 @@ export const ReticulumUserCard = ({
                   onClick={handleMessage}
                   sx={primaryActionSx}
                 >
-                  {t('group:reticulum.user_card.message', {
+                  {t('reticulum:user_card.message', {
                     postProcess: 'capitalizeFirstChar',
                   })}
                 </Button>
@@ -585,12 +582,12 @@ export const ReticulumUserCard = ({
                   onClick={handleSendQort}
                   sx={secondaryActionSx}
                 >
-                  {t('group:reticulum.user_card.send_qort', {
+                  {t('reticulum:user_card.send_qort', {
                     postProcess: 'capitalizeFirstChar',
                   })}
                 </Button>
                 <Button
-                  aria-label={t('group:reticulum.user_card.hide_user', {
+                  aria-label={t('reticulum:user_card.hide_user', {
                     postProcess: 'capitalizeFirstChar',
                   })}
                   disabled={!silenceContext}

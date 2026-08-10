@@ -850,7 +850,7 @@ export const GroupsWidget = ({
   refreshToken = 0,
 }: GroupsWidgetProps) => {
   const theme = useTheme();
-  const { t } = useTranslation('group');
+  const { t } = useTranslation(['group', 'reticulum']);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const reticulumChatEnabled = useAtomValue(reticulumChatEnabledAtom);
   const memberGroups = useAtomValue(memberGroupsWithReticulumChatAtom);
@@ -2210,13 +2210,13 @@ export const GroupsWidget = ({
         <ButtonBase
           aria-label={`${item.groupName}. ${
             item.newMessageCount > 0
-              ? t('groups_widget.reticulum_new_messages', {
+              ? t('reticulum:groups_widget.new_messages', {
                   count: item.newMessageCount,
                 })
               : ''
           } ${
             item.mentionCount > 0
-              ? t('groups_widget.reticulum_mentions', {
+              ? t('reticulum:groups_widget.mentions', {
                   count: item.mentionCount,
                 })
               : ''
@@ -2298,7 +2298,7 @@ export const GroupsWidget = ({
                   lineHeight: 1.35,
                 }}
               >
-                {t('groups_widget.reticulum_new_messages', {
+                {t('reticulum:groups_widget.new_messages', {
                   count: item.newMessageCount,
                 })}
               </Typography>
@@ -2320,7 +2320,7 @@ export const GroupsWidget = ({
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {t('groups_widget.reticulum_mentions', {
+                  {t('reticulum:groups_widget.mentions', {
                     count: item.mentionCount,
                   })}
                 </Typography>
@@ -2590,7 +2590,7 @@ export const GroupsWidget = ({
                             lineHeight: 1.35,
                           }}
                         >
-                          {t('groups_widget.reticulum_new_messages', {
+                          {t('reticulum:groups_widget.new_messages', {
                             count: item.newMessageCount,
                           })}
                         </Typography>
@@ -2610,7 +2610,7 @@ export const GroupsWidget = ({
                               lineHeight: 1.35,
                             }}
                           >
-                            {t('groups_widget.reticulum_mentions', {
+                            {t('reticulum:groups_widget.mentions', {
                               count: item.mentionCount,
                             })}
                           </Typography>
