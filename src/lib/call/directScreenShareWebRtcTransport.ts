@@ -49,6 +49,7 @@ const MAX_PENDING_CANDIDATES = 128;
  */
 export class DirectScreenShareWebRtcTransport {
   private pc: RTCPeerConnection | null = null;
+  private pcCreationPromise: Promise<RTCPeerConnection> | null = null;
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private negotiationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -162,7 +163,21 @@ export class DirectScreenShareWebRtcTransport {
 
   private async createPeerConnection(): Promise<RTCPeerConnection> {
     if (this.pc) return this.pc;
+    if (this.pcCreationPromise) return this.pcCreationPromise;
     if (this.closed) throw new Error('screen-share-transport-closed');
+
+    const creation = this.initializePeerConnection();
+    this.pcCreationPromise = creation;
+    try {
+      return await creation;
+    } finally {
+      if (this.pcCreationPromise === creation) {
+        this.pcCreationPromise = null;
+      }
+    }
+  }
+
+  private async initializePeerConnection(): Promise<RTCPeerConnection> {
     const iceServers = await this.lookupIceServers();
     if (this.closed) throw new Error('screen-share-transport-closed');
     const pc = new RTCPeerConnection({ iceServers });

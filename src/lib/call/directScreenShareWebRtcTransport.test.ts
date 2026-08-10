@@ -7,6 +7,7 @@ import {
 
 class FakePeerConnection {
   static latest: FakePeerConnection | null = null;
+  static created = 0;
   connectionState: RTCPeerConnectionState = 'new';
   signalingState: RTCSignalingState = 'stable';
   localDescription: RTCSessionDescription | null = null;
@@ -20,6 +21,7 @@ class FakePeerConnection {
   rejectCandidates = false;
 
   constructor() {
+    FakePeerConnection.created += 1;
     FakePeerConnection.latest = this;
   }
 
@@ -71,6 +73,7 @@ afterEach(() => {
   vi.useRealTimers();
   globalThis.RTCPeerConnection = originalPeerConnection;
   FakePeerConnection.latest = null;
+  FakePeerConnection.created = 0;
   vi.restoreAllMocks();
 });
 
@@ -135,6 +138,51 @@ describe('DirectScreenShareWebRtcTransport', () => {
       generation: 'screen_generation',
       description: { type: 'answer' },
     });
+    transport.close();
+  });
+
+  it('uses one peer connection when an offer and ICE arrive concurrently', async () => {
+    globalThis.RTCPeerConnection =
+      FakePeerConnection as unknown as typeof RTCPeerConnection;
+    let resolveIceServers: ((servers: RTCIceServer[]) => void) | null = null;
+    const iceServers = new Promise<RTCIceServer[]>((resolve) => {
+      resolveIceServers = resolve;
+    });
+    const signals: DirectScreenShareRtcSignal[] = [];
+    const transport = new DirectScreenShareWebRtcTransport({
+      generation: 'screen_generation',
+      sender: false,
+      getIceServers: () => iceServers,
+      onSignal: (signal) => {
+        signals.push(signal);
+      },
+      onRemoteStream: vi.fn(),
+      onState: vi.fn(),
+    });
+
+    const offer = transport.handleSignal({
+      kind: 'screen-description',
+      generation: 'screen_generation',
+      description: { type: 'offer', sdp: 'screen-offer' },
+    });
+    const candidate = transport.handleSignal({
+      kind: 'screen-ice',
+      generation: 'screen_generation',
+      candidate: { candidate: 'candidate' },
+    });
+
+    expect(FakePeerConnection.created).toBe(0);
+    resolveIceServers?.([]);
+    await Promise.all([offer, candidate]);
+
+    expect(FakePeerConnection.created).toBe(1);
+    expect(signals).toContainEqual(
+      expect.objectContaining({
+        kind: 'screen-description',
+        generation: 'screen_generation',
+        description: expect.objectContaining({ type: 'answer' }),
+      })
+    );
     transport.close();
   });
 
