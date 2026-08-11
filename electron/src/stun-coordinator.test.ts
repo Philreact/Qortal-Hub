@@ -118,6 +118,43 @@ describe('community STUN endpoint validation', () => {
     await coordinator.waitForStop();
   });
 
+  it('queues previously verified endpoints for immediate startup revalidation', async () => {
+    const bridge = new FakeBridge();
+    const coordinator = makeCoordinator();
+    const internal = coordinator as unknown as {
+      cache: {
+        getReprobeCandidates: ReturnType<typeof vi.fn>;
+      };
+      drainProbeQueue: () => void;
+      probeQueue: Array<{ host: string; stunPort: number }>;
+    };
+    internal.cache.getReprobeCandidates = vi.fn(() => [
+      {
+        host: '8.8.8.8',
+        stunPort: 47321,
+        lastProbeSuccessAt: Date.now() - 60_000,
+        lastProbeAttemptAt: Date.now() - 60_000,
+      },
+    ]);
+    const drain = vi
+      .spyOn(internal, 'drainProbeQueue')
+      .mockImplementation(() => {});
+
+    await coordinator.start(bridge as unknown as ReticulumBridge, {
+      stunCacheDbPath: '',
+      contributionEnabled: false,
+    });
+
+    expect(internal.cache.getReprobeCandidates).toHaveBeenCalledTimes(1);
+    expect(internal.probeQueue).toEqual([
+      expect.objectContaining({ host: '8.8.8.8', stunPort: 47321 }),
+    ]);
+    expect(drain).toHaveBeenCalled();
+
+    coordinator.stop();
+    await coordinator.waitForStop();
+  });
+
   it('retries contribution after another local instance owns the UDP port', async () => {
     vi.useFakeTimers();
     const tryBind = vi

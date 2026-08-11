@@ -11,7 +11,11 @@ import net from 'net';
 import type { ReticulumBridge } from './reticulum-bridge';
 import { log as loggerLog } from './logger';
 import { STUN_FIXED_UDP_PORT } from './stun-bootstrap';
-import { StunCache } from './stun-cache';
+import {
+  STUN_CACHE_MAX_ROWS,
+  STUN_PROBE_FRESHNESS_MS,
+  StunCache,
+} from './stun-cache';
 import { StunUdpServer } from './stun-udp-server';
 import { sendStunBindingProbe } from './stun-probe';
 import {
@@ -35,6 +39,14 @@ const PROBE_TICK_MS = 2_000;
 // refresh when the app starts before any contributor has answered.
 const DISCOVERY_REFRESH_INTERVAL_MS = 4 * 60_000;
 const DISCOVERY_REQUEST_MIN_INTERVAL_MS = 5_000;
+// A discovery announce is intentionally best-effort. Keep previously verified
+// endpoints warm independently so one missed announce after restart cannot
+// leave calls with an empty ICE pool.
+const CACHED_REPROBE_INTERVAL_MS = STUN_PROBE_FRESHNESS_MS / 2;
+const CACHED_REPROBE_REQUEST_MIN_INTERVAL_MS = 60_000;
+const CACHED_REPROBE_MAX_SUCCESS_AGE_MS = 24 * 60 * 60_000;
+const CACHED_REPROBE_QUEUE_TTL_MS = 30_000;
+const CACHED_REPROBE_CAP = ICE_STUN_SERVER_CAP;
 const ADVERTISE_INTERVAL_MS = 2 * 60_000;
 const ADVERTISE_TTL_MS = 10 * 60_000;
 const MAPPING_MAINTENANCE_INTERVAL_MS = 60_000;
@@ -116,6 +128,7 @@ export class StunCoordinator {
   private lastServedIceServers: { urls: string }[] = [];
   private lastLoggedIceUrlsKey: string | null = null;
   private lastDiscoveryRequestAt = 0;
+  private lastCachedReprobeAt = 0;
   private readonly onDiscoveredEndpoint = (payload: CommunityStunEndpoint) => {
     this.acceptDiscoveredEndpoint(payload);
   };
@@ -144,6 +157,9 @@ export class StunCoordinator {
     this.bindBridge(bridge);
     this.contributionEnabled = opts.contributionEnabled !== false;
     this.cache.open();
+    this.probeBudget = PROBES_PER_MINUTE;
+    this.probeBudgetReset = Date.now();
+    this.queueCachedReprobes(0);
     this.requestBridgeEndpoints(bridge, true);
 
     this.probeTimer = setInterval(() => {
@@ -154,6 +170,7 @@ export class StunCoordinator {
 
     this.discoveryTimer = setInterval(() => {
       if (this.bridge) this.requestBridgeEndpoints(this.bridge);
+      this.queueCachedReprobes();
     }, DISCOVERY_REFRESH_INTERVAL_MS);
     this.discoveryTimer.unref?.();
 
@@ -187,6 +204,7 @@ export class StunCoordinator {
     this.probing.clear();
     this.activeProbes = 0;
     this.lastDiscoveryRequestAt = 0;
+    this.lastCachedReprobeAt = 0;
     this.lastLoggedIceUrlsKey = null;
     if (coordinatorInstance === this) coordinatorInstance = null;
     loggerLog('[STUN] Community coordinator stopped');
@@ -235,6 +253,9 @@ export class StunCoordinator {
     // deduplicated query instead of becoming a permanent result for calls.
     if (out.length === 0 && this.bridge) {
       this.requestBridgeEndpoints(this.bridge);
+    }
+    if (out.length === 0) {
+      this.queueCachedReprobes(CACHED_REPROBE_REQUEST_MIN_INTERVAL_MS);
     }
     this.lastServedIceServers = out.map((server) => ({ ...server }));
     const urlsKey = out.map((server) => server.urls).join('|');
@@ -295,22 +316,65 @@ export class StunCoordinator {
     this.drainProbeQueue();
   }
 
+  private queueCachedReprobes(
+    minAttemptAgeMs = CACHED_REPROBE_INTERVAL_MS
+  ): void {
+    if (!this.running) return;
+    const now = Date.now();
+    if (
+      minAttemptAgeMs > 0 &&
+      now - this.lastCachedReprobeAt < CACHED_REPROBE_REQUEST_MIN_INTERVAL_MS
+    ) {
+      return;
+    }
+    this.lastCachedReprobeAt = now;
+    const candidates = this.cache.getReprobeCandidates(STUN_CACHE_MAX_ROWS, {
+      now,
+      maxSuccessAgeMs: CACHED_REPROBE_MAX_SUCCESS_AGE_MS,
+      minAttemptAgeMs,
+    });
+    let queued = 0;
+    for (const candidate of candidates) {
+      if (
+        !isPublicCommunityStunHost(candidate.host) ||
+        candidate.stunPort !== STUN_FIXED_UDP_PORT
+      ) {
+        continue;
+      }
+      if (
+        this.enqueueProbe(
+          candidate.host,
+          candidate.stunPort,
+          now + CACHED_REPROBE_QUEUE_TTL_MS
+        )
+      ) {
+        queued += 1;
+        if (queued >= CACHED_REPROBE_CAP) break;
+      }
+    }
+    if (queued > 0) {
+      loggerLog(`[STUN] Queued cached endpoint revalidation count=${queued}`);
+      this.drainProbeQueue();
+    }
+  }
+
   private enqueueProbe(
     host: string,
     stunPort: number,
     expiresAt: number
-  ): void {
+  ): boolean {
     const key = `${host}:${stunPort}`;
-    if (this.probing.has(key)) return;
+    if (this.probing.has(key)) return false;
     const existing = this.probeQueue.find(
       (entry) => `${entry.host}:${entry.stunPort}` === key
     );
     if (existing) {
       existing.expiresAt = Math.max(existing.expiresAt, expiresAt);
-      return;
+      return false;
     }
-    if (this.probeQueue.length >= MAX_PROBE_QUEUE) return;
+    if (this.probeQueue.length >= MAX_PROBE_QUEUE) return false;
     this.probeQueue.push({ host, stunPort, expiresAt });
+    return true;
   }
 
   private refillProbeBudget(): void {
