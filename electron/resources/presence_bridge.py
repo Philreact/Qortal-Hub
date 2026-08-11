@@ -345,6 +345,7 @@ _RESOURCE_SESSION_LEGACY_PROVIDER_IDLE_TIMEOUT_SECONDS = 60.0
 _RESOURCE_SESSION_PROVIDER_IDLE_GUARD_SECONDS = 5.0
 _RESOURCE_SESSION_PATH_WAIT_TIMEOUT_SECONDS = 30.0
 _RESOURCE_SESSION_PATH_POLL_SECONDS = 1.0
+_RESOURCE_SESSION_PATH_REFRESH_RETRY_SECONDS = 5.0
 _RESOURCE_SESSION_MAX_QUEUE_PER_LANE = 64
 _RESOURCE_SESSION_MAX_QUEUE_TOTAL = 256
 _RESOURCE_SESSION_FAST_CONCURRENCY = 1
@@ -8709,7 +8710,12 @@ def _refresh_qortalland_game_path(peer_hash: str, reason: str) -> bool:
     if not _valid_presence_destination_hash_hex(peer):
         return False
     destination_hash = bytes.fromhex(peer)
-    if reason == "game_link_attempt_closed":
+    if reason in {
+        "game_link_attempt_closed",
+        "game_resume_link_closed",
+        "proximity_link_attempt_closed",
+        "proximity_link_timeout",
+    }:
         return _force_overlay_peer_path_refresh(
             peer,
             target="qortalland-game",
@@ -13912,6 +13918,20 @@ def on_qchat_file_link_closed(link) -> None:
         isinstance(existing_state, dict)
         and existing_state.get("manager_kind") == "resource_session"
     ):
+        reason = _overlay_teardown_reason_name(
+            getattr(link, "teardown_reason", None)
+        )
+        was_established = existing_state.get("established") is True
+        path_failed = (
+            existing_state.get("incoming") is not True
+            and (not was_established or reason == "timeout")
+        )
+        if path_failed:
+            _resource_session_note_failed_link_path(
+                existing_state,
+                f"resource_session_link_closed:{reason}",
+                allow_established_timeout=(was_established and reason == "timeout"),
+            )
         with _state_lock:
             _qchat_file_link_ids_by_object.pop(id(link), None)
             _incoming_unified_peer_hash_by_object.pop(id(link), None)
@@ -13931,7 +13951,13 @@ def on_qchat_file_link_closed(link) -> None:
         _resource_session_fail_state(
             existing_state,
             "resource_session_link_closed",
-            refresh_path=existing_state.get("incoming") is not True,
+            # An established, idle pooled session may be retired normally by
+            # the provider. It had no user work to fail and does not prove the
+            # route is bad, so reconnect immediately when it is next needed.
+            # Resolve this under the state lock in _resource_session_fail_state
+            # so a job queued concurrently with the close is still failed and
+            # rehomed normally.
+            record_failure=None if was_established else True,
         )
         return
     state = remove_qchat_file_link(link_id)
@@ -14263,7 +14289,6 @@ def _handle_qchat_file_link_packet(message, packet) -> None:
             _resource_session_fail_state(
                 state,
                 "resource_session_ready_mismatch",
-                refresh_path=False,
             )
             return
         with _state_lock:
@@ -21448,7 +21473,7 @@ def _resource_session_fail_state(
     state: Dict[str, Any],
     reason: str,
     *,
-    refresh_path: bool = False,
+    record_failure: Optional[bool] = True,
 ) -> None:
     with _state_lock:
         if state.get("closing") is True:
@@ -21457,11 +21482,21 @@ def _resource_session_fail_state(
         peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
         pending_jobs = list(state.get("pending_jobs") or [])
         active_jobs = list((state.get("active_requests") or {}).values())
+        should_record_failure = (
+            bool(
+                pending_jobs
+                or active_jobs
+                or int(state.get("provider_active") or 0) > 0
+            )
+            if record_failure is None
+            else record_failure
+        )
         state["pending_jobs"] = []
         state["active_requests"] = {}
         _resource_session_provider_capacity_condition.notify_all()
-    _resource_session_note_failure(state, reason)
-    _resource_session_emit_status(state, "failed", reason)
+    if should_record_failure:
+        _resource_session_note_failure(state, reason)
+        _resource_session_emit_status(state, "failed", reason)
     _resource_session_remove_state(state)
     # Requests already handed to Reticulum are failed so their receipt cannot
     # race a replacement request. Higher layers retain completed byte ranges
@@ -21494,20 +21529,6 @@ def _resource_session_fail_state(
             "[presence_bridge] resource_session_jobs_requeued "
             f"peer={peer_hash[:16]} lane={state.get('sessionLane')} jobs={requeued} reason={reason}"
         )
-    if refresh_path and peer_hash:
-        try:
-            _force_overlay_peer_path_refresh(
-                peer_hash,
-                target="qchat-file-reticulum",
-                reason=reason,
-                cooldown_seconds=15.0,
-                await_seconds=0.0,
-            )
-        except Exception as exc:
-            log(
-                "[presence_bridge] resource_session_path_refresh_failed "
-                f"peer={peer_hash[:16]} reason={reason} err={exc}"
-            )
     link = state.get("link")
     if link is not None:
         _teardown_reticulum_link_bounded(
@@ -21524,11 +21545,214 @@ def _resource_session_open_timeout(state: Dict[str, Any]) -> None:
         f"peer={str(state.get('peerPresenceHash') or '')[:16]} lane={state.get('sessionLane')} "
         f"age_ms={int((time.time() - float(state.get('link_created_at') or time.time())) * 1000)}"
     )
-    _resource_session_fail_state(
-        state,
-        "resource_session_establish_timeout",
-        refresh_path=True,
+    link = state.get("link")
+    if link is not None:
+        _resource_session_note_failed_link_path(
+            state,
+            "resource_session_establish_timeout",
+        )
+    _resource_session_fail_state(state, "resource_session_establish_timeout")
+
+
+def _resource_session_note_failed_link_path(
+    state: Dict[str, Any],
+    reason: str,
+    *,
+    allow_established_timeout: bool = False,
+) -> None:
+    if state.get("incoming") is True:
+        return
+    if state.get("established") is True and not allow_established_timeout:
+        return
+    peer_hash = str(
+        state.get("peerDestinationHash")
+        or state.get("peerPresenceHash")
+        or ""
+    ).strip().lower()
+    if not _valid_presence_destination_hash_hex(peer_hash):
+        return
+    lifecycle = _lifecycle_state_for_peer(peer_hash)
+    if lifecycle is None:
+        return
+    with _state_lock:
+        generation = int(
+            lifecycle.get("resource_session_path_failure_generation") or 0
+        ) + 1
+        lifecycle["resource_session_path_failure_generation"] = generation
+        lifecycle["resource_session_path_failure_at"] = time.time()
+        lifecycle["resource_session_path_failure_reason"] = reason
+        for key in (
+            "resource_session_path_refresh_generation",
+            "resource_session_path_refresh_started_at",
+            "resource_session_path_refresh_before",
+            "resource_session_path_refresh_retry_at",
+            "resource_session_path_refresh_last_request_at",
+        ):
+            lifecycle.pop(key, None)
+    log(
+        "[presence_bridge] target=qchat-file-reticulum "
+        "resource_session_path_marked_stale "
+        f"peer={peer_hash} generation={generation} reason={reason}"
     )
+
+
+def _resource_session_failed_path_ready(
+    destination_hash: bytes,
+    peer_hash: str,
+) -> Optional[bool]:
+    """Require one fresh path after a resource Link fails to establish.
+
+    The proof is peer-scoped so parallel fast/bulk sessions share one path
+    request instead of each dropping and rediscovering the same destination.
+    ``None`` means no failed-path recovery is pending, ``False`` means a fresh
+    path is still being discovered, and ``True`` means it is safe to open.
+    """
+    lifecycle = _lifecycle_state_for_peer(peer_hash)
+    if lifecycle is None:
+        return None
+    with _state_lock:
+        failure_generation = int(
+            lifecycle.get("resource_session_path_failure_generation") or 0
+        )
+        proven_generation = int(
+            lifecycle.get("resource_session_path_proven_generation") or 0
+        )
+        recovered_generation = int(
+            lifecycle.get("resource_session_path_recovered_generation") or 0
+        )
+        if failure_generation <= proven_generation:
+            return None
+        if failure_generation <= recovered_generation:
+            # A fresh path has been discovered for this failure generation.
+            # Let parallel lanes share it while the first Link establishes;
+            # do not fall through to the generic stale-path recovery again.
+            return True
+        refresh_generation = int(
+            lifecycle.get("resource_session_path_refresh_generation") or 0
+        )
+        refresh_started_at = lifecycle.get(
+            "resource_session_path_refresh_started_at"
+        )
+        before = lifecycle.get("resource_session_path_refresh_before")
+        start_refresh = (
+            refresh_generation != failure_generation
+            or not isinstance(refresh_started_at, (int, float))
+            or not isinstance(before, dict)
+        )
+        retry_at = lifecycle.get("resource_session_path_refresh_retry_at")
+        if start_refresh and isinstance(retry_at, (int, float)):
+            if float(retry_at) > time.time():
+                return False
+        if start_refresh:
+            before = _reticulum_path_snapshot(destination_hash)
+            refresh_started_at = time.time()
+            lifecycle["resource_session_path_refresh_generation"] = (
+                failure_generation
+            )
+            lifecycle["resource_session_path_refresh_started_at"] = (
+                refresh_started_at
+            )
+            lifecycle["resource_session_path_refresh_before"] = before
+            lifecycle["resource_session_path_refresh_last_request_at"] = (
+                refresh_started_at
+            )
+            lifecycle.pop("resource_session_path_refresh_retry_at", None)
+
+    if start_refresh:
+        dropped = _drop_reticulum_path(destination_hash)
+        try:
+            RNS.Transport.request_path(destination_hash)
+            lifecycle["last_request_path_at"] = refresh_started_at
+            log(
+                "[presence_bridge] target=qchat-file-reticulum "
+                "resource_session_fresh_path_requested "
+                f"peer={peer_hash} generation={failure_generation} "
+                f"dropped={str(dropped).lower()} "
+                f"before={_format_reticulum_path_snapshot(before)}"
+            )
+        except Exception as exc:
+            with _state_lock:
+                if int(
+                    lifecycle.get("resource_session_path_refresh_generation")
+                    or 0
+                ) == failure_generation:
+                    for key in (
+                        "resource_session_path_refresh_generation",
+                        "resource_session_path_refresh_started_at",
+                        "resource_session_path_refresh_before",
+                    ):
+                        lifecycle.pop(key, None)
+                    lifecycle["resource_session_path_refresh_retry_at"] = (
+                        time.time() + 2.0
+                    )
+            log(
+                "[presence_bridge] target=qchat-file-reticulum "
+                "resource_session_fresh_path_request_failed "
+                f"peer={peer_hash} generation={failure_generation} err={exc}"
+            )
+        return False
+
+    after = _reticulum_path_snapshot(destination_hash)
+    if not _path_snapshot_is_fresh(
+        before,
+        after,
+        float(refresh_started_at),
+    ):
+        retry_request = False
+        now = time.time()
+        with _state_lock:
+            if int(
+                lifecycle.get("resource_session_path_failure_generation") or 0
+            ) == failure_generation:
+                last_request_at = lifecycle.get(
+                    "resource_session_path_refresh_last_request_at"
+                )
+                if not isinstance(last_request_at, (int, float)) or (
+                    now - float(last_request_at)
+                    >= _RESOURCE_SESSION_PATH_REFRESH_RETRY_SECONDS
+                ):
+                    # Claim this retry under the peer-scoped lock so parallel
+                    # lanes cannot each send the same discovery request.
+                    lifecycle["resource_session_path_refresh_last_request_at"] = now
+                    retry_request = True
+        if retry_request:
+            try:
+                RNS.Transport.request_path(destination_hash)
+                log(
+                    "[presence_bridge] target=qchat-file-reticulum "
+                    "resource_session_fresh_path_retried "
+                    f"peer={peer_hash} generation={failure_generation}"
+                )
+            except Exception as exc:
+                log(
+                    "[presence_bridge] target=qchat-file-reticulum "
+                    "resource_session_fresh_path_retry_failed "
+                    f"peer={peer_hash} generation={failure_generation} err={exc}"
+                )
+        return False
+    with _state_lock:
+        if int(
+            lifecycle.get("resource_session_path_failure_generation") or 0
+        ) != failure_generation:
+            return False
+        lifecycle["resource_session_path_recovered_generation"] = (
+            failure_generation
+        )
+        for key in (
+            "resource_session_path_refresh_generation",
+            "resource_session_path_refresh_started_at",
+            "resource_session_path_refresh_before",
+            "resource_session_path_refresh_retry_at",
+            "resource_session_path_refresh_last_request_at",
+        ):
+            lifecycle.pop(key, None)
+    log(
+        "[presence_bridge] target=qchat-file-reticulum "
+        "resource_session_fresh_path_resolved "
+        f"peer={peer_hash} generation={failure_generation} "
+        f"after={_format_reticulum_path_snapshot(after)}"
+    )
+    return True
 
 
 def _resource_session_create_link(state: Dict[str, Any], outbound) -> None:
@@ -21579,14 +21803,20 @@ def _resource_session_poll_path(state: Dict[str, Any]) -> None:
         outbound = build_outbound_destination(peer_identity)
         if destination_hash_hex(outbound.hash) != peer_hash:
             raise RuntimeError("Reticulum public key does not match destination hash")
-        allow_refresh = state.get("failed_path_refresh_requested") is not True
-        if allow_refresh and _peer_has_recent_unestablished_link_failure(peer_hash):
-            state["failed_path_refresh_requested"] = True
-        if _request_qchat_file_path(
+        failed_path_ready = _resource_session_failed_path_ready(
             outbound.hash,
             peer_hash,
-            allow_failed_path_refresh=allow_refresh,
-        ):
+        )
+        path_ready = (
+            failed_path_ready
+            if failed_path_ready is not None
+            else _request_qchat_file_path(
+                outbound.hash,
+                peer_hash,
+                allow_failed_path_refresh=True,
+            )
+        )
+        if path_ready:
             state.pop("path_timer", None)
             _resource_session_create_link(state, outbound)
             return
@@ -21594,7 +21824,6 @@ def _resource_session_poll_path(state: Dict[str, Any]) -> None:
             _resource_session_fail_state(
                 state,
                 "resource_session_path_timeout",
-                refresh_path=True,
             )
             return
     except Exception as exc:
@@ -21873,6 +22102,34 @@ def on_outgoing_resource_session_established(link) -> None:
         state["activity_generation"] = int(
             state.get("activity_generation") or 0
         ) + 1
+    peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    if _valid_presence_destination_hash_hex(peer_hash):
+        lifecycle = _lifecycle_state_for_peer(peer_hash)
+        if lifecycle is not None:
+            with _state_lock:
+                failure_generation = int(
+                    lifecycle.get("resource_session_path_failure_generation")
+                    or 0
+                )
+                lifecycle["resource_session_path_recovered_generation"] = (
+                    failure_generation
+                )
+                lifecycle["resource_session_path_proven_generation"] = (
+                    failure_generation
+                )
+                for key in (
+                    "resource_session_path_refresh_generation",
+                    "resource_session_path_refresh_started_at",
+                    "resource_session_path_refresh_before",
+                    "resource_session_path_refresh_retry_at",
+                    "resource_session_path_refresh_last_request_at",
+                ):
+                    lifecycle.pop(key, None)
+        _note_peer_direct_activity(
+            peer_hash,
+            "tx",
+            "resource_session_established",
+        )
     session_key = str(state.get("sessionKey") or "")
     with _state_lock:
         _resource_session_failures_by_key.pop(session_key, None)

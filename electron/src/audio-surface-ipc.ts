@@ -38,6 +38,7 @@ export type AudioSurfaceCommand =
     }
   | {
       type: 'start-direct-voice-receive';
+      ownerId: string;
       roomId: string;
       peerAddress: string;
       roomKey: ArrayBuffer | Uint8Array;
@@ -47,13 +48,15 @@ export type AudioSurfaceCommand =
     }
   | {
       type: 'update-direct-voice-receive';
+      ownerId: string;
       outputDeviceId?: string | null;
       hearCall?: boolean;
       profile?: 'low-latency' | 'high-stability';
     }
-  | { type: 'stop-direct-voice-receive' }
+  | { type: 'stop-direct-voice-receive'; ownerId: string }
   | {
       type: 'start-direct-voice-rtc';
+      ownerId: string;
       roomId: string;
       peerAddress: string;
       initiator: boolean;
@@ -69,6 +72,7 @@ export type AudioSurfaceCommand =
     }
   | {
       type: 'apply-direct-voice-rtc-signal';
+      ownerId: string;
       roomId: string;
       peerAddress: string;
       signal:
@@ -92,9 +96,10 @@ export type AudioSurfaceCommand =
             generation: string;
           };
     }
-  | { type: 'stop-direct-voice-rtc' }
+  | { type: 'stop-direct-voice-rtc'; ownerId: string }
   | {
       type: 'start-direct-voice-media';
+      ownerId: string;
       roomId: string;
       peerAddress: string;
       localAddress: string;
@@ -107,13 +112,14 @@ export type AudioSurfaceCommand =
     }
   | {
       type: 'update-direct-voice-media';
+      ownerId: string;
       inputDeviceId?: string | null;
       outputDeviceId?: string | null;
       muted?: boolean;
       hearCall?: boolean;
       profile?: 'low-latency' | 'high-stability';
     }
-  | { type: 'stop-direct-voice-media' }
+  | { type: 'stop-direct-voice-media'; ownerId: string }
   | { type: 'clear-join-error' };
 
 export type AudioSurfaceResponseLike = {
@@ -154,11 +160,13 @@ export type AudioSurfaceEvent =
     }
   | {
       type: 'direct-voice-media-ready';
+      ownerId: string;
       roomId: string;
       peerAddress: string;
     }
   | {
       type: 'direct-voice-rtc-signal';
+      ownerId: string;
       roomId: string;
       peerAddress: string;
       signal:
@@ -184,12 +192,14 @@ export type AudioSurfaceEvent =
     }
   | {
       type: 'direct-voice-rtc-state';
+      ownerId: string;
       roomId: string;
       peerAddress: string;
       state: 'connecting' | 'open' | 'closed' | 'failed';
     }
   | {
       type: 'direct-voice-rtc-diagnostic';
+      ownerId: string;
       roomId: string;
       peerAddress: string;
       stage: string;

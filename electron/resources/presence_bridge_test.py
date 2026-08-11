@@ -4656,7 +4656,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
 
         self.assertTrue(receipt.response.closed)
 
-    def test_establishment_timeout_fails_jobs_once_and_refreshes_path(self):
+    def test_establishment_timeout_fails_jobs_once_and_marks_path_for_refresh(self):
         state, link = self.session(established=False)
         state["link_created_at"] = time.time() - 31
         jobs = [
@@ -4671,14 +4671,17 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         state["pending_jobs"] = jobs
         with mock.patch.object(
             self.bridge,
-            "_force_overlay_peer_path_refresh",
-        ) as refresh, mock.patch.object(
+            "_resource_session_note_failed_link_path",
+        ) as note_path_failure, mock.patch.object(
             self.bridge,
             "_teardown_reticulum_link_bounded",
         ) as teardown, mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
             self.bridge._resource_session_open_timeout(state)
 
-        refresh.assert_called_once()
+        note_path_failure.assert_called_once_with(
+            state,
+            "resource_session_establish_timeout",
+        )
         teardown.assert_called_once_with(link, mock.ANY)
         self.assertTrue(all(job["completed"] for job in jobs))
         self.assertEqual(
@@ -4686,6 +4689,213 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             2,
         )
         self.assertNotIn(state["sessionKey"], self.bridge._resource_sessions_by_key)
+
+    def test_established_idle_peer_close_does_not_poison_path_or_backoff(self):
+        state, link = self.session(established=True)
+        link.teardown_reason = RNS.Link.DESTINATION_CLOSED
+
+        with mock.patch.object(
+            self.bridge,
+            "_resource_session_note_failed_link_path",
+        ) as note_path_failure, mock.patch.object(
+            self.bridge,
+            "_resource_session_note_failure",
+        ) as note_session_failure, mock.patch.object(
+            self.bridge,
+            "_resource_session_emit_status",
+        ) as emit_status:
+            self.bridge.on_qchat_file_link_closed(link)
+
+        note_path_failure.assert_not_called()
+        note_session_failure.assert_not_called()
+        emit_status.assert_not_called()
+        self.assertNotIn(state["sessionKey"], self.bridge._resource_sessions_by_key)
+
+    def test_established_timeout_marks_path_stale_without_idle_backoff(self):
+        state, link = self.session(established=True)
+        link.teardown_reason = RNS.Link.TIMEOUT
+
+        with mock.patch.object(
+            self.bridge,
+            "_resource_session_note_failure",
+        ) as note_session_failure:
+            self.bridge.on_qchat_file_link_closed(link)
+
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertEqual(
+            lifecycle["resource_session_path_failure_generation"],
+            1,
+        )
+        note_session_failure.assert_not_called()
+
+    def test_unestablished_peer_close_requires_fresh_path_recovery(self):
+        state, link = self.session(established=False)
+        link.teardown_reason = RNS.Link.TIMEOUT
+
+        self.bridge.on_qchat_file_link_closed(link)
+
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertEqual(
+            lifecycle["resource_session_path_failure_generation"],
+            1,
+        )
+        self.assertEqual(
+            lifecycle["resource_session_path_failure_reason"],
+            "resource_session_link_closed:timeout",
+        )
+
+    def test_failed_resource_path_is_not_used_until_refresh_is_fresh(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["resource_session_path_failure_generation"] = 1
+        stale = {
+            "has_path": True,
+            "timestamp": 10.0,
+            "packet": "stale-packet",
+        }
+        fresh = {
+            "has_path": True,
+            "timestamp": time.time() + 1,
+            "packet": "fresh-packet",
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_path_snapshot",
+            side_effect=[stale, stale, fresh],
+        ), mock.patch.object(
+            self.bridge,
+            "_drop_reticulum_path",
+            return_value=True,
+        ) as drop_path, mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path:
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            self.assertTrue(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            # Other pooled lanes can share the newly resolved path without
+            # dropping it again while the first Link is still establishing.
+            self.assertTrue(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+
+        drop_path.assert_called_once_with(destination_hash)
+        request_path.assert_called_once_with(destination_hash)
+        self.assertEqual(
+            lifecycle["resource_session_path_recovered_generation"],
+            1,
+        )
+
+    def test_unresolved_fresh_path_discovery_retries_once_per_interval(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["resource_session_path_failure_generation"] = 1
+        stale = {
+            "has_path": True,
+            "timestamp": 10.0,
+            "packet": "stale-packet",
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_path_snapshot",
+            return_value=stale,
+        ), mock.patch.object(
+            self.bridge,
+            "_drop_reticulum_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path:
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            self.assertEqual(request_path.call_count, 1)
+
+            lifecycle["resource_session_path_refresh_last_request_at"] = (
+                time.time()
+                - self.bridge._RESOURCE_SESSION_PATH_REFRESH_RETRY_SECONDS
+                - 0.1
+            )
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+
+        self.assertEqual(request_path.call_count, 2)
+
+    def test_failed_path_request_uses_short_bounded_retry_backoff(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["resource_session_path_failure_generation"] = 1
+        stale = {
+            "has_path": True,
+            "timestamp": 10.0,
+            "packet": "stale-packet",
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_path_snapshot",
+            return_value=stale,
+        ), mock.patch.object(
+            self.bridge,
+            "_drop_reticulum_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+            side_effect=RuntimeError("discovery unavailable"),
+        ) as request_path:
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            self.assertGreater(
+                lifecycle["resource_session_path_refresh_retry_at"],
+                time.time(),
+            )
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+
+        self.assertEqual(request_path.call_count, 1)
 
     def test_session_failure_requeues_jobs_that_were_never_dispatched(self):
         failed, failed_link = self.session(lane="bulk", slot=0)

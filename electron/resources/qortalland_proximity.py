@@ -102,6 +102,7 @@ class QortalLandProximityVoiceManager:
         resolve_link_peer_hash: Optional[Callable[[Any], str]] = None,
         identify_link: Optional[Callable[[Any], None]] = None,
         path_available: Optional[Callable[[bytes], bool]] = None,
+        refresh_path: Optional[Callable[[str, str], bool]] = None,
     ):
         self.emit = emit
         self.send_binary = send_binary
@@ -119,6 +120,7 @@ class QortalLandProximityVoiceManager:
         self.resolve_link_peer_hash = resolve_link_peer_hash
         self.identify_link = identify_link
         self.path_available = path_available or RNS.Transport.has_path
+        self.refresh_path = refresh_path
         self.lock = threading.RLock()
         self.context: Optional[Dict[str, Any]] = None
         self.enabled = False
@@ -789,13 +791,27 @@ class QortalLandProximityVoiceManager:
                 now = time.time()
                 if now - self.path_requested_at.get(peer_key, 0) >= 1.0:
                     self.path_requested_at[peer_key] = now
-                    RNS.Transport.request_path(destination_hash)
+                    refreshed = False
+                    if self.refresh_path is not None:
+                        try:
+                            refreshed = self.refresh_path(
+                                peer_hash,
+                                "proximity_link_no_path",
+                            ) is True
+                        except Exception as exc:
+                            self.log(
+                                "[qortalland-proximity] path refresh failed "
+                                f"peer={address[:8]} code={str(exc)[:80]}"
+                            )
+                    if not refreshed:
+                        RNS.Transport.request_path(destination_hash)
                     self._trace("candidate_requesting_path", address, throttle=5.0)
                 return
             state = {
                 "peerKey": peer_key, "address": address, "sessionId": session_id,
                 "peerHash": peer_hash, "distance": distance,
                 "phase": "opening", "createdAt": time.time(), "lastActivity": time.time(),
+                "outbound": True,
                 "authenticated": False, "muted": False, "volume": 1.0,
                 "sourceId": self._source_id(peer_key), "txSequence": 0,
                 "sendLock": threading.RLock(),
@@ -881,6 +897,7 @@ class QortalLandProximityVoiceManager:
                 "peerKey": peer_key, "address": address, "sessionId": session_id,
                 "peerHash": str(remote.get("fields", {}).get("destinationHash") or ""),
                 "distance": self._distance_to(peer_key), "phase": "connected", "link": link,
+                "outbound": False,
                 "linkId": bytes(self.link_id_bytes(link) or b""), "authenticated": True,
                 "createdAt": time.time(), "lastActivity": time.time(), "muted": False,
                 "volume": 1.0, "sourceId": self._source_id(peer_key), "txSequence": 0,
@@ -1345,10 +1362,12 @@ class QortalLandProximityVoiceManager:
             age = now - float(state.get("lastActivity") or state.get("createdAt") or now)
             if state.get("authenticated") and age > LINK_DEAD_AFTER:
                 self._schedule_retry(peer_key)
+                self._refresh_failed_link_path(state, "proximity_link_timeout")
                 self._close_peer(peer_key, "heartbeat_timeout")
                 continue
             if not state.get("authenticated") and now - float(state.get("createdAt") or now) > LINK_TIMEOUT:
                 self._schedule_retry(peer_key)
+                self._refresh_failed_link_path(state, "proximity_link_timeout")
                 self._close_peer(peer_key, "establishment_timeout")
                 continue
             if (
@@ -1387,11 +1406,28 @@ class QortalLandProximityVoiceManager:
                 if self.links.get(peer_key, {}).get("link") is link:
                     self.links.pop(peer_key, None)
             self._schedule_retry(peer_key)
+            self._refresh_failed_link_path(state, "proximity_link_attempt_closed")
             self._trace("link_closed", state["address"], "callback", throttle=1.0)
             self.emit("PROXIMITY_PEER_STATE", {
                 "peerKey": peer_key, "address": state["address"], "sessionId": state["sessionId"],
                 "state": "disconnected", "sourceId": state.get("sourceId", 0),
             })
+
+    def _refresh_failed_link_path(self, state: Dict[str, Any], reason: str) -> bool:
+        """Invalidate only failed outbound routes; inbound/intentional closes do not churn paths."""
+        if state.get("outbound") is not True or self.refresh_path is None:
+            return False
+        peer_hash = str(state.get("peerHash") or "").strip().lower()
+        if len(peer_hash) != 32 or any(char not in "0123456789abcdef" for char in peer_hash):
+            return False
+        try:
+            return self.refresh_path(peer_hash, reason) is True
+        except Exception as exc:
+            self.log(
+                "[qortalland-proximity] failed-link path refresh failed "
+                f"peer={str(state.get('address') or '')[:8]} code={str(exc)[:80]}"
+            )
+            return False
 
     def _close_peer(self, peer_key: str, reason: str) -> None:
         state = self.links.pop(peer_key, None)

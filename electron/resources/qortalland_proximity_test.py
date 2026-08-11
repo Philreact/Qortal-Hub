@@ -234,6 +234,55 @@ class ProximityVoiceManagerTest(unittest.TestCase):
         request_path.assert_not_called()
         self.assertEqual(self.manager.links[peer_key]["link"], link)
 
+    def test_failed_outbound_link_refreshes_path_before_retry(self):
+        peer_hash = "11" * 16
+        peer_key = "Q-remote:land-remote"
+        link = object()
+        refreshes = []
+        self.manager.refresh_path = (
+            lambda peer, reason: refreshes.append((peer, reason)) or False
+        )
+        self.manager.links[peer_key] = {
+            "peerKey": peer_key,
+            "address": "Q-remote",
+            "sessionId": "land-remote",
+            "peerHash": peer_hash,
+            "outbound": True,
+            "link": link,
+        }
+        self.manager.links_by_object[id(link)] = peer_key
+
+        self.manager._link_closed(link)
+
+        self.assertEqual(
+            refreshes,
+            [(peer_hash, "proximity_link_attempt_closed")],
+        )
+        self.assertNotIn(peer_key, self.manager.links)
+        self.assertIn(peer_key, self.manager.link_retry)
+
+    def test_failed_inbound_link_does_not_replace_shared_path(self):
+        peer_hash = "11" * 16
+        peer_key = "Q-remote:land-remote"
+        link = object()
+        refreshes = []
+        self.manager.refresh_path = (
+            lambda peer, reason: refreshes.append((peer, reason)) or True
+        )
+        self.manager.links[peer_key] = {
+            "peerKey": peer_key,
+            "address": "Q-remote",
+            "sessionId": "land-remote",
+            "peerHash": peer_hash,
+            "outbound": False,
+            "link": link,
+        }
+        self.manager.links_by_object[id(link)] = peer_key
+
+        self.manager._link_closed(link)
+
+        self.assertEqual(refreshes, [])
+
     def test_malformed_proximity_classifier_is_consumed_and_closed(self):
         class Link:
             closed = False

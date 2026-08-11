@@ -1047,6 +1047,8 @@ export class GroupCallAudioEngineRuntime {
   private uiActive = false;
   private inputDeviceId: string | null = null;
   private outputDeviceId: string | null = null;
+  /** Exact renderer call lifecycle that owns the singleton direct-call slot. */
+  private directVoiceOwnerId = '';
   private directVoiceRoomId = '';
   private directVoicePeerAddress = '';
   private directVoiceLocalAddress = '';
@@ -1361,6 +1363,7 @@ export class GroupCallAudioEngineRuntime {
     this.stopRendererThreadMonitor();
     this.closeAudioDataPlane('runtime-dispose');
     this.closeDirectVoiceRtc('runtime-dispose');
+    this.directVoiceOwnerId = '';
     void this.senderEngine.stop();
     void this.directVoiceSenderEngine.stop();
     void this.receiveEngine.dispose();
@@ -1504,6 +1507,9 @@ export class GroupCallAudioEngineRuntime {
         case 'start-direct-voice-receive':
           return await this.startDirectVoiceReceive(command);
         case 'update-direct-voice-receive':
+          if (!this.isDirectVoiceOwner(command.ownerId)) {
+            return { ok: true, payload: { ignored: 'stale-owner' } };
+          }
           if (this.directVoiceReceiveEngine) {
             await this.directVoiceReceiveEngine.configure({
               ...(command.outputDeviceId !== undefined
@@ -1517,25 +1523,37 @@ export class GroupCallAudioEngineRuntime {
           }
           return { ok: true };
         case 'stop-direct-voice-receive':
+          if (!this.isDirectVoiceOwner(command.ownerId)) {
+            return { ok: true, payload: { ignored: 'stale-owner' } };
+          }
           await this.stopDirectVoiceReceive();
+          this.releaseDirectVoiceOwnerIfIdle();
           return { ok: true, payload: { idle: this.isRuntimeIdle() } };
         case 'start-direct-voice-rtc':
           return await this.startDirectVoiceRtc(command);
         case 'apply-direct-voice-rtc-signal':
           return await this.applyDirectVoiceRtcSignal(command);
         case 'stop-direct-voice-rtc':
+          if (!this.isDirectVoiceOwner(command.ownerId)) {
+            return { ok: true, payload: { ignored: 'stale-owner' } };
+          }
           this.closeDirectVoiceRtc('host-stop');
           if (!this.directVoiceRoomKey && !this.directVoiceLocalAddress) {
             this.directVoiceRoomId = '';
             this.directVoicePeerAddress = '';
           }
+          this.releaseDirectVoiceOwnerIfIdle();
           return { ok: true, payload: { idle: this.isRuntimeIdle() } };
         case 'start-direct-voice-media':
           return await this.startDirectVoiceMedia(command);
         case 'update-direct-voice-media':
           return await this.updateDirectVoiceMedia(command);
         case 'stop-direct-voice-media':
+          if (!this.isDirectVoiceOwner(command.ownerId)) {
+            return { ok: true, payload: { ignored: 'stale-owner' } };
+          }
           await this.stopDirectVoiceMedia();
+          this.releaseDirectVoiceOwnerIfIdle();
           return { ok: true, payload: { idle: this.isRuntimeIdle() } };
         case 'clear-join-error':
           this.snapshot = { ...this.snapshot, gcallJoinError: null };
@@ -1561,6 +1579,46 @@ export class GroupCallAudioEngineRuntime {
     }
   }
 
+  private claimDirectVoiceOwner(
+    ownerIdInput: string
+  ): AudioSurfaceResponse | null {
+    const ownerId = ownerIdInput.trim();
+    if (!ownerId) {
+      return { ok: false, error: 'invalid-direct-voice-owner' };
+    }
+    if (this.directVoiceOwnerId && this.directVoiceOwnerId !== ownerId) {
+      if (this.hasActiveDirectVoiceSession()) {
+        return { ok: false, error: 'direct-voice-runtime-in-use' };
+      }
+      // Recover from an interrupted start whose renderer disappeared before
+      // it could send its owner-scoped teardown.
+      this.directVoiceOwnerId = '';
+    }
+    this.directVoiceOwnerId = ownerId;
+    return null;
+  }
+
+  private isDirectVoiceOwner(ownerIdInput: string): boolean {
+    const ownerId = ownerIdInput.trim();
+    return Boolean(ownerId) && ownerId === this.directVoiceOwnerId;
+  }
+
+  private releaseDirectVoiceOwnerIfIdle(): void {
+    if (!this.hasActiveDirectVoiceSession()) {
+      this.directVoiceOwnerId = '';
+    }
+  }
+
+  private hasActiveDirectVoiceSession(): boolean {
+    return Boolean(
+      this.directVoiceRtcTransport ||
+      this.directVoiceRoomId ||
+      this.directVoicePeerAddress ||
+      this.directVoiceLocalAddress ||
+      this.directVoiceRoomKey
+    );
+  }
+
   private async startDirectVoiceReceive(
     command: Extract<
       AudioSurfaceCommand,
@@ -1573,6 +1631,8 @@ export class GroupCallAudioEngineRuntime {
     if (!roomId || !peerAddress || !key) {
       return { ok: false, error: 'invalid-direct-voice-receive-config' };
     }
+    const ownerError = this.claimDirectVoiceOwner(command.ownerId);
+    if (ownerError) return ownerError;
     if (
       this.directVoiceRoomId &&
       (this.directVoiceRoomId !== roomId ||
@@ -1606,8 +1666,12 @@ export class GroupCallAudioEngineRuntime {
     if (!roomId || !peerAddress) {
       return { ok: false, error: 'invalid-direct-voice-rtc-config' };
     }
+    const ownerError = this.claimDirectVoiceOwner(command.ownerId);
+    if (ownerError) return ownerError;
+    const ownerId = command.ownerId.trim();
     if (isReticulumCallEnabled) {
       this.closeDirectVoiceRtc('reticulum-call-enabled');
+      this.releaseDirectVoiceOwnerIfIdle();
       return { ok: true, payload: { transport: 'reticulum' } };
     }
     if (
@@ -1672,6 +1736,8 @@ export class GroupCallAudioEngineRuntime {
         localStream,
         onSignal: (signal) => {
           if (
+            lifecycleGeneration !== this.directVoiceRtcLifecycleGeneration ||
+            this.directVoiceOwnerId !== ownerId ||
             this.directVoiceRoomId !== roomId ||
             this.directVoicePeerAddress !== peerAddress
           ) {
@@ -1679,6 +1745,7 @@ export class GroupCallAudioEngineRuntime {
           }
           this.emit({
             type: 'direct-voice-rtc-signal',
+            ownerId,
             roomId,
             peerAddress,
             signal,
@@ -1686,6 +1753,8 @@ export class GroupCallAudioEngineRuntime {
         },
         onRemoteStream: (stream) => {
           if (
+            lifecycleGeneration !== this.directVoiceRtcLifecycleGeneration ||
+            this.directVoiceOwnerId !== ownerId ||
             this.directVoiceRoomId !== roomId ||
             this.directVoicePeerAddress !== peerAddress
           ) {
@@ -1701,6 +1770,12 @@ export class GroupCallAudioEngineRuntime {
           });
         },
         onState: (state) => {
+          if (
+            lifecycleGeneration !== this.directVoiceRtcLifecycleGeneration ||
+            this.directVoiceOwnerId !== ownerId
+          ) {
+            return;
+          }
           const projected =
             state === 'open'
               ? this.directVoiceRtcMediaReadyEmitted
@@ -1715,6 +1790,7 @@ export class GroupCallAudioEngineRuntime {
                   : 'failed';
           this.emit({
             type: 'direct-voice-rtc-state',
+            ownerId,
             roomId,
             peerAddress,
             state: projected,
@@ -1722,6 +1798,8 @@ export class GroupCallAudioEngineRuntime {
         },
         onDiagnostic: (stage, detail) => {
           if (
+            lifecycleGeneration !== this.directVoiceRtcLifecycleGeneration ||
+            this.directVoiceOwnerId !== ownerId ||
             this.directVoiceRoomId !== roomId ||
             this.directVoicePeerAddress !== peerAddress
           ) {
@@ -1729,6 +1807,7 @@ export class GroupCallAudioEngineRuntime {
           }
           this.emit({
             type: 'direct-voice-rtc-diagnostic',
+            ownerId,
             roomId,
             peerAddress,
             stage,
@@ -1749,6 +1828,7 @@ export class GroupCallAudioEngineRuntime {
       return { ok: true, payload: { transport: 'webrtc-native' } };
     } catch (error) {
       this.closeDirectVoiceRtc('start-failed');
+      this.releaseDirectVoiceOwnerIfIdle();
       return {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
@@ -1764,6 +1844,7 @@ export class GroupCallAudioEngineRuntime {
   ): Promise<AudioSurfaceResponse> {
     if (isReticulumCallEnabled) return { ok: true };
     if (
+      !this.isDirectVoiceOwner(command.ownerId) ||
       !this.directVoiceRtcTransport ||
       command.roomId !== this.directVoiceRoomId ||
       command.peerAddress !== this.directVoicePeerAddress
@@ -1827,12 +1908,14 @@ export class GroupCallAudioEngineRuntime {
         this.directVoiceRtcMediaReadyEmitted = true;
         this.emit({
           type: 'direct-voice-media-ready',
+          ownerId: this.directVoiceOwnerId,
           roomId: this.directVoiceRoomId,
           peerAddress: this.directVoicePeerAddress,
         });
         if (this.directVoiceRtcTransport?.isOpen()) {
           this.emit({
             type: 'direct-voice-rtc-state',
+            ownerId: this.directVoiceOwnerId,
             roomId: this.directVoiceRoomId,
             peerAddress: this.directVoicePeerAddress,
             state: 'open',
@@ -1874,6 +1957,8 @@ export class GroupCallAudioEngineRuntime {
     if (!roomId || !peerAddress || !localAddress || !key) {
       return { ok: false, error: 'invalid-direct-voice-media-config' };
     }
+    const ownerError = this.claimDirectVoiceOwner(command.ownerId);
+    if (ownerError) return ownerError;
 
     const sessionChanged =
       this.directVoiceRoomId &&
@@ -1923,6 +2008,7 @@ export class GroupCallAudioEngineRuntime {
     if (typeof senderDiagnostics.unsupportedReason === 'string') {
       const unsupportedReason = senderDiagnostics.unsupportedReason;
       await this.stopDirectVoiceMedia();
+      this.releaseDirectVoiceOwnerIfIdle();
       return { ok: false, error: unsupportedReason };
     }
     this.recordDiagEvent('direct-voice-media-started', {
@@ -1936,6 +2022,9 @@ export class GroupCallAudioEngineRuntime {
   private async updateDirectVoiceMedia(
     command: Extract<AudioSurfaceCommand, { type: 'update-direct-voice-media' }>
   ): Promise<AudioSurfaceResponse> {
+    if (!this.isDirectVoiceOwner(command.ownerId)) {
+      return { ok: true, payload: { ignored: 'stale-owner' } };
+    }
     if (!this.directVoiceRoomId) {
       return { ok: true };
     }
@@ -5571,6 +5660,7 @@ export class GroupCallAudioEngineRuntime {
         await this.stopDirectVoiceReceive();
       }
     }
+    this.directVoiceOwnerId = '';
     this.closeAudioDataPlane('logout');
     this.recordDiagEvent('logout-cleanup-complete', {
       groupRoomId,
@@ -6598,6 +6688,7 @@ export class GroupCallAudioEngineRuntime {
         this.directVoiceMediaReadyEmitted = true;
         this.emit({
           type: 'direct-voice-media-ready',
+          ownerId: this.directVoiceOwnerId,
           roomId: this.directVoiceRoomId,
           peerAddress: this.directVoicePeerAddress,
         });

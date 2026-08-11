@@ -80,6 +80,39 @@ describe('useVoiceCall', () => {
     vi.restoreAllMocks();
   });
 
+  it('does not let an idle hook teardown stop another direct call', async () => {
+    const sendCommand = vi.fn(async () => ({ ok: true }));
+    Object.assign(window as any, {
+      call: {
+        onEvent: vi.fn(() => vi.fn()),
+        setLocalAddresses: vi.fn(async () => ({ success: true })),
+      },
+      groupCall: { onEvent: vi.fn(() => vi.fn()) },
+      audioSurface: {
+        sendCommand,
+        onEvent: vi.fn(() => vi.fn()),
+      },
+      electronAPI: electronApiWithGoodReadiness(),
+      sendMessage: vi.fn(async () => ({ signature: 'sig' })),
+    });
+    const store = createStore();
+    store.set(userInfoAtom, { address: 'Qme', publicKey: 'pub' });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <Provider store={store}>{children}</Provider>
+    );
+    const { unmount } = renderHook(() => useVoiceCall(), { wrapper });
+    sendCommand.mockClear();
+
+    unmount();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      sendCommand.mock.calls.filter(([command]) =>
+        String(command.type).startsWith('stop-direct-voice-')
+      )
+    ).toHaveLength(0);
+  });
+
   it('initiates a direct call and starts outgoing ringtone audio', async () => {
     const resume = vi.fn(async () => {});
     class MockAudioContext {
@@ -451,6 +484,14 @@ describe('useVoiceCall', () => {
         }),
       })
     );
+    const rtcStartCommand = audioSurfaceSendCommand.mock.calls.find(
+      ([command]) => command.type === 'start-direct-voice-rtc'
+    )?.[0];
+    const rtcSignalCommand = audioSurfaceSendCommand.mock.calls.find(
+      ([command]) => command.type === 'apply-direct-voice-rtc-signal'
+    )?.[0];
+    expect(rtcStartCommand?.ownerId).toMatch(/^dvc:[A-Za-z0-9_-]{16}$/);
+    expect(rtcSignalCommand?.ownerId).toBe(rtcStartCommand?.ownerId);
     expect(result.current.screenShareSupported).toBe(true);
     await waitFor(() =>
       expect(sendRtcSignal).toHaveBeenCalledWith(

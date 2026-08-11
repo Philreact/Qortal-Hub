@@ -489,6 +489,8 @@ export function useVoiceCall(
   );
 
   const callIdRef = useRef<string | null>(null);
+  const directVoiceOwnerCallIdRef = useRef<string | null>(null);
+  const directVoiceOwnerIdRef = useRef<string | null>(null);
   const callStateRef = useRef<CallState>('idle');
   const incomingCallRef = useRef<IncomingCall | null>(null);
   const blockedAddressesRef = useRef(blockedAddresses);
@@ -651,6 +653,19 @@ export function useVoiceCall(
     new Set()
   );
 
+  const ensureDirectVoiceOwnerId = useCallback((): string | null => {
+    const callId = callIdRef.current;
+    if (!callId) return null;
+    if (
+      directVoiceOwnerCallIdRef.current !== callId ||
+      !directVoiceOwnerIdRef.current
+    ) {
+      directVoiceOwnerCallIdRef.current = callId;
+      directVoiceOwnerIdRef.current = `dvc:${createDirectVoiceRtcSignalId()}`;
+    }
+    return directVoiceOwnerIdRef.current;
+  }, []);
+
   const updateCallState = useCallback((nextState: CallState) => {
     callStateRef.current = nextState;
     setCallState(nextState);
@@ -737,16 +752,18 @@ export function useVoiceCall(
   );
 
   const startDirectVoiceReceiveOnAudioSurface = useCallback(async () => {
+    const ownerId = ensureDirectVoiceOwnerId();
     const roomId = dmRoomIdRef.current;
     const peer = peerAddressRef.current;
     const roomKey = roomKeyRef.current;
-    if (!window.audioSurface || !roomId || !peer || !roomKey) {
+    if (!window.audioSurface || !ownerId || !roomId || !peer || !roomKey) {
       dmReceiveOnAudioSurfaceRef.current = false;
       return false;
     }
     const keyBuffer = roomKey.slice().buffer as ArrayBuffer;
     const response = await window.audioSurface.sendCommand({
       type: 'start-direct-voice-receive',
+      ownerId,
       roomId,
       peerAddress: peer,
       roomKey: keyBuffer,
@@ -761,14 +778,16 @@ export function useVoiceCall(
       });
     }
     return response.ok === true;
-  }, []);
+  }, [ensureDirectVoiceOwnerId]);
 
   const applyDirectVoiceRtcSignalOnAudioSurface = useCallback(
     async (signal: DirectVoiceRtcSignal): Promise<boolean> => {
       const roomId = dmRoomIdRef.current;
       const peer = peerAddressRef.current;
+      const ownerId = directVoiceOwnerIdRef.current;
       if (
         !window.audioSurface ||
+        !ownerId ||
         !roomId ||
         !peer ||
         !dmRtcOnAudioSurfaceRef.current
@@ -835,6 +854,7 @@ export function useVoiceCall(
       }
       const response = await window.audioSurface.sendCommand({
         type: 'apply-direct-voice-rtc-signal',
+        ownerId,
         roomId,
         peerAddress: peer,
         signal,
@@ -856,7 +876,8 @@ export function useVoiceCall(
     const startAttempt = (async (): Promise<boolean> => {
       const roomId = dmRoomIdRef.current;
       const peer = peerAddressRef.current;
-      if (!window.audioSurface || !roomId || !peer) return false;
+      const ownerId = ensureDirectVoiceOwnerId();
+      if (!window.audioSurface || !ownerId || !roomId || !peer) return false;
       const lifecycleGeneration = dmRtcLifecycleGenerationRef.current;
       dmRtcOpenRef.current = false;
       let iceServers: RTCIceServer[] = [];
@@ -875,6 +896,7 @@ export function useVoiceCall(
       }
       const response = await window.audioSurface.sendCommand({
         type: 'start-direct-voice-rtc',
+        ownerId,
         roomId,
         peerAddress: peer,
         initiator: isOutboundCallRef.current,
@@ -891,7 +913,7 @@ export function useVoiceCall(
       ) {
         if (response.ok) {
           await window.audioSurface
-            .sendCommand({ type: 'stop-direct-voice-rtc' })
+            .sendCommand({ type: 'stop-direct-voice-rtc', ownerId })
             .catch(() => {});
         }
         return false;
@@ -913,25 +935,32 @@ export function useVoiceCall(
         dmRtcStartPromiseRef.current = null;
       }
     }
-  }, [applyDirectVoiceRtcSignalOnAudioSurface, prefersDirectVoiceWebRtc]);
+  }, [
+    applyDirectVoiceRtcSignalOnAudioSurface,
+    ensureDirectVoiceOwnerId,
+    prefersDirectVoiceWebRtc,
+  ]);
 
-  const stopDirectVoiceRtcOnAudioSurface = useCallback(async () => {
-    dmRtcLifecycleGenerationRef.current += 1;
-    dmRtcSignalSendChainRef.current = Promise.resolve();
-    pendingDirectVoiceRtcSignalsRef.current = [];
-    pendingDirectVoiceLinkSignalsRef.current = [];
-    dmRtcStartPromiseRef.current = null;
-    dmRtcPeerNativeCapabilityCallIdRef.current = null;
-    dmRtcLocalCapabilityRef.current = null;
-    dmRtcOnAudioSurfaceRef.current = false;
-    dmRtcOpenRef.current = false;
-    for (const resolve of dmRtcOpenWaitersRef.current) resolve(false);
-    dmRtcOpenWaitersRef.current.clear();
-    if (!window.audioSurface) return;
-    await window.audioSurface
-      .sendCommand({ type: 'stop-direct-voice-rtc' })
-      .catch(() => {});
-  }, []);
+  const stopDirectVoiceRtcOnAudioSurface = useCallback(
+    async (ownerId = directVoiceOwnerIdRef.current) => {
+      dmRtcLifecycleGenerationRef.current += 1;
+      dmRtcSignalSendChainRef.current = Promise.resolve();
+      pendingDirectVoiceRtcSignalsRef.current = [];
+      pendingDirectVoiceLinkSignalsRef.current = [];
+      dmRtcStartPromiseRef.current = null;
+      dmRtcPeerNativeCapabilityCallIdRef.current = null;
+      dmRtcLocalCapabilityRef.current = null;
+      dmRtcOnAudioSurfaceRef.current = false;
+      dmRtcOpenRef.current = false;
+      for (const resolve of dmRtcOpenWaitersRef.current) resolve(false);
+      dmRtcOpenWaitersRef.current.clear();
+      if (!window.audioSurface || !ownerId) return;
+      await window.audioSurface
+        .sendCommand({ type: 'stop-direct-voice-rtc', ownerId })
+        .catch(() => {});
+    },
+    []
+  );
 
   const sendAuthenticatedDirectVoiceRtcPayload = useCallback(
     async (input: {
@@ -1497,11 +1526,19 @@ export function useVoiceCall(
   );
 
   const startDirectVoiceMediaOnAudioSurface = useCallback(async () => {
+    const ownerId = ensureDirectVoiceOwnerId();
     const roomId = dmRoomIdRef.current;
     const peer = peerAddressRef.current;
     const roomKey = roomKeyRef.current;
     const localAddress = userInfo?.address ?? '';
-    if (!window.audioSurface || !roomId || !peer || !roomKey || !localAddress) {
+    if (
+      !window.audioSurface ||
+      !ownerId ||
+      !roomId ||
+      !peer ||
+      !roomKey ||
+      !localAddress
+    ) {
       dmMediaOnAudioSurfaceRef.current = false;
       return false;
     }
@@ -1509,6 +1546,7 @@ export function useVoiceCall(
     const response = await window.audioSurface
       .sendCommand({
         type: 'start-direct-voice-media',
+        ownerId,
         roomId,
         peerAddress: peer,
         localAddress,
@@ -1531,18 +1569,20 @@ export function useVoiceCall(
       });
     }
     return response.ok === true;
-  }, [userInfo?.address]);
+  }, [ensureDirectVoiceOwnerId, userInfo?.address]);
 
   const updateDirectVoiceMediaOnAudioSurface = useCallback(async () => {
     if (
       (!dmMediaOnAudioSurfaceRef.current && !dmRtcOnAudioSurfaceRef.current) ||
-      !window.audioSurface
+      !window.audioSurface ||
+      !directVoiceOwnerIdRef.current
     ) {
       return;
     }
     await window.audioSurface
       .sendCommand({
         type: 'update-direct-voice-media',
+        ownerId: directVoiceOwnerIdRef.current,
         inputDeviceId: callAudioPrefsRef.current.inputDeviceId ?? null,
         outputDeviceId: callAudioPrefsRef.current.outputDeviceId ?? null,
         muted: isMutedRef.current,
@@ -1552,24 +1592,30 @@ export function useVoiceCall(
       .catch(() => {});
   }, []);
 
-  const stopDirectVoiceMediaOnAudioSurface = useCallback(async () => {
-    if (!dmMediaOnAudioSurfaceRef.current || !window.audioSurface) {
+  const stopDirectVoiceMediaOnAudioSurface = useCallback(
+    async (ownerId = directVoiceOwnerIdRef.current) => {
+      if (!dmMediaOnAudioSurfaceRef.current || !window.audioSurface) {
+        dmMediaOnAudioSurfaceRef.current = false;
+        return;
+      }
       dmMediaOnAudioSurfaceRef.current = false;
       dmReceiveOnAudioSurfaceRef.current = false;
-      return;
-    }
-    dmMediaOnAudioSurfaceRef.current = false;
-    dmReceiveOnAudioSurfaceRef.current = false;
-    await window.audioSurface
-      .sendCommand({ type: 'stop-direct-voice-media' })
-      .catch(() => {});
-  }, []);
+      if (!ownerId) return;
+      await window.audioSurface
+        .sendCommand({ type: 'stop-direct-voice-media', ownerId })
+        .catch(() => {});
+    },
+    []
+  );
 
   const updateDirectVoiceReceiveOnAudioSurface = useCallback(async () => {
-    if (!dmReceiveOnAudioSurfaceRef.current || !window.audioSurface) return;
+    const ownerId = directVoiceOwnerIdRef.current;
+    if (!dmReceiveOnAudioSurfaceRef.current || !window.audioSurface || !ownerId)
+      return;
     await window.audioSurface
       .sendCommand({
         type: 'update-direct-voice-receive',
+        ownerId,
         outputDeviceId: callAudioPrefsRef.current.outputDeviceId ?? null,
         hearCall: hearCallRef.current,
         profile: readGroupCallAudioProfile(),
@@ -1577,19 +1623,23 @@ export function useVoiceCall(
       .catch(() => {});
   }, []);
 
-  const stopDirectVoiceReceiveOnAudioSurface = useCallback(async () => {
-    if (dmMediaOnAudioSurfaceRef.current) {
-      return;
-    }
-    if (!dmReceiveOnAudioSurfaceRef.current || !window.audioSurface) {
+  const stopDirectVoiceReceiveOnAudioSurface = useCallback(
+    async (ownerId = directVoiceOwnerIdRef.current) => {
+      if (dmMediaOnAudioSurfaceRef.current) {
+        return;
+      }
+      if (!dmReceiveOnAudioSurfaceRef.current || !window.audioSurface) {
+        dmReceiveOnAudioSurfaceRef.current = false;
+        return;
+      }
       dmReceiveOnAudioSurfaceRef.current = false;
-      return;
-    }
-    dmReceiveOnAudioSurfaceRef.current = false;
-    await window.audioSurface
-      .sendCommand({ type: 'stop-direct-voice-receive' })
-      .catch(() => {});
-  }, []);
+      if (!ownerId) return;
+      await window.audioSurface
+        .sendCommand({ type: 'stop-direct-voice-receive', ownerId })
+        .catch(() => {});
+    },
+    []
+  );
 
   const resetDmVoiceMediaSession = useCallback(() => {
     metricsRef.current = new GroupCallPerformanceTracker();
@@ -1958,14 +2008,15 @@ export function useVoiceCall(
   }, []);
 
   const teardownReticulumMediaInner = useCallback(async () => {
+    const ownerId = directVoiceOwnerIdRef.current;
     clearDmRoomKeyReplayTimers();
     clearDmRoomKeyRequestTimers();
     await resetScreenShare(false);
     screenShareSupportedRef.current = false;
     setScreenShareSupported(false);
-    await stopDirectVoiceRtcOnAudioSurface();
-    await stopDirectVoiceMediaOnAudioSurface();
-    await stopDirectVoiceReceiveOnAudioSurface();
+    await stopDirectVoiceRtcOnAudioSurface(ownerId);
+    await stopDirectVoiceMediaOnAudioSurface(ownerId);
+    await stopDirectVoiceReceiveOnAudioSurface(ownerId);
     await dmReceiveEngineRef.current?.dispose();
     dmReceiveEngineRef.current = new GroupCallAudioReceiveEngine(() => {});
     await stopCapturePipeline();
@@ -2011,6 +2062,10 @@ export function useVoiceCall(
     resetDmVoiceMediaSession();
     audioModeRef.current = null;
     setAudioMode(null);
+    if (directVoiceOwnerIdRef.current === ownerId) {
+      directVoiceOwnerIdRef.current = null;
+      directVoiceOwnerCallIdRef.current = null;
+    }
   }, [
     clearPendingWorkerJobs,
     clearDmRoomKeyReplayTimers,
@@ -3048,6 +3103,12 @@ export function useVoiceCall(
     return window.audioSurface.onEvent((event) => {
       const roomId = dmRoomIdRef.current;
       const peer = peerAddressRef.current;
+      if (
+        'ownerId' in event &&
+        event.ownerId !== directVoiceOwnerIdRef.current
+      ) {
+        return;
+      }
       if (
         'roomId' in event &&
         'peerAddress' in event &&
