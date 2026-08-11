@@ -193,10 +193,10 @@ _CANDIDATE_FAILURE_LIMIT = 2
 _OVERLAY_DEFAULT_HOPS = 4
 _OVERLAY_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 5.0
 _OVERLAY_LINK_PATH_AWAIT_SECONDS = 2.0
-_OVERLAY_LINK_CACHED_PATH_SETTLE_SECONDS = 1.5
 _DIRECT_LINK_PATH_PROVEN_SECONDS = 30.0
 _DIRECT_ACTIVITY_RECORD_MIN_INTERVAL_SECONDS = 1.0
 _UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS = 30.0
+_LOCAL_PATH_INSTALL_REQUEST_COOLDOWN_SECONDS = 1.0
 _UNESTABLISHED_LINK_PATH_REQUEST_COOLDOWN_SECONDS = 60.0
 _UNESTABLISHED_LINK_HARD_REFRESH_FAILURES = 3
 _UNESTABLISHED_LINK_HARD_REFRESH_COOLDOWN_SECONDS = 5 * 60.0
@@ -7027,19 +7027,31 @@ def _request_path_if_eligible(peer_key: str, h: bytes, nudge_budget: list[int]) 
         log(f"[presence_bridge] target=presence-reticulum request_path_failed peer={peer_key}: {exc}")
 
 
+def _reticulum_local_has_path(destination_hash: bytes) -> bool:
+    """Return whether this bridge process can open an outbound Link now.
+
+    A shared rnsd can know a route before the corresponding announce has been
+    delivered to this client process.  ``RNS.Link`` consults the client's
+    local Transport table, so daemon-only visibility is not sufficient here.
+    """
+    try:
+        return bool(RNS.Transport.has_path(destination_hash))
+    except Exception:
+        return False
+
+
 def _reticulum_has_path(destination_hash: bytes) -> bool:
     """Return path availability from the owner of the active path table.
 
     Local Transport state is authoritative for an embedded Reticulum instance.
     When this bridge is a client of shared rnsd, however, a local miss does not
     mean the daemon has no route. In that case query the daemon through its
-    bounded RPC and briefly cache the answer.
+    bounded RPC and briefly cache the answer.  This broad check is suitable for
+    discovery and diagnostics; use ``_reticulum_local_has_path`` before
+    constructing an outbound ``RNS.Link``.
     """
-    try:
-        if RNS.Transport.has_path(destination_hash):
-            return True
-    except Exception:
-        pass
+    if _reticulum_local_has_path(destination_hash):
+        return True
     reticulum = _reticulum
     if (
         reticulum is None
@@ -7262,12 +7274,18 @@ def _await_fresh_destination_path(
 ) -> tuple[bool, Dict[str, Any]]:
     if timeout_seconds <= 0:
         after = _reticulum_path_snapshot(destination_hash)
-        return _path_snapshot_is_fresh(before, after, refresh_started_at), after
+        return (
+            _path_snapshot_is_fresh(before, after, refresh_started_at)
+            and _reticulum_local_has_path(destination_hash)
+        ), after
     deadline = time.time() + timeout_seconds
     after = _reticulum_path_snapshot(destination_hash)
     while True:
         after = _reticulum_path_snapshot(destination_hash)
-        if _path_snapshot_is_fresh(before, after, refresh_started_at):
+        if (
+            _path_snapshot_is_fresh(before, after, refresh_started_at)
+            and _reticulum_local_has_path(destination_hash)
+        ):
             return True, after
         remaining = deadline - time.time()
         if remaining <= 0:
@@ -7429,15 +7447,16 @@ def _request_fresh_link_path(
     force_refresh: bool,
 ) -> bool:
     peer = str(peer_key or "").strip().lower()
-    had_path = _reticulum_has_path(destination_hash)
-    before = _reticulum_path_snapshot(destination_hash)
+    local_path_ready = _reticulum_local_has_path(destination_hash)
+    had_path = local_path_ready or _reticulum_has_path(destination_hash)
     now = time.time()
-    if had_path and not force_refresh:
+    if local_path_ready and not force_refresh:
         log(
             f"[presence_bridge] target={target} path_ready "
-            f"peer={peer or destination_hash_hex(destination_hash)} source=recent_activity"
+            f"peer={peer or destination_hash_hex(destination_hash)} source=local_transport"
         )
         return True
+    before = _reticulum_path_snapshot(destination_hash)
     if had_path and force_refresh:
         _drop_reticulum_path(destination_hash)
         log(
@@ -7711,9 +7730,16 @@ def _ensure_call_media_path(
     if state.get("destination_hash_hex") != dest_hex:
         state = _reset_call_media_state(peer_hash, destination_hash)
     initial_state = _classify_call_media_path_state(peer_hash, destination_hash)
-    if initial_state == "fresh":
+    if initial_state == "fresh" and _reticulum_local_has_path(destination_hash):
         state["consecutive_timeouts"] = 0
         return initial_state, True
+    if initial_state == "fresh":
+        _transition_call_media_path_state(
+            peer_hash,
+            "stale",
+            f"{reason}:local_path_missing",
+        )
+        initial_state = "stale"
     if initial_state == "stale" and str(state.get("path_state") or "") == "fresh":
         _transition_call_media_path_state(peer_hash, "stale", "fresh_expired")
         initial_state = "stale"
@@ -7777,7 +7803,7 @@ def _ensure_call_media_path(
         if allow_wait and await_seconds > 0:
             resolved = _await_destination_path(destination_hash, await_seconds)
         else:
-            resolved = _reticulum_has_path(destination_hash)
+            resolved = _reticulum_local_has_path(destination_hash)
     if resolved:
         current = str(state.get("path_state") or "unknown")
         if current == "unknown":
@@ -7792,7 +7818,7 @@ def _ensure_call_media_path(
         _mark_audio_queue_state_dirty()
         return str(state.get("path_state") or "fresh"), True
     if not force_refresh_cached_path:
-        resolved = _reticulum_has_path(destination_hash)
+        resolved = _reticulum_local_has_path(destination_hash)
     else:
         resolved = False
     if resolved:
@@ -7828,10 +7854,10 @@ def _ensure_call_media_path(
 
 def _await_destination_path(destination_hash: bytes, timeout_seconds: float) -> bool:
     if timeout_seconds <= 0:
-        return _reticulum_has_path(destination_hash)
+        return _reticulum_local_has_path(destination_hash)
     deadline = time.time() + timeout_seconds
     while True:
-        resolved = _reticulum_has_path(destination_hash)
+        resolved = _reticulum_local_has_path(destination_hash)
         if resolved:
             return True
         remaining = deadline - time.time()
@@ -7852,17 +7878,28 @@ def _request_and_await_destination_path(
 ) -> tuple[bool, bool]:
     before: Optional[Dict[str, Any]] = None
     refresh_started_at = 0.0
-    if _reticulum_has_path(destination_hash):
+    local_path_ready = _reticulum_local_has_path(destination_hash)
+    daemon_or_local_path = local_path_ready or _reticulum_has_path(destination_hash)
+    if daemon_or_local_path:
         if not force_refresh_cached_path:
-            if nudge_cached_path:
-                _nudge_cached_reticulum_path(
-                    destination_hash,
-                    peer_key,
-                    target=target,
-                    reason=f"{log_context}:cached_path_open",
-                    cooldown_seconds=_UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
-                )
-            return True, False
+            if local_path_ready:
+                if nudge_cached_path:
+                    _nudge_cached_reticulum_path(
+                        destination_hash,
+                        peer_key,
+                        target=target,
+                        reason=f"{log_context}:cached_path_open",
+                        cooldown_seconds=_UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
+                    )
+                return True, False
+            requested = _nudge_cached_reticulum_path(
+                destination_hash,
+                peer_key,
+                target=target,
+                reason=f"{log_context}:install_local_path",
+                cooldown_seconds=_LOCAL_PATH_INSTALL_REQUEST_COOLDOWN_SECONDS,
+            )
+            return _await_destination_path(destination_hash, timeout_seconds), requested
         before = _reticulum_path_snapshot(destination_hash)
         _drop_reticulum_path(destination_hash)
         refresh_started_at = time.time()
@@ -7908,28 +7945,29 @@ def _nudge_overlay_link_path(
     await_seconds: float = 0.0,
 ) -> bool:
     peer_key = str(peer_key or "").strip().lower()
-    if _reticulum_has_path(destination_hash):
+    if _reticulum_local_has_path(destination_hash):
         if _peer_has_recent_direct_activity(peer_key):
             return True
-        nudged = _nudge_cached_reticulum_path(
+        _nudge_cached_reticulum_path(
             destination_hash,
             peer_key,
             target="presence-reticulum",
             reason="overlay_link_cached_path_unproven",
             cooldown_seconds=_UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
         )
-        settle_seconds = min(
-            _OVERLAY_LINK_CACHED_PATH_SETTLE_SECONDS,
-            max(0.0, float(await_seconds or 0.0)),
-        )
-        if nudged and settle_seconds > 0:
-            log(
-                "[presence_bridge] target=presence-reticulum "
-                "overlay_link_cached_path_settle "
-                f"peer={peer_key} await={settle_seconds}"
-            )
-            time.sleep(settle_seconds)
         return True
+
+    if _reticulum_has_path(destination_hash):
+        _nudge_cached_reticulum_path(
+            destination_hash,
+            peer_key,
+            target="presence-reticulum",
+            reason="overlay_link_install_local_path",
+            cooldown_seconds=_LOCAL_PATH_INSTALL_REQUEST_COOLDOWN_SECONDS,
+        )
+        if await_seconds > 0:
+            return _await_destination_path(destination_hash, await_seconds)
+        return False
 
     now = time.time()
     st = _peer_lifecycle.get(peer_key) or {}
@@ -7947,6 +7985,7 @@ def _nudge_overlay_link_path(
                 destination_hash,
                 await_seconds,
                 log_context=f"overlay_link_path peer={peer_key}",
+                peer_key=peer_key,
             )
             if requested:
                 if peer_key not in _peer_lifecycle:
@@ -8749,7 +8788,7 @@ def _ensure_qortalland_game_manager() -> Optional[QortalLandGameManager]:
             resolve_link_peer_hash=_qortalland_game_link_peer_hash,
             local_destination_hash=_qortalland_local_destination_hash,
             identify_link=_identify_qortalland_private_link,
-            path_available=_reticulum_has_path,
+            path_available=_reticulum_local_has_path,
         )
     return _qortalland_game_manager
 
@@ -10246,6 +10285,20 @@ def _create_overlay_migration_candidate(
             return None
     outbound = build_outbound_destination(peer_identity)
     if destination_hash_hex(outbound.hash) != peer_key:
+        return None
+    path_ready, _requested = _request_and_await_destination_path(
+        outbound.hash,
+        _OVERLAY_LINK_PATH_AWAIT_SECONDS,
+        log_context=f"overlay_route_migration peer={peer_key}",
+        nudge_cached_path=True,
+        peer_key=peer_key,
+        target="presence-reticulum",
+    )
+    if not path_ready:
+        log(
+            "[presence_bridge] target=presence-reticulum "
+            f"overlay_route_migration_deferred_no_local_path peer={peer_key}"
+        )
         return None
     link_id = str(uuid.uuid4())
     link = RNS.Link(
@@ -13545,7 +13598,9 @@ def _request_qchat_file_path(
     *,
     allow_failed_path_refresh: bool = True,
 ) -> bool:
-    if _reticulum_has_path(destination_hash):
+    local_path_ready = _reticulum_local_has_path(destination_hash)
+    daemon_or_local_path = local_path_ready or _reticulum_has_path(destination_hash)
+    if daemon_or_local_path:
         if (
             allow_failed_path_refresh
             and _peer_has_recent_unestablished_link_failure(peer_hash)
@@ -13562,10 +13617,18 @@ def _request_qchat_file_path(
             destination_hash,
             peer_hash,
             target="qchat-file-reticulum",
-            reason="qchat_file_link_open_cached_path",
-            cooldown_seconds=_UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
+            reason=(
+                "qchat_file_link_open_cached_path"
+                if local_path_ready
+                else "qchat_file_link_install_local_path"
+            ),
+            cooldown_seconds=(
+                _UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS
+                if local_path_ready
+                else _LOCAL_PATH_INSTALL_REQUEST_COOLDOWN_SECONDS
+            ),
         )
-        return True
+        return local_path_ready
     return _request_fresh_link_path(
         destination_hash,
         peer_hash,
@@ -21610,6 +21673,7 @@ def _resource_session_failed_path_ready(
     lifecycle = _lifecycle_state_for_peer(peer_hash)
     if lifecycle is None:
         return None
+    recovered_path_needs_local_install = False
     with _state_lock:
         failure_generation = int(
             lifecycle.get("resource_session_path_failure_generation") or 0
@@ -21626,19 +21690,29 @@ def _resource_session_failed_path_ready(
             # A fresh path has been discovered for this failure generation.
             # Let parallel lanes share it while the first Link establishes;
             # do not fall through to the generic stale-path recovery again.
-            return True
-        refresh_generation = int(
-            lifecycle.get("resource_session_path_refresh_generation") or 0
-        )
-        refresh_started_at = lifecycle.get(
-            "resource_session_path_refresh_started_at"
-        )
-        before = lifecycle.get("resource_session_path_refresh_before")
-        start_refresh = (
-            refresh_generation != failure_generation
-            or not isinstance(refresh_started_at, (int, float))
-            or not isinstance(before, dict)
-        )
+            # The client-local path can still disappear independently of the
+            # shared daemon's route, so it must remain locally Link-ready.
+            if _reticulum_local_has_path(destination_hash):
+                return True
+            recovered_path_needs_local_install = True
+        if recovered_path_needs_local_install:
+            refresh_generation = failure_generation
+            refresh_started_at = None
+            before = None
+            start_refresh = False
+        else:
+            refresh_generation = int(
+                lifecycle.get("resource_session_path_refresh_generation") or 0
+            )
+            refresh_started_at = lifecycle.get(
+                "resource_session_path_refresh_started_at"
+            )
+            before = lifecycle.get("resource_session_path_refresh_before")
+            start_refresh = (
+                refresh_generation != failure_generation
+                or not isinstance(refresh_started_at, (int, float))
+                or not isinstance(before, dict)
+            )
         retry_at = lifecycle.get("resource_session_path_refresh_retry_at")
         if start_refresh and isinstance(retry_at, (int, float)):
             if float(retry_at) > time.time():
@@ -21657,6 +21731,16 @@ def _resource_session_failed_path_ready(
                 refresh_started_at
             )
             lifecycle.pop("resource_session_path_refresh_retry_at", None)
+
+    if recovered_path_needs_local_install:
+        _nudge_cached_reticulum_path(
+            destination_hash,
+            peer_hash,
+            target="qchat-file-reticulum",
+            reason="resource_session_reinstall_local_path",
+            cooldown_seconds=_LOCAL_PATH_INSTALL_REQUEST_COOLDOWN_SECONDS,
+        )
+        return False
 
     if start_refresh:
         dropped = _drop_reticulum_path(destination_hash)
@@ -21693,10 +21777,13 @@ def _resource_session_failed_path_ready(
         return False
 
     after = _reticulum_path_snapshot(destination_hash)
-    if not _path_snapshot_is_fresh(
-        before,
-        after,
-        float(refresh_started_at),
+    if not (
+        _path_snapshot_is_fresh(
+            before,
+            after,
+            float(refresh_started_at),
+        )
+        and _reticulum_local_has_path(destination_hash)
     ):
         retry_request = False
         now = time.time()
