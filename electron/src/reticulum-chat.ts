@@ -527,6 +527,7 @@ export interface ReticulumDmPageOffer {
   requesterPublicKey?: string;
   timestamp?: number;
   signature?: string;
+  pullKey?: string;
 }
 
 type ReticulumChatEventOfferOptions = {
@@ -835,16 +836,31 @@ type ReticulumChatPullQueueItem = {
 };
 
 type ReticulumPendingDmNotifyDelivery = {
-  eventId: string;
   senderAddress: string;
   recipientAddress: string;
-  latestCursor: string;
   wire: Extract<ReticulumChatWire, { k: 'dm_notify' }>;
   excludePeerHashes: string[];
   createdAt: number;
   gossipTimer: ReturnType<typeof setTimeout> | null;
   fallbackTimer: ReturnType<typeof setTimeout> | null;
   cleanupTimer: ReturnType<typeof setTimeout> | null;
+};
+
+type ReticulumDirectDmPullState = {
+  key: string;
+  conversationId: string;
+  addressA: string;
+  addressB: string;
+  sourcePeerHash: string;
+  remoteEventId: string;
+  remoteTimestamp: number;
+  requestId: string;
+  attempts: number;
+  createdAt: number;
+  inFlight: boolean;
+  activeRequestId: string;
+  nextAfter?: number;
+  retryTimer: ReturnType<typeof setTimeout> | null;
 };
 
 type ReticulumChatLocalSignature = {
@@ -1511,16 +1527,6 @@ export type ReticulumDmProbeWire = {
   fw?: number;
 };
 
-export type ReticulumDmNotifyAckWire = {
-  q: string;
-  lc?: string;
-  b: string;
-  sp: string;
-  p: string;
-  n: number;
-  z: string;
-};
-
 type ReticulumCalendarResourceOffer = {
   transferId: string;
   groupId: number;
@@ -1769,7 +1775,6 @@ export type ReticulumChatWire =
     }
   | { t: 'RCHAT'; k: 'dm_event'; e: ReticulumDmEventWire | ReticulumDmEvent }
   | { t: 'RCHAT'; k: 'dm_notify'; d: ReticulumDmNotifyWire }
-  | { t: 'RCHAT'; k: 'dm_notify_ack'; d: ReticulumDmNotifyAckWire }
   | { t: 'RCHAT'; k: 'dm_probe'; q: ReticulumDmProbeWire }
   | { t: 'RCHAT'; k: 'dm_req'; q: ReticulumDmRequestWire }
   | {
@@ -2495,6 +2500,11 @@ const RETICULUM_CHAT_DM_NOTIFY_GOSSIP_DELAY_MS = 750;
 const RETICULUM_CHAT_DM_NOTIFY_FULL_FALLBACK_MS = 3_000;
 const RETICULUM_CHAT_DM_NOTIFY_PENDING_TTL_MS = 2 * 60_000;
 const RETICULUM_CHAT_DM_NOTIFY_PENDING_MAX = 4096;
+const RETICULUM_CHAT_DM_PULL_RETRY_DELAYS_MS = [
+  500, 1_500, 4_000, 8_000, 15_000,
+];
+const RETICULUM_CHAT_DM_PULL_MAX_AGE_MS = 2 * 60_000;
+const RETICULUM_CHAT_DM_PULL_MAX = 1024;
 // Probes are the cheap periodic anti-entropy path. Full per-conversation
 // summaries are only a slower compatibility/safety net; live messages use the
 // immediate targeted notify path above.
@@ -3203,27 +3213,6 @@ export function buildReticulumDmProbeSignedFields(input: {
     requestId: input.requestId,
     timestamp: input.timestamp,
     type: 'RCHAT_DM_PROBE',
-  };
-}
-
-export function buildReticulumDmNotifyAckSignedFields(input: {
-  notifyRequestId: string;
-  latestCursor?: string;
-  peerAddress: string;
-  sourcePeerHash: string;
-  authorAddress: string;
-  authorPublicKey: string;
-  timestamp: number;
-}): Record<string, unknown> {
-  return {
-    authorAddress: input.authorAddress,
-    authorPublicKey: input.authorPublicKey,
-    latestCursor: input.latestCursor ?? '',
-    notifyRequestId: input.notifyRequestId,
-    peerAddress: input.peerAddress,
-    sourcePeerHash: input.sourcePeerHash,
-    timestamp: input.timestamp,
-    type: 'RCHAT_DM_NOTIFY_ACK',
   };
 }
 
@@ -5514,44 +5503,6 @@ export function verifyReticulumDmProbe(
   }
 }
 
-export function verifyReticulumDmNotifyAck(
-  wire: ReticulumDmNotifyAckWire,
-  now = Date.now()
-): boolean {
-  const notifyRequestId = normalizeReticulumControlRequestId(wire?.q);
-  const latestCursor = typeof wire?.lc === 'string' ? wire.lc.trim() : '';
-  const peerAddress = typeof wire?.b === 'string' ? wire.b.trim() : '';
-  const sourcePeerHash = normalizePeerHashFromWire(wire?.sp) ?? '';
-  if (!notifyRequestId || !peerAddress || !sourcePeerHash) return false;
-  if (latestCursor && !/^[A-Za-z0-9_-]{8,16}$/.test(latestCursor)) return false;
-  if (!Number.isFinite(wire.n)) return false;
-  if (wire.n > now + RETICULUM_CHAT_CONTROL_MAX_FUTURE_SKEW_MS) return false;
-  if (wire.n < now - RETICULUM_CHAT_DM_NOTIFY_TTL_MS) return false;
-  const authorAddress = deriveReticulumControlAuthor(wire.p);
-  if (!authorAddress || typeof wire.z !== 'string' || !wire.z) return false;
-  try {
-    return verifyEd25519Detached(
-      new Uint8Array(
-        canonicalizeForSigning(
-          buildReticulumDmNotifyAckSignedFields({
-            notifyRequestId,
-            latestCursor,
-            peerAddress,
-            sourcePeerHash,
-            authorAddress,
-            authorPublicKey: wire.p,
-            timestamp: wire.n,
-          })
-        )
-      ),
-      new Uint8Array(base58Decode(wire.z)),
-      new Uint8Array(base58Decode(wire.p))
-    );
-  } catch {
-    return false;
-  }
-}
-
 export function verifyReticulumDmRequest(
   wire: ReticulumDmRequestWire,
   now = Date.now()
@@ -7052,6 +7003,7 @@ export class ReticulumChatManager extends EventEmitter {
     string,
     ReticulumPendingDmNotifyDelivery
   >();
+  private directDmPulls = new Map<string, ReticulumDirectDmPullState>();
   private pendingReadSync = new Map<string, ReticulumChatPendingReadSync>();
   private readSyncFlushScheduled = false;
   private readSyncFlushActive = false;
@@ -7894,6 +7846,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.publicGroupActivityServedAt.clear();
     this.stopDmDigestTimer();
     this.clearPendingDmNotifyDeliveries();
+    this.clearDirectDmPulls();
     this.detachBridge();
     this.stopLocalNotificationWatcher();
     this.stopSubscriptionRefreshTimer();
@@ -8933,6 +8886,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.pendingInitialDmDiscovery = false;
     this.stopDmDigestTimer();
     this.clearPendingDmNotifyDeliveries();
+    this.clearDirectDmPulls();
     this.clearActiveDirectChats();
     for (const timer of this.directTypingTimers.values()) clearTimeout(timer);
     this.directTypingTimers.clear();
@@ -9497,7 +9451,9 @@ export class ReticulumChatManager extends EventEmitter {
     this.assertLocalGroupMember(groupId);
     return this.db.getCalendarEventOccurrence(
       groupId,
-      String(eventId || '').trim().toLowerCase(),
+      String(eventId || '')
+        .trim()
+        .toLowerCase(),
       this.now(),
       RETICULUM_CALENDAR_VISIBLE_PAST_MS,
       preferredOccurrenceStart
@@ -15423,8 +15379,7 @@ export class ReticulumChatManager extends EventEmitter {
           : 0;
         if (
           fanoutKey &&
-          this.now() - lastSentAt <
-            RETICULUM_CHAT_SUBSCRIPTION_FANOUT_DEDUPE_MS
+          this.now() - lastSentAt < RETICULUM_CHAT_SUBSCRIPTION_FANOUT_DEDUPE_MS
         ) {
           return;
         }
@@ -16506,33 +16461,15 @@ export class ReticulumChatManager extends EventEmitter {
           peerHash
         );
         return;
-      case 'dm_event':
-        this.handleDirectEvent(
-          wire as Extract<ReticulumChatWire, { k: 'dm_event' }>,
-          peerHash
-        );
-        return;
       case 'dm_notify':
         void this.handleDirectNotify(
           wire as Extract<ReticulumChatWire, { k: 'dm_notify' }>,
           peerHash
         );
         return;
-      case 'dm_notify_ack':
-        this.handleDirectNotifyAck(
-          wire as Extract<ReticulumChatWire, { k: 'dm_notify_ack' }>,
-          peerHash
-        );
-        return;
       case 'dm_probe':
         void this.handleDirectProbe(
           wire as Extract<ReticulumChatWire, { k: 'dm_probe' }>,
-          peerHash
-        );
-        return;
-      case 'dm_req':
-        void this.handleDirectRequest(
-          wire as Extract<ReticulumChatWire, { k: 'dm_req' }>,
           peerHash
         );
         return;
@@ -16557,18 +16494,6 @@ export class ReticulumChatManager extends EventEmitter {
       case 'dm_resource_receipt':
         void this.handleDirectResourceReceipt(
           wire.w as ReticulumDmResourceReceiptWire,
-          peerHash
-        );
-        return;
-      case 'dm_page_offer':
-        void this.handleDirectPageOffer(
-          wire as Extract<ReticulumChatWire, { k: 'dm_page_offer' }>,
-          peerHash
-        );
-        return;
-      case 'dm_page':
-        this.handleDirectPage(
-          wire as Extract<ReticulumChatWire, { k: 'dm_page' }>,
           peerHash
         );
         return;
@@ -17624,6 +17549,9 @@ export class ReticulumChatManager extends EventEmitter {
         now - requestedAt > RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS
       ) {
         this.directDmPageRequests.delete(transferId);
+        if (request.pullKey) {
+          this.scheduleDirectDmPullRetry(request.pullKey, 'request_stale');
+        }
       }
     }
     const trimOldest = <T>(map: Map<string, T>, max: number) => {
@@ -17888,7 +17816,10 @@ export class ReticulumChatManager extends EventEmitter {
     ].join('|');
   }
 
-  private dmNotifyLatestCursor(event: ReticulumDmEvent): string {
+  private dmNotifyLatestCursor(event: {
+    eventId: string;
+    timestamp: number;
+  }): string {
     return nodeCrypto
       .createHash('sha256')
       .update(
@@ -18007,6 +17938,160 @@ export class ReticulumChatManager extends EventEmitter {
     return normalizedRequestId ? `req:${normalizedRequestId}` : '';
   }
 
+  private directDmPullKey(
+    sourcePeerHash: string,
+    conversationId: string
+  ): string {
+    return `${sourcePeerHash}:${conversationId}`;
+  }
+
+  private queueDirectMissingEvents(input: {
+    conversationId: string;
+    addressA: string;
+    addressB: string;
+    sourcePeerHash: string;
+    remoteEventId: string;
+    remoteTimestamp: number;
+    requestId: string;
+  }): void {
+    const sourcePeerHash =
+      this.routePeerHash(input.sourcePeerHash) ??
+      this.normalizeResourcePeerHash(input.sourcePeerHash);
+    const conversationId = normalizeReticulumDmConversationId(
+      input.conversationId
+    );
+    const requestId = normalizeReticulumControlRequestId(input.requestId);
+    if (!sourcePeerHash || !conversationId || !requestId || this.isClosed)
+      return;
+    const key = this.directDmPullKey(sourcePeerHash, conversationId);
+    const existing = this.directDmPulls.get(key);
+    if (existing) {
+      existing.addressA = input.addressA;
+      existing.addressB = input.addressB;
+      const changedRemoteCursor =
+        existing.remoteEventId !== input.remoteEventId ||
+        existing.remoteTimestamp !== input.remoteTimestamp;
+      if (changedRemoteCursor) {
+        existing.remoteEventId = input.remoteEventId;
+        existing.remoteTimestamp = input.remoteTimestamp;
+        existing.requestId = requestId;
+        existing.attempts = 0;
+        existing.createdAt = this.now();
+        if (!existing.inFlight && existing.retryTimer) {
+          clearTimeout(existing.retryTimer);
+          existing.retryTimer = null;
+        }
+      }
+      if (!existing.inFlight && !existing.retryTimer) {
+        void this.runDirectDmPull(key);
+      }
+      return;
+    }
+    while (this.directDmPulls.size >= RETICULUM_CHAT_DM_PULL_MAX) {
+      const oldestKey = this.directDmPulls.keys().next().value as
+        | string
+        | undefined;
+      if (!oldestKey) break;
+      this.completeDirectDmPull(oldestKey);
+    }
+    this.directDmPulls.set(key, {
+      key,
+      conversationId,
+      addressA: input.addressA,
+      addressB: input.addressB,
+      sourcePeerHash,
+      remoteEventId: input.remoteEventId,
+      remoteTimestamp: input.remoteTimestamp,
+      requestId,
+      attempts: 0,
+      createdAt: this.now(),
+      inFlight: false,
+      activeRequestId: '',
+      retryTimer: null,
+    });
+    void this.runDirectDmPull(key);
+  }
+
+  private async runDirectDmPull(key: string): Promise<void> {
+    const pull = this.directDmPulls.get(key);
+    if (!pull || pull.inFlight || pull.retryTimer || this.isClosed) return;
+    if (this.now() - pull.createdAt > RETICULUM_CHAT_DM_PULL_MAX_AGE_MS) {
+      this.completeDirectDmPull(key);
+      return;
+    }
+    pull.inFlight = true;
+    pull.activeRequestId = pull.requestId;
+    pull.attempts += 1;
+    const result = await this.requestDirectMissingEvents(
+      pull.conversationId,
+      pull.addressA,
+      pull.addressB,
+      pull.sourcePeerHash,
+      pull.remoteEventId,
+      pull.remoteTimestamp,
+      {
+        requestId: pull.activeRequestId,
+        pullKey: key,
+        afterOverride: pull.nextAfter,
+      }
+    );
+    const current = this.directDmPulls.get(key);
+    if (!current || current !== pull) return;
+    if (result === 'started') return;
+    pull.inFlight = false;
+    pull.activeRequestId = '';
+    if (result === 'complete') {
+      this.completeDirectDmPull(key);
+      return;
+    }
+    this.scheduleDirectDmPullRetry(key, result);
+  }
+
+  private scheduleDirectDmPullRetry(key: string, reason: string): void {
+    const pull = this.directDmPulls.get(key);
+    if (!pull || this.isClosed) return;
+    pull.inFlight = false;
+    pull.activeRequestId = '';
+    if (pull.retryTimer) return;
+    if (
+      pull.attempts >= RETICULUM_CHAT_DM_PULL_RETRY_DELAYS_MS.length + 1 ||
+      this.now() - pull.createdAt > RETICULUM_CHAT_DM_PULL_MAX_AGE_MS
+    ) {
+      loggerWarn(
+        `[ReticulumChat] dm_link_pull_exhausted conversation=${pull.conversationId.slice(0, 16)} peer=${pull.sourcePeerHash.slice(0, 16)} attempts=${pull.attempts} reason=${reason}`
+      );
+      this.completeDirectDmPull(key);
+      return;
+    }
+    const delay =
+      RETICULUM_CHAT_DM_PULL_RETRY_DELAYS_MS[
+        Math.min(
+          Math.max(0, pull.attempts - 1),
+          RETICULUM_CHAT_DM_PULL_RETRY_DELAYS_MS.length - 1
+        )
+      ];
+    pull.retryTimer = setTimeout(() => {
+      const current = this.directDmPulls.get(key);
+      if (!current || current !== pull) return;
+      pull.retryTimer = null;
+      void this.runDirectDmPull(key);
+    }, delay);
+    pull.retryTimer.unref?.();
+  }
+
+  private completeDirectDmPull(key: string): void {
+    const pull = this.directDmPulls.get(key);
+    if (!pull) return;
+    if (pull.retryTimer) clearTimeout(pull.retryTimer);
+    this.directDmPulls.delete(key);
+  }
+
+  private clearDirectDmPulls(): void {
+    for (const key of [...this.directDmPulls.keys()]) {
+      this.completeDirectDmPull(key);
+    }
+  }
+
   private async requestDirectMissingEvents(
     conversationId: string,
     addressA: string,
@@ -18014,10 +18099,14 @@ export class ReticulumChatManager extends EventEmitter {
     sourcePeerHash: string,
     remoteEventId: string,
     remoteTimestamp: number,
-    inboundPeerHash?: string,
-    options: { force?: boolean; requestId?: string } = {}
-  ): Promise<void> {
-    const tracePrefix = `[ReticulumChat] dm_missing_request conversation=${conversationId.slice(0, 16)} source=${String(sourcePeerHash || '').slice(0, 16)} inbound=${String(inboundPeerHash || '').slice(0, 16)} rid=${String(options.requestId || '').slice(0, 12)}`;
+    options: {
+      force?: boolean;
+      requestId?: string;
+      pullKey?: string;
+      afterOverride?: number;
+    } = {}
+  ): Promise<'complete' | 'started' | string> {
+    const tracePrefix = `[ReticulumChat] dm_link_pull conversation=${conversationId.slice(0, 16)} source=${String(sourcePeerHash || '').slice(0, 16)} rid=${String(options.requestId || '').slice(0, 12)}`;
     const localLatest = this.db.getDirectLatestEvent(conversationId);
     const senderLatest =
       this.db.getDirectSyncCursorFromSender(conversationId, addressA) ??
@@ -18037,6 +18126,13 @@ export class ReticulumChatManager extends EventEmitter {
     }
     if (
       cursorLatest &&
+      remoteEventId.startsWith('cursor:') &&
+      this.dmNotifyLatestCursor(cursorLatest) === remoteEventId.slice(7)
+    ) {
+      return 'complete';
+    }
+    if (
+      cursorLatest &&
       remoteTimestamp < Number.MAX_SAFE_INTEGER &&
       (cursorLatest.timestamp > remoteTimestamp ||
         (cursorLatest.timestamp === remoteTimestamp &&
@@ -18047,33 +18143,35 @@ export class ReticulumChatManager extends EventEmitter {
           `${tracePrefix} status=skip reason=already_have cursor_ts=${cursorLatest.timestamp} remote_ts=${remoteTimestamp}`
         );
       }
-      return;
+      return 'complete';
     }
     const source =
       this.routePeerHash(sourcePeerHash) ??
       this.normalizeResourcePeerHash(sourcePeerHash);
     if (!source) {
       loggerWarn(`${tracePrefix} status=skip reason=bad_source`);
-      return;
+      return 'bad_source';
     }
     if (addressA === addressB && !this.isVerifiedSelfDmPeer(addressA, source)) {
       loggerWarn(`${tracePrefix} status=skip reason=unverified_self_dm_source`);
-      return;
+      return 'unverified_self_dm_source';
     }
     if (source === this.getLocalResourcePeerHash()) {
       if (RETICULUM_CHAT_TRACE) {
         loggerLog(`${tracePrefix} status=skip reason=local_source`);
       }
-      return;
+      return 'complete';
     }
     if (!this.localDmAddressForConversation(addressA, addressB)) {
       loggerWarn(`${tracePrefix} status=skip reason=no_local_dm_address`);
-      return;
+      return 'no_local_dm_address';
     }
     const now = this.now();
-    const requestAfter = cursorLatest
-      ? Math.max(0, cursorLatest.timestamp - 1)
-      : 0;
+    const requestAfter = Number.isFinite(options.afterOverride)
+      ? Math.max(0, Math.floor(Number(options.afterOverride)))
+      : cursorLatest
+        ? Math.max(0, cursorLatest.timestamp - 1)
+        : 0;
     const requestIdentity = this.dmPageRequestIdentity(
       options.requestId,
       remoteEventId,
@@ -18095,21 +18193,9 @@ export class ReticulumChatManager extends EventEmitter {
           `${tracePrefix} status=skip reason=dm_page_no_progress after=${requestAfter} request=${requestIdentity.slice(0, 48)}`
         );
       }
-      return;
+      return 'complete';
     }
-    const requestKeyPart = options.requestId ? `:${options.requestId}` : '';
-    const key = `${source}:${conversationId}:${remoteTimestamp}:${remoteEventId}${requestKeyPart}`;
     this.pruneDmDiscoveryRoutes(now);
-    const last = this.recentDmRequests.get(key) || 0;
-    if (!options.force && now - last < 10_000) {
-      if (RETICULUM_CHAT_TRACE) {
-        loggerLog(
-          `${tracePrefix} status=skip reason=recent_request age_ms=${now - last}`
-        );
-      }
-      return;
-    }
-    this.recentDmRequests.set(key, now);
     let linkedIdentity = '';
     let linkedSessionReady = false;
     if (
@@ -18135,6 +18221,8 @@ export class ReticulumChatManager extends EventEmitter {
               `${tracePrefix} status=session_prepare_failed reason=${reticulumResultReason(prepared)}`
             );
           }
+        } else {
+          loggerWarn(`${tracePrefix} status=identity_unavailable`);
         }
       } catch (err) {
         loggerWarn(
@@ -18152,11 +18240,15 @@ export class ReticulumChatManager extends EventEmitter {
     );
     if (!request) {
       loggerWarn(`${tracePrefix} status=skip reason=request_build_failed`);
-      return;
+      return 'request_build_failed';
     }
-    const transferId =
-      normalizeReticulumControlRequestId(request.q.q) ||
-      nodeCrypto.randomBytes(8).toString('hex');
+    if (!this.bridge || !linkedSessionReady) {
+      return 'session_prepare_failed';
+    }
+    // The notification id remains stable for correlation, while every link
+    // attempt gets a fresh transfer id so a failed response cannot poison a
+    // later retry on the reusable resource session.
+    const transferId = nodeCrypto.randomBytes(8).toString('hex');
     const requesterAddress = deriveReticulumControlAuthor(request.q.p);
     const requesterPeerHash =
       this.routePeerHash(request.q.rp) ??
@@ -18181,79 +18273,53 @@ export class ReticulumChatManager extends EventEmitter {
       requesterPublicKey: typeof request.q.p === 'string' ? request.q.p : '',
       timestamp: Number(request.q.n || 0),
       signature: typeof request.q.z === 'string' ? request.q.z : '',
+      pullKey: options.pullKey,
     });
     if (RETICULUM_CHAT_TRACE) {
       loggerLog(
         `${tracePrefix} status=prepared transfer=${transferId.slice(0, 12)} after=${Number(request.q.a ?? request.q.after ?? 0)}`
       );
     }
-    if (this.bridge && linkedSessionReady) {
-      try {
-        const accepted = await this.bridge.acceptReticulumChatResourceDetailed({
-          peerPresenceHash: source,
-          reticulumIdentityPublicKeyBase64: linkedIdentity,
+    try {
+      const accepted = await this.bridge.acceptReticulumChatResourceDetailed({
+        peerPresenceHash: source,
+        reticulumIdentityPublicKeyBase64: linkedIdentity,
+        transferId,
+        savePath: this.tempEventBlobPath(`${transferId}.dm-page.recv`),
+        fileName: `${transferId}.dm-page.json`,
+        size: RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES,
+        metadata: {
+          resourceType: 'reticulum_chat_event',
+          logicalResourceType: 'reticulum_chat_dm_page',
+          conversationId,
+          variableSize: true,
+        },
+        authMessage: {
+          type: 'RETICULUM_CHAT_DM_PAGE_REQUEST',
           transferId,
-          savePath: this.tempEventBlobPath(`${transferId}.dm-page.recv`),
-          fileName: `${transferId}.dm-page.json`,
-          size: RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES,
-          metadata: {
-            resourceType: 'reticulum_chat_event',
-            logicalResourceType: 'reticulum_chat_dm_page',
-            conversationId,
-            variableSize: true,
-          },
-          authMessage: {
-            type: 'RETICULUM_CHAT_DM_PAGE_REQUEST',
-            transferId,
-            ...request.q,
-          },
-        });
-        if (accepted.ok) {
-          if (RETICULUM_CHAT_TRACE) {
-            loggerLog(
-              `${tracePrefix} status=accept_started transfer=${transferId.slice(0, 12)}`
-            );
-          }
-          return;
-        }
-        if (!accepted.ok) {
-          loggerWarn(
-            `${tracePrefix} status=accept_failed transfer=${transferId.slice(0, 12)} reason=${reticulumResultReason(accepted)}`
-          );
-        }
-      } catch (err) {
-        loggerWarn(
-          `[ReticulumChat] dm_page_link_failed conversation=${conversationId.slice(0, 16)} peer=${source.slice(0, 16)} reason=${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-    }
-    const direct = await this.sendToPeer(source, request);
-    if (direct.ok) {
-      if (RETICULUM_CHAT_TRACE) {
-        loggerLog(`${tracePrefix} status=dm_req_sent target=source`);
-      }
-      return;
-    }
-    if (!direct.ok) {
-      loggerWarn(
-        `${tracePrefix} status=dm_req_failed target=source reason=${reticulumResultReason(direct)}`
-      );
-    }
-    if (addressA === addressB) return;
-    const inbound = inboundPeerHash
-      ? (this.routePeerHash(inboundPeerHash) ??
-        this.normalizeResourcePeerHash(inboundPeerHash))
-      : undefined;
-    if (inbound && inbound !== source) {
-      void this.sendToPeer(inbound, request).then((fallback) => {
-        if (!fallback.ok) {
-          loggerWarn(
-            `${tracePrefix} status=dm_req_failed target=inbound reason=${reticulumResultReason(fallback)}`
-          );
-        } else if (RETICULUM_CHAT_TRACE) {
-          loggerLog(`${tracePrefix} status=dm_req_sent target=inbound`);
-        }
+          ...request.q,
+        },
       });
+      if (accepted.ok) {
+        if (RETICULUM_CHAT_TRACE) {
+          loggerLog(
+            `${tracePrefix} status=accept_started transfer=${transferId.slice(0, 12)}`
+          );
+        }
+        return 'started';
+      }
+      loggerWarn(
+        `${tracePrefix} status=accept_failed transfer=${transferId.slice(0, 12)} reason=${reticulumResultReason(accepted)}`
+      );
+      this.directDmPageRequests.delete(transferId);
+      return reticulumResultReason(accepted);
+    } catch (err) {
+      this.directDmPageRequests.delete(transferId);
+      const reason = err instanceof Error ? err.message : String(err);
+      loggerWarn(
+        `[ReticulumChat] dm_page_link_failed conversation=${conversationId.slice(0, 16)} peer=${source.slice(0, 16)} reason=${reason}`
+      );
+      return reason || 'link_failed';
     }
   }
 
@@ -18294,6 +18360,9 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     const selfDm = authorAddress === peerAddress;
+    const localConversation = Boolean(
+      this.localDmAddressForConversation(authorAddress, peerAddress)
+    );
     if (
       selfDm &&
       (!this.localDmAddresses.has(authorAddress) ||
@@ -18308,6 +18377,19 @@ export class ReticulumChatManager extends EventEmitter {
     this.pruneDmDiscoveryRoutes(now);
     const recentKey = `notify:${requestId}`;
     if ((this.recentDmDiscoveryKeys.get(recentKey) ?? 0) > now) {
+      if (localConversation) {
+        const latestCursor =
+          typeof notify.lc === 'string' ? notify.lc.trim() : '';
+        this.queueDirectMissingEvents({
+          conversationId,
+          addressA: authorAddress,
+          addressB: peerAddress,
+          sourcePeerHash,
+          remoteEventId: latestCursor ? `cursor:${latestCursor}` : '',
+          remoteTimestamp: Number.MAX_SAFE_INTEGER,
+          requestId,
+        });
+      }
       if (RETICULUM_CHAT_TRACE) {
         loggerLog(
           `[ReticulumChat] dm_notify_skip conversation=${conversationId.slice(0, 16)} rid=${requestId.slice(0, 12)} reason=duplicate`
@@ -18341,8 +18423,7 @@ export class ReticulumChatManager extends EventEmitter {
       }
     );
 
-    if (this.localDmAddressForConversation(authorAddress, peerAddress)) {
-      void this.sendDirectNotifyAck(notify, sourcePeerHash, reversePeerHash);
+    if (localConversation) {
       const latestCursor =
         typeof notify.lc === 'string' ? notify.lc.trim() : '';
       const remoteCursorId = latestCursor ? `cursor:${latestCursor}` : '';
@@ -18351,16 +18432,15 @@ export class ReticulumChatManager extends EventEmitter {
           `[ReticulumChat] dm_notify_local conversation=${conversationId.slice(0, 16)} author=${authorAddress.slice(0, 8)} source=${sourcePeerHash.slice(0, 16)} reverse=${reversePeerHash.slice(0, 16)} rid=${requestId.slice(0, 12)} latest=${latestCursor || 'none'}`
         );
       }
-      await this.requestDirectMissingEvents(
+      this.queueDirectMissingEvents({
         conversationId,
-        authorAddress,
-        peerAddress,
+        addressA: authorAddress,
+        addressB: peerAddress,
         sourcePeerHash,
-        remoteCursorId,
-        Number.MAX_SAFE_INTEGER,
-        reversePeerHash,
-        { requestId }
-      );
+        remoteEventId: remoteCursorId,
+        remoteTimestamp: Number.MAX_SAFE_INTEGER,
+        requestId,
+      });
       if (selfDm) return;
     } else if (RETICULUM_CHAT_TRACE) {
       loggerLog(
@@ -18407,78 +18487,6 @@ export class ReticulumChatManager extends EventEmitter {
     } else {
       this.fanoutRelayedDmDiscovery(forwarded, exclude);
     }
-  }
-
-  private async sendDirectNotifyAck(
-    notify: ReticulumDmNotifyWire,
-    sourcePeerHash: string,
-    reversePeerHash: string
-  ): Promise<void> {
-    if (!this.signLocalFields) return;
-    const notificationAuthor = deriveReticulumControlAuthor(notify.p);
-    const localAddress = this.localDmAddressForConversation(
-      notificationAuthor,
-      notify.b
-    );
-    const localPeerHash = this.getLocalResourcePeerHash();
-    if (!localAddress || !localPeerHash) return;
-    const peerAddress =
-      localAddress === notificationAuthor ? notify.b : notificationAuthor;
-    const timestamp = this.now();
-    const signed = await this.signLocalFields({
-      type: 'RCHAT_DM_NOTIFY_ACK',
-      notifyRequestId: notify.q,
-      latestCursor: notify.lc ?? '',
-      peerAddress,
-      sourcePeerHash: localPeerHash,
-      timestamp,
-    }).catch(() => null);
-    if (!signed || signed.authorAddress !== localAddress) return;
-    const ack: Extract<ReticulumChatWire, { k: 'dm_notify_ack' }> = {
-      t: 'RCHAT',
-      k: 'dm_notify_ack',
-      d: {
-        q: notify.q,
-        ...(notify.lc ? { lc: notify.lc } : {}),
-        b: peerAddress,
-        sp: this.compactResourcePeerHash(localPeerHash),
-        p: signed.authorPublicKey,
-        n: timestamp,
-        z: signed.signature,
-      },
-    };
-    if (!verifyReticulumDmNotifyAck(ack.d, timestamp)) return;
-    const direct = await this.sendToPeerOnce(sourcePeerHash, ack);
-    if (!direct.ok && reversePeerHash !== sourcePeerHash) {
-      void this.sendToPeerOnce(reversePeerHash, ack);
-    }
-  }
-
-  private handleDirectNotifyAck(
-    wire: Extract<ReticulumChatWire, { k: 'dm_notify_ack' }>,
-    peerHash: string
-  ): void {
-    const ack = wire.d;
-    if (!verifyReticulumDmNotifyAck(ack, this.now())) return;
-    const requestId = normalizeReticulumControlRequestId(ack.q);
-    const pending = this.pendingDmNotifyDeliveries.get(requestId);
-    if (!pending) return;
-    const authorAddress = deriveReticulumControlAuthor(ack.p);
-    const sourcePeerHash =
-      this.routePeerHash(ack.sp) ?? this.normalizeResourcePeerHash(ack.sp);
-    const inboundPeerHash =
-      this.routePeerHash(peerHash) ?? this.normalizeResourcePeerHash(peerHash);
-    if (
-      authorAddress !== pending.recipientAddress ||
-      ack.b !== pending.senderAddress ||
-      (pending.latestCursor && ack.lc !== pending.latestCursor) ||
-      !sourcePeerHash ||
-      !inboundPeerHash ||
-      sourcePeerHash !== inboundPeerHash
-    ) {
-      return;
-    }
-    this.completePendingDmNotify(requestId, true);
   }
 
   private async handleDirectProbe(
@@ -18600,7 +18608,6 @@ export class ReticulumChatManager extends EventEmitter {
       }
       return;
     }
-    this.acknowledgePendingDmDeliveries(requesterAddress, conversationId);
     const after = Number(request.a ?? request.after ?? 0);
     const limit = Math.max(
       1,
@@ -18885,7 +18892,6 @@ export class ReticulumChatManager extends EventEmitter {
         _peerHash,
         lastEvent.eventId,
         Number.MAX_SAFE_INTEGER,
-        _peerHash,
         {
           force: true,
           requestId:
@@ -19395,9 +19401,7 @@ export class ReticulumChatManager extends EventEmitter {
         // briefly duplicate the old table's traffic.
         const now = this.now();
         const appliedTargets = new Set(
-          [
-            ...(this.landStateForwardingAppliedTargets.get(groupId) ?? []),
-          ]
+          [...(this.landStateForwardingAppliedTargets.get(groupId) ?? [])]
             .filter(([, expiresAt]) => expiresAt > now)
             .map(([peerHash]) => peerHash)
         );
@@ -22749,15 +22753,11 @@ export class ReticulumChatManager extends EventEmitter {
       }
     }
     const notice = await this.buildEventNoticeWire(event, eventSizeBytes);
-    const transitNextHops = this.getGroupInterestTransitNextHops(
-      event.groupId
-    );
-    const noticeExcludePeerHashes = directlyNotifiedPeers.filter(
-      (peerHash) => {
-        const normalized = this.routePeerHash(peerHash);
-        return !normalized || !transitNextHops.has(normalized);
-      }
-    );
+    const transitNextHops = this.getGroupInterestTransitNextHops(event.groupId);
+    const noticeExcludePeerHashes = directlyNotifiedPeers.filter((peerHash) => {
+      const normalized = this.routePeerHash(peerHash);
+      return !normalized || !transitNextHops.has(normalized);
+    });
     const noticeResult = notice
       ? await this.sendGroupRoutedControl(event.groupId, notice, {
           // Do not duplicate notices to direct leaf recipients, but preserve
@@ -25509,7 +25509,8 @@ export class ReticulumChatManager extends EventEmitter {
   private async announceDirectNotifyForEvent(
     event: ReticulumDmEvent,
     excludePeerHashes: string[] = [],
-    directPeerHashes: string[] = []
+    directPeerHashes: string[] = [],
+    options: { recovery?: boolean } = {}
   ): Promise<void> {
     const notify = await this.buildSignedDirectNotifyWire(
       event.senderAddress,
@@ -25540,12 +25541,21 @@ export class ReticulumChatManager extends EventEmitter {
           .filter((peerHash): peerHash is string => !!peerHash)
       ),
     ];
+    const exclude = [
+      ...excludePeerHashes,
+      ...(localPeerHash ? [localPeerHash] : []),
+    ];
+    if (!options.recovery) {
+      // Register before the first packet is sent. A fast receiver can open the
+      // authenticated resource link before the bridge resolves this send.
+      this.trackPendingDmNotifyDelivery(event, notify, exclude);
+    }
     const directResults = await Promise.all(
       directPeers.map(async (peerHash) => {
         try {
           return {
             peerHash,
-            result: await this.sendToPeer(peerHash, notify),
+            result: await this.sendToPeerOnce(peerHash, notify),
           };
         } catch (err) {
           return {
@@ -25562,13 +25572,33 @@ export class ReticulumChatManager extends EventEmitter {
     const deliveredDirectPeers = directResults
       .filter(({ result }) => result.ok)
       .map(({ peerHash }) => peerHash);
-    const exclude = [
-      ...excludePeerHashes,
-      ...deliveredDirectPeers,
-      ...(localPeerHash ? [localPeerHash] : []),
-    ];
-    this.trackPendingDmNotifyDelivery(event, notify, exclude);
+    const pendingAfterDirectSend = this.pendingDmNotifyDeliveries.get(
+      notify.d.q
+    );
+    if (pendingAfterDirectSend && deliveredDirectPeers.length > 0) {
+      pendingAfterDirectSend.excludePeerHashes = [
+        ...new Set([
+          ...pendingAfterDirectSend.excludePeerHashes,
+          ...deliveredDirectPeers,
+        ]),
+      ];
+    }
     if (deliveredDirectPeers.length === 0) {
+      if (options.recovery) {
+        await this.fanoutDiscoveryOnce(
+          {
+            ...notify,
+            d: {
+              ...notify.d,
+              fw: RETICULUM_CHAT_DISCOVERY_GOSSIP_WIDTH,
+            },
+          },
+          exclude,
+          RETICULUM_CHAT_DISCOVERY_GOSSIP_WIDTH,
+          `dm-summary:${notify.d.q}:0`
+        );
+        return;
+      }
       const pending = this.pendingDmNotifyDeliveries.get(notify.d.q);
       if (pending?.gossipTimer) {
         clearTimeout(pending.gossipTimer);
@@ -25589,12 +25619,10 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     const requestId = normalizeReticulumControlRequestId(wire.d.q);
     if (!requestId) return;
-    this.completePendingDmNotify(requestId, false);
+    this.completePendingDmNotify(requestId);
     const pending: ReticulumPendingDmNotifyDelivery = {
-      eventId: event.eventId,
       senderAddress: event.senderAddress,
       recipientAddress: event.recipientAddress,
-      latestCursor: wire.d.lc ?? '',
       wire,
       excludePeerHashes: [...new Set(excludePeerHashes)],
       createdAt: this.now(),
@@ -25622,7 +25650,7 @@ export class ReticulumChatManager extends EventEmitter {
     pending.fallbackTimer.unref?.();
     pending.cleanupTimer = setTimeout(() => {
       pending.cleanupTimer = null;
-      this.completePendingDmNotify(requestId, false);
+      this.completePendingDmNotify(requestId);
     }, RETICULUM_CHAT_DM_NOTIFY_PENDING_TTL_MS);
     pending.cleanupTimer.unref?.();
     while (
@@ -25632,7 +25660,7 @@ export class ReticulumChatManager extends EventEmitter {
       const oldestRequestId = this.pendingDmNotifyDeliveries.keys().next()
         .value as string | undefined;
       if (!oldestRequestId) break;
-      this.completePendingDmNotify(oldestRequestId, false);
+      this.completePendingDmNotify(oldestRequestId);
     }
     this.pendingDmNotifyDeliveries.set(requestId, pending);
   }
@@ -25644,7 +25672,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.now() - pending.createdAt >
       RETICULUM_CHAT_DM_NOTIFY_PENDING_TTL_MS
     ) {
-      this.completePendingDmNotify(requestId, false);
+      this.completePendingDmNotify(requestId);
       return;
     }
     const wire: Extract<ReticulumChatWire, { k: 'dm_notify' }> = {
@@ -25675,45 +25703,28 @@ export class ReticulumChatManager extends EventEmitter {
     await this.fanout(wire, pending.excludePeerHashes);
   }
 
-  private completePendingDmNotify(
-    requestId: string,
-    delivered: boolean
-  ): void {
+  private completePendingDmNotify(requestId: string): void {
     const pending = this.pendingDmNotifyDeliveries.get(requestId);
     if (!pending) return;
     if (pending.gossipTimer) clearTimeout(pending.gossipTimer);
     if (pending.fallbackTimer) clearTimeout(pending.fallbackTimer);
     if (pending.cleanupTimer) clearTimeout(pending.cleanupTimer);
     this.pendingDmNotifyDeliveries.delete(requestId);
-    if (delivered) {
-      const event = this.db.getDirectEvent(pending.eventId);
-      if (event && event.localDeliveryStatus !== 'sent') {
-        this.markDirectEventSent(event);
+  }
+
+  private clearDmNotifyControlRetries(requestId: string): void {
+    const normalized = normalizeReticulumControlRequestId(requestId);
+    if (!normalized) return;
+    for (const [key, item] of this.controlRetryQueue) {
+      if (item.wire.k === 'dm_notify' && item.wire.d.q === normalized) {
+        this.controlRetryQueue.delete(key);
       }
     }
   }
 
   private clearPendingDmNotifyDeliveries(): void {
     for (const requestId of [...this.pendingDmNotifyDeliveries.keys()]) {
-      this.completePendingDmNotify(requestId, false);
-    }
-  }
-
-  private acknowledgePendingDmDeliveries(
-    requesterAddress: string,
-    conversationId: string
-  ): void {
-    for (const [requestId, pending] of this.pendingDmNotifyDeliveries) {
-      if (pending.recipientAddress !== requesterAddress) continue;
-      if (
-        reticulumDmConversationId(
-          pending.senderAddress,
-          pending.recipientAddress
-        ) !== conversationId
-      ) {
-        continue;
-      }
-      this.completePendingDmNotify(requestId, true);
+      this.completePendingDmNotify(requestId);
     }
   }
 
@@ -25746,10 +25757,11 @@ export class ReticulumChatManager extends EventEmitter {
         const latest = summary.lastEvent;
         if (!latest || !this.acceptsDirectConversation(latest)) continue;
         if (latest.senderAddress === latest.recipientAddress) continue;
-        const localAddress = this.localDmAddressForConversation(
-          latest.senderAddress,
-          latest.recipientAddress
-        );
+        // A recovery notification advertises data supplied by its signer.
+        // Never advertise the remote participant's latest event back to them:
+        // it causes a redundant pull and cannot correlate with this device's
+        // sender-bound authorization record.
+        if (latest.senderAddress !== localAddress) continue;
         const peerAddress =
           localAddress === latest.senderAddress
             ? latest.recipientAddress
@@ -25757,7 +25769,8 @@ export class ReticulumChatManager extends EventEmitter {
         await this.announceDirectNotifyForEvent(
           latest,
           [],
-          this.getPreferredDirectPeerHashes(localAddress, peerAddress)
+          this.getPreferredDirectPeerHashes(localAddress, peerAddress),
+          { recovery: true }
         );
       }
     }
@@ -29085,9 +29098,7 @@ export class ReticulumChatManager extends EventEmitter {
     }
     if (digestFingerprint) {
       this.clearPendingDigestRepairFingerprint(groupId, digestFingerprint);
-      for (const [transferId, offer] of [
-        ...this.directHistoryPageRequests,
-      ]) {
+      for (const [transferId, offer] of [...this.directHistoryPageRequests]) {
         if (
           offer.groupId === groupId &&
           offer.digestRepairFingerprint === digestFingerprint
@@ -29160,10 +29171,7 @@ export class ReticulumChatManager extends EventEmitter {
   private rejectedEventMarkerMatches(
     event: ReticulumChatEvent
   ): 'none' | 'suppressed' {
-    const marker = this.db.getRejectedEventMarker(
-      event.groupId,
-      event.eventId
-    );
+    const marker = this.db.getRejectedEventMarker(event.groupId, event.eventId);
     if (!marker) return 'none';
     return 'suppressed';
   }
@@ -29173,13 +29181,8 @@ export class ReticulumChatManager extends EventEmitter {
     digestFingerprint: string
   ): void {
     if (!digestFingerprint) return;
-    const marker = this.db.getRejectedEventMarker(
-      event.groupId,
-      event.eventId
-    );
-    if (
-      !marker
-    ) {
+    const marker = this.db.getRejectedEventMarker(event.groupId, event.eventId);
+    if (!marker) {
       return;
     }
     this.db.upsertRejectedDigestMarker(marker, digestFingerprint);
@@ -30226,9 +30229,7 @@ export class ReticulumChatManager extends EventEmitter {
       for (const rawPeer of this.eventSourcePeers.get(eventId)?.peers ?? []) {
         const peer = this.normalizeResourcePeerHash(rawPeer);
         if (peer && peer !== localPeerHash) peers.add(peer);
-        if (
-          peers.size >= RETICULUM_CHAT_RESOURCE_DIRECT_DISCOVERY_MAX_PEERS
-        ) {
+        if (peers.size >= RETICULUM_CHAT_RESOURCE_DIRECT_DISCOVERY_MAX_PEERS) {
           break;
         }
       }
@@ -30482,15 +30483,11 @@ export class ReticulumChatManager extends EventEmitter {
         discoveryPeers
           .map((peer) => this.normalizeResourcePeerHash(peer))
           .filter(
-            (peer): peer is string =>
-              Boolean(peer) && peer !== localPeerHash
+            (peer): peer is string => Boolean(peer) && peer !== localPeerHash
           )
       ),
     ].slice(0, RETICULUM_CHAT_RESOURCE_DIRECT_DISCOVERY_MAX_PEERS);
-    const exclude = [
-      ...directPeers,
-      ...(localPeerHash ? [localPeerHash] : []),
-    ];
+    const exclude = [...directPeers, ...(localPeerHash ? [localPeerHash] : [])];
 
     // Record the reverse route before sending because a directly connected
     // peer can answer resource_have before the send promises settle.
@@ -30536,10 +30533,7 @@ export class ReticulumChatManager extends EventEmitter {
       if (directPeers.length === 0) {
         this.localResourceFindRequests.delete(wire.q);
       }
-      const failed = fanoutResult as Exclude<
-        ReticulumSendResult,
-        { ok: true }
-      >;
+      const failed = fanoutResult as Exclude<ReticulumSendResult, { ok: true }>;
       loggerWarn(
         `[ReticulumChat] resource_find_send_failed group=${groupId} file=${fileHash.slice(0, 12)} rid=${wire.q.slice(0, 12)} direct=0/${directPeers.length} responseRoute=${directPeers.length > 0 ? 'retained' : 'removed'} reason=${failed.reason}`
       );
@@ -32668,11 +32662,7 @@ export class ReticulumChatManager extends EventEmitter {
       .digest('hex');
     const localResourceIdentity = await this.localReticulumResourceIdentity();
     const transferId = nodeCrypto.randomBytes(8).toString('hex');
-    const { filePath } = this.tryWriteTempEventBlob(
-      transferId,
-      blob,
-      'event'
-    );
+    const { filePath } = this.tryWriteTempEventBlob(transferId, blob, 'event');
     if (!filePath) {
       return {
         ok: false,
@@ -33947,7 +33937,16 @@ export class ReticulumChatManager extends EventEmitter {
           `[ReticulumChat] qortalland_chat_resource_failed transfer=${payload.transferId} reason=${typeof payload.reason === 'string' ? payload.reason : 'resource_failed'}`
         );
       } else if (this.directDmPageRequests.has(payload.transferId)) {
+        const request = this.directDmPageRequests.get(payload.transferId);
         this.directDmPageRequests.delete(payload.transferId);
+        if (request?.pullKey) {
+          this.scheduleDirectDmPullRetry(
+            request.pullKey,
+            typeof payload.reason === 'string'
+              ? payload.reason
+              : 'resource_failed'
+          );
+        }
       } else if (this.metadataSnapshotOffers.has(payload.transferId)) {
         this.failMetadataSnapshotDownload(
           payload.transferId,
@@ -34393,6 +34392,12 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     let applyStartedAt = 0;
+    const retryPull = (reason: string) => {
+      this.directDmPageRequests.delete(payload.transferId!);
+      if (request.pullKey) {
+        this.scheduleDirectDmPullRetry(request.pullKey, reason);
+      }
+    };
     try {
       const prepared = useWorkerPrep
         ? await this.prepareChatResourceWithWorker(
@@ -34407,7 +34412,7 @@ export class ReticulumChatManager extends EventEmitter {
         .trim()
         .toLowerCase();
       if (expectedHash && actualHash !== expectedHash) {
-        this.directDmPageRequests.delete(payload.transferId);
+        retryPull('hash_mismatch');
         loggerWarn(
           `[ReticulumChat] dm_page_hash_mismatch transfer=${payload.transferId} expected=${expectedHash} actual=${actualHash}`
         );
@@ -34425,7 +34430,7 @@ export class ReticulumChatManager extends EventEmitter {
         parsed.events.length >
           Math.max(1, Math.min(50, Number(request.limit || 50)))
       ) {
-        this.directDmPageRequests.delete(payload.transferId);
+        retryPull('invalid_page');
         loggerWarn(
           `[ReticulumChat] invalid_dm_page transfer=${payload.transferId}`
         );
@@ -34442,7 +34447,7 @@ export class ReticulumChatManager extends EventEmitter {
           request.sourcePeerHash || ''
         )
       ) {
-        this.directDmPageRequests.delete(payload.transferId);
+        retryPull('unverified_own_device');
         loggerWarn(
           `[ReticulumChat] self_dm_page_rejected transfer=${payload.transferId} reason=unverified_own_device`
         );
@@ -34498,19 +34503,33 @@ export class ReticulumChatManager extends EventEmitter {
         );
       }
       if (parsed.more === true && lastEvent && request.sourcePeerHash) {
-        await this.requestDirectMissingEvents(
-          request.conversationId,
-          lastEvent.senderAddress,
-          lastEvent.recipientAddress,
-          request.sourcePeerHash,
-          lastEvent.eventId,
-          Number.MAX_SAFE_INTEGER,
-          undefined,
-          { force: true }
-        );
+        const pull = request.pullKey
+          ? this.directDmPulls.get(request.pullKey)
+          : undefined;
+        if (pull) {
+          pull.nextAfter = lastEvent.timestamp;
+          pull.inFlight = false;
+          pull.activeRequestId = '';
+          pull.attempts = 0;
+          pull.createdAt = this.now();
+          void this.runDirectDmPull(pull.key);
+        }
+      } else if (parsed.more === true && request.pullKey) {
+        this.scheduleDirectDmPullRetry(request.pullKey, 'page_no_progress');
+      } else if (request.pullKey) {
+        const pull = this.directDmPulls.get(request.pullKey);
+        if (pull && pull.requestId !== request.requestId) {
+          pull.inFlight = false;
+          pull.activeRequestId = '';
+          pull.attempts = 0;
+          pull.createdAt = this.now();
+          void this.runDirectDmPull(pull.key);
+        } else {
+          this.completeDirectDmPull(request.pullKey);
+        }
       }
     } catch (err) {
-      this.directDmPageRequests.delete(payload.transferId);
+      retryPull('import_failed');
       loggerWarn(
         `[ReticulumChat] dm_page_import_failed transfer=${payload.transferId} reason=${err instanceof Error ? err.message : String(err)}`
       );
@@ -35509,9 +35528,7 @@ export class ReticulumChatManager extends EventEmitter {
     item.inFlight = false;
     item.nextAttemptAt =
       this.now() + RETICULUM_CHAT_VALIDATION_UNAVAILABLE_RETRY_MS;
-    this.scheduleEventPullQueue(
-      RETICULUM_CHAT_VALIDATION_UNAVAILABLE_RETRY_MS
-    );
+    this.scheduleEventPullQueue(RETICULUM_CHAT_VALIDATION_UNAVAILABLE_RETRY_MS);
   }
 
   private async authorizeResource(
@@ -36201,16 +36218,46 @@ export class ReticulumChatManager extends EventEmitter {
     const requesterPeerHash =
       this.routePeerHash(request.rp) ??
       this.normalizeResourcePeerHash(request.rp);
-    if (!requesterPeerHash) {
+    const authenticatedPeerHash = this.normalizeResourcePeerHash(
+      payload.peerPresenceHash
+    );
+    if (!requesterPeerHash || !authenticatedPeerHash) {
       await reject('missing_requester_peer');
+      return;
+    }
+    if (requesterPeerHash !== authenticatedPeerHash) {
+      await reject('requester_link_mismatch');
       return;
     }
     if (
       requesterAddress === peerAddress &&
       (!this.localDmAddresses.has(requesterAddress) ||
-        !this.isVerifiedSelfDmPeer(requesterAddress, requesterPeerHash))
+        !this.isVerifiedSelfDmPeer(requesterAddress, authenticatedPeerHash))
     ) {
       await reject('unverified_self_dm_device');
+      return;
+    }
+    if (
+      requesterAddress !== peerAddress &&
+      !ownAddressMatches(this.localDmAddresses, peerAddress)
+    ) {
+      await reject('dm_provider_account_mismatch');
+      return;
+    }
+    const notificationId = normalizeReticulumControlRequestId(request.q);
+    const pendingNotification = notificationId
+      ? this.pendingDmNotifyDeliveries.get(notificationId)
+      : undefined;
+    if (
+      pendingNotification &&
+      (pendingNotification.senderAddress !== peerAddress ||
+        pendingNotification.recipientAddress !== requesterAddress ||
+        reticulumDmConversationId(
+          pendingNotification.senderAddress,
+          pendingNotification.recipientAddress
+        ) !== conversationId)
+    ) {
+      await reject('dm_notification_request_mismatch');
       return;
     }
     const after = Math.max(
@@ -36236,7 +36283,7 @@ export class ReticulumChatManager extends EventEmitter {
       pageEvents,
       after,
       events.length > pageEvents.length,
-      this.peerSupportsDmAuthorStreams(requesterPeerHash)
+      true
     );
     if (!page) {
       await reject('dm_page_too_large');
@@ -36252,7 +36299,7 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     const registered = await this.bridge.sendReticulumChatResourceDetailed({
-      allowedRecipientAddress: requesterPeerHash,
+      allowedRecipientAddress: authenticatedPeerHash,
       transferId: payload.transferId,
       filePath,
       fileName: `${payload.transferId}.dm-page.json`,
@@ -36273,6 +36320,10 @@ export class ReticulumChatManager extends EventEmitter {
       this.safeUnlink(filePath);
       await reject('dm_page_register_failed');
       return;
+    }
+    if (notificationId && pendingNotification) {
+      this.clearDmNotifyControlRetries(notificationId);
+      this.completePendingDmNotify(notificationId);
     }
     for (const event of page.pageEvents) {
       if (
@@ -36539,16 +36590,16 @@ export class ReticulumChatManager extends EventEmitter {
     if (reticulumChatTempBlobSweepPromise) return;
     if (
       !force &&
-      now - reticulumChatTempBlobLastSweepAt <
-        RETICULUM_CHAT_TEMP_BLOB_SWEEP_MS
+      now - reticulumChatTempBlobLastSweepAt < RETICULUM_CHAT_TEMP_BLOB_SWEEP_MS
     ) {
       return;
     }
     reticulumChatTempBlobLastSweepAt = now;
-    reticulumChatTempBlobSweepPromise =
-      this.sweepStaleTempEventBlobs().finally(() => {
+    reticulumChatTempBlobSweepPromise = this.sweepStaleTempEventBlobs().finally(
+      () => {
         reticulumChatTempBlobSweepPromise = null;
-      });
+      }
+    );
   }
 
   private async sweepStaleTempEventBlobs(): Promise<void> {
@@ -36580,8 +36631,7 @@ export class ReticulumChatManager extends EventEmitter {
             ) {
               return;
             }
-            const transferId =
-              this.tempEventBlobTransferByPath.get(filePath);
+            const transferId = this.tempEventBlobTransferByPath.get(filePath);
             if (transferId) {
               this.tempEventBlobs.delete(transferId);
               this.tempEventBlobTransferByPath.delete(filePath);
@@ -37456,8 +37506,7 @@ export class ReticulumChatManager extends EventEmitter {
     maxPeerCount: number,
     selectionKey: string
   ): Promise<ReticulumSendResult> {
-    if (!this.bridge)
-      return { ok: false, reason: 'bridge-unavailable' };
+    if (!this.bridge) return { ok: false, reason: 'bridge-unavailable' };
     if (!wireFitsReticulumChat(wire)) {
       return { ok: false, reason: 'wire-too-large' };
     }
@@ -37601,7 +37650,6 @@ export class ReticulumChatManager extends EventEmitter {
       case 'resource_have':
       case 'dm_notify':
       case 'dm_probe':
-      case 'dm_req':
       case 'dm_resource_find':
       case 'dm_resource_have':
         return true;

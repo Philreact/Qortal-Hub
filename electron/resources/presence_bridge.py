@@ -12076,7 +12076,7 @@ def _reticulum_chat_inbound_dedup_key(
     message: Dict[str, Any],
 ) -> Optional[Tuple[str, float]]:
     message_type = message.get("k")
-    if message_type in {"dm_probe", "dm_notify", "dm_notify_ack"}:
+    if message_type in {"dm_probe", "dm_notify"}:
         body = message.get("q") if message_type == "dm_probe" else message.get("d")
         request_id = body.get("q") if isinstance(body, dict) else None
         if not isinstance(request_id, str) or not request_id.strip():

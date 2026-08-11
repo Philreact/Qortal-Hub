@@ -26,7 +26,6 @@ import {
   buildReticulumLandSessionRouteSignedFields,
   buildReticulumLandStateSignedFields,
   buildReticulumDmSignedFields,
-  buildReticulumDmNotifyAckSignedFields,
   buildReticulumDmNotifySignedFields,
   buildReticulumDmProbeSignedFields,
   buildReticulumDmRequestSignedFields,
@@ -1324,9 +1323,7 @@ describe('reticulum chat protocol', () => {
       { t: 'RCHAT', k: 'dm_event', e: remoteEvent },
       upgradedPeerHash
     );
-    expect(
-      (manager as any).db.getDirectEvent(remoteEvent.eventId)
-    ).toMatchObject({ localDeliveryStatus: 'received' });
+    expect((manager as any).db.getDirectEvent(remoteEvent.eventId)).toBeNull();
     expect(
       manager.getDirectSummaries(owner.address, owner.address)[0]
     ).toMatchObject({ unreadCount: 0 });
@@ -7016,7 +7013,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('does not fanout a direct DM notify after the destination acknowledges it', async () => {
+  it('does not fanout a direct DM notify after an authenticated link requests its contents', async () => {
     vi.useFakeTimers();
     try {
       const sender = createDmIdentity();
@@ -7025,6 +7022,7 @@ describe('reticulum chat manager', () => {
       const recipientPeerHash = 'b'.repeat(32);
       const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
       const fanout: ReticulumChatWire[] = [];
+      const sentResources: Array<Record<string, unknown>> = [];
       const manager = new ReticulumChatManager({
         dbPath: tempDbPath(),
         signLocalFields: createDmSigner(sender),
@@ -7052,6 +7050,15 @@ describe('reticulum chat manager', () => {
             fanout.push(...messages);
             return { ok: true as const };
           },
+          sendReticulumChatResourceDetailed: async (
+            payload: Record<string, unknown>
+          ) => {
+            sentResources.push(payload);
+            return { ok: true as const };
+          },
+          authorizeReticulumChatResourceDetailed: async () => ({
+            ok: true as const,
+          }),
         } as any,
       });
       manager.setLocalDmAddresses([sender.address]);
@@ -7068,45 +7075,50 @@ describe('reticulum chat manager', () => {
       });
       await manager.publishDirectEvent(event);
       const notify = sent.find(
-        ({ peer, wire }) =>
-          peer === recipientPeerHash && wire.k === 'dm_notify'
+        ({ peer, wire }) => peer === recipientPeerHash && wire.k === 'dm_notify'
       )?.wire as Extract<ReticulumChatWire, { k: 'dm_notify' }> | undefined;
       expect(notify).toBeDefined();
 
       const timestamp = Date.now();
-      const signedFields = buildReticulumDmNotifyAckSignedFields({
-        notifyRequestId: notify!.d.q,
-        latestCursor: notify!.d.lc,
+      const signedFields = buildReticulumDmRequestSignedFields({
         peerAddress: sender.address,
-        sourcePeerHash: recipientPeerHash,
+        after: 0,
+        limit: 50,
+        requesterPeerHash: recipientPeerHash,
+        requestId: notify!.d.q,
         authorAddress: recipient.address,
         authorPublicKey: recipient.publicKey,
         timestamp,
       });
-      manager.handleWire(
+      await (manager as any).authorizeDirectDmPageResource(
         {
-          t: 'RCHAT',
-          k: 'dm_notify_ack',
-          d: {
-            q: notify!.d.q,
-            lc: notify!.d.lc,
-            b: sender.address,
-            sp: recipientPeerHash,
-            p: recipient.publicKey,
-            n: timestamp,
-            z: base58Encode(
-              nacl.sign.detached(
-                new Uint8Array(canonicalizeForSigning(signedFields)),
-                recipient.secretKey
-              )
-            ),
-          },
+          status: 'auth',
+          linkId: 'dm-link-1',
+          transferId: 'dm-transfer-1',
+          peerPresenceHash: recipientPeerHash,
         },
-        recipientPeerHash
+        {
+          transferId: 'dm-transfer-1',
+          b: sender.address,
+          a: 0,
+          l: 50,
+          q: notify!.d.q,
+          rp: recipientPeerHash,
+          p: recipient.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              recipient.secretKey
+            )
+          ),
+        }
       );
 
       await vi.advanceTimersByTimeAsync(4_000);
       expect(fanout.some((wire) => wire.k === 'dm_notify')).toBe(false);
+      expect(sentResources).toHaveLength(1);
+      fs.rmSync(String(sentResources[0].filePath || ''), { force: true });
       manager.close();
     } finally {
       vi.useRealTimers();
@@ -7169,7 +7181,7 @@ describe('reticulum chat manager', () => {
       sender.address,
       recipient.address
     );
-    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const acceptedResources: Array<Record<string, any>> = [];
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
       signLocalFields: createDmSigner(recipient),
@@ -7177,11 +7189,10 @@ describe('reticulum chat manager', () => {
         on: () => undefined,
         off: () => undefined,
         getLocalDestinationHash: () => requesterPeerHash,
-        sendReticulumChatDetailed: async (
-          peer: string,
-          wire: ReticulumChatWire
+        acceptReticulumChatResourceDetailed: async (
+          payload: Record<string, any>
         ) => {
-          sent.push({ peer, wire });
+          acceptedResources.push(payload);
           return { ok: true as const };
         },
       } as any,
@@ -7217,13 +7228,14 @@ describe('reticulum chat manager', () => {
     );
     await flushAsyncWork();
 
-    const request = sent.find(
-      (item) => item.peer === sourcePeerHash && item.wire.k === 'dm_req'
-    );
-    expect(request).toBeDefined();
-    expect(
-      (request!.wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q.a
-    ).toBe(999);
+    expect(acceptedResources).toHaveLength(1);
+    expect(acceptedResources[0]).toMatchObject({
+      peerPresenceHash: sourcePeerHash,
+      authMessage: {
+        type: 'RETICULUM_CHAT_DM_PAGE_REQUEST',
+        a: 999,
+      },
+    });
     manager.close();
   });
 
@@ -7298,6 +7310,114 @@ describe('reticulum chat manager', () => {
     }
   });
 
+  it('only advertises locally authored DM summaries during periodic recovery', async () => {
+    const local = createDmIdentity();
+    const remote = createDmIdentity();
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(local),
+      hasGoodOverlayHealth: () => false,
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+      } as any,
+    });
+    manager.setLocalDmAddresses([local.address]);
+    await flushAsyncWork();
+
+    const locallyAuthored = signedDmEvent({
+      sender: local,
+      recipient: remote,
+      eventId: 'dm-periodic-local-event',
+      senderSeq: 1,
+      timestamp: 1_000,
+    });
+    const remotelyAuthored = signedDmEvent({
+      sender: remote,
+      recipient: local,
+      eventId: 'dm-periodic-remote-event',
+      senderSeq: 1,
+      timestamp: 2_000,
+    });
+    const announce = vi
+      .spyOn(manager as any, 'announceDirectNotifyForEvent')
+      .mockResolvedValue(undefined);
+    (manager as any).db.getDirectSummaries = () => [
+      {
+        peerAddress: remote.address,
+        conversationId: locallyAuthored.conversationId,
+        lastEvent: locallyAuthored,
+        unreadCount: 0,
+        updatedAt: locallyAuthored.timestamp,
+      },
+      {
+        peerAddress: remote.address,
+        conversationId: remotelyAuthored.conversationId,
+        lastEvent: remotelyAuthored,
+        unreadCount: 0,
+        updatedAt: remotelyAuthored.timestamp,
+      },
+    ];
+
+    await (manager as any).broadcastDmNotificationsForLocalAddresses();
+
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith(
+      locallyAuthored,
+      [],
+      expect.any(Array),
+      { recovery: true }
+    );
+    manager.close();
+  });
+
+  it('keeps periodic DM recovery notifications bounded without live fallback timers', async () => {
+    const local = createDmIdentity();
+    const remote = createDmIdentity();
+    const fanouts: Array<{
+      messages: ReticulumChatWire[];
+      options?: { maxPeerCount?: number; selectionKey?: string };
+    }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(local),
+      hasGoodOverlayHealth: () => false,
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        fanoutReticulumChatDetailed: async (
+          messages: ReticulumChatWire[],
+          _exclude?: string[],
+          options?: { maxPeerCount?: number; selectionKey?: string }
+        ) => {
+          fanouts.push({ messages, options });
+          return { ok: true as const };
+        },
+      } as any,
+    });
+    manager.setLocalDmAddresses([local.address]);
+    await flushAsyncWork();
+
+    const event = signedDmEvent({
+      sender: local,
+      recipient: remote,
+      eventId: 'dm-periodic-bounded-event',
+      senderSeq: 1,
+      timestamp: Date.now(),
+    });
+    await (manager as any).announceDirectNotifyForEvent(event, [], [], {
+      recovery: true,
+    });
+
+    expect(fanouts).toHaveLength(1);
+    expect(fanouts[0].messages[0]).toMatchObject({ k: 'dm_notify' });
+    expect(fanouts[0].options).toMatchObject({ maxPeerCount: 4 });
+    expect((manager as any).pendingDmNotifyDeliveries.size).toBe(0);
+    manager.close();
+  });
+
   it('marks direct DM pages as continued when more events remain', async () => {
     const sender = createDmIdentity();
     const recipient = createDmIdentity();
@@ -7307,7 +7427,6 @@ describe('reticulum chat manager', () => {
       sender.address,
       recipient.address
     );
-    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
     const sentResources: Array<Record<string, any>> = [];
     const bridge = Object.assign(new EventEmitter(), {
       getLocalDestinationHash: () => sourcePeerHash,
@@ -7317,13 +7436,9 @@ describe('reticulum chat manager', () => {
         sentResources.push(payload);
         return { ok: true as const };
       },
-      sendReticulumChatDetailed: async (
-        peer: string,
-        wire: ReticulumChatWire
-      ) => {
-        sent.push({ peer, wire });
-        return { ok: true as const };
-      },
+      authorizeReticulumChatResourceDetailed: async () => ({
+        ok: true as const,
+      }),
     });
     const source = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -7331,12 +7446,12 @@ describe('reticulum chat manager', () => {
     });
     source.setLocalDmAddresses([sender.address]);
     await flushQueuedWork();
-    sent.length = 0;
 
     const first = signedDmEvent({
       sender,
       recipient,
       eventId: 'dm-source-page-1',
+      senderStreamId: '1'.repeat(32),
       senderSeq: 1,
       timestamp: Date.now() - 2_000,
     });
@@ -7364,51 +7479,130 @@ describe('reticulum chat manager', () => {
       authorPublicKey: recipient.publicKey,
       timestamp,
     });
-    await (source as any).handleDirectRequest(
+    await (source as any).authorizeDirectDmPageResource(
       {
-        t: 'RCHAT',
-        k: 'dm_req',
-        q: {
-          b: sender.address,
-          after: 0,
-          limit: 1,
-          q: requestId,
-          rp: requesterPeerHash,
-          p: recipient.publicKey,
-          n: timestamp,
-          z: base58Encode(
-            nacl.sign.detached(
-              new Uint8Array(canonicalizeForSigning(signedFields)),
-              recipient.secretKey
-            )
-          ),
-        },
+        status: 'auth',
+        linkId: 'dm-page-link',
+        transferId: 'dm-page-transfer',
+        peerPresenceHash: requesterPeerHash,
       },
-      requesterPeerHash
+      {
+        transferId: 'dm-page-transfer',
+        b: sender.address,
+        a: 0,
+        l: 1,
+        q: requestId,
+        rp: requesterPeerHash,
+        p: recipient.publicKey,
+        n: timestamp,
+        z: base58Encode(
+          nacl.sign.detached(
+            new Uint8Array(canonicalizeForSigning(signedFields)),
+            recipient.secretKey
+          )
+        ),
+      }
     );
     await flushQueuedWork();
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0].peer).toBe(requesterPeerHash);
-    expect(sent[0].wire).toMatchObject({
-      t: 'RCHAT',
-      k: 'dm_page_offer',
-      p: {
-        c: conversationId,
-        more: 1,
-        n: 1,
-      },
-    });
     expect(sentResources).toHaveLength(1);
     expect(sentResources[0].metadata).toMatchObject({
       logicalResourceType: 'reticulum_chat_dm_page',
       conversationId,
       eventCount: 1,
     });
+    expect(
+      JSON.parse(fs.readFileSync(String(sentResources[0].filePath), 'utf8'))
+    ).toMatchObject({
+      more: true,
+      events: [expect.arrayContaining(['v3'])],
+    });
+    fs.rmSync(String(sentResources[0].filePath), { force: true });
     source.close();
   });
 
-  it('continues direct DM pulls after importing a partial page', async () => {
+  it('binds a direct DM page request to the authenticated link peer and local provider account', async () => {
+    const provider = createDmIdentity();
+    const requester = createDmIdentity();
+    const unrelatedProvider = createDmIdentity();
+    const requesterPeerHash = 'b'.repeat(32);
+    const otherPeerHash = 'c'.repeat(32);
+    const rejected: Array<Record<string, unknown>> = [];
+    const sendResource = vi.fn(async () => ({ ok: true as const }));
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: Object.assign(new EventEmitter(), {
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatResourceDetailed: sendResource,
+        rejectReticulumChatResourceDetailed: async (
+          payload: Record<string, unknown>
+        ) => {
+          rejected.push(payload);
+          return { ok: true as const };
+        },
+      }) as any,
+    });
+    manager.setLocalDmAddresses([provider.address]);
+    await flushQueuedWork();
+
+    const authorize = async (
+      transferId: string,
+      peerAddress: string,
+      actualPeerHash: string
+    ) => {
+      const timestamp = Date.now();
+      const signedFields = buildReticulumDmRequestSignedFields({
+        peerAddress,
+        after: 0,
+        limit: 50,
+        requesterPeerHash,
+        requestId: transferId,
+        authorAddress: requester.address,
+        authorPublicKey: requester.publicKey,
+        timestamp,
+      });
+      await (manager as any).authorizeDirectDmPageResource(
+        {
+          status: 'auth',
+          linkId: `link-${transferId}`,
+          transferId,
+          peerPresenceHash: actualPeerHash,
+        },
+        {
+          transferId,
+          b: peerAddress,
+          a: 0,
+          l: 50,
+          q: transferId,
+          rp: requesterPeerHash,
+          p: requester.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              requester.secretKey
+            )
+          ),
+        }
+      );
+    };
+
+    await authorize('1'.repeat(16), provider.address, otherPeerHash);
+    await authorize(
+      '2'.repeat(16),
+      unrelatedProvider.address,
+      requesterPeerHash
+    );
+
+    expect(rejected.map((entry) => entry.reason)).toEqual([
+      'requester_link_mismatch',
+      'dm_provider_account_mismatch',
+    ]);
+    expect(sendResource).not.toHaveBeenCalled();
+    manager.close();
+  });
+
+  it('ignores legacy DM page contents delivered over the overlay', async () => {
     const sender = createDmIdentity();
     const recipient = createDmIdentity();
     const sourcePeerHash = 'a'.repeat(32);
@@ -7417,16 +7611,8 @@ describe('reticulum chat manager', () => {
       sender.address,
       recipient.address
     );
-    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
     const bridge = Object.assign(new EventEmitter(), {
       getLocalDestinationHash: () => requesterPeerHash,
-      sendReticulumChatDetailed: async (
-        peer: string,
-        wire: ReticulumChatWire
-      ) => {
-        sent.push({ peer, wire });
-        return { ok: true as const };
-      },
     });
     const receiver = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -7435,11 +7621,6 @@ describe('reticulum chat manager', () => {
     });
     receiver.setLocalDmAddresses([recipient.address]);
     await flushQueuedWork();
-    sent.length = 0;
-    expect((receiver as any).localDmAddresses.has(recipient.address)).toBe(
-      true
-    );
-
     const first = signedDmEvent({
       sender,
       recipient,
@@ -7447,9 +7628,7 @@ describe('reticulum chat manager', () => {
       senderSeq: 1,
       timestamp: Date.now() - 1_000,
     });
-    (receiver as any).acceptDirectEvent = () => true;
-    (receiver as any).db.getDirectLatestEvent = () => first;
-    (receiver as any).handleDirectPage(
+    receiver.handleWire(
       {
         t: 'RCHAT',
         k: 'dm_page',
@@ -7459,28 +7638,7 @@ describe('reticulum chat manager', () => {
       },
       sourcePeerHash
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    const request = sent.find(
-      (item) => item.peer === sourcePeerHash && item.wire.k === 'dm_req'
-    );
-    expect(request).toBeDefined();
-    expect(request?.wire).toMatchObject({
-      t: 'RCHAT',
-      k: 'dm_req',
-      q: {
-        b: sender.address,
-        a: first.timestamp - 1,
-        l: 50,
-      },
-    });
-    expect(
-      verifyReticulumDmRequest(
-        (request!.wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q,
-        Date.now()
-      )
-    ).toBe(true);
+    expect((receiver as any).db.getDirectEvent(first.eventId)).toBeNull();
     receiver.close();
   });
 
@@ -7494,14 +7652,13 @@ describe('reticulum chat manager', () => {
       sender.address,
       recipient.address
     );
-    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const acceptedResources: Array<Record<string, any>> = [];
     const bridge = Object.assign(new EventEmitter(), {
       getLocalDestinationHash: () => requesterPeerHash,
-      sendReticulumChatDetailed: async (
-        peer: string,
-        wire: ReticulumChatWire
+      acceptReticulumChatResourceDetailed: async (
+        payload: Record<string, any>
       ) => {
-        sent.push({ peer, wire });
+        acceptedResources.push(payload);
         return { ok: true as const };
       },
     });
@@ -7546,6 +7703,22 @@ describe('reticulum chat manager', () => {
         ],
       })
     );
+    const pullKey = `${sourcePeerHash}:${conversationId}`;
+    (receiver as any).directDmPulls.set(pullKey, {
+      key: pullKey,
+      conversationId,
+      addressA: sender.address,
+      addressB: recipient.address,
+      sourcePeerHash,
+      remoteEventId: 'cursor:partial-page',
+      remoteTimestamp: Number.MAX_SAFE_INTEGER,
+      requestId: 'd'.repeat(8),
+      attempts: 1,
+      createdAt: Date.now(),
+      inFlight: true,
+      activeRequestId: 'd'.repeat(8),
+      retryTimer: null,
+    });
     (receiver as any).directDmPageRequests.set(transferId, {
       transferId,
       conversationId,
@@ -7560,6 +7733,7 @@ describe('reticulum chat manager', () => {
       after: 0,
       limit: 1,
       requestId: 'd'.repeat(8),
+      pullKey,
     });
     const acceptSpy = vi
       .spyOn(receiver as any, 'acceptDirectEvent')
@@ -7583,17 +7757,12 @@ describe('reticulum chat manager', () => {
       }),
       false
     );
-    const request = sent.find(
-      (item) => item.peer === sourcePeerHash && item.wire.k === 'dm_req'
-    );
-    expect(request).toBeDefined();
-    expect(request?.wire).toMatchObject({
-      t: 'RCHAT',
-      k: 'dm_req',
-      q: {
-        b: sender.address,
-        a: first.timestamp - 1,
-        l: 50,
+    expect(acceptedResources).toHaveLength(1);
+    expect(acceptedResources[0]).toMatchObject({
+      peerPresenceHash: sourcePeerHash,
+      authMessage: {
+        type: 'RETICULUM_CHAT_DM_PAGE_REQUEST',
+        a: first.timestamp,
       },
     });
     expect(fs.existsSync(pagePath)).toBe(false);
@@ -7610,14 +7779,13 @@ describe('reticulum chat manager', () => {
       sender.address,
       recipient.address
     );
-    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const acceptedResources: Array<Record<string, any>> = [];
     const bridge = Object.assign(new EventEmitter(), {
       getLocalDestinationHash: () => requesterPeerHash,
-      sendReticulumChatDetailed: async (
-        peer: string,
-        wire: ReticulumChatWire
+      acceptReticulumChatResourceDetailed: async (
+        payload: Record<string, any>
       ) => {
-        sent.push({ peer, wire });
+        acceptedResources.push(payload);
         return { ok: true as const };
       },
     });
@@ -7668,7 +7836,7 @@ describe('reticulum chat manager', () => {
       transferId,
       path: pagePath,
     });
-    sent.length = 0;
+    acceptedResources.length = 0;
 
     await (receiver as any).requestDirectMissingEvents(
       conversationId,
@@ -7677,12 +7845,11 @@ describe('reticulum chat manager', () => {
       sourcePeerHash,
       'cursor:same-dm-state',
       Number.MAX_SAFE_INTEGER,
-      undefined,
       { requestId: 'e'.repeat(8) }
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(sent.find((item) => item.wire.k === 'dm_req')).toBeUndefined();
+    expect(acceptedResources).toHaveLength(0);
     await (receiver as any).requestDirectMissingEvents(
       conversationId,
       sender.address,
@@ -7690,12 +7857,11 @@ describe('reticulum chat manager', () => {
       sourcePeerHash,
       'cursor:same-dm-state',
       Number.MAX_SAFE_INTEGER,
-      undefined,
       { requestId: 'f'.repeat(8) }
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(sent.find((item) => item.wire.k === 'dm_req')).toBeUndefined();
+    expect(acceptedResources).toHaveLength(0);
     await (receiver as any).requestDirectMissingEvents(
       conversationId,
       sender.address,
@@ -7703,12 +7869,11 @@ describe('reticulum chat manager', () => {
       sourcePeerHash,
       'new-remote-dm-event',
       100_001,
-      undefined,
       { requestId: 'f'.repeat(8) }
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(sent.find((item) => item.wire.k === 'dm_req')).toBeDefined();
+    expect(acceptedResources).toHaveLength(1);
     fs.rmSync(pagePath, { force: true });
     receiver.close();
   });
@@ -7720,6 +7885,7 @@ describe('reticulum chat manager', () => {
     const requesterPeerHash = 'b'.repeat(32);
     const inboundPeerHash = 'c'.repeat(32);
     const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const acceptedResources: Array<Record<string, any>> = [];
     const bridge = Object.assign(new EventEmitter(), {
       getLocalDestinationHash: () => requesterPeerHash,
       sendReticulumChatDetailed: async (
@@ -7727,6 +7893,12 @@ describe('reticulum chat manager', () => {
         wire: ReticulumChatWire
       ) => {
         sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+      acceptReticulumChatResourceDetailed: async (
+        payload: Record<string, any>
+      ) => {
+        acceptedResources.push(payload);
         return { ok: true as const };
       },
     });
@@ -7772,36 +7944,30 @@ describe('reticulum chat manager', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    const request = sent.find(
-      (item) => item.peer === sourcePeerHash && item.wire.k === 'dm_req'
-    );
-    expect(request).toBeDefined();
-    expect(
-      (request!.wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q.q
-    ).toBe(requestId);
-    expect(
-      verifyReticulumDmRequest(
-        (request!.wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q,
-        Date.now()
-      )
-    ).toBe(true);
+    expect(acceptedResources).toHaveLength(1);
+    expect(acceptedResources[0]).toMatchObject({
+      peerPresenceHash: sourcePeerHash,
+      authMessage: {
+        type: 'RETICULUM_CHAT_DM_PAGE_REQUEST',
+        q: requestId,
+      },
+    });
     receiver.close();
   });
 
-  it('does not suppress distinct direct DM notifies received close together', async () => {
+  it('retries a failed direct DM link pull with a fresh transfer id', async () => {
     const sender = createDmIdentity();
     const recipient = createDmIdentity();
     const sourcePeerHash = 'a'.repeat(32);
     const requesterPeerHash = 'b'.repeat(32);
     const inboundPeerHash = 'c'.repeat(32);
-    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const acceptedResources: Array<Record<string, any>> = [];
     const bridge = Object.assign(new EventEmitter(), {
       getLocalDestinationHash: () => requesterPeerHash,
-      sendReticulumChatDetailed: async (
-        peer: string,
-        wire: ReticulumChatWire
+      acceptReticulumChatResourceDetailed: async (
+        payload: Record<string, any>
       ) => {
-        sent.push({ peer, wire });
+        acceptedResources.push(payload);
         return { ok: true as const };
       },
     });
@@ -7813,20 +7979,19 @@ describe('reticulum chat manager', () => {
     receiver.setLocalDmAddresses([recipient.address]);
     await flushAsyncWork();
 
-    const buildNotify = (
-      requestId: string,
-      timestamp: number
-    ): Extract<ReticulumChatWire, { k: 'dm_notify' }> => {
-      const signedFields = buildReticulumDmNotifySignedFields({
-        peerAddress: recipient.address,
-        sourcePeerHash,
-        requestId,
-        maxHops: 5,
-        authorAddress: sender.address,
-        authorPublicKey: sender.publicKey,
-        timestamp,
-      });
-      return {
+    const requestId = 'd'.repeat(8);
+    const timestamp = Date.now();
+    const signedFields = buildReticulumDmNotifySignedFields({
+      peerAddress: recipient.address,
+      sourcePeerHash,
+      requestId,
+      maxHops: 5,
+      authorAddress: sender.address,
+      authorPublicKey: sender.publicKey,
+      timestamp,
+    });
+    await (receiver as any).handleDirectNotify(
+      {
         t: 'RCHAT',
         k: 'dm_notify',
         d: {
@@ -7842,30 +8007,125 @@ describe('reticulum chat manager', () => {
             )
           ),
         },
+      },
+      inboundPeerHash
+    );
+    await flushAsyncWork();
+    expect(acceptedResources).toHaveLength(1);
+
+    receiver.handleResourceEvent({
+      status: 'failed',
+      transferId: acceptedResources[0].transferId,
+      reason: 'resource_session_link_closed',
+    });
+    const pull = [...(receiver as any).directDmPulls.values()][0];
+    expect(pull?.retryTimer).toBeTruthy();
+    clearTimeout(pull.retryTimer);
+    pull.retryTimer = null;
+    await (receiver as any).runDirectDmPull(pull.key);
+
+    expect(acceptedResources).toHaveLength(2);
+    expect(acceptedResources[1].transferId).not.toBe(
+      acceptedResources[0].transferId
+    );
+    expect(acceptedResources[1].authMessage.q).toBe(requestId);
+    receiver.close();
+  });
+
+  it('coalesces close direct DM notifies while one link pull is active', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const sourcePeerHash = 'a'.repeat(32);
+    const requesterPeerHash = 'b'.repeat(32);
+    const inboundPeerHash = 'c'.repeat(32);
+    const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+    const acceptedResources: Array<Record<string, any>> = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => requesterPeerHash,
+      sendReticulumChatDetailed: async (
+        peer: string,
+        wire: ReticulumChatWire
+      ) => {
+        sent.push({ peer, wire });
+        return { ok: true as const };
+      },
+      acceptReticulumChatResourceDetailed: async (
+        payload: Record<string, any>
+      ) => {
+        acceptedResources.push(payload);
+        return { ok: true as const };
+      },
+    });
+    const receiver = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(recipient),
+      bridge: bridge as any,
+    });
+    receiver.setLocalDmAddresses([recipient.address]);
+    await flushAsyncWork();
+
+    const buildNotify = (
+      requestId: string,
+      timestamp: number,
+      latestCursor: string
+    ): Extract<ReticulumChatWire, { k: 'dm_notify' }> => {
+      const signedFields = buildReticulumDmNotifySignedFields({
+        peerAddress: recipient.address,
+        sourcePeerHash,
+        requestId,
+        latestCursor,
+        maxHops: 5,
+        authorAddress: sender.address,
+        authorPublicKey: sender.publicKey,
+        timestamp,
+      });
+      return {
+        t: 'RCHAT',
+        k: 'dm_notify',
+        d: {
+          b: recipient.address,
+          sp: sourcePeerHash,
+          q: requestId,
+          lc: latestCursor,
+          p: sender.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              sender.secretKey
+            )
+          ),
+        },
       };
     };
 
     const timestamp = Date.now();
     await (receiver as any).handleDirectNotify(
-      buildNotify('d'.repeat(8), timestamp),
+      buildNotify('d'.repeat(8), timestamp, 'a'.repeat(10)),
       inboundPeerHash
     );
     await (receiver as any).handleDirectNotify(
-      buildNotify('e'.repeat(8), timestamp + 1),
+      buildNotify('f'.repeat(8), timestamp + 1, 'a'.repeat(10)),
+      inboundPeerHash
+    );
+    let pull = [...(receiver as any).directDmPulls.values()][0];
+    expect(pull).toMatchObject({ requestId: 'd'.repeat(8), inFlight: true });
+    await (receiver as any).handleDirectNotify(
+      buildNotify('e'.repeat(8), timestamp + 2, 'b'.repeat(10)),
       inboundPeerHash
     );
     await flushAsyncWork();
 
-    const requests = sent.filter(
-      (item) => item.peer === sourcePeerHash && item.wire.k === 'dm_req'
-    );
-    expect(requests).toHaveLength(2);
-    expect(
-      (requests[0].wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q.q
-    ).toBe('d'.repeat(8));
-    expect(
-      (requests[1].wire as Extract<ReticulumChatWire, { k: 'dm_req' }>).q.q
-    ).toBe('e'.repeat(8));
+    expect(acceptedResources).toHaveLength(1);
+    expect(acceptedResources[0]).toMatchObject({
+      peerPresenceHash: sourcePeerHash,
+      authMessage: {
+        type: 'RETICULUM_CHAT_DM_PAGE_REQUEST',
+        q: 'd'.repeat(8),
+      },
+    });
+    pull = [...(receiver as any).directDmPulls.values()][0];
+    expect(pull).toMatchObject({ requestId: 'e'.repeat(8), inFlight: true });
     receiver.close();
   });
 
@@ -12357,9 +12617,8 @@ describe('reticulum chat manager', () => {
     expect(direct.some(({ wire: sent }) => sent.k === 'event_req')).toBe(false);
     expect((intermediate as any).pendingEventPulls.size).toBe(1);
     expect(
-      (intermediate as any).pendingEventPulls.get(
-        `73:${event.eventId}`
-      ).inFlight
+      (intermediate as any).pendingEventPulls.get(`73:${event.eventId}`)
+        .inFlight
     ).toBe(true);
     expect([
       ...(intermediate as any).eventSourcePeers.get(event.eventId).peers,
@@ -13541,9 +13800,9 @@ describe('reticulum chat manager', () => {
         1
       )
     );
-    expect(
-      direct.find(({ wire }) => wire.k === 'land_state')?.peer
-    ).toBe('peer-b');
+    expect(direct.find(({ wire }) => wire.k === 'land_state')?.peer).toBe(
+      'peer-b'
+    );
 
     // A target whose bridge lease has expired must return to the JavaScript
     // fallback even if another target made the native fast-forward successful.
@@ -13576,9 +13835,9 @@ describe('reticulum chat manager', () => {
         1
       )
     );
-    expect(
-      direct.find(({ wire }) => wire.k === 'land_state')?.peer
-    ).toBe('peer-a');
+    expect(direct.find(({ wire }) => wire.k === 'land_state')?.peer).toBe(
+      'peer-a'
+    );
     manager.close();
   });
 
@@ -13769,9 +14028,7 @@ describe('reticulum chat manager', () => {
     const initialRevision = (manager as any).landStateForwardingRevision;
     (manager as any).noteGroupInterestRoute(73, 'peer-origin', 'peer-b', 1);
 
-    expect((manager as any).landStateForwardingRevision).toBe(
-      initialRevision
-    );
+    expect((manager as any).landStateForwardingRevision).toBe(initialRevision);
     expect((manager as any).groupInterestRoutes.get('73:peer-origin')).toEqual(
       expect.objectContaining({ reversePeerHash: 'peer-a', hops: 1 })
     );
@@ -13845,12 +14102,8 @@ describe('reticulum chat manager', () => {
     const auth = signer.landAuthWire(73, 'session-expiry', 100_000);
 
     expect(getReticulumLandAuthRejectionReason(auth, 100_000)).toBeNull();
-    expect(getReticulumLandAuthRejectionReason(auth, 220_000)).toBe(
-      'expired'
-    );
-    expect(getReticulumLandAuthRejectionReason(auth, 220_001)).toBe(
-      'expired'
-    );
+    expect(getReticulumLandAuthRejectionReason(auth, 220_000)).toBe('expired');
+    expect(getReticulumLandAuthRejectionReason(auth, 220_001)).toBe('expired');
     expect(
       getReticulumLandAuthRejectionReason({ ...auth, g: 74 }, 100_000)
     ).toBe('bad_signature');
@@ -15233,9 +15486,9 @@ describe('reticulum chat manager', () => {
     expect([...chatInboundDedupe.keys()]).toEqual(['history-inbound-sentinel']);
     expect((manager as any).recentInboundLandControlWires.size).toBe(1);
     expect((manager as any).forwardedLandControlKeys.size).toBe(2);
-    expect(
-      new Set((manager as any).forwardedLandControlKeys.values())
-    ).toEqual(new Set([now + 8_000]));
+    expect(new Set((manager as any).forwardedLandControlKeys.values())).toEqual(
+      new Set([now + 8_000])
+    );
 
     manager.handleWire(
       { ...wire, o: 'bbbbbbbbbbbbbbbb', h: 3 },
@@ -19933,12 +20186,14 @@ describe('reticulum chat manager', () => {
     expect(
       (sent.find((wire) => wire.k === 'hello_v3')?.f as string[]) ?? []
     ).not.toContain('public_activity_v1');
-    expect(sent).toContainEqual(expect.objectContaining({
-      t: 'RCHAT',
-      k: 'group_sub',
-      groups: [48],
-      mode: 'summary',
-    }));
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [48],
+        mode: 'summary',
+      })
+    );
     expect(sent).toContainEqual(
       expect.objectContaining({
         t: 'RCHAT',
@@ -20318,12 +20573,14 @@ describe('reticulum chat manager', () => {
       manager.subscribeGroup(58);
       await flushQueuedWork();
       expect(manager.getSubscriptions()).toEqual([58]);
-      expect(fanout).toContainEqual(expect.objectContaining({
-        t: 'RCHAT',
-        k: 'group_sub',
-        groups: [58],
-        mode: 'summary',
-      }));
+      expect(fanout).toContainEqual(
+        expect.objectContaining({
+          t: 'RCHAT',
+          k: 'group_sub',
+          groups: [58],
+          mode: 'summary',
+        })
+      );
 
       direct.length = 0;
       manager.handleWire(
@@ -20417,12 +20674,14 @@ describe('reticulum chat manager', () => {
     manager.setLocalGroupMemberships([58]);
     await flushQueuedWork();
     expect(manager.getSubscriptions()).toEqual([58]);
-    expect(fanout).toContainEqual(expect.objectContaining({
-      t: 'RCHAT',
-      k: 'group_sub',
-      groups: [58],
-      mode: 'summary',
-    }));
+    expect(fanout).toContainEqual(
+      expect.objectContaining({
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [58],
+        mode: 'summary',
+      })
+    );
     manager.close();
   });
 
@@ -20624,9 +20883,9 @@ describe('reticulum chat manager', () => {
           peer === 'peer-a' && wire.k === 'group_state_digest_v3'
       )
     ).toBe(true);
-    expect(
-      fanout.some((wire) => wire.k === 'group_state_digest_v3')
-    ).toBe(false);
+    expect(fanout.some((wire) => wire.k === 'group_state_digest_v3')).toBe(
+      false
+    );
     manager.close();
   });
 
@@ -20703,12 +20962,14 @@ describe('reticulum chat manager', () => {
       manager.subscribeChannel(716, 'general');
       await flushQueuedWork();
 
-      expect(sent).toContainEqual(expect.objectContaining({
-        t: 'RCHAT',
-        k: 'group_sub',
-        groups: [716],
-        mode: 'active',
-      }));
+      expect(sent).toContainEqual(
+        expect.objectContaining({
+          t: 'RCHAT',
+          k: 'group_sub',
+          groups: [716],
+          mode: 'active',
+        })
+      );
       expect(sent).toContainEqual(
         expect.objectContaining({
           t: 'RCHAT',
@@ -22663,9 +22924,7 @@ describe('reticulum chat manager', () => {
   it('sweeps abandoned receive blobs without touching a recent transfer', async () => {
     const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
     const suffix = nodeCrypto.randomBytes(8).toString('hex');
-    const stalePath = (manager as any).tempEventBlobPath(
-      `${suffix}.page.recv`
-    );
+    const stalePath = (manager as any).tempEventBlobPath(`${suffix}.page.recv`);
     const recentPath = (manager as any).tempEventBlobPath(
       `${suffix}-recent.page.recv`
     );
