@@ -7869,6 +7869,145 @@ describe('reticulum chat manager', () => {
     receiver.close();
   });
 
+  it('does not retry a relayed DM notify when exclusions leave no overlay route', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const local = createDmIdentity();
+    const sourcePeerHash = 'a'.repeat(32);
+    const localPeerHash = 'b'.repeat(32);
+    const inboundPeerHash = 'c'.repeat(32);
+    const fanoutReticulumChatDetailed = vi.fn(async () => ({
+      ok: false as const,
+      reason: 'no-route' as const,
+      error: 'No overlay route',
+    }));
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => localPeerHash,
+      fanoutReticulumChatDetailed,
+    });
+    const relay = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(local),
+      bridge: bridge as any,
+    });
+    relay.setLocalDmAddresses([local.address]);
+    await flushAsyncWork();
+    fanoutReticulumChatDetailed.mockClear();
+
+    const requestId = 'f'.repeat(8);
+    const timestamp = Date.now();
+    const signedFields = buildReticulumDmNotifySignedFields({
+      peerAddress: recipient.address,
+      sourcePeerHash,
+      requestId,
+      maxHops: 5,
+      authorAddress: sender.address,
+      authorPublicKey: sender.publicKey,
+      timestamp,
+    });
+    await (relay as any).handleDirectNotify(
+      {
+        t: 'RCHAT',
+        k: 'dm_notify',
+        d: {
+          b: recipient.address,
+          sp: sourcePeerHash,
+          q: requestId,
+          p: sender.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              sender.secretKey
+            )
+          ),
+        },
+      },
+      inboundPeerHash
+    );
+    await flushAsyncWork();
+
+    expect(fanoutReticulumChatDetailed).toHaveBeenCalledTimes(1);
+    expect((relay as any).controlRetryQueue.size).toBe(0);
+    relay.close();
+  });
+
+  it('retries transient relayed DM notify failures but quietly stops at an excluded-route dead end', async () => {
+    const sender = createDmIdentity();
+    const recipient = createDmIdentity();
+    const local = createDmIdentity();
+    const sourcePeerHash = 'a'.repeat(32);
+    const localPeerHash = 'b'.repeat(32);
+    const inboundPeerHash = 'c'.repeat(32);
+    const fanoutReticulumChatDetailed = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false as const,
+        reason: 'bridge-overloaded' as const,
+        error: 'Bridge overloaded',
+      })
+      .mockResolvedValueOnce({
+        ok: false as const,
+        reason: 'no-route' as const,
+        error: 'No overlay route',
+      });
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => localPeerHash,
+      fanoutReticulumChatDetailed,
+    });
+    const relay = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createDmSigner(local),
+      bridge: bridge as any,
+    });
+    relay.setLocalDmAddresses([local.address]);
+    await flushAsyncWork();
+    fanoutReticulumChatDetailed.mockClear();
+
+    const requestId = '1'.repeat(8);
+    const timestamp = Date.now();
+    const signedFields = buildReticulumDmNotifySignedFields({
+      peerAddress: recipient.address,
+      sourcePeerHash,
+      requestId,
+      maxHops: 5,
+      authorAddress: sender.address,
+      authorPublicKey: sender.publicKey,
+      timestamp,
+    });
+    await (relay as any).handleDirectNotify(
+      {
+        t: 'RCHAT',
+        k: 'dm_notify',
+        d: {
+          b: recipient.address,
+          sp: sourcePeerHash,
+          q: requestId,
+          p: sender.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              sender.secretKey
+            )
+          ),
+        },
+      },
+      inboundPeerHash
+    );
+    await flushAsyncWork();
+
+    const queued = [...(relay as any).controlRetryQueue.values()];
+    expect(queued).toHaveLength(1);
+    expect(queued[0].dropIfNoRoute).toBe(true);
+    queued[0].nextAttemptAt = 0;
+    await (relay as any).drainControlRetryQueue();
+
+    expect(fanoutReticulumChatDetailed).toHaveBeenCalledTimes(2);
+    expect((relay as any).controlRetryQueue.size).toBe(0);
+    relay.close();
+  });
+
   it('answers DM probes from another device using the same local address', async () => {
     const sender = createDmIdentity();
     const recipient = createDmIdentity();

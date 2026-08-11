@@ -868,6 +868,7 @@ type ReticulumChatControlRetryItem = {
   wire: ReticulumChatWire;
   peerHash?: string;
   excludePeerPresenceHashes?: string[];
+  dropIfNoRoute?: boolean;
   attempts: number;
   nextAttemptAt: number;
 };
@@ -18404,7 +18405,34 @@ export class ReticulumChatManager extends EventEmitter {
         `dm-notify:${requestId}:${hop + 1}`
       );
     } else {
-      void this.fanout(forwarded, exclude);
+      // This is relay-only fanout. A leaf commonly has no eligible neighbor
+      // after excluding the inbound/source peers, which is an expected
+      // topology outcome rather than a delivery failure. Suppress only that
+      // result; transient bridge/send failures still enter the normal retry
+      // queue. Locally originated notifies retain their existing behavior.
+      void this.fanoutOnce(forwarded, exclude)
+        .then((result) => {
+          if (
+            result.ok === false &&
+            result.reason !== 'no-route' &&
+            this.shouldRetryControlSend(forwarded, result.reason)
+          ) {
+            this.enqueueControlRetry({
+              wire: forwarded,
+              excludePeerPresenceHashes: exclude,
+              dropIfNoRoute: true,
+            });
+          }
+        })
+        .catch(() => {
+          // Match the normal fanout path's bridge-exception recovery without
+          // turning an unexpected rejected Promise into an unhandled error.
+          this.enqueueControlRetry({
+            wire: forwarded,
+            excludePeerPresenceHashes: exclude,
+            dropIfNoRoute: true,
+          });
+        });
     }
   }
 
@@ -37612,6 +37640,7 @@ export class ReticulumChatManager extends EventEmitter {
     wire: ReticulumChatWire;
     peerHash?: string;
     excludePeerPresenceHashes?: string[];
+    dropIfNoRoute?: boolean;
   }): void {
     if (this.isClosed) return;
     const key = this.controlRetryKey(item);
@@ -37621,6 +37650,10 @@ export class ReticulumChatManager extends EventEmitter {
       existing.wire = item.wire;
       existing.peerHash = item.peerHash?.trim().toLowerCase();
       existing.excludePeerPresenceHashes = item.excludePeerPresenceHashes;
+      // Only keep silent dead-end handling when every enqueue for this exact
+      // retry key is relay-only. A normal/local enqueue must retain warnings.
+      existing.dropIfNoRoute =
+        existing.dropIfNoRoute === true && item.dropIfNoRoute === true;
       existing.nextAttemptAt = Math.min(
         existing.nextAttemptAt,
         now + RETICULUM_CHAT_CONTROL_RETRY_MS
@@ -37650,6 +37683,7 @@ export class ReticulumChatManager extends EventEmitter {
       wire: item.wire,
       peerHash: item.peerHash?.trim().toLowerCase(),
       excludePeerPresenceHashes: item.excludePeerPresenceHashes,
+      dropIfNoRoute: item.dropIfNoRoute,
       attempts: 0,
       nextAttemptAt: now + RETICULUM_CHAT_CONTROL_RETRY_MS,
     });
@@ -37713,6 +37747,17 @@ export class ReticulumChatManager extends EventEmitter {
           continue;
         }
         if (result.ok) {
+          this.controlRetryQueue.delete(item.key);
+          continue;
+        }
+        if (
+          result.ok === false &&
+          item.dropIfNoRoute === true &&
+          result.reason === 'no-route'
+        ) {
+          // A relayed discovery notice has nowhere else to go once its inbound
+          // and source peers are excluded. This is a completed relay branch,
+          // not a connectivity warning.
           this.controlRetryQueue.delete(item.key);
           continue;
         }
