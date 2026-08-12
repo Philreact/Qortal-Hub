@@ -8626,7 +8626,7 @@ describe('reticulum chat manager', () => {
     }
   );
 
-  it('publishes oversized live events as event resource offers and digest discovery', async () => {
+  it('publishes oversized live events as event resource offers and digest discovery without a redundant notice', async () => {
     const fanout: Record<string, unknown>[] = [];
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const accepts: Array<Record<string, unknown>> = [];
@@ -8679,7 +8679,7 @@ describe('reticulum chat manager', () => {
     expect(
       direct.some(({ wire }) => wire.k === 'event_notice_v3') ||
         fanout.some((wire) => wire.k === 'event_notice_v3')
-    ).toBe(true);
+    ).toBe(false);
     expect(fanout.find((wire) => wire.k === 'event_batch')).toBeUndefined();
     expect(direct).toContainEqual(
       expect.objectContaining({
@@ -12158,6 +12158,87 @@ describe('reticulum chat manager', () => {
     );
     expect(
       fanout.some((wire) => wire.k === 'group_state_digest_v3' && wire.g === 73)
+    ).toBe(false);
+    manager.close();
+  });
+
+  it('does not retry a redundant event notice after directly offering the event to the only interested leaf', async () => {
+    const now = 100_000;
+    const localPeer = 'a'.repeat(32);
+    const leafPeer = 'b'.repeat(32);
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const fanout: Array<{
+      wires: Record<string, unknown>[];
+      excluded: string[];
+    }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => localPeer,
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+        fanoutReticulumChatDetailed: async (
+          wires: Record<string, unknown>[],
+          excluded: string[] = []
+        ) => {
+          fanout.push({ wires, excluded });
+          return {
+            ok: false as const,
+            reason: 'no-route' as const,
+            error: 'No established overlay route',
+          };
+        },
+        sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' },
+      leafPeer
+    );
+    await flushQueuedWork();
+    direct.length = 0;
+    fanout.length = 0;
+
+    const result = await manager.publishEvent(
+      signedEvent({
+        eventId: 'event-direct-leaf-no-redundant-notice-retry',
+        groupId: 73,
+        timestamp: now,
+      })
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(direct).toContainEqual(
+      expect.objectContaining({
+        peer: leafPeer,
+        wire: expect.objectContaining({
+          k: 'event_offer',
+          g: 73,
+        }),
+      })
+    );
+    expect(direct.some(({ wire }) => wire.k === 'event_notice_v3')).toBe(false);
+    expect(
+      fanout.some(({ wires }) =>
+        wires.some((wire) => wire.k === 'event_notice_v3')
+      )
+    ).toBe(false);
+    expect(
+      [...(manager as any).controlRetryQueue.values()].some(
+        (item: { wire: ReticulumChatWire }) => item.wire.k === 'event_notice_v3'
+      )
     ).toBe(false);
     manager.close();
   });

@@ -22758,21 +22758,32 @@ export class ReticulumChatManager extends EventEmitter {
       const normalized = this.routePeerHash(peerHash);
       return !normalized || !transitNextHops.has(normalized);
     });
-    const noticeResult = notice
-      ? await this.sendGroupRoutedControl(event.groupId, notice, {
-          // Do not duplicate notices to direct leaf recipients, but preserve
-          // any successful recipient that is also the sole next hop for an
-          // indirect group member.
-          excludePeerHashes: noticeExcludePeerHashes,
-          fallbackFanout: true,
-          useRetryQueue: true,
-          context: 'published-event-notice-v3',
-        })
-      : {
+    const allInterestedPeersDirectlyNotified =
+      interestedPeers.length > 0 && offeredCount === interestedPeers.length;
+    const remainingNoticeNextHops = this.getGroupInterestNextHops(
+      event.groupId,
+      noticeExcludePeerHashes
+    );
+    const noticeAlreadyCovered =
+      allInterestedPeersDirectlyNotified &&
+      remainingNoticeNextHops.length === 0;
+    const noticeResult = !notice
+      ? {
           ok: false as const,
           reason: 'send-command-failed' as const,
           error: 'Unable to sign event notice',
-        };
+        }
+      : noticeAlreadyCovered
+        ? ({ ok: true as const } satisfies ReticulumSendResult)
+        : await this.sendGroupRoutedControl(event.groupId, notice, {
+            // Do not duplicate notices to direct leaf recipients, but preserve
+            // any successful recipient that is also the sole next hop for an
+            // indirect group member.
+            excludePeerHashes: noticeExcludePeerHashes,
+            fallbackFanout: true,
+            useRetryQueue: true,
+            context: 'published-event-notice-v3',
+          });
 
     const digestWire = await this.buildGroupStateDigestWire(event.groupId);
     if (!digestWire) {
