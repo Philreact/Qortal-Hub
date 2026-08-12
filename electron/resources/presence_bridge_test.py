@@ -6852,7 +6852,7 @@ class PresenceBridgePinnedCallPeersTest(unittest.TestCase):
         self.assertIn(peer_hash, self.bridge._pinned_call_overlay_peers)
         self.assertFalse(responses[-1][0][1])
 
-    def test_land_call_control_leases_peer_before_a_missing_link_response(self):
+    def test_land_call_control_uses_dedicated_link_without_overlay_admission(self):
         peer_hash = "ef" * 16
         responses = []
         self.bridge._destination = object()
@@ -6870,15 +6870,12 @@ class PresenceBridgePinnedCallPeersTest(unittest.TestCase):
                 "message_type": "RCHAT",
             },
         ), mock.patch.object(
-            self.bridge, "_prepare_group_signal_peer", return_value=None
-        ), mock.patch.object(
-            self.bridge,
-            "_send_group_signal_wire_to_peer",
-            return_value={
-                "payload": {"code": "packet_send_false"},
-                "error": "Packet send returned False",
-            },
-        ):
+            self.bridge, "_send_land_call_wire_to_peer", return_value=False
+        ) as dedicated_send, mock.patch.object(
+            self.bridge, "_prepare_group_signal_peer"
+        ) as overlay_prepare, mock.patch.object(
+            self.bridge, "_send_group_signal_wire_to_peer"
+        ) as overlay_send:
             self.bridge.handle_send_reticulum_chat(
                 "land-call-send",
                 {
@@ -6887,8 +6884,160 @@ class PresenceBridgePinnedCallPeersTest(unittest.TestCase):
                 },
             )
 
-        self.assertIn(peer_hash, self.bridge._pinned_call_overlay_peers)
+        dedicated_send.assert_called_once_with(
+            peer_hash,
+            b'{"t":"RCHAT","k":"lc2"}',
+        )
+        overlay_prepare.assert_not_called()
+        overlay_send.assert_not_called()
+        self.assertNotIn(peer_hash, self.bridge._pinned_call_overlay_peers)
         self.assertFalse(responses[-1][0][1])
+
+    def test_inbound_lc2_first_packet_bypasses_overlay_and_requires_link_identity(self):
+        peer_hash = "ac" * 16
+        link = FakeLink()
+        packet = FakePacket(link)
+        wire = {
+            "t": "RCHAT",
+            "k": "lc2",
+            "r": peer_hash,
+            "g": 1143,
+        }
+
+        with mock.patch.object(
+            self.bridge, "_overlay_link_remote_identity", return_value=object()
+        ), mock.patch.object(
+            self.bridge, "_overlay_identity_matches_peer", return_value=True
+        ), mock.patch.object(
+            self.bridge, "_emit_call_bridge_message", return_value=True
+        ) as emitted:
+            self.bridge._pending_inbound_classify_link_ids.add(id(link))
+            self.bridge._handle_inbound_link_first_packet(
+                json.dumps(wire).encode("utf-8"),
+                packet,
+            )
+
+        self.assertEqual(len(self.bridge._land_call_links_by_id), 1)
+        self.assertEqual(len(self.bridge._overlay_links_by_id), 0)
+        emitted.assert_called_once_with(wire, peer_hash, mock.ANY)
+        state = next(iter(self.bridge._land_call_links_by_id.values()))
+        self.assertTrue(state["incoming"])
+        self.assertTrue(state["remote_identity_verified"])
+
+    def test_inbound_lc2_rejects_a_claim_that_does_not_match_link_identity(self):
+        peer_hash = "ad" * 16
+        link = FakeLink()
+        packet = FakePacket(link)
+        wire = {"t": "RCHAT", "k": "lc2", "r": peer_hash, "g": 1143}
+
+        with mock.patch.object(
+            self.bridge, "_overlay_link_remote_identity", return_value=object()
+        ), mock.patch.object(
+            self.bridge, "_overlay_identity_matches_peer", return_value=False
+        ), mock.patch.object(
+            self.bridge, "_teardown_reticulum_link_bounded"
+        ) as teardown, mock.patch.object(
+            self.bridge, "_emit_call_bridge_message"
+        ) as emitted:
+            self.bridge._pending_inbound_classify_link_ids.add(id(link))
+            self.bridge._handle_inbound_link_first_packet(
+                json.dumps(wire).encode("utf-8"),
+                packet,
+            )
+
+        self.assertEqual(len(self.bridge._land_call_links_by_id), 0)
+        emitted.assert_not_called()
+        teardown.assert_called_once()
+
+    def test_established_land_call_link_sends_without_overlay(self):
+        peer_hash = "ae" * 16
+        link = FakeLink()
+        link_id = "land-call-link"
+        now = time.time()
+        state = {
+            "linkId": link_id,
+            "link": link,
+            "peerPresenceHash": peer_hash,
+            "incoming": False,
+            "established": True,
+            "created_at": now,
+            "established_at": now,
+            "last_activity_at": now,
+        }
+        self.bridge._land_call_links_by_id[link_id] = state
+        self.bridge._land_call_link_ids_by_object[id(link)] = link_id
+        self.bridge._active_land_call_link_id_by_peer_hash[peer_hash] = link_id
+
+        with mock.patch.object(
+            self.bridge, "_send_packet_on_link", return_value=True
+        ) as send_packet, mock.patch.object(
+            self.bridge, "_send_wire_to_overlay_peer"
+        ) as overlay_send:
+            self.assertTrue(
+                self.bridge._send_land_call_wire_to_peer(peer_hash, b"call-control")
+            )
+
+        send_packet.assert_called_once_with(
+            link,
+            b"call-control",
+            f"target=qortalland-call-control send peer={peer_hash}",
+        )
+        overlay_send.assert_not_called()
+
+    def test_closed_land_call_link_is_not_reused(self):
+        peer_hash = "be" * 16
+        link = FakeLink()
+        link.status = RNS.Link.CLOSED
+        link_id = "closed-land-call-link"
+        state = {
+            "linkId": link_id,
+            "link": link,
+            "peerPresenceHash": peer_hash,
+            "incoming": False,
+            "established": True,
+            "created_at": time.time(),
+            "established_at": time.time(),
+            "last_activity_at": time.time(),
+        }
+        self.bridge._land_call_links_by_id[link_id] = state
+        self.bridge._land_call_link_ids_by_object[id(link)] = link_id
+        self.bridge._active_land_call_link_id_by_peer_hash[peer_hash] = link_id
+
+        self.assertFalse(self.bridge._land_call_link_is_usable(state))
+        self.bridge._prune_land_call_links()
+
+        self.assertNotIn(link_id, self.bridge._land_call_links_by_id)
+        self.assertNotIn(peer_hash, self.bridge._active_land_call_link_id_by_peer_hash)
+        self.assertTrue(link.teardown_called)
+
+    def test_land_call_link_rejects_a_later_sender_mismatch(self):
+        peer_hash = "af" * 16
+        link = FakeLink()
+        link_id = "land-call-link"
+        state = {
+            "linkId": link_id,
+            "link": link,
+            "peerPresenceHash": peer_hash,
+            "incoming": True,
+            "established": True,
+        }
+        self.bridge._land_call_links_by_id[link_id] = state
+        self.bridge._land_call_link_ids_by_object[id(link)] = link_id
+
+        with mock.patch.object(
+            self.bridge, "_close_land_call_link"
+        ) as close_link, mock.patch.object(
+            self.bridge, "_emit_call_bridge_message"
+        ) as emitted:
+            self.bridge._handle_land_call_link_packet(
+                json.dumps(
+                    {"t": "RCHAT", "k": "lc2", "r": "ba" * 16}
+                ).encode("utf-8"),
+                FakePacket(link),
+            )
+
+        close_link.assert_called_once_with(link_id, "sender_mismatch")
+        emitted.assert_not_called()
 
     def test_full_call_lease_table_does_not_evict_existing_calls(self):
         now = 2_000.0

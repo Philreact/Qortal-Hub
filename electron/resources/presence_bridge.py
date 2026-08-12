@@ -392,6 +392,14 @@ _INBOUND_LINK_CLASSIFY_TIMEOUT_SEC = 5.0
 _pending_inbound_classify_link_ids: Set[int] = set()
 _inbound_classify_timers: Dict[int, threading.Timer] = {}
 
+# Qortal Land call controls use short-lived, endpoint-authenticated Links that
+# are deliberately separate from the presence overlay mesh. A call must not be
+# rejected merely because the receiver's ordinary overlay-neighbour budget is
+# full. The signed lc2 packet itself classifies the Link on first delivery.
+_LAND_CALL_LINK_IDLE_SECONDS = 3 * 60.0
+_LAND_CALL_LINK_CONNECT_TIMEOUT_SECONDS = 30.0
+_LAND_CALL_LINK_MAX = 32
+
 # RNS Destination.announce: once after authenticated local presence activity
 # (PRESENCE_ANNOUNCE, or PRESENCE_HEARTBEAT after bridge recovery), then every
 # RNS_ANNOUNCE_INTERVAL_SEC while session active; cancel on PRESENCE_OFFLINE / stop.
@@ -546,6 +554,9 @@ _audio_link_desired_by_peer_hash: Dict[str, Dict[str, Any]] = {}
 _overlay_links_by_id: Dict[str, Dict[str, Any]] = {}
 _overlay_link_ids_by_object: Dict[int, str] = {}
 _active_overlay_link_id_by_peer_hash: Dict[str, str] = {}
+_land_call_links_by_id: Dict[str, Dict[str, Any]] = {}
+_land_call_link_ids_by_object: Dict[int, str] = {}
+_active_land_call_link_id_by_peer_hash: Dict[str, str] = {}
 _pinned_chat_overlay_peers: Dict[str, float] = {}
 _pinned_call_overlay_peers: Dict[str, float] = {}
 _overlay_open_pending_by_peer_hash: Set[str] = set()
@@ -5939,6 +5950,7 @@ def overlay_transport_maintenance_loop() -> None:
                     last_announce_at = now
                 _seed_overlay_good_outbound_cache_candidates()
                 _run_overlay_sync_maintenance("overlay_transport_periodic")
+                _prune_land_call_links(now)
                 pinged = _ping_established_overlay_links("periodic")
                 with _state_lock:
                     active = len(_active_overlay_neighbors)
@@ -19325,6 +19337,402 @@ def _cancel_inbound_classify_timer(link_key: int) -> None:
             pass
 
 
+def _land_call_link_state(link_id: str) -> Optional[Dict[str, Any]]:
+    with _state_lock:
+        return _land_call_links_by_id.get(str(link_id or ""))
+
+
+def _land_call_link_id(link: Any) -> str:
+    with _state_lock:
+        return str(_land_call_link_ids_by_object.get(id(link)) or "")
+
+
+def _land_call_link_is_usable(state: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state, dict) or state.get("established") is not True:
+        return False
+    link = state.get("link")
+    link_id = str(state.get("linkId") or "")
+    if link is None or not link_id:
+        return False
+    status = getattr(link, "status", None)
+    active_status = getattr(RNS.Link, "ACTIVE", None)
+    if status is not None and active_status is not None and status != active_status:
+        return False
+    with _state_lock:
+        return (
+            _land_call_links_by_id.get(link_id) is state
+            and _land_call_link_ids_by_object.get(id(link)) == link_id
+        )
+
+
+def _land_call_link_is_terminal(state: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state, dict):
+        return True
+    link = state.get("link")
+    if link is None:
+        return True
+    status = getattr(link, "status", None)
+    return status in {
+        getattr(RNS.Link, "STALE", object()),
+        getattr(RNS.Link, "CLOSED", object()),
+    }
+
+
+def _remove_land_call_link(link_id: str) -> Optional[Dict[str, Any]]:
+    link_key = str(link_id or "")
+    if not link_key:
+        return None
+    with _state_lock:
+        state = _land_call_links_by_id.pop(link_key, None)
+        if state is None:
+            return None
+        link = state.get("link")
+        if link is not None and _land_call_link_ids_by_object.get(id(link)) == link_key:
+            _land_call_link_ids_by_object.pop(id(link), None)
+            _incoming_unified_peer_hash_by_object.pop(id(link), None)
+        peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+        if _active_land_call_link_id_by_peer_hash.get(peer_key) == link_key:
+            replacement = next(
+                (
+                    candidate_id
+                    for candidate_id, candidate in _land_call_links_by_id.items()
+                    if str(candidate.get("peerPresenceHash") or "").strip().lower()
+                    == peer_key
+                    and _land_call_link_is_usable(candidate)
+                ),
+                "",
+            )
+            if replacement:
+                _active_land_call_link_id_by_peer_hash[peer_key] = replacement
+            else:
+                _active_land_call_link_id_by_peer_hash.pop(peer_key, None)
+        return state
+
+
+def _close_land_call_link(link_id: str, reason: str) -> None:
+    state = _remove_land_call_link(link_id)
+    if state is None:
+        return
+    link = state.get("link")
+    peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+    if link is not None:
+        _teardown_reticulum_link_bounded(
+            link,
+            f"target=qortalland-call-control reason={reason} peer={peer_key or 'unknown'}",
+        )
+
+
+def _prune_land_call_links(
+    now: Optional[float] = None,
+    *,
+    reserve_slots: int = 0,
+) -> None:
+    if now is None:
+        now = time.time()
+    stale_ids: List[str] = []
+    with _state_lock:
+        for link_id, state in list(_land_call_links_by_id.items()):
+            created_at = float(state.get("created_at") or now)
+            if _land_call_link_is_terminal(state):
+                stale_ids.append(link_id)
+                continue
+            if state.get("established") is not True:
+                if now - created_at >= _LAND_CALL_LINK_CONNECT_TIMEOUT_SECONDS:
+                    stale_ids.append(link_id)
+                continue
+            last_activity = float(
+                state.get("last_activity_at")
+                or state.get("established_at")
+                or created_at
+            )
+            if now - last_activity >= _LAND_CALL_LINK_IDLE_SECONDS:
+                stale_ids.append(link_id)
+        retained_limit = max(0, _LAND_CALL_LINK_MAX - max(0, reserve_slots))
+        if len(_land_call_links_by_id) - len(stale_ids) > retained_limit:
+            candidates = sorted(
+                (
+                    (
+                        float(
+                            state.get("last_activity_at")
+                            or state.get("established_at")
+                            or state.get("created_at")
+                            or 0.0
+                        ),
+                        link_id,
+                    )
+                    for link_id, state in _land_call_links_by_id.items()
+                    if link_id not in stale_ids
+                )
+            )
+            excess = len(_land_call_links_by_id) - len(stale_ids) - retained_limit
+            stale_ids.extend(link_id for _at, link_id in candidates[:excess])
+    for link_id in dict.fromkeys(stale_ids):
+        _close_land_call_link(link_id, "idle_or_pressure")
+
+
+def on_land_call_link_closed(link: Any) -> None:
+    link_id = _land_call_link_id(link)
+    if link_id:
+        _remove_land_call_link(link_id)
+
+
+def _configure_land_call_link(link: Any, link_id: str) -> None:
+    link.set_link_closed_callback(on_land_call_link_closed)
+    link.set_packet_callback(on_land_call_link_packet)
+    link.set_remote_identified_callback(on_land_call_link_remote_identified)
+    with _state_lock:
+        _land_call_link_ids_by_object[id(link)] = link_id
+
+
+def on_land_call_link_remote_identified(link: Any, identity: Any) -> None:
+    link_id = _land_call_link_id(link)
+    state = _land_call_link_state(link_id)
+    if state is None:
+        return
+    peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+    if peer_key and not _overlay_identity_matches_peer(identity, peer_key):
+        _close_land_call_link(link_id, "remote_identity_mismatch")
+        return
+    state["remote_identity_verified"] = True
+    state["last_activity_at"] = time.time()
+
+
+def _register_incoming_land_call_link(
+    link: Any,
+    peer_key: str,
+    decoded: Dict[str, Any],
+) -> str:
+    peer_key = str(peer_key or "").strip().lower()
+    if not _valid_presence_destination_hash_hex(peer_key):
+        _teardown_reticulum_link_bounded(
+            link,
+            "target=qortalland-call-control invalid_sender",
+        )
+        return ""
+    remote_identity = _overlay_link_remote_identity(link)
+    identified_peer = str(
+        _incoming_unified_peer_hash_by_object.get(id(link)) or ""
+    ).strip().lower()
+    identity_matches = _overlay_identity_matches_peer(remote_identity, peer_key)
+    if not identity_matches and identified_peer != peer_key:
+        log(
+            "[presence_bridge] target=qortalland-call-control "
+            f"inbound_rejected peer={peer_key or 'unknown'} reason=remote_identity_mismatch"
+        )
+        _teardown_reticulum_link_bounded(
+            link,
+            "target=qortalland-call-control inbound_identity_mismatch",
+        )
+        return ""
+    _prune_land_call_links(reserve_slots=1)
+    link_id = str(uuid.uuid4())
+    now = time.time()
+    state = {
+        "linkId": link_id,
+        "link": link,
+        "peerPresenceHash": peer_key,
+        "incoming": True,
+        "established": True,
+        "established_at": now,
+        "created_at": now,
+        "last_activity_at": now,
+        "remote_identity_verified": True,
+    }
+    with _state_lock:
+        _land_call_links_by_id[link_id] = state
+        _land_call_link_ids_by_object[id(link)] = link_id
+        existing_id = _active_land_call_link_id_by_peer_hash.get(peer_key) or ""
+        existing = _land_call_links_by_id.get(existing_id) if existing_id else None
+        if not _land_call_link_is_usable(existing):
+            _active_land_call_link_id_by_peer_hash[peer_key] = link_id
+    _configure_land_call_link(link, link_id)
+    _emit_call_bridge_message(decoded, peer_key, link_id)
+    log(
+        "[presence_bridge] target=qortalland-call-control inbound_ready "
+        f"peer={peer_key} link={link_id}"
+    )
+    return link_id
+
+
+def _handle_land_call_link_packet(message: bytes, packet: Any) -> None:
+    link = getattr(packet, "link", None)
+    if link is None:
+        return
+    link_id = _land_call_link_id(link)
+    state = _land_call_link_state(link_id)
+    if state is None:
+        return
+    try:
+        decoded = json.loads(message.decode("utf-8"))
+    except Exception:
+        _close_land_call_link(link_id, "invalid_packet")
+        return
+    if (
+        not isinstance(decoded, dict)
+        or decoded.get("t") != _RETICULUM_CHAT_WIRE_TYPE
+        or decoded.get("k") != "lc2"
+    ):
+        _close_land_call_link(link_id, "invalid_packet")
+        return
+    peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+    claimed_peer = str(decoded.get("r") or "").strip().lower()
+    if not peer_key or claimed_peer != peer_key:
+        _close_land_call_link(link_id, "sender_mismatch")
+        return
+    state["last_activity_at"] = time.time()
+    _emit_call_bridge_message(decoded, peer_key, link_id)
+
+
+def on_land_call_link_packet(message: bytes, packet: Any) -> None:
+    started_at = time.monotonic()
+    try:
+        _handle_land_call_link_packet(message, packet)
+    finally:
+        _note_callback_duration("land_call", started_at, message)
+
+
+def on_outgoing_land_call_link_established(link: Any) -> None:
+    link_id = _land_call_link_id(link)
+    state = _land_call_link_state(link_id)
+    if state is None:
+        return
+    if state.get("established") is True:
+        return
+    try:
+        if _identity is not None:
+            link.identify(_identity)
+    except Exception as exc:
+        log(
+            "[presence_bridge] target=qortalland-call-control "
+            f"identify_failed link={link_id} err={str(exc)[:160]}"
+        )
+        _close_land_call_link(link_id, "identify_failed")
+        return
+    now = time.time()
+    state["established"] = True
+    state["established_at"] = now
+    state["last_activity_at"] = now
+    peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+    with _state_lock:
+        _active_land_call_link_id_by_peer_hash[peer_key] = link_id
+    log(
+        "[presence_bridge] target=qortalland-call-control outbound_ready "
+        f"peer={peer_key} link={link_id}"
+    )
+
+
+def _ensure_land_call_link(peer_key: str) -> Optional[Dict[str, Any]]:
+    peer_key = str(peer_key or "").strip().lower()
+    if not _valid_presence_destination_hash_hex(peer_key):
+        return None
+    _prune_land_call_links()
+    with _state_lock:
+        active_id = _active_land_call_link_id_by_peer_hash.get(peer_key) or ""
+        active = _land_call_links_by_id.get(active_id) if active_id else None
+        peer_identity = _known_peers.get(peer_key)
+    if active is not None:
+        if _land_call_link_is_usable(active) or not _land_call_link_is_terminal(active):
+            return active
+        _close_land_call_link(active_id, "terminal_before_reuse")
+    if peer_identity is None:
+        ensure_known_peer_from_recall(peer_key, "ts_seed")
+        with _state_lock:
+            peer_identity = _known_peers.get(peer_key)
+    if peer_identity is None:
+        _nudge_overlay_path_for_peer(peer_key)
+        return None
+    # Make capacity only when a new link is actually required. Reusing one of
+    # the existing 32 links must not evict an unrelated active call control.
+    _prune_land_call_links(reserve_slots=1)
+    with _state_lock:
+        active_id = _active_land_call_link_id_by_peer_hash.get(peer_key) or ""
+        active = _land_call_links_by_id.get(active_id) if active_id else None
+    if active is not None:
+        if _land_call_link_is_usable(active) or not _land_call_link_is_terminal(active):
+            return active
+        _close_land_call_link(active_id, "terminal_before_open")
+    link_id = ""
+    link = None
+    try:
+        outbound = build_outbound_destination(peer_identity)
+        if destination_hash_hex(outbound.hash) != peer_key:
+            return None
+        if not _nudge_overlay_link_path(peer_key, outbound.hash, await_seconds=0.0):
+            return None
+        link_id = str(uuid.uuid4())
+        link = RNS.Link(
+            outbound,
+            established_callback=on_outgoing_land_call_link_established,
+            closed_callback=on_land_call_link_closed,
+        )
+        now = time.time()
+        state = {
+            "linkId": link_id,
+            "link": link,
+            "peerPresenceHash": peer_key,
+            "incoming": False,
+            "established": False,
+            "created_at": now,
+            "last_activity_at": now,
+            "remote_identity_verified": False,
+        }
+        with _state_lock:
+            existing_id = _active_land_call_link_id_by_peer_hash.get(peer_key) or ""
+            existing = _land_call_links_by_id.get(existing_id) if existing_id else None
+            if existing is None:
+                _land_call_links_by_id[link_id] = state
+                _land_call_link_ids_by_object[id(link)] = link_id
+                _active_land_call_link_id_by_peer_hash[peer_key] = link_id
+        if existing is not None:
+            _teardown_reticulum_link_bounded(
+                link,
+                "target=qortalland-call-control duplicate_outbound",
+            )
+            if _land_call_link_is_terminal(existing):
+                _close_land_call_link(existing_id, "terminal_duplicate")
+                return None
+            return existing
+        _configure_land_call_link(link, link_id)
+        # A cached/local route can establish unusually quickly. If Reticulum
+        # invoked the constructor callback before our object map was installed,
+        # complete the transition now. The callback is idempotent.
+        if getattr(link, "status", None) == getattr(RNS.Link, "ACTIVE", object()):
+            on_outgoing_land_call_link_established(link)
+        log(
+            "[presence_bridge] target=qortalland-call-control outbound_connecting "
+            f"peer={peer_key} link={link_id}"
+        )
+        return state
+    except Exception as exc:
+        if link_id and _land_call_link_state(link_id) is not None:
+            _close_land_call_link(link_id, "open_failed")
+        elif link is not None:
+            _teardown_reticulum_link_bounded(
+                link,
+                "target=qortalland-call-control open_failed_unregistered",
+            )
+        log(
+            "[presence_bridge] target=qortalland-call-control "
+            f"open_failed peer={peer_key} err={str(exc)[:160]}"
+        )
+        return None
+
+
+def _send_land_call_wire_to_peer(peer_key: str, wire_bytes: bytes) -> bool:
+    state = _ensure_land_call_link(peer_key)
+    if not _land_call_link_is_usable(state):
+        return False
+    link = state.get("link")
+    if not _send_packet_on_link(
+        link,
+        wire_bytes,
+        f"target=qortalland-call-control send peer={peer_key}",
+    ):
+        return False
+    state["last_activity_at"] = time.time()
+    return True
+
+
 def _register_incoming_overlay_link(
     link,
     peer_hash: str = "",
@@ -19524,6 +19932,8 @@ def on_inbound_unified_link_closed(link) -> None:
         _qortalland_game_manager.proximity._link_closed(link)
     elif _qortalland_game_manager is not None and _qortalland_game_manager.owns_link(link):
         _qortalland_game_manager._link_closed(link)
+    elif _land_call_link_id(link):
+        on_land_call_link_closed(link)
     elif get_overlay_link_id(link):
         on_overlay_link_closed(link)
     elif get_audio_link_id(link):
@@ -19577,6 +19987,13 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
         return
     if not isinstance(decoded, dict):
         _register_incoming_overlay_link(link, reason="first_packet_non_object")
+        return
+    if (
+        decoded.get("t") == _RETICULUM_CHAT_WIRE_TYPE
+        and decoded.get("k") == "lc2"
+    ):
+        peer_hash = str(decoded.get("r") or "").strip().lower()
+        _register_incoming_land_call_link(link, peer_hash, decoded)
         return
     if decoded.get("t") in _AUDIO_LINK_WIRE_TYPES:
         link_id = str(uuid.uuid4())
@@ -20105,6 +20522,7 @@ def handle_stop(req_id: str) -> None:
     with _state_lock:
         _pinned_chat_overlay_peers.clear()
         _pinned_call_overlay_peers.clear()
+        land_call_link_ids = list(_land_call_links_by_id.keys())
         resource_sessions = [
             state
             for state in _qchat_file_links_by_id.values()
@@ -20121,6 +20539,8 @@ def handle_stop(req_id: str) -> None:
             event.set()
     for state in resource_sessions:
         _resource_session_fail_state(state, "resource_session_stopped")
+    for link_id in land_call_link_ids:
+        _close_land_call_link(link_id, "bridge_stopped")
     _flush_overlay_good_outbound_cache(force=True)
     _rns_announce_on_auth_session_end()
     if _qortalland_game_manager is not None:
@@ -23557,12 +23977,6 @@ def handle_send_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
 
     peer_key = peer_hash.strip().lower()
     try:
-        # Direct Qortal Land call controls use the RCHAT endpoint handler but
-        # have the same Link-lifetime requirements as ordinary call signaling.
-        # Lease before asking the asynchronous overlay manager to open the Link
-        # so maintenance cannot prune it between bounded Electron retries.
-        if msg.get("k") == "lc2":
-            _lease_call_overlay_peer(peer_key)
         encoded = _encode_group_signal_wire(msg)
         if not encoded.get("ok"):
             emit_resp(
@@ -23571,6 +23985,17 @@ def handle_send_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                 payload=encoded.get("payload"),
                 error=str(encoded.get("error") or "Wire encoding failed"),
             )
+            return
+        if msg.get("k") == "lc2":
+            if not _send_land_call_wire_to_peer(peer_key, encoded["wire_bytes"]):
+                emit_resp(
+                    req_id,
+                    False,
+                    payload={"code": "packet_send_false"},
+                    error="Dedicated Qortal Land call link is not ready",
+                )
+                return
+            emit_resp(req_id, True)
             return
         failure = _prepare_group_signal_peer(peer_key)
         if failure is not None:
