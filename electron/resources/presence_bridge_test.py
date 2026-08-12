@@ -6852,6 +6852,44 @@ class PresenceBridgePinnedCallPeersTest(unittest.TestCase):
         self.assertIn(peer_hash, self.bridge._pinned_call_overlay_peers)
         self.assertFalse(responses[-1][0][1])
 
+    def test_land_call_control_leases_peer_before_a_missing_link_response(self):
+        peer_hash = "ef" * 16
+        responses = []
+        self.bridge._destination = object()
+
+        with mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda *args, **kwargs: responses.append((args, kwargs)),
+        ), mock.patch.object(
+            self.bridge,
+            "_encode_group_signal_wire",
+            return_value={
+                "ok": True,
+                "wire_bytes": b'{"t":"RCHAT","k":"lc2"}',
+                "message_type": "RCHAT",
+            },
+        ), mock.patch.object(
+            self.bridge, "_prepare_group_signal_peer", return_value=None
+        ), mock.patch.object(
+            self.bridge,
+            "_send_group_signal_wire_to_peer",
+            return_value={
+                "payload": {"code": "packet_send_false"},
+                "error": "Packet send returned False",
+            },
+        ):
+            self.bridge.handle_send_reticulum_chat(
+                "land-call-send",
+                {
+                    "peerPresenceHash": peer_hash,
+                    "message": {"t": "RCHAT", "k": "lc2"},
+                },
+            )
+
+        self.assertIn(peer_hash, self.bridge._pinned_call_overlay_peers)
+        self.assertFalse(responses[-1][0][1])
+
     def test_full_call_lease_table_does_not_evict_existing_calls(self):
         now = 2_000.0
         existing = {

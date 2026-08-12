@@ -2300,6 +2300,13 @@ const RETICULUM_LAND_STATE_SEQUENCE_MAX = 4096;
 const RETICULUM_LAND_STATE_DIAGNOSTIC_LOG_MS = 30_000;
 const RETICULUM_LAND_CALL_MEDIA_ROUTE_TTL_MS = 24 * 60 * 60_000;
 const RETICULUM_LAND_CALL_MEDIA_ROUTE_MAX = 512;
+// A Qortal Land endpoint may be known through a relayed Land route before an
+// overlay Link to that endpoint exists locally. Keep the signed control
+// endpoint-bound, but give the bridge's asynchronous Link open enough time to
+// complete instead of treating the first packet-send-false as terminal.
+const RETICULUM_LAND_CALL_SEND_RETRY_MS = 250;
+const RETICULUM_LAND_CALL_SEND_MAX_ATTEMPTS = 120;
+const RETICULUM_LAND_CALL_SEND_TIMEOUT_MS = 30_000;
 const RETICULUM_CHAT_DIRECT_HISTORY_PAGE_REQUEST_STALE_MS = 2 * 60_000;
 const RETICULUM_CHAT_HISTORY_LINK_FAILURE_BACKOFF_MS = [
   5_000,
@@ -6864,6 +6871,7 @@ export class ReticulumChatManager extends EventEmitter {
    * the same account must not become the media endpoint for an existing call.
    */
   private landCallMediaRoutes = new Map<string, ReticulumLandCallMediaRoute>();
+  private landCallControlSendGenerations = new Map<string, number>();
   private latestVerifiedLandStateSequences = new Map<string, number>();
   private latestVerifiedLandStates = new Map<
     string,
@@ -7930,6 +7938,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.landAuthSessions.clear();
     this.landSessionRoutes.clear();
     this.landCallMediaRoutes.clear();
+    this.landCallControlSendGenerations.clear();
     this.latestVerifiedLandStateSequences.clear();
     this.latestVerifiedLandStates.clear();
     this.latestVerifiedLandActionSequences.clear();
@@ -8915,6 +8924,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.clearLandAuthQueue();
     this.clearLocalLandAuthSessions();
     this.landCallMediaRoutes.clear();
+    this.landCallControlSendGenerations.clear();
     this.pendingLandActions.clear();
     this.localLandSocialActionTimes.clear();
 
@@ -12672,7 +12682,72 @@ export class ReticulumChatManager extends EventEmitter {
           error: 'QortalLand call exceeds the secure transport budget',
         };
       }
-      const result = await this.sendToPeerOnce(targetDestinationHash, wire);
+      const controlSendKey = `${groupId}:${callId}:${[fromAddress, toAddress]
+        .sort()
+        .join(':')}`;
+      const controlSendGeneration =
+        (this.landCallControlSendGenerations.get(controlSendKey) ?? 0) + 1;
+      this.landCallControlSendGenerations.set(
+        controlSendKey,
+        controlSendGeneration
+      );
+      const routeStillCurrent = (): boolean => {
+        if (
+          this.isClosed ||
+          this.landCallControlSendGenerations.get(controlSendKey) !==
+            controlSendGeneration
+        ) {
+          return false;
+        }
+        const currentLocalSession = this.localLandAuthSessions.get(
+          this.landAuthSessionKey(groupId, fromAddress, sourceSessionId)
+        );
+        if (
+          !currentLocalSession ||
+          currentLocalSession.authorAddress !== fromAddress
+        ) {
+          return false;
+        }
+        const currentTargetRoute = this.getLandSessionRoute(
+          groupId,
+          toAddress,
+          targetSessionId
+        );
+        if (currentTargetRoute?.destinationHash === targetDestinationHash) {
+          return true;
+        }
+        if (callType === 'request') return false;
+        return Boolean(
+          this.getRetainedLandCallPeerRoute({
+            groupId,
+            callId,
+            localAddress: fromAddress,
+            localSessionId: sourceSessionId,
+            remoteAddress: toAddress,
+            remoteSessionId: targetSessionId,
+            peerDestinationHash: targetDestinationHash,
+          })
+        );
+      };
+      let result: ReticulumSendResult;
+      try {
+        result = await this.sendLandCallControlWithLinkRetry({
+          groupId,
+          callType,
+          callId,
+          targetSessionId,
+          targetDestinationHash,
+          wire,
+          routeStillCurrent,
+        });
+      } finally {
+        if (
+          this.landCallControlSendGenerations.get(controlSendKey) ===
+          controlSendGeneration
+        ) {
+          this.landCallControlSendGenerations.delete(controlSendKey);
+        }
+      }
       loggerLog(
         `[ReticulumChat] land_call_v2_send group=${groupId} type=${callType} call=${callId.slice(0, 12)} target_session=${targetSessionId} result=${result.ok === true ? 'ok' : result.reason}`
       );
@@ -12793,6 +12868,83 @@ export class ReticulumChatManager extends EventEmitter {
       this.applyLandCall(groupId, wire);
     }
     return result;
+  }
+
+  private async sendLandCallControlWithLinkRetry(input: {
+    groupId: number;
+    callType: string;
+    callId: string;
+    targetSessionId: string;
+    targetDestinationHash: string;
+    wire: Extract<ReticulumChatWire, { k: 'lc2' }>;
+    routeStillCurrent: () => boolean;
+  }): Promise<ReticulumSendResult> {
+    const startedAt = Date.now();
+    let attempts = 0;
+    let lastFailure: Exclude<ReticulumSendResult, { ok: true }> | null = null;
+    while (
+      attempts < RETICULUM_LAND_CALL_SEND_MAX_ATTEMPTS &&
+      Date.now() - startedAt < RETICULUM_LAND_CALL_SEND_TIMEOUT_MS
+    ) {
+      if (!input.routeStillCurrent()) {
+        return (
+          lastFailure ?? {
+            ok: false,
+            reason: 'send-command-failed',
+            error: 'The selected QortalLand session is no longer available',
+          }
+        );
+      }
+      attempts += 1;
+      let result: ReticulumSendResult;
+      try {
+        result = await this.sendToPeerOnce(
+          input.targetDestinationHash,
+          input.wire
+        );
+      } catch (err) {
+        result = {
+          ok: false,
+          reason: 'bridge-exception',
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+      if (result.ok === true) {
+        if (attempts > 1) {
+          loggerLog(
+            `[ReticulumChat] land_call_v2_link_ready group=${input.groupId} type=${input.callType} call=${input.callId.slice(0, 12)} target_session=${input.targetSessionId} attempts=${attempts} elapsed_ms=${Date.now() - startedAt}`
+          );
+        }
+        return result;
+      }
+      lastFailure = result;
+      if (result.reason === 'wire-too-large') return result;
+      if (
+        attempts >= RETICULUM_LAND_CALL_SEND_MAX_ATTEMPTS ||
+        Date.now() - startedAt >= RETICULUM_LAND_CALL_SEND_TIMEOUT_MS
+      ) {
+        break;
+      }
+      if (attempts === 1) {
+        loggerLog(
+          `[ReticulumChat] land_call_v2_link_wait group=${input.groupId} type=${input.callType} call=${input.callId.slice(0, 12)} target_session=${input.targetSessionId} reason=${result.reason}`
+        );
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, RETICULUM_LAND_CALL_SEND_RETRY_MS);
+        timer.unref?.();
+      });
+    }
+    if (lastFailure) {
+      loggerWarn(
+        `[ReticulumChat] land_call_v2_link_timeout group=${input.groupId} type=${input.callType} call=${input.callId.slice(0, 12)} target_session=${input.targetSessionId} attempts=${attempts} elapsed_ms=${Date.now() - startedAt} reason=${lastFailure.reason}`
+      );
+      return lastFailure;
+    }
+    return {
+      ok: false,
+      reason: 'bridge-not-ready',
+    };
   }
 
   async sendLandChat(
@@ -29233,6 +29385,7 @@ export class ReticulumChatManager extends EventEmitter {
     hint: ReticulumChatEventHint,
     digestFingerprint = ''
   ): void {
+    if (this.isClosed) return;
     const peerKey = peerHash.trim().toLowerCase();
     if (!peerKey) return;
     if (this.isRejectedEventPullSuppressed(hint.groupId, hint.eventId)) return;
@@ -29287,6 +29440,7 @@ export class ReticulumChatManager extends EventEmitter {
     reason: string,
     digestFingerprint = ''
   ): boolean {
+    if (this.isClosed) return false;
     const peerKey = peerHash.trim().toLowerCase();
     const eventId = String(latest.eventId || '').trim();
     if (!peerKey || !eventId || !this.signLocalFields) return false;
@@ -29426,7 +29580,7 @@ export class ReticulumChatManager extends EventEmitter {
     reason: string,
     peerHash = ''
   ): void {
-    if (isDisabledRelayCache) return;
+    if (isDisabledRelayCache || this.isClosed) return;
     const ids = [...new Set(eventIds)]
       .filter(
         (id) =>
@@ -29461,6 +29615,7 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private scheduleEventPullQueue(delayMs = 0): void {
+    if (this.isClosed) return;
     if (this.eventPullQueueTimer) {
       if (delayMs > 0) return;
       clearTimeout(this.eventPullQueueTimer);
@@ -29477,12 +29632,13 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private async processEventPullQueue(): Promise<void> {
-    if (this.eventPullQueueActive) return;
+    if (this.eventPullQueueActive || this.isClosed) return;
     this.eventPullQueueActive = true;
     try {
       const now = this.now();
       let dispatched = 0;
       for (const [queueKey, item] of this.pendingEventPulls) {
+        if (this.isClosed) break;
         if (dispatched >= RETICULUM_CHAT_PULL_QUEUE_CONCURRENCY) break;
         if (item.inFlight || item.nextAttemptAt > now) continue;
         if (this.db.hasEvent(item.hint.eventId)) {
@@ -29526,7 +29682,7 @@ export class ReticulumChatManager extends EventEmitter {
       }
     } finally {
       this.eventPullQueueActive = false;
-      if (this.pendingEventPulls.size > 0) {
+      if (!this.isClosed && this.pendingEventPulls.size > 0) {
         this.scheduleEventPullQueue(RETICULUM_CHAT_PULL_QUEUE_TICK_MS);
       }
     }
@@ -29536,6 +29692,7 @@ export class ReticulumChatManager extends EventEmitter {
     peerKey: string,
     item: ReticulumChatPullQueueItem
   ): Promise<void> {
+    if (this.isClosed) return;
     const hint = item.hint;
     if (this.isRejectedEventPullSuppressed(hint.groupId, hint.eventId)) {
       this.pendingEventPulls.delete(
@@ -29559,6 +29716,7 @@ export class ReticulumChatManager extends EventEmitter {
       hint.groupId,
       hint.eventId
     );
+    if (this.isClosed) return;
     if (!signedRequest) {
       item.inFlight = false;
       item.nextAttemptAt = now + RETICULUM_CHAT_PULL_RETRY_MS;
@@ -29573,6 +29731,7 @@ export class ReticulumChatManager extends EventEmitter {
       g: hint.groupId,
       q: signedRequest,
     });
+    if (this.isClosed) return;
     item.inFlight = false;
     if (item.peerHashes.size > 1 && item.peerHashes.delete(peerKey)) {
       // Try alternate notice routes sequentially if this request does not

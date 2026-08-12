@@ -23557,6 +23557,12 @@ def handle_send_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
 
     peer_key = peer_hash.strip().lower()
     try:
+        # Direct Qortal Land call controls use the RCHAT endpoint handler but
+        # have the same Link-lifetime requirements as ordinary call signaling.
+        # Lease before asking the asynchronous overlay manager to open the Link
+        # so maintenance cannot prune it between bounded Electron retries.
+        if msg.get("k") == "lc2":
+            _lease_call_overlay_peer(peer_key)
         encoded = _encode_group_signal_wire(msg)
         if not encoded.get("ok"):
             emit_resp(

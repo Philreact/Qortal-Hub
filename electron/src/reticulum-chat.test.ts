@@ -15577,6 +15577,114 @@ describe('reticulum chat manager', () => {
     }
   });
 
+  it('waits for a non-direct QortalLand endpoint link without using fanout', async () => {
+    vi.useFakeTimers();
+    const caller = createLandAuthSigner();
+    const recipient = createLandAuthSigner();
+    const sourceDestinationHash = '3'.repeat(32);
+    const targetDestinationHash = '4'.repeat(32);
+    const sourceSessionId = '3'.repeat(16);
+    const targetSessionId = '4'.repeat(16);
+    const timestamp = 1_785_329_927_285;
+    vi.setSystemTime(timestamp);
+    const direct: Array<{
+      peer: string;
+      wire: Extract<ReticulumChatWire, { k: 'lc2' }>;
+    }> = [];
+    const fanout: Array<Record<string, unknown>> = [];
+    let failuresRemaining = 2;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => sourceDestinationHash,
+        fanoutReticulumChatDetailed: async (
+          messages: Array<Record<string, unknown>>
+        ) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Extract<ReticulumChatWire, { k: 'lc2' }>
+        ) => {
+          direct.push({ peer, wire });
+          const remaining = failuresRemaining--;
+          if (remaining === 2) throw new Error('temporary bridge failure');
+          if (remaining === 1) {
+            return {
+              ok: false as const,
+              reason: 'packet-send-false' as const,
+            };
+          }
+          return { ok: true as const };
+        },
+      } as any,
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: targetDestinationHash,
+          address: recipient.address,
+          lastSeen: timestamp,
+        },
+      ],
+      now: () => timestamp,
+      signLocalFields: caller.signLocalFields,
+      validateGroupMember: async (_groupId, address) =>
+        address === caller.address || address === recipient.address,
+    });
+    try {
+      manager.setLocalGroupMemberships([
+        { groupId: 73, localAddress: caller.address },
+      ]);
+      manager.subscribeGroup(73);
+      (manager as any).localLandAuthSessions.set(
+        `73:${caller.address}:${sourceSessionId}`,
+        {
+          authorAddress: caller.address,
+          groupId: 73,
+          sessionId: sourceSessionId,
+          lastUsedAt: timestamp,
+        }
+      );
+      (manager as any).landSessionRoutes.set(
+        `73:${recipient.address}:${targetSessionId}`,
+        {
+          groupId: 73,
+          authorAddress: recipient.address,
+          sessionId: targetSessionId,
+          destinationHash: targetDestinationHash,
+          timestamp,
+          expiresAt: timestamp + 60_000,
+        }
+      );
+
+      const pending = manager.sendLandCall(73, {
+        callType: 'request',
+        callId: 'retry-land-call',
+        fromAddress: caller.address,
+        toAddress: recipient.address,
+        sourceSessionId,
+        targetSessionId,
+        targetDestinationHash,
+        timestamp,
+      });
+      await flushAsyncWork();
+      expect(direct).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(500);
+      await expect(pending).resolves.toEqual({ ok: true });
+      expect(direct).toHaveLength(3);
+      expect(direct.every(({ peer }) => peer === targetDestinationHash)).toBe(
+        true
+      );
+      expect(fanout.filter((wire) => wire.k === 'lc2')).toHaveLength(0);
+    } finally {
+      manager.close();
+      vi.useRealTimers();
+    }
+  });
+
   it('retries low-frequency QortalLand auth and route controls after transient transport loss', async () => {
     vi.useFakeTimers();
     const signer = createLandAuthSigner();
@@ -30850,6 +30958,48 @@ describe('reticulum chat manager', () => {
     }
     expect((manager as any).pendingEventPulls.size).toBeLessThanOrEqual(500);
     manager.close();
+  });
+
+  it('does not access the database when an in-flight event pull finishes after shutdown', async () => {
+    let releaseSend!: (result: { ok: true }) => void;
+    const pendingSend = new Promise<{ ok: true }>((resolve) => {
+      releaseSend = resolve;
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: createReticulumChatTestSigner(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatDetailed: async () => pendingSend,
+      } as any,
+    });
+    (manager as any).pendingEventPulls.set('744:event-shutdown-race', {
+      hint: {
+        eventId: 'event-shutdown-race',
+        groupId: 744,
+        channelId: '*',
+        authorAddress: '',
+        authorSeq: 0,
+        timestamp: Date.now(),
+        eventType: 'message',
+        payloadHash: '',
+        mentionAddressHashes: [],
+      },
+      peerHashes: new Set(['peer-shutdown']),
+      digestFingerprint: '',
+      attempts: 0,
+      nextAttemptAt: 0,
+      inFlight: false,
+    });
+
+    const processing = (manager as any).processEventPullQueue();
+    await flushQueuedWork();
+    manager.close();
+    releaseSend({ ok: true });
+
+    await expect(processing).resolves.toBeUndefined();
+    expect((manager as any).eventPullQueueTimer).toBeNull();
   });
 
   it('accepts only signed v3 event notices', async () => {
