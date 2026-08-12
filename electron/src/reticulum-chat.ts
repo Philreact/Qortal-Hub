@@ -839,6 +839,8 @@ type ReticulumPendingDmNotifyDelivery = {
   senderAddress: string;
   recipientAddress: string;
   wire: Extract<ReticulumChatWire, { k: 'dm_notify' }>;
+  directPeerHashes: string[];
+  confirmedPeerHashes: string[];
   excludePeerHashes: string[];
   createdAt: number;
   gossipTimer: ReturnType<typeof setTimeout> | null;
@@ -17003,18 +17005,6 @@ export class ReticulumChatManager extends EventEmitter {
     return nextHops;
   }
 
-  private getGroupInterestTransitNextHops(groupId: number): Set<string> {
-    this.pruneGroupInterestRoutes();
-    const nextHops = new Set<string>();
-    for (const route of this.groupInterestRoutes.values()) {
-      if (route.groupId !== groupId || route.hops <= 0) continue;
-      const nextHop = this.routePeerHash(route.reversePeerHash);
-      const origin = this.routePeerHash(route.originPeerHash);
-      if (nextHop && origin && origin !== nextHop) nextHops.add(nextHop);
-    }
-    return nextHops;
-  }
-
   private rememberForwardedGroupControlEdge(
     groupId: number,
     wire: ReticulumChatWire,
@@ -22722,10 +22712,37 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<ReticulumSendResult> {
     const interestedPeers = this.getInterestedPeers(event.groupId);
     const eventSizeBytes = Buffer.byteLength(JSON.stringify(event), 'utf8');
+    // Start the lightweight recovery notice immediately. Resource offers can
+    // involve multiple registrations and must not delay the signal that lets
+    // a recipient request the event over an authenticated dedicated link.
+    const noticeDelivery = this.buildEventNoticeWire(event, eventSizeBytes)
+      .then((notice): Promise<ReticulumSendResult> => {
+        if (!notice) {
+          return Promise.resolve({
+            ok: false as const,
+            reason: 'send-command-failed' as const,
+            error: 'Unable to sign event notice',
+          });
+        }
+        return this.sendGroupRoutedControl(event.groupId, notice, {
+          // A successful event-offer command only confirms bridge acceptance,
+          // not receipt. Always send the small signed notice so the recipient
+          // can request the event over its authenticated dedicated link.
+          fallbackFanout: true,
+          useRetryQueue: true,
+          context: 'published-event-notice-v3',
+        });
+      })
+      .catch(
+        (err): ReticulumSendResult => ({
+          ok: false,
+          reason: 'bridge-exception',
+          error: err instanceof Error ? err.message : String(err),
+        })
+      );
     let offeredCount = 0;
     let lastOfferFailure: Exclude<ReticulumSendResult, { ok: true }> | null =
       null;
-    const directlyNotifiedPeers: string[] = [];
     for (
       let offset = 0;
       offset < interestedPeers.length;
@@ -22738,12 +22755,9 @@ export class ReticulumChatManager extends EventEmitter {
             this.offerEventResource(peerHash, event.groupId, event.eventId)
           )
       );
-      for (let index = 0; index < offerResults.length; index += 1) {
-        const result = offerResults[index];
+      for (const result of offerResults) {
         if (result.ok) {
           offeredCount += 1;
-          const peerHash = interestedPeers[offset + index];
-          if (peerHash) directlyNotifiedPeers.push(peerHash);
         } else {
           lastOfferFailure = result as Exclude<
             ReticulumSendResult,
@@ -22752,38 +22766,7 @@ export class ReticulumChatManager extends EventEmitter {
         }
       }
     }
-    const notice = await this.buildEventNoticeWire(event, eventSizeBytes);
-    const transitNextHops = this.getGroupInterestTransitNextHops(event.groupId);
-    const noticeExcludePeerHashes = directlyNotifiedPeers.filter((peerHash) => {
-      const normalized = this.routePeerHash(peerHash);
-      return !normalized || !transitNextHops.has(normalized);
-    });
-    const allInterestedPeersDirectlyNotified =
-      interestedPeers.length > 0 && offeredCount === interestedPeers.length;
-    const remainingNoticeNextHops = this.getGroupInterestNextHops(
-      event.groupId,
-      noticeExcludePeerHashes
-    );
-    const noticeAlreadyCovered =
-      allInterestedPeersDirectlyNotified &&
-      remainingNoticeNextHops.length === 0;
-    const noticeResult = !notice
-      ? {
-          ok: false as const,
-          reason: 'send-command-failed' as const,
-          error: 'Unable to sign event notice',
-        }
-      : noticeAlreadyCovered
-        ? ({ ok: true as const } satisfies ReticulumSendResult)
-        : await this.sendGroupRoutedControl(event.groupId, notice, {
-            // Do not duplicate notices to direct leaf recipients, but preserve
-            // any successful recipient that is also the sole next hop for an
-            // indirect group member.
-            excludePeerHashes: noticeExcludePeerHashes,
-            fallbackFanout: true,
-            useRetryQueue: true,
-            context: 'published-event-notice-v3',
-          });
+    const noticeResult = await noticeDelivery;
 
     const digestWire = await this.buildGroupStateDigestWire(event.groupId);
     if (!digestWire) {
@@ -25559,7 +25542,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (!options.recovery) {
       // Register before the first packet is sent. A fast receiver can open the
       // authenticated resource link before the bridge resolves this send.
-      this.trackPendingDmNotifyDelivery(event, notify, exclude);
+      this.trackPendingDmNotifyDelivery(event, notify, directPeers, exclude);
     }
     const directResults = await Promise.all(
       directPeers.map(async (peerHash) => {
@@ -25580,21 +25563,13 @@ export class ReticulumChatManager extends EventEmitter {
         }
       })
     );
-    const deliveredDirectPeers = directResults
+    const acceptedDirectPeers = directResults
       .filter(({ result }) => result.ok)
       .map(({ peerHash }) => peerHash);
-    const pendingAfterDirectSend = this.pendingDmNotifyDeliveries.get(
-      notify.d.q
-    );
-    if (pendingAfterDirectSend && deliveredDirectPeers.length > 0) {
-      pendingAfterDirectSend.excludePeerHashes = [
-        ...new Set([
-          ...pendingAfterDirectSend.excludePeerHashes,
-          ...deliveredDirectPeers,
-        ]),
-      ];
-    }
-    if (deliveredDirectPeers.length === 0) {
+    // Packet acceptance only means the bridge accepted the command. It is not
+    // recipient confirmation, so these endpoints remain eligible for the
+    // bounded gossip and full-network recovery paths below.
+    if (acceptedDirectPeers.length === 0) {
       if (options.recovery) {
         await this.fanoutDiscoveryOnce(
           {
@@ -25626,6 +25601,7 @@ export class ReticulumChatManager extends EventEmitter {
   private trackPendingDmNotifyDelivery(
     event: ReticulumDmEvent,
     wire: Extract<ReticulumChatWire, { k: 'dm_notify' }>,
+    directPeerHashes: string[],
     excludePeerHashes: string[]
   ): void {
     const requestId = normalizeReticulumControlRequestId(wire.d.q);
@@ -25635,6 +25611,8 @@ export class ReticulumChatManager extends EventEmitter {
       senderAddress: event.senderAddress,
       recipientAddress: event.recipientAddress,
       wire,
+      directPeerHashes: [...new Set(directPeerHashes)],
+      confirmedPeerHashes: [],
       excludePeerHashes: [...new Set(excludePeerHashes)],
       createdAt: this.now(),
       gossipTimer: null,
@@ -25643,20 +25621,24 @@ export class ReticulumChatManager extends EventEmitter {
     };
     pending.gossipTimer = setTimeout(() => {
       pending.gossipTimer = null;
-      void this.sendPendingDmNotifyGossip(requestId).catch((err) => {
-        loggerWarn(
-          `[ReticulumChat] dm_notify_gossip_failed rid=${requestId.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
-        );
-      });
+      void this.retryPendingDmNotifyDirect(requestId)
+        .then(() => this.sendPendingDmNotifyGossip(requestId))
+        .catch((err) => {
+          loggerWarn(
+            `[ReticulumChat] dm_notify_gossip_failed rid=${requestId.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
+          );
+        });
     }, RETICULUM_CHAT_DM_NOTIFY_GOSSIP_DELAY_MS);
     pending.gossipTimer.unref?.();
     pending.fallbackTimer = setTimeout(() => {
       pending.fallbackTimer = null;
-      void this.sendPendingDmNotifyFullFallback(requestId).catch((err) => {
-        loggerWarn(
-          `[ReticulumChat] dm_notify_fallback_failed rid=${requestId.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
-        );
-      });
+      void this.retryPendingDmNotifyDirect(requestId)
+        .then(() => this.sendPendingDmNotifyFullFallback(requestId))
+        .catch((err) => {
+          loggerWarn(
+            `[ReticulumChat] dm_notify_fallback_failed rid=${requestId.slice(0, 12)} reason=${err instanceof Error ? err.message : String(err)}`
+          );
+        });
     }, RETICULUM_CHAT_DM_NOTIFY_FULL_FALLBACK_MS);
     pending.fallbackTimer.unref?.();
     pending.cleanupTimer = setTimeout(() => {
@@ -25674,6 +25656,24 @@ export class ReticulumChatManager extends EventEmitter {
       this.completePendingDmNotify(oldestRequestId);
     }
     this.pendingDmNotifyDeliveries.set(requestId, pending);
+  }
+
+  private async retryPendingDmNotifyDirect(requestId: string): Promise<void> {
+    const pending = this.pendingDmNotifyDeliveries.get(requestId);
+    if (!pending || this.isClosed) return;
+    const confirmed = new Set(pending.confirmedPeerHashes);
+    const retryPeers = pending.directPeerHashes.filter(
+      (peerHash) => !confirmed.has(peerHash)
+    );
+    await Promise.all(
+      retryPeers.map(async (peerHash) => {
+        try {
+          await this.sendToPeerOnce(peerHash, pending.wire);
+        } catch {
+          // The scheduled gossip/fallback path remains available.
+        }
+      })
+    );
   }
 
   private async sendPendingDmNotifyGossip(requestId: string): Promise<void> {
@@ -25712,6 +25712,35 @@ export class ReticulumChatManager extends EventEmitter {
     };
     delete wire.d.fw;
     await this.fanout(wire, pending.excludePeerHashes);
+  }
+
+  private confirmPendingDmNotifyPeer(
+    requestId: string,
+    peerHash: string
+  ): void {
+    const pending = this.pendingDmNotifyDeliveries.get(requestId);
+    if (!pending) return;
+    const peer = this.normalizeResourcePeerHash(peerHash);
+    if (!peer) return;
+    if (!pending.directPeerHashes.includes(peer)) {
+      // When discovery was the only route, the first authenticated request is
+      // the available confirmation. If known devices were targeted, a newly
+      // learned device must not cancel their independent delivery recovery.
+      if (pending.directPeerHashes.length === 0) {
+        this.completePendingDmNotify(requestId);
+      }
+      return;
+    }
+    if (!pending.confirmedPeerHashes.includes(peer)) {
+      pending.confirmedPeerHashes.push(peer);
+    }
+    if (
+      pending.directPeerHashes.every((candidate) =>
+        pending.confirmedPeerHashes.includes(candidate)
+      )
+    ) {
+      this.completePendingDmNotify(requestId);
+    }
   }
 
   private completePendingDmNotify(requestId: string): void {
@@ -36149,6 +36178,18 @@ export class ReticulumChatManager extends EventEmitter {
       });
       return;
     }
+    const authorized = await this.bridge.authorizeReticulumChatResourceDetailed(
+      {
+        linkId: payload.linkId,
+        transferId: payload.transferId,
+      }
+    );
+    if (!authorized.ok) {
+      loggerWarn(
+        `[ReticulumChat] live_event_resource_authorize_failed group=${groupId} event=${eventId} requester=${requesterAddress} transfer=${payload.transferId} reason=${reticulumResultReason(authorized)}`
+      );
+      return;
+    }
     const diagnostics = this.liveEventResourceDiagnostics.get(
       payload.transferId
     );
@@ -36164,10 +36205,6 @@ export class ReticulumChatManager extends EventEmitter {
         )} after_offer_ms=${diagnostics.offerSentAt ? Math.max(0, diagnostics.authAt - diagnostics.offerSentAt) : 'n/a'}`
       );
     }
-    await this.bridge.authorizeReticulumChatResourceDetailed?.({
-      linkId: payload.linkId,
-      transferId: payload.transferId,
-    });
     this.outboundEventResources.delete(payload.transferId);
   }
 
@@ -36369,9 +36406,21 @@ export class ReticulumChatManager extends EventEmitter {
       await reject('dm_page_register_failed');
       return;
     }
+    const authorized = await this.bridge.authorizeReticulumChatResourceDetailed(
+      {
+        linkId: payload.linkId,
+        transferId: payload.transferId,
+      }
+    );
+    if (!authorized.ok) {
+      loggerWarn(
+        `[ReticulumChat] dm_page_link_authorize_failed conversation=${conversationId.slice(0, 16)} requester=${requesterAddress} transfer=${payload.transferId} reason=${reticulumResultReason(authorized)}`
+      );
+      return;
+    }
     if (notificationId && pendingNotification) {
       this.clearDmNotifyControlRetries(notificationId);
-      this.completePendingDmNotify(notificationId);
+      this.confirmPendingDmNotifyPeer(notificationId, authenticatedPeerHash);
     }
     for (const event of page.pageEvents) {
       if (
@@ -36384,10 +36433,6 @@ export class ReticulumChatManager extends EventEmitter {
     loggerLog(
       `[ReticulumChat] dm_page_link_authorized conversation=${conversationId.slice(0, 16)} requester=${requesterAddress} transfer=${payload.transferId} events=${page.eventCount} more=${page.hasMore === true}`
     );
-    await this.bridge.authorizeReticulumChatResourceDetailed?.({
-      linkId: payload.linkId,
-      transferId: payload.transferId,
-    });
   }
 
   private async authorizeLinkedHistoryPageResource(

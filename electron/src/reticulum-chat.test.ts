@@ -7013,7 +7013,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('does not fanout a direct DM notify after an authenticated link requests its contents', async () => {
+  it('keeps a DM notify pending until dedicated-page authorization succeeds', async () => {
     vi.useFakeTimers();
     try {
       const sender = createDmIdentity();
@@ -7023,6 +7023,7 @@ describe('reticulum chat manager', () => {
       const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
       const fanout: ReticulumChatWire[] = [];
       const sentResources: Array<Record<string, unknown>> = [];
+      let authorizeAttempts = 0;
       const manager = new ReticulumChatManager({
         dbPath: tempDbPath(),
         signLocalFields: createDmSigner(sender),
@@ -7056,9 +7057,15 @@ describe('reticulum chat manager', () => {
             sentResources.push(payload);
             return { ok: true as const };
           },
-          authorizeReticulumChatResourceDetailed: async () => ({
-            ok: true as const,
-          }),
+          authorizeReticulumChatResourceDetailed: async () => {
+            authorizeAttempts += 1;
+            return authorizeAttempts === 1
+              ? {
+                  ok: false as const,
+                  reason: 'send-command-failed' as const,
+                }
+              : { ok: true as const };
+          },
         } as any,
       });
       manager.setLocalDmAddresses([sender.address]);
@@ -7115,10 +7122,243 @@ describe('reticulum chat manager', () => {
         }
       );
 
+      await vi.advanceTimersByTimeAsync(750);
+      expect(
+        sent.filter(
+          ({ peer, wire }) =>
+            peer === recipientPeerHash && wire.k === 'dm_notify'
+        )
+      ).toHaveLength(2);
+      expect((manager as any).pendingDmNotifyDeliveries.size).toBe(1);
+
+      await (manager as any).authorizeDirectDmPageResource(
+        {
+          status: 'auth',
+          linkId: 'dm-link-2',
+          transferId: 'dm-transfer-2',
+          peerPresenceHash: recipientPeerHash,
+        },
+        {
+          transferId: 'dm-transfer-2',
+          b: sender.address,
+          a: 0,
+          l: 50,
+          q: notify!.d.q,
+          rp: recipientPeerHash,
+          p: recipient.publicKey,
+          n: timestamp,
+          z: base58Encode(
+            nacl.sign.detached(
+              new Uint8Array(canonicalizeForSigning(signedFields)),
+              recipient.secretKey
+            )
+          ),
+        }
+      );
+
       await vi.advanceTimersByTimeAsync(4_000);
-      expect(fanout.some((wire) => wire.k === 'dm_notify')).toBe(false);
-      expect(sentResources).toHaveLength(1);
-      fs.rmSync(String(sentResources[0].filePath || ''), { force: true });
+      expect(fanout.some((wire) => wire.k === 'dm_notify')).toBe(true);
+      expect(
+        sent.filter(
+          ({ peer, wire }) =>
+            peer === recipientPeerHash && wire.k === 'dm_notify'
+        )
+      ).toHaveLength(2);
+      expect(sentResources).toHaveLength(2);
+      for (const resource of sentResources) {
+        fs.rmSync(String(resource.filePath || ''), { force: true });
+      }
+      manager.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries a direct DM notify until the authenticated link requests its contents', async () => {
+    vi.useFakeTimers();
+    try {
+      const sender = createDmIdentity();
+      const recipient = createDmIdentity();
+      const senderPeerHash = 'a'.repeat(32);
+      const recipientPeerHash = 'b'.repeat(32);
+      const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+      const fanouts: Array<{
+        messages: ReticulumChatWire[];
+        exclude?: string[];
+      }> = [];
+      const manager = new ReticulumChatManager({
+        dbPath: tempDbPath(),
+        signLocalFields: createDmSigner(sender),
+        getVerifiedReticulumPeers: () => [
+          {
+            destinationHash: recipientPeerHash,
+            address: recipient.address,
+            lastSeenAt: Date.now(),
+          },
+        ],
+        bridge: {
+          on: () => undefined,
+          off: () => undefined,
+          getLocalDestinationHash: () => senderPeerHash,
+          sendReticulumChatDetailed: async (
+            peer: string,
+            wire: ReticulumChatWire
+          ) => {
+            sent.push({ peer, wire });
+            return { ok: true as const };
+          },
+          fanoutReticulumChatDetailed: async (
+            messages: ReticulumChatWire[],
+            exclude?: string[]
+          ) => {
+            fanouts.push({ messages, exclude });
+            return { ok: true as const };
+          },
+        } as any,
+      });
+      manager.setLocalDmAddresses([sender.address]);
+      await flushAsyncWork();
+      sent.length = 0;
+      fanouts.length = 0;
+
+      const event = signedDmEvent({
+        sender,
+        recipient,
+        eventId: 'dm-notify-direct-retry',
+        senderSeq: Date.now() * 1000,
+        timestamp: Date.now(),
+        payload: 'hello',
+      });
+      await manager.publishDirectEvent(event);
+
+      const directNotifies = () =>
+        sent.filter(
+          ({ peer, wire }) =>
+            peer === recipientPeerHash && wire.k === 'dm_notify'
+        );
+      expect(directNotifies()).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(750);
+      expect(directNotifies()).toHaveLength(2);
+      expect(
+        fanouts.some(({ messages }) =>
+          messages.some((wire) => wire.k === 'dm_notify')
+        )
+      ).toBe(true);
+      expect(
+        fanouts.find(({ messages }) =>
+          messages.some((wire) => wire.k === 'dm_notify')
+        )?.exclude ?? []
+      ).not.toContain(recipientPeerHash);
+
+      await vi.advanceTimersByTimeAsync(2_250);
+      expect(directNotifies()).toHaveLength(3);
+      expect((manager as any).pendingDmNotifyDeliveries.size).toBe(1);
+      manager.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps retrying unconfirmed recipient devices after another device confirms', async () => {
+    vi.useFakeTimers();
+    try {
+      const sender = createDmIdentity();
+      const recipient = createDmIdentity();
+      const senderPeerHash = 'a'.repeat(32);
+      const firstRecipientPeerHash = 'b'.repeat(32);
+      const secondRecipientPeerHash = 'c'.repeat(32);
+      const sent: Array<{ peer: string; wire: ReticulumChatWire }> = [];
+      const fanout: ReticulumChatWire[] = [];
+      const manager = new ReticulumChatManager({
+        dbPath: tempDbPath(),
+        signLocalFields: createDmSigner(sender),
+        getVerifiedReticulumPeers: () => [
+          {
+            destinationHash: firstRecipientPeerHash,
+            address: recipient.address,
+            lastSeenAt: Date.now(),
+          },
+          {
+            destinationHash: secondRecipientPeerHash,
+            address: recipient.address,
+            lastSeenAt: Date.now() - 1,
+          },
+        ],
+        bridge: {
+          on: () => undefined,
+          off: () => undefined,
+          getLocalDestinationHash: () => senderPeerHash,
+          sendReticulumChatDetailed: async (
+            peer: string,
+            wire: ReticulumChatWire
+          ) => {
+            sent.push({ peer, wire });
+            return { ok: true as const };
+          },
+          fanoutReticulumChatDetailed: async (
+            messages: ReticulumChatWire[]
+          ) => {
+            fanout.push(...messages);
+            return { ok: true as const };
+          },
+        } as any,
+      });
+      manager.setLocalDmAddresses([sender.address]);
+      await flushAsyncWork();
+      sent.length = 0;
+      fanout.length = 0;
+
+      const event = signedDmEvent({
+        sender,
+        recipient,
+        eventId: 'dm-notify-multi-device-retry',
+        senderSeq: Date.now() * 1000,
+        timestamp: Date.now(),
+        payload: 'hello devices',
+      });
+      await manager.publishDirectEvent(event);
+      const notify = sent.find(({ wire }) => wire.k === 'dm_notify')
+        ?.wire as Extract<ReticulumChatWire, { k: 'dm_notify' }>;
+      expect(notify).toBeDefined();
+      expect(sent.filter(({ wire }) => wire.k === 'dm_notify')).toHaveLength(2);
+
+      (manager as any).confirmPendingDmNotifyPeer(
+        notify.d.q,
+        firstRecipientPeerHash
+      );
+      expect((manager as any).pendingDmNotifyDeliveries.size).toBe(1);
+      (manager as any).confirmPendingDmNotifyPeer(notify.d.q, 'd'.repeat(32));
+      expect((manager as any).pendingDmNotifyDeliveries.size).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(750);
+      expect(
+        sent.filter(
+          ({ peer, wire }) =>
+            peer === firstRecipientPeerHash && wire.k === 'dm_notify'
+        )
+      ).toHaveLength(1);
+      expect(
+        sent.filter(
+          ({ peer, wire }) =>
+            peer === secondRecipientPeerHash && wire.k === 'dm_notify'
+        )
+      ).toHaveLength(2);
+      expect(fanout.some((wire) => wire.k === 'dm_notify')).toBe(true);
+
+      (manager as any).confirmPendingDmNotifyPeer(
+        notify.d.q,
+        firstRecipientPeerHash
+      );
+      expect((manager as any).pendingDmNotifyDeliveries.size).toBe(1);
+      (manager as any).confirmPendingDmNotifyPeer(
+        notify.d.q,
+        secondRecipientPeerHash
+      );
+      expect((manager as any).pendingDmNotifyDeliveries.size).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(sent.filter(({ wire }) => wire.k === 'dm_notify')).toHaveLength(3);
       manager.close();
     } finally {
       vi.useRealTimers();
@@ -12162,7 +12402,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('does not retry a redundant event notice after directly offering the event to the only interested leaf', async () => {
+  it('sends the event notice even when the bridge accepts the direct offer', async () => {
     const now = 100_000;
     const localPeer = 'a'.repeat(32);
     const leafPeer = 'b'.repeat(32);
@@ -12171,6 +12411,10 @@ describe('reticulum chat manager', () => {
       wires: Record<string, unknown>[];
       excluded: string[];
     }> = [];
+    let releaseResourceRegistration!: (result: { ok: true }) => void;
+    const resourceRegistration = new Promise<{ ok: true }>((resolve) => {
+      releaseResourceRegistration = resolve;
+    });
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: {
@@ -12195,7 +12439,7 @@ describe('reticulum chat manager', () => {
             error: 'No established overlay route',
           };
         },
-        sendReticulumChatResourceDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatResourceDetailed: async () => resourceRegistration,
       } as any,
       now: () => now,
       signLocalFields: createReticulumChatTestSigner(),
@@ -12211,13 +12455,22 @@ describe('reticulum chat manager', () => {
     direct.length = 0;
     fanout.length = 0;
 
-    const result = await manager.publishEvent(
+    const publishing = manager.publishEvent(
       signedEvent({
-        eventId: 'event-direct-leaf-no-redundant-notice-retry',
+        eventId: 'event-direct-leaf-notice-recovery',
         groupId: 73,
         timestamp: now,
       })
     );
+
+    await flushQueuedWork();
+    expect(
+      direct.some(
+        ({ peer, wire }) => peer === leafPeer && wire.k === 'event_notice_v3'
+      )
+    ).toBe(true);
+    releaseResourceRegistration({ ok: true });
+    const result = await publishing;
 
     expect(result).toEqual({ ok: true });
     expect(direct).toContainEqual(
@@ -12229,7 +12482,11 @@ describe('reticulum chat manager', () => {
         }),
       })
     );
-    expect(direct.some(({ wire }) => wire.k === 'event_notice_v3')).toBe(false);
+    expect(
+      direct.some(
+        ({ peer, wire }) => peer === leafPeer && wire.k === 'event_notice_v3'
+      )
+    ).toBe(true);
     expect(
       fanout.some(({ wires }) =>
         wires.some((wire) => wire.k === 'event_notice_v3')
@@ -12353,7 +12610,7 @@ describe('reticulum chat manager', () => {
       direct.some(
         ({ peer, wire }) => peer === leafPeer && wire.k === 'event_notice_v3'
       )
-    ).toBe(false);
+    ).toBe(true);
     expect(direct).toContainEqual(
       expect.objectContaining({
         peer: middlePeer,
@@ -28546,12 +28803,18 @@ describe('reticulum chat manager', () => {
   it('authorizes compact live event resource auth from the outbound transfer map when metadata is absent', async () => {
     const authorized: unknown[] = [];
     const rejected: unknown[] = [];
+    let authorizationShouldFail = true;
     const bridge = {
       on: () => undefined,
       off: () => undefined,
       authorizeReticulumChatResourceDetailed: async (payload: unknown) => {
         authorized.push(payload);
-        return { ok: true as const };
+        return authorizationShouldFail
+          ? {
+              ok: false as const,
+              reason: 'send-command-failed' as const,
+            }
+          : { ok: true as const };
       },
       rejectReticulumChatResourceDetailed: async (payload: unknown) => {
         rejected.push(payload);
@@ -28600,6 +28863,22 @@ describe('reticulum chat manager', () => {
         transferId: 'live-normal-transfer-compact-no-metadata',
       })
     );
+    expect(
+      (manager as any).outboundEventResources.has(
+        'live-normal-transfer-compact-no-metadata'
+      )
+    ).toBe(true);
+
+    authorizationShouldFail = false;
+    manager.handleResourceEvent({
+      status: 'auth',
+      linkId: 'live-normal-link-compact-no-metadata',
+      transferId: 'live-normal-transfer-compact-no-metadata',
+      auth: authMessage,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(authorized).toHaveLength(2);
     expect(
       (manager as any).outboundEventResources.has(
         'live-normal-transfer-compact-no-metadata'
