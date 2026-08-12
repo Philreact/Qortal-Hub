@@ -896,6 +896,7 @@ type ReticulumChatControlRetryItem = {
   peerHash?: string;
   excludePeerPresenceHashes?: string[];
   dropIfNoRoute?: boolean;
+  ownedResourceTransferId?: string;
   attempts: number;
   nextAttemptAt: number;
 };
@@ -2382,6 +2383,11 @@ const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_DELAY_MS = 60_000;
 const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_INTERVAL_MS = 60_000;
 const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_LIMIT = 4;
 const RETICULUM_CHAT_AUTHOR_GAP_RESPONSE_TIMEOUT_MS = 20_000;
+const RETICULUM_CHAT_AUTHOR_GAP_MAX_CONTROL_SENDS_PER_PEER = 4;
+const RETICULUM_CHAT_AUTHOR_GAP_ROUTE_BACKOFF_MS = [
+  3_000, 10_000, 30_000, 60_000,
+] as const;
+const RETICULUM_CHAT_AUTHOR_GAP_ROUTE_BACKOFF_RESET_MS = 10 * 60_000;
 const RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS = 6 * 60 * 60_000;
 const RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_PEERS = 3;
 const RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_TTL_MS = 10 * 60_000;
@@ -6801,6 +6807,11 @@ export class ReticulumChatManager extends EventEmitter {
     string,
     { attempts: number; nextAttemptAt: number }
   >();
+  private authorGapRouteBackoffs = new Map<
+    string,
+    { failures: number; nextAttemptAt: number; expiresAt: number }
+  >();
+  private authorGapControlSendsInFlight = new Map<string, number>();
   private peerProtocolFeatures = new Map<
     string,
     Set<ReticulumChatProtocolFeature>
@@ -8029,6 +8040,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.authorGapPagedRangeOrigins.clear();
     this.pendingAuthorRangeRequests.clear();
     this.authorGapPeerAttempts.clear();
+    this.authorGapRouteBackoffs.clear();
+    this.authorGapControlSendsInFlight.clear();
     this.peerProtocolFeatures.clear();
     this.outboundEventResources.clear();
     this.outboundRelayCachedEventResources.clear();
@@ -17267,6 +17280,7 @@ export class ReticulumChatManager extends EventEmitter {
     options: {
       excludePeerHashes?: string[];
       context?: string;
+      useRetryQueue?: boolean;
     } = {}
   ): Promise<ReticulumSendResult> {
     const excluded = [...(options.excludePeerHashes ?? [])];
@@ -17289,7 +17303,7 @@ export class ReticulumChatManager extends EventEmitter {
     return this.sendGroupRoutedControl(groupId, wire, {
       excludePeerHashes: excluded,
       fallbackFanout: true,
-      useRetryQueue: true,
+      useRetryQueue: options.useRetryQueue !== false,
       context: options.context,
     });
   }
@@ -20522,6 +20536,10 @@ export class ReticulumChatManager extends EventEmitter {
       void this.sendGroupTargetedRoutedControl(groupId, target, forwarded, {
         excludePeerHashes: exclusions,
         context: `relay-${kind}`,
+        // The origin's persistent missing-range scheduler owns retries for
+        // routed author-gap requests. Intermediates must not retain stale
+        // copies after the origin has timed out or selected another provider.
+        useRetryQueue: kind !== 'range_req',
       });
     } else {
       void this.sendGroupRoutedControl(groupId, forwarded, {
@@ -21879,6 +21897,82 @@ export class ReticulumChatManager extends EventEmitter {
     ];
   }
 
+  private authorGapRouteKey(groupId: number, peerHash: string): string {
+    const rawPeer = peerHash.trim().toLowerCase();
+    const peer = normalizeRoutePeerHash(rawPeer) ?? rawPeer;
+    return `${groupId}:${peer}`;
+  }
+
+  private noteAuthorGapRouteFailure(groupId: number, peerHash: string): number {
+    const key = this.authorGapRouteKey(groupId, peerHash);
+    const now = this.now();
+    const stored = this.authorGapRouteBackoffs.get(key);
+    const current = stored && stored.expiresAt > now ? stored : undefined;
+    const failures = Math.max(0, current?.failures ?? 0) + 1;
+    const delayMs =
+      RETICULUM_CHAT_AUTHOR_GAP_ROUTE_BACKOFF_MS[
+        Math.min(
+          failures - 1,
+          RETICULUM_CHAT_AUTHOR_GAP_ROUTE_BACKOFF_MS.length - 1
+        )
+      ];
+    const nextAttemptAt = now + delayMs;
+    this.authorGapRouteBackoffs.delete(key);
+    this.authorGapRouteBackoffs.set(key, {
+      failures,
+      nextAttemptAt,
+      expiresAt: now + RETICULUM_CHAT_AUTHOR_GAP_ROUTE_BACKOFF_RESET_MS,
+    });
+    while (this.authorGapRouteBackoffs.size > 4_096) {
+      const oldest = this.authorGapRouteBackoffs.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.authorGapRouteBackoffs.delete(oldest);
+    }
+    return nextAttemptAt;
+  }
+
+  private clearAuthorGapRouteFailure(groupId: number, peerHash: string): void {
+    this.authorGapRouteBackoffs.delete(
+      this.authorGapRouteKey(groupId, peerHash)
+    );
+  }
+
+  private isAuthorGapRouteBackedOff(
+    groupId: number,
+    peerHash: string,
+    now = this.now()
+  ): boolean {
+    const key = this.authorGapRouteKey(groupId, peerHash);
+    const state = this.authorGapRouteBackoffs.get(key);
+    if (!state) return false;
+    if (state.expiresAt <= now) {
+      this.authorGapRouteBackoffs.delete(key);
+      return false;
+    }
+    return state.nextAttemptAt > now;
+  }
+
+  private nextAuthorGapRouteRetryAt(
+    groupId: number,
+    now = this.now()
+  ): number | null {
+    let nextAttemptAt: number | null = null;
+    for (const [key, state] of this.authorGapRouteBackoffs) {
+      if (state.expiresAt <= now) {
+        this.authorGapRouteBackoffs.delete(key);
+        continue;
+      }
+      if (state.nextAttemptAt <= now) continue;
+      if (!key.startsWith(`${groupId}:`)) continue;
+      if (nextAttemptAt == null || state.nextAttemptAt < nextAttemptAt) {
+        nextAttemptAt = state.nextAttemptAt;
+      }
+    }
+    return nextAttemptAt;
+  }
+
   private authorGapSuppressionKey(
     peerHash: string,
     groupId: number,
@@ -22603,6 +22697,7 @@ export class ReticulumChatManager extends EventEmitter {
         peer === local ||
         peer === excluded ||
         seen.has(peer) ||
+        this.isAuthorGapRouteBackedOff(groupId, peer) ||
         this.db.hasMissingRangePeerUnavailable(
           groupId,
           range.a,
@@ -22667,6 +22762,10 @@ export class ReticulumChatManager extends EventEmitter {
           range.preferredPeer
         );
         if (!peer) {
+          const routeRetryAt = this.nextAuthorGapRouteRetryAt(
+            range.groupId,
+            now
+          );
           this.db.scheduleMissingRange(
             range.groupId,
             range.authorAddress,
@@ -22674,7 +22773,8 @@ export class ReticulumChatManager extends EventEmitter {
             range.fromSeq,
             range.toSeq,
             range.preferredPeer,
-            now + RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_INTERVAL_MS
+            routeRetryAt ??
+              now + RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_INTERVAL_MS
           );
           skipped += 1;
           continue;
@@ -22810,6 +22910,23 @@ export class ReticulumChatManager extends EventEmitter {
         );
         continue;
       }
+      const routeSendKey = this.authorGapRouteKey(groupId, peer);
+      const activeRouteSends =
+        this.authorGapControlSendsInFlight.get(routeSendKey) ?? 0;
+      if (
+        activeRouteSends >= RETICULUM_CHAT_AUTHOR_GAP_MAX_CONTROL_SENDS_PER_PEER
+      ) {
+        this.db.scheduleMissingRange(
+          groupId,
+          normalizedRange.a,
+          normalizedRange.s,
+          normalizedRange.from,
+          normalizedRange.to,
+          peer,
+          now + RETICULUM_CHAT_CONTROL_RETRY_TICK_MS
+        );
+        continue;
+      }
       const wire: ReticulumChatWire = {
         t: 'RCHAT',
         k: 'range_req',
@@ -22890,19 +23007,20 @@ export class ReticulumChatManager extends EventEmitter {
       loggerLog(
         `[ReticulumChat] author_gap_repair_ready group=${groupId} peer=${peer.slice(0, 16)} author=${normalizedRange.a} from=${normalizedRange.from} to=${normalizedRange.to} attempts=${claimed.attempts} next_retry_ms=${Math.max(0, claimed.nextAttemptAt - now)} reason=${reason}`
       );
-      void this.sendAuthorRangeRequest(peer, wire, normalizedRange).then(
-        (result) => {
+      this.authorGapControlSendsInFlight.set(
+        routeSendKey,
+        activeRouteSends + 1
+      );
+      void this.sendAuthorRangeRequest(peer, wire, normalizedRange)
+        .then((result) => {
           if (this.isClosed) return;
-          if (result.ok !== false) return;
+          if (result.ok !== false) {
+            this.clearAuthorGapRouteFailure(groupId, peer);
+            return;
+          }
+          const retryAt = this.noteAuthorGapRouteFailure(groupId, peer);
           loggerWarn(
-            `[ReticulumChat] Targeted author gap repair failed group=${groupId} peer=${peer.slice(0, 16)} reason=${result.reason}; retrying targeted path`
-          );
-          this.markAuthorGapRangeNoProgress(
-            peer,
-            groupId,
-            normalizedRange,
-            `send_failed_${result.reason}`,
-            false
+            `[ReticulumChat] Targeted author gap repair failed group=${groupId} peer=${peer.slice(0, 16)} reason=${result.reason}; retrying after route backoff`
           );
           const replacement = this.selectAuthorGapRepairPeer(
             groupId,
@@ -22916,14 +23034,42 @@ export class ReticulumChatManager extends EventEmitter {
             normalizedRange.from,
             normalizedRange.to,
             replacement || peer,
-            replacement
-              ? this.now()
-              : this.now() + RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_TTL_MS,
+            replacement ? this.now() : retryAt,
             peer
           );
-          this.scheduleBackgroundAuthorGapRepair(1);
-        }
-      );
+          this.scheduleBackgroundAuthorGapRepair(
+            replacement ? 1 : Math.max(1, retryAt - this.now())
+          );
+        })
+        .catch((error) => {
+          if (this.isClosed) return;
+          const retryAt = this.noteAuthorGapRouteFailure(groupId, peer);
+          this.db.rescheduleMissingRange(
+            groupId,
+            normalizedRange.a,
+            normalizedRange.s,
+            normalizedRange.from,
+            normalizedRange.to,
+            peer,
+            retryAt,
+            peer
+          );
+          loggerWarn(
+            `[ReticulumChat] Targeted author gap repair failed group=${groupId} peer=${peer.slice(0, 16)} reason=${error instanceof Error ? error.message : String(error)}; retrying after route backoff`
+          );
+          this.scheduleBackgroundAuthorGapRepair(
+            Math.max(1, retryAt - this.now())
+          );
+        })
+        .finally(() => {
+          const remaining =
+            (this.authorGapControlSendsInFlight.get(routeSendKey) ?? 1) - 1;
+          if (remaining > 0) {
+            this.authorGapControlSendsInFlight.set(routeSendKey, remaining);
+          } else {
+            this.authorGapControlSendsInFlight.delete(routeSendKey);
+          }
+        });
       sent += 1;
     }
     return sent;
@@ -23100,7 +23246,10 @@ export class ReticulumChatManager extends EventEmitter {
               wire.g,
               peer,
               routedWire,
-              { context: 'author-gap-direct-fallback' }
+              {
+                context: 'author-gap-direct-fallback',
+                useRetryQueue: false,
+              }
             );
           }
         }
@@ -32861,7 +33010,7 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
     });
     if (!registered.ok) {
-      this.safeUnlink(filePath);
+      this.releaseTempEventBlob(transferId, filePath);
       return registered;
     }
     this.outboundRelayCachedEventResources.set(transferId, {
@@ -32890,13 +33039,13 @@ export class ReticulumChatManager extends EventEmitter {
       relayCached: true,
       relayBlobId: entry.blobId,
     };
-    const sent = await this.sendToPeer(
-      peerKey,
-      buildEventOfferControlWire(event.groupId, offer)
-    );
+    const wire = buildEventOfferControlWire(event.groupId, offer);
+    const sent = await this.sendToPeer(peerKey, wire);
     if (!sent.ok) {
-      this.outboundRelayCachedEventResources.delete(transferId);
-      this.safeUnlink(filePath);
+      const failedSent = sent as Exclude<ReticulumSendResult, { ok: true }>;
+      if (!this.shouldRetryControlSend(wire, failedSent.reason)) {
+        this.cleanupOutboundControlResource(transferId);
+      }
     }
     return sent;
   }
@@ -33119,7 +33268,7 @@ export class ReticulumChatManager extends EventEmitter {
     };
     const wire = buildEventPageOfferControlWire(groupId, offer);
     if (!wireFitsReticulumChat(wire)) {
-      this.safeUnlink(filePath);
+      this.releaseTempEventBlob(transferId, filePath);
       return {
         ok: false,
         reason: 'send-command-failed',
@@ -33147,7 +33296,7 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt: this.now() + RETICULUM_CHAT_RESOURCE_TTL_MS,
     });
     if (!registered.ok) {
-      this.safeUnlink(filePath);
+      this.releaseTempEventBlob(transferId, filePath);
       return registered;
     }
 
@@ -33165,8 +33314,7 @@ export class ReticulumChatManager extends EventEmitter {
     const failedSent = sent as Exclude<ReticulumSendResult, { ok: true }>;
     const retryable = this.shouldRetryControlSend(wire, failedSent.reason);
     if (!retryable) {
-      this.outboundEventPageResources.delete(transferId);
-      this.safeUnlink(filePath);
+      this.cleanupOutboundControlResource(transferId);
     }
     return sent;
   }
@@ -33274,7 +33422,7 @@ export class ReticulumChatManager extends EventEmitter {
       expiresAt,
     });
     if (!registered.ok) {
-      this.safeUnlink(filePath);
+      this.releaseTempEventBlob(transferId, filePath);
       return registered;
     }
     const registeredAt = this.now();
@@ -33314,10 +33462,7 @@ export class ReticulumChatManager extends EventEmitter {
     }
     const wire = buildEventOfferControlWire(groupId, offer);
     if (!wireFitsReticulumChat(wire)) {
-      this.outboundRelayStoreEventResources.delete(transferId);
-      this.outboundEventResources.delete(transferId);
-      this.liveEventResourceDiagnostics.delete(transferId);
-      this.safeUnlink(filePath);
+      this.cleanupOutboundControlResource(transferId);
       return {
         ok: false,
         reason: 'send-command-failed',
@@ -33353,10 +33498,10 @@ export class ReticulumChatManager extends EventEmitter {
       }
     }
     if (!sent.ok) {
-      this.outboundRelayStoreEventResources.delete(transferId);
-      this.outboundEventResources.delete(transferId);
-      this.liveEventResourceDiagnostics.delete(transferId);
-      this.safeUnlink(filePath);
+      const failedSent = sent as Exclude<ReticulumSendResult, { ok: true }>;
+      if (!this.shouldRetryControlSend(wire, failedSent.reason)) {
+        this.cleanupOutboundControlResource(transferId);
+      }
     }
     return sent;
   }
@@ -34469,6 +34614,7 @@ export class ReticulumChatManager extends EventEmitter {
       // The bridge emits a terminal event only after it has finished reading
       // the provider source file. Release every manager-owned temp blob here,
       // regardless of which logical resource type used it.
+      this.removeControlRetriesForResource(payload.transferId);
       this.releaseTempEventBlob(payload.transferId);
       this.outboundEventPageResources.delete(payload.transferId);
       this.outboundEventResources.delete(payload.transferId);
@@ -36323,8 +36469,7 @@ export class ReticulumChatManager extends EventEmitter {
     }
     for (const [transferId, offered] of this.outboundEventResources) {
       if (offered.expiresAt <= now) {
-        this.outboundEventResources.delete(transferId);
-        this.releaseTempEventBlob(transferId);
+        this.cleanupOutboundControlResource(transferId);
       }
     }
     for (const [transferId, diagnostics] of this.liveEventResourceDiagnostics) {
@@ -36364,8 +36509,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (!isDisabledRelayCache) {
       for (const [transferId, relay] of this.outboundRelayStoreEventResources) {
         if (relay.expiresAt <= now) {
-          this.outboundRelayStoreEventResources.delete(transferId);
-          this.releaseTempEventBlob(transferId);
+          this.cleanupOutboundControlResource(transferId);
         }
       }
       const relayStore = this.outboundRelayStoreEventResources.get(
@@ -36389,8 +36533,7 @@ export class ReticulumChatManager extends EventEmitter {
     }
     for (const [transferId, page] of this.outboundEventPageResources) {
       if (page.expiresAt <= now) {
-        this.outboundEventPageResources.delete(transferId);
-        this.releaseTempEventBlob(transferId, page.filePath);
+        this.cleanupOutboundControlResource(transferId);
       }
     }
     const page = this.outboundEventPageResources.get(payload.transferId);
@@ -36547,8 +36690,7 @@ export class ReticulumChatManager extends EventEmitter {
       for (const [transferId, relay] of this
         .outboundRelayCachedEventResources) {
         if (relay.expiresAt <= now) {
-          this.outboundRelayCachedEventResources.delete(transferId);
-          this.releaseTempEventBlob(transferId);
+          this.cleanupOutboundControlResource(transferId);
         }
       }
       const relay = this.outboundRelayCachedEventResources.get(
@@ -38306,6 +38448,79 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
+  private resourceTransferIdFromControlWire(wire: ReticulumChatWire): string {
+    if (wire.k === 'event_offer') {
+      return typeof wire.o?.x === 'string' ? wire.o.x : '';
+    }
+    if (wire.k === 'event_page_offer') {
+      return typeof wire.p?.x === 'string' ? wire.p.x : '';
+    }
+    return '';
+  }
+
+  private ownedResourceTransferIdFromControlWire(
+    wire: ReticulumChatWire
+  ): string {
+    const transferId = this.resourceTransferIdFromControlWire(wire);
+    if (!transferId || !this.tempEventBlobs.has(transferId)) return '';
+    if (
+      !this.outboundEventResources.has(transferId) &&
+      !this.outboundEventPageResources.has(transferId) &&
+      !this.outboundRelayStoreEventResources.has(transferId) &&
+      !this.outboundRelayCachedEventResources.has(transferId)
+    ) {
+      return '';
+    }
+    return transferId;
+  }
+
+  private cleanupOutboundControlResource(transferId: string): void {
+    if (!transferId) return;
+    this.removeControlRetriesForResource(transferId);
+    this.outboundEventResources.delete(transferId);
+    this.outboundEventPageResources.delete(transferId);
+    this.outboundRelayStoreEventResources.delete(transferId);
+    this.outboundRelayCachedEventResources.delete(transferId);
+    this.liveEventResourceDiagnostics.delete(transferId);
+    this.releaseTempEventBlob(transferId);
+  }
+
+  private isOutboundControlResourceAvailable(
+    transferId: string,
+    now = this.now()
+  ): boolean {
+    if (!this.tempEventBlobs.has(transferId)) return false;
+    const expiresAt =
+      this.outboundEventResources.get(transferId)?.expiresAt ??
+      this.outboundEventPageResources.get(transferId)?.expiresAt ??
+      this.outboundRelayStoreEventResources.get(transferId)?.expiresAt ??
+      this.outboundRelayCachedEventResources.get(transferId)?.expiresAt ??
+      0;
+    return expiresAt > now;
+  }
+
+  private removeControlRetriesForResource(transferId: string): void {
+    if (!transferId) return;
+    for (const [key, item] of this.controlRetryQueue) {
+      if (
+        item.ownedResourceTransferId === transferId ||
+        this.resourceTransferIdFromControlWire(item.wire) === transferId
+      ) {
+        this.controlRetryQueue.delete(key);
+      }
+    }
+  }
+
+  private dropControlRetry(
+    item: ReticulumChatControlRetryItem,
+    cleanupOwnedResource: boolean
+  ): void {
+    this.controlRetryQueue.delete(item.key);
+    if (cleanupOwnedResource && item.ownedResourceTransferId) {
+      this.cleanupOutboundControlResource(item.ownedResourceTransferId);
+    }
+  }
+
   private enqueueControlRetry(item: {
     wire: ReticulumChatWire;
     peerHash?: string;
@@ -38315,6 +38530,9 @@ export class ReticulumChatManager extends EventEmitter {
     if (this.isClosed) return;
     const key = this.controlRetryKey(item);
     const now = this.now();
+    const ownedResourceTransferId = this.ownedResourceTransferIdFromControlWire(
+      item.wire
+    );
     const existing = this.controlRetryQueue.get(key);
     if (existing) {
       existing.wire = item.wire;
@@ -38324,6 +38542,8 @@ export class ReticulumChatManager extends EventEmitter {
       // retry key is relay-only. A normal/local enqueue must retain warnings.
       existing.dropIfNoRoute =
         existing.dropIfNoRoute === true && item.dropIfNoRoute === true;
+      existing.ownedResourceTransferId =
+        existing.ownedResourceTransferId || ownedResourceTransferId;
       existing.nextAttemptAt = Math.min(
         existing.nextAttemptAt,
         now + RETICULUM_CHAT_CONTROL_RETRY_MS
@@ -38346,7 +38566,10 @@ export class ReticulumChatManager extends EventEmitter {
       const oldestKey =
         oldestDigestKey ??
         (this.controlRetryQueue.keys().next().value as string | undefined);
-      if (oldestKey) this.controlRetryQueue.delete(oldestKey);
+      if (oldestKey) {
+        const evicted = this.controlRetryQueue.get(oldestKey);
+        if (evicted) this.dropControlRetry(evicted, true);
+      }
     }
     this.controlRetryQueue.set(key, {
       key,
@@ -38354,6 +38577,7 @@ export class ReticulumChatManager extends EventEmitter {
       peerHash: item.peerHash?.trim().toLowerCase(),
       excludePeerPresenceHashes: item.excludePeerPresenceHashes,
       dropIfNoRoute: item.dropIfNoRoute,
+      ...(ownedResourceTransferId ? { ownedResourceTransferId } : {}),
       attempts: 0,
       nextAttemptAt: now + RETICULUM_CHAT_CONTROL_RETRY_MS,
     });
@@ -38388,6 +38612,16 @@ export class ReticulumChatManager extends EventEmitter {
       for (const item of [...this.controlRetryQueue.values()]) {
         if (item.nextAttemptAt > now) continue;
         if (
+          item.ownedResourceTransferId &&
+          !this.isOutboundControlResourceAvailable(
+            item.ownedResourceTransferId,
+            now
+          )
+        ) {
+          this.dropControlRetry(item, true);
+          continue;
+        }
+        if (
           item.wire.k === 'group_state_digest_v3' &&
           (!this.canExchangeSubscribedGroupState(item.wire.g) ||
             (item.peerHash != null &&
@@ -38397,7 +38631,7 @@ export class ReticulumChatManager extends EventEmitter {
                 now
               )))
         ) {
-          this.controlRetryQueue.delete(item.key);
+          this.dropControlRetry(item, false);
           continue;
         }
         const attemptedWire = item.wire;
@@ -38417,7 +38651,7 @@ export class ReticulumChatManager extends EventEmitter {
           continue;
         }
         if (result.ok) {
-          this.controlRetryQueue.delete(item.key);
+          this.dropControlRetry(item, false);
           continue;
         }
         if (
@@ -38428,7 +38662,7 @@ export class ReticulumChatManager extends EventEmitter {
           // A relayed discovery notice has nowhere else to go once its inbound
           // and source peers are excluded. This is a completed relay branch,
           // not a connectivity warning.
-          this.controlRetryQueue.delete(item.key);
+          this.dropControlRetry(item, true);
           continue;
         }
         if (
@@ -38436,7 +38670,7 @@ export class ReticulumChatManager extends EventEmitter {
           (item.attempts >= this.controlRetryMaxAttempts(attemptedWire) ||
             !this.shouldRetryControlSend(attemptedWire, result.reason))
         ) {
-          this.controlRetryQueue.delete(item.key);
+          this.dropControlRetry(item, true);
           loggerWarn(
             `[ReticulumChat] Control retry dropped kind=${attemptedWire.k} attempts=${item.attempts}:`,
             result.error ?? result.reason

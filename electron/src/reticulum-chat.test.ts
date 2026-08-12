@@ -8866,7 +8866,7 @@ describe('reticulum chat manager', () => {
     }
   );
 
-  it('publishes oversized live events as event resource offers and digest discovery without a redundant notice', async () => {
+  it('publishes oversized live events with a resource offer, recovery notice, and digest discovery', async () => {
     const fanout: Record<string, unknown>[] = [];
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const accepts: Array<Record<string, unknown>> = [];
@@ -8919,7 +8919,7 @@ describe('reticulum chat manager', () => {
     expect(
       direct.some(({ wire }) => wire.k === 'event_notice_v3') ||
         fanout.some((wire) => wire.k === 'event_notice_v3')
-    ).toBe(false);
+    ).toBe(true);
     expect(fanout.find((wire) => wire.k === 'event_batch')).toBeUndefined();
     expect(direct).toContainEqual(
       expect.objectContaining({
@@ -12497,6 +12497,278 @@ describe('reticulum chat manager', () => {
         (item: { wire: ReticulumChatWire }) => item.wire.k === 'event_notice_v3'
       )
     ).toBe(false);
+    manager.close();
+  });
+
+  it('keeps a failed live event resource available until its offer retry succeeds', async () => {
+    let now = 100_000;
+    const peer = 'b'.repeat(32);
+    const registered: Array<{ transferId: string; filePath: string }> = [];
+    let offerAttempts = 0;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (
+          _peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          if (wire.k !== 'event_offer') return { ok: true as const };
+          offerAttempts += 1;
+          return offerAttempts === 1
+            ? { ok: false as const, reason: 'packet-send-false' as const }
+            : { ok: true as const };
+        },
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatResourceDetailed: async (payload: {
+          transferId: string;
+          filePath: string;
+        }) => {
+          registered.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'active' },
+      peer
+    );
+
+    await manager.publishEvent(
+      signedEvent({
+        eventId: 'event-offer-resource-retry-retained',
+        groupId: 73,
+        timestamp: now,
+      })
+    );
+
+    expect(registered).toHaveLength(1);
+    const [{ transferId, filePath }] = registered;
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect((manager as any).outboundEventResources.has(transferId)).toBe(true);
+    expect(
+      [...(manager as any).controlRetryQueue.values()].some(
+        (item: { wire: ReticulumChatWire }) => item.wire.k === 'event_offer'
+      )
+    ).toBe(true);
+
+    now += 3_000;
+    await (manager as any).drainControlRetryQueue();
+
+    expect(offerAttempts).toBe(2);
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect((manager as any).outboundEventResources.has(transferId)).toBe(true);
+    expect(
+      [...(manager as any).controlRetryQueue.values()].some(
+        (item: { wire: ReticulumChatWire }) => item.wire.k === 'event_offer'
+      )
+    ).toBe(false);
+    manager.close();
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it('keeps a failed event page resource available until its offer retry succeeds', async () => {
+    let now = 100_000;
+    const peer = 'b'.repeat(32);
+    const registered: Array<{ transferId: string; filePath: string }> = [];
+    let offerAttempts = 0;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (
+          _peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          if (wire.k !== 'event_page_offer') return { ok: true as const };
+          offerAttempts += 1;
+          return offerAttempts === 1
+            ? { ok: false as const, reason: 'packet-send-false' as const }
+            : { ok: true as const };
+        },
+        sendReticulumChatResourceDetailed: async (payload: {
+          transferId: string;
+          filePath: string;
+        }) => {
+          registered.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([73]);
+
+    const result = await (manager as any).offerEventPageResource(
+      peer,
+      73,
+      'general',
+      [
+        signedEvent({
+          eventId: 'event-page-offer-resource-retry-retained',
+          groupId: 73,
+          channelId: 'general',
+          timestamp: now,
+        }),
+      ],
+      false,
+      'after'
+    );
+
+    expect(result.ok).toBe(false);
+    expect(registered).toHaveLength(1);
+    const [{ transferId, filePath }] = registered;
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect((manager as any).outboundEventPageResources.has(transferId)).toBe(
+      true
+    );
+
+    now += 3_000;
+    await (manager as any).drainControlRetryQueue();
+
+    expect(offerAttempts).toBe(2);
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect((manager as any).outboundEventPageResources.has(transferId)).toBe(
+      true
+    );
+    manager.close();
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it('cleans a live event resource when its offer retry is exhausted', async () => {
+    let now = 100_000;
+    const peer = 'b'.repeat(32);
+    const registered: Array<{ transferId: string; filePath: string }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async (
+          _peer: string,
+          wire: Record<string, unknown>
+        ) =>
+          wire.k === 'event_offer'
+            ? { ok: false as const, reason: 'packet-send-false' as const }
+            : { ok: true as const },
+        fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+        sendReticulumChatResourceDetailed: async (payload: {
+          transferId: string;
+          filePath: string;
+        }) => {
+          registered.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'active' },
+      peer
+    );
+
+    await manager.publishEvent(
+      signedEvent({
+        eventId: 'event-offer-resource-retry-exhausted',
+        groupId: 73,
+        timestamp: now,
+      })
+    );
+
+    const [{ transferId, filePath }] = registered;
+    const queued = [...(manager as any).controlRetryQueue.values()].find(
+      (item: { wire: ReticulumChatWire }) => item.wire.k === 'event_offer'
+    );
+    expect(queued).toBeTruthy();
+    queued.attempts = 9;
+    now += 3_000;
+    queued.nextAttemptAt = now;
+    await (manager as any).drainControlRetryQueue();
+
+    expect((manager as any).outboundEventResources.has(transferId)).toBe(false);
+    expect((manager as any).tempEventBlobs.has(transferId)).toBe(false);
+    expect(fs.existsSync(filePath)).toBe(false);
+    manager.close();
+  });
+
+  it('leaves routed author-gap retries exclusively to the persistent repair scheduler', async () => {
+    const localPeer = 'a'.repeat(32);
+    const provider = 'b'.repeat(32);
+    const fanout: Record<string, unknown>[] = [];
+    const event = signedEvent({ groupId: 73 });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => localPeer,
+        sendReticulumChatDetailed: async () => ({
+          ok: false as const,
+          reason: 'packet-send-false' as const,
+        }),
+        fanoutReticulumChatDetailed: async (
+          wires: Record<string, unknown>[]
+        ) => {
+          fanout.push(...wires);
+          return {
+            ok: false as const,
+            reason: 'packet-send-false' as const,
+          };
+        },
+      } as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    manager.setLocalGroupMemberships([73]);
+    manager.subscribeGroup(73);
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' },
+      provider
+    );
+
+    const range = {
+      a: event.authorAddress,
+      s: event.authorStreamId,
+      from: 2,
+      to: 3,
+    };
+    const result = await (manager as any).sendAuthorRangeRequest(
+      provider,
+      {
+        t: 'RCHAT',
+        k: 'range_req',
+        g: 73,
+        id: 'author-gap-single-owner',
+        ranges: [range],
+        limit: 100,
+      },
+      range
+    );
+
+    expect(result.ok).toBe(false);
+    expect(fanout.some((wire) => wire.k === 'rr')).toBe(true);
+    expect(
+      [...(manager as any).controlRetryQueue.values()].some(
+        (item: { wire: ReticulumChatWire }) =>
+          item.wire.k === 'rr' || item.wire.k === 'range_req'
+      )
+    ).toBe(false);
+    expect((manager as any).pendingAuthorRangeRequests.size).toBe(0);
     manager.close();
   });
 
