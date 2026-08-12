@@ -570,9 +570,18 @@ type ReticulumChatAuthorRange = {
 function authorStreamIdFromWire(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim().toLowerCase();
-  return /^[0-9a-f]{32}$/.test(normalized) && value === normalized
-    ? normalized
-    : null;
+  if (/^[0-9a-f]{32}$/.test(normalized) && value === normalized) {
+    return normalized;
+  }
+  if (!/^[A-Za-z0-9_-]{22}$/.test(value)) return null;
+  try {
+    const decoded = Buffer.from(value, 'base64url');
+    return decoded.length === 16 && decoded.toString('base64url') === value
+      ? decoded.toString('hex')
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 type ReticulumChatResourceServeCheck =
@@ -1742,8 +1751,20 @@ export type ReticulumChatWire =
       >;
       limit?: number;
       q?: [string, string, number, string];
+      /** Intended provider destination for a routed repair request. */
+      d?: string;
       o?: string;
       rid?: string;
+      h?: number;
+    }
+  | {
+      /** Compact, signed and targeted multi-hop author range request. */
+      t: 'RCHAT';
+      k: 'rr';
+      g: number;
+      v: [string, string, number, number];
+      q: [string, string, number, string];
+      d: string;
       h?: number;
     }
   | {
@@ -2647,6 +2668,14 @@ type ReticulumChatEventRelayRoute = {
   originPeerHash: string;
   groupId: number;
   eventId: string;
+  expiresAt: number;
+};
+
+type ReticulumChatHistoryRelayRoute = {
+  reversePeerHash: string;
+  originPeerHash: string;
+  targetPeerHash: string;
+  groupId: number;
   expiresAt: number;
 };
 
@@ -3697,6 +3726,17 @@ function authorRangeToWireTuple(
   return [normalized.a, normalized.s as string, normalized.from, normalized.to];
 }
 
+function authorRangeToCompactWireTuple(
+  range: ReticulumChatAuthorRange | undefined
+): [string, string, number, number] | undefined {
+  const normalized = normalizeReticulumChatAuthorRange(range);
+  if (!normalized?.s) return undefined;
+  const compactStreamId = Buffer.from(normalized.s, 'hex').toString(
+    'base64url'
+  );
+  return [normalized.a, compactStreamId, normalized.from, normalized.to];
+}
+
 function authorRangeFromWireTuple(
   tuple: unknown
 ): ReticulumChatAuthorRange | null {
@@ -3715,6 +3755,20 @@ function normalizeAuthorRangeWire(
   return (
     authorRangeFromWireTuple(value) ?? normalizeReticulumChatAuthorRange(value)
   );
+}
+
+function authorRangesFromRequestWire(
+  wire: Record<string, unknown>
+): ReticulumChatAuthorRange[] {
+  const rawRanges = Array.isArray(wire.ranges)
+    ? wire.ranges
+    : wire.k === 'rr' && Array.isArray(wire.v)
+      ? [wire.v]
+      : [];
+  return rawRanges
+    .slice(0, RETICULUM_CHAT_MAX_RECENT_AUTHOR_SAMPLE)
+    .map((range) => normalizeAuthorRangeWire(range))
+    .filter((range): range is ReticulumChatAuthorRange => Boolean(range));
 }
 
 function buildReticulumChatRangeRequestSignedFields(input: {
@@ -7034,6 +7088,10 @@ export class ReticulumChatManager extends EventEmitter {
     { requestId: string; expiresAt: number }
   >();
   private eventRelayRoutes = new Map<string, ReticulumChatEventRelayRoute>();
+  private historyRelayRoutes = new Map<
+    string,
+    ReticulumChatHistoryRelayRoute
+  >();
   private localNotifyWatcher: fs.FSWatcher | null = null;
   private localNotifyTimer: ReturnType<typeof setTimeout> | null = null;
   private localNotifyScanInterval: ReturnType<typeof setInterval> | null = null;
@@ -8024,6 +8082,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.directExpiryTimer = null;
     this.directExpiryAt = 0;
     this.eventRelayRoutes.clear();
+    this.historyRelayRoutes.clear();
     this.resourceTransfer?.close();
     this.directResourceTransfer?.close();
     for (const timer of this.typingTimers.values()) clearTimeout(timer);
@@ -14641,6 +14700,10 @@ export class ReticulumChatManager extends EventEmitter {
       .slice(0, 32);
   }
 
+  private historyRelayRouteKey(groupId: number, requestId: string): string {
+    return `${groupId}:${requestId}`;
+  }
+
   private pruneGroupInterestRoutes(now = this.now()): void {
     let routesChanged = false;
     for (const [key, route] of this.groupInterestRoutes) {
@@ -14693,6 +14756,21 @@ export class ReticulumChatManager extends EventEmitter {
         .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
         .slice(0, excess);
       for (const [key] of oldest) this.eventRelayRoutes.delete(key);
+    }
+    for (const [key, route] of this.historyRelayRoutes) {
+      if (route.expiresAt <= now) this.historyRelayRoutes.delete(key);
+    }
+    if (
+      this.historyRelayRoutes.size >
+      RETICULUM_CHAT_GROUP_CONTROL_RELAY_MAX_ROUTES
+    ) {
+      const excess =
+        this.historyRelayRoutes.size -
+        RETICULUM_CHAT_GROUP_CONTROL_RELAY_MAX_ROUTES;
+      const oldest = [...this.historyRelayRoutes.entries()]
+        .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
+        .slice(0, excess);
+      for (const [key] of oldest) this.historyRelayRoutes.delete(key);
     }
   }
 
@@ -16579,7 +16657,8 @@ export class ReticulumChatManager extends EventEmitter {
         void this.handleFeedReq(groupId, wire, peerHash);
         return;
       }
-      case 'range_req': {
+      case 'range_req':
+      case 'rr': {
         const groupId = Number(wire.g);
         if (!Number.isInteger(groupId) || groupId <= 0) return;
         void this.handleRangeReq(groupId, wire, peerHash);
@@ -17155,6 +17234,64 @@ export class ReticulumChatManager extends EventEmitter {
       nextHops.push(nextHop);
     }
     return nextHops;
+  }
+
+  private getGroupInterestNextHopForOrigin(
+    groupId: number,
+    originPeerHash: string,
+    excludePeerHashes: string[] = []
+  ): string | undefined {
+    this.pruneGroupInterestRoutes();
+    const origin = this.routePeerHash(originPeerHash);
+    if (!origin) return undefined;
+    const route = this.groupInterestRoutes.get(
+      this.groupInterestRouteKey(groupId, origin)
+    );
+    if (!route) return undefined;
+    const nextHop = this.routePeerHash(route.reversePeerHash);
+    if (!nextHop) return undefined;
+    const excluded = new Set(
+      excludePeerHashes
+        .map((hash) => this.routePeerHash(hash))
+        .filter((hash): hash is string => Boolean(hash))
+    );
+    const local = this.localPeerHash();
+    if (local) excluded.add(local);
+    return excluded.has(nextHop) ? undefined : nextHop;
+  }
+
+  private async sendGroupTargetedRoutedControl(
+    groupId: number,
+    targetPeerHash: string,
+    wire: ReticulumChatWire,
+    options: {
+      excludePeerHashes?: string[];
+      context?: string;
+    } = {}
+  ): Promise<ReticulumSendResult> {
+    const excluded = [...(options.excludePeerHashes ?? [])];
+    const nextHop = this.getGroupInterestNextHopForOrigin(
+      groupId,
+      targetPeerHash,
+      excluded
+    );
+    if (nextHop) {
+      const result = await this.sendToPeerOnce(nextHop, wire);
+      if (result.ok === true) return result;
+      this.pruneGroupInterestRoutesForNextHop(groupId, nextHop, result.reason);
+      loggerWarn(
+        `[ReticulumChat] group_targeted_control_failed group=${groupId} kind=${wire.k} target=${targetPeerHash.slice(0, 16)} nextHop=${nextHop.slice(0, 16)} reason=${result.reason}${options.context ? ` context=${options.context}` : ''}; using bounded routed fallback`
+      );
+      // Do not exclude a failed next hop from the bounded retry. On a leaf it
+      // may be the only overlay neighbor, and the underlying path can recover
+      // before the retry fires.
+    }
+    return this.sendGroupRoutedControl(groupId, wire, {
+      excludePeerHashes: excluded,
+      fallbackFanout: true,
+      useRetryQueue: true,
+      context: options.context,
+    });
   }
 
   private rememberForwardedGroupControlEdge(
@@ -20246,9 +20383,31 @@ export class ReticulumChatManager extends EventEmitter {
     payloadKey: string
   ): boolean {
     const inbound = this.routePeerHash(inboundPeerHash);
-    const origin = this.routePeerHash(wire.o) ?? inbound;
+    const rangeAuth =
+      kind === 'range_req' && Array.isArray(wire.q) ? wire.q : null;
+    const origin =
+      this.routePeerHash(wire.o) ??
+      this.routePeerHash(rangeAuth?.[0]) ??
+      inbound;
     const local = this.localPeerHash();
     if (!inbound || !origin || (local && origin === local)) return false;
+    if (kind === 'range_req' && wire.d != null) {
+      const ranges = authorRangesFromRequestWire(wire);
+      if (
+        ranges.length === 0 ||
+        !rangeAuth ||
+        !verifyReticulumChatRangeRequest(
+          groupId,
+          ranges,
+          this.normalizeFeedLimit(wire.limit),
+          rangeAuth,
+          origin,
+          this.now()
+        )
+      ) {
+        return false;
+      }
+    }
     if (
       !this.groupInterestRoutes.has(this.groupInterestRouteKey(groupId, origin))
     ) {
@@ -20262,11 +20421,29 @@ export class ReticulumChatManager extends EventEmitter {
       )
     );
     if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return false;
+    const requestId =
+      this.normalizeGroupControlRequestId(wire.rid) ??
+      (kind === 'range_req' && typeof rangeAuth?.[3] === 'string'
+        ? nodeCrypto
+            .createHash('sha256')
+            .update(rangeAuth[3], 'utf8')
+            .digest('hex')
+            .slice(0, 16)
+        : undefined) ??
+      (kind === 'event_req' && wire.q && typeof wire.q === 'object'
+        ? this.eventRelayRequestId(
+            groupId,
+            String((wire.q as Partial<ReticulumChatEventRequestWire>).id || ''),
+            origin
+          )
+        : this.groupControlRequestId(kind, groupId, origin, payloadKey));
+    const dedupePayloadKey =
+      kind === 'range_req' ? `${payloadKey}:${requestId}` : payloadKey;
     const dedupeKey = this.groupControlRouteKey(
       kind,
       groupId,
       origin,
-      payloadKey
+      dedupePayloadKey
     );
     const now = this.now();
     if ((this.forwardedGroupControlKeys.get(dedupeKey) ?? 0) > now) return true;
@@ -20275,15 +20452,6 @@ export class ReticulumChatManager extends EventEmitter {
       now + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS
     );
     this.noteGroupInterestRoute(groupId, origin, inbound, hops);
-    const requestId =
-      this.normalizeGroupControlRequestId(wire.rid) ??
-      (kind === 'event_req' && wire.q && typeof wire.q === 'object'
-        ? this.eventRelayRequestId(
-            groupId,
-            String((wire.q as Partial<ReticulumChatEventRequestWire>).id || ''),
-            origin
-          )
-        : this.groupControlRequestId(kind, groupId, origin, payloadKey));
     if (kind === 'event_req' || kind === 'relay_query') {
       const eventIds =
         kind === 'event_req'
@@ -20317,10 +20485,29 @@ export class ReticulumChatManager extends EventEmitter {
         });
       }
     }
+    if (kind === 'range_req') {
+      const targetPeerHash = this.routePeerHash(wire.d);
+      if (!targetPeerHash) return false;
+      this.historyRelayRoutes.set(
+        this.historyRelayRouteKey(groupId, requestId),
+        {
+          reversePeerHash: inbound,
+          originPeerHash: origin,
+          targetPeerHash,
+          groupId,
+          expiresAt: now + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS,
+        }
+      );
+      this.pruneGroupControlRoutes(now);
+    }
     const forwarded = {
       ...wire,
-      o: this.compactRoutePeerHash(origin),
-      ...(kind === 'relay_query' ? {} : { rid: requestId }),
+      ...(kind === 'range_req' && rangeAuth
+        ? {}
+        : { o: this.compactRoutePeerHash(origin) }),
+      ...(kind === 'relay_query' || (kind === 'range_req' && rangeAuth)
+        ? {}
+        : { rid: requestId }),
       h: hops + 1,
     } as ReticulumChatWire;
     if (kind === 'event_req' && !wireFitsReticulumChat(forwarded)) {
@@ -20328,13 +20515,23 @@ export class ReticulumChatManager extends EventEmitter {
         forwarded as Partial<Extract<ReticulumChatWire, { k: 'event_req' }>>
       ).rid;
     }
-    void this.sendGroupRoutedControl(groupId, forwarded, {
-      excludePeerHashes: [inbound, origin, ...(local ? [local] : [])],
-      fallbackFanout: true,
-      fallbackOnPartialFailure: true,
-      useRetryQueue: true,
-      context: `relay-${kind}`,
-    });
+    const exclusions = [inbound, origin, ...(local ? [local] : [])];
+    const target =
+      kind === 'range_req' ? this.routePeerHash(wire.d) : undefined;
+    if (target) {
+      void this.sendGroupTargetedRoutedControl(groupId, target, forwarded, {
+        excludePeerHashes: exclusions,
+        context: `relay-${kind}`,
+      });
+    } else {
+      void this.sendGroupRoutedControl(groupId, forwarded, {
+        excludePeerHashes: exclusions,
+        fallbackFanout: true,
+        fallbackOnPartialFailure: true,
+        useRetryQueue: true,
+        context: `relay-${kind}`,
+      });
+    }
     return true;
   }
 
@@ -20834,8 +21031,21 @@ export class ReticulumChatManager extends EventEmitter {
   private relayResponseOptionsFromWire(
     wire: Record<string, unknown>
   ): Omit<ReticulumChatEventOfferOptions, 'continuation'> | undefined {
-    const recipientPeerHash = this.routePeerHash(wire.o);
-    const relayRequestId = this.normalizeGroupControlRequestId(wire.rid);
+    const rangeAuth =
+      (wire.k === 'range_req' || wire.k === 'rr') && Array.isArray(wire.q)
+        ? wire.q
+        : null;
+    const recipientPeerHash =
+      this.routePeerHash(wire.o) ?? this.routePeerHash(rangeAuth?.[0]);
+    const relayRequestId =
+      this.normalizeGroupControlRequestId(wire.rid) ??
+      (typeof rangeAuth?.[3] === 'string'
+        ? nodeCrypto
+            .createHash('sha256')
+            .update(rangeAuth[3], 'utf8')
+            .digest('hex')
+            .slice(0, 16)
+        : undefined);
     const sourcePeerHash = this.localPeerHash();
     if (!recipientPeerHash && !relayRequestId && !sourcePeerHash)
       return undefined;
@@ -21046,6 +21256,23 @@ export class ReticulumChatManager extends EventEmitter {
     wire: Record<string, unknown>,
     peerHash: string
   ): Promise<void> {
+    const targetPeerHash = this.routePeerHash(wire.d);
+    if (wire.d != null && !targetPeerHash) return;
+    const localPeerHash = this.localPeerHash();
+    if (targetPeerHash && targetPeerHash !== localPeerHash) {
+      this.relayGroupControlRequest(
+        'range_req',
+        groupId,
+        wire,
+        peerHash,
+        this.hashControlPayload({
+          d: targetPeerHash,
+          ranges: wire.ranges ?? wire.v,
+          limit: wire.limit,
+        })
+      );
+      return;
+    }
     if (!this.canServeGroupHistory(groupId)) {
       this.relayGroupControlRequest(
         'range_req',
@@ -21053,14 +21280,13 @@ export class ReticulumChatManager extends EventEmitter {
         wire,
         peerHash,
         this.hashControlPayload({
-          ranges: wire.ranges,
+          ranges: wire.ranges ?? wire.v,
           limit: wire.limit,
         })
       );
       return;
     }
     if (!this.shouldServeControlRequest(wire, groupId, peerHash)) return;
-    if (!Array.isArray(wire.ranges)) return;
     const limit = this.normalizeFeedLimit(wire.limit);
     const rangeAuth = Array.isArray(wire.q) ? wire.q : null;
     const signedRequestId =
@@ -21075,11 +21301,12 @@ export class ReticulumChatManager extends EventEmitter {
       typeof wire.id === 'string' && /^[a-f0-9]{16,64}$/i.test(wire.id)
         ? wire.id.toLowerCase()
         : signedRequestId;
-    const normalizedRanges = wire.ranges
-      .slice(0, RETICULUM_CHAT_MAX_RECENT_AUTHOR_SAMPLE)
-      .map((range) => normalizeAuthorRangeWire(range))
-      .filter((range): range is ReticulumChatAuthorRange => Boolean(range));
-    const requesterPeerHash = this.routePeerHash(wire.o) ?? peerHash;
+    const normalizedRanges = authorRangesFromRequestWire(wire);
+    if (normalizedRanges.length === 0) return;
+    const requesterPeerHash =
+      this.routePeerHash(wire.o) ??
+      this.routePeerHash(rangeAuth?.[0]) ??
+      peerHash;
     let requesterAddress = '';
     if (requestId && wire.q) {
       requesterAddress = verifyReticulumChatRangeRequest(
@@ -21099,6 +21326,10 @@ export class ReticulumChatManager extends EventEmitter {
         if (isMember !== true) requesterAddress = '';
       }
     }
+    // Routed requests cross peers that are not trusted to speak for the
+    // requester. Only the end-to-end signed requester may authorize a
+    // targeted provider to register history resources for that destination.
+    if (targetPeerHash && !requesterAddress) return;
     if (this.isClosed) return;
     let budget = limit;
     const emptyRanges: ReticulumChatAuthorRange[] = [];
@@ -22786,7 +23017,95 @@ export class ReticulumChatManager extends EventEmitter {
         this.pendingAuthorRangeRequests.delete(oldest);
       }
     }
-    const result = await this.sendToPeer(peer, wire);
+    let result = await this.sendToPeerOnce(peer, wire);
+    if (result.ok === false) {
+      const localPeerHash = this.localPeerHash();
+      let routedBaseWire = wire;
+      let routedRequestId = requestId;
+      if (
+        !routedBaseWire.q &&
+        this.signLocalFields &&
+        localPeerHash &&
+        legacyRequestId
+      ) {
+        const timestamp = this.now();
+        const signed = await this.signLocalFields(
+          buildReticulumChatRangeRequestSignedFields({
+            groupId: wire.g,
+            ranges,
+            limit,
+            sourcePeerHash: localPeerHash,
+            timestamp,
+          })
+        ).catch((err) => {
+          loggerWarn(
+            '[ReticulumChat] Failed to sign routed author range request:',
+            err
+          );
+          return null;
+        });
+        if (signed) {
+          routedRequestId = nodeCrypto
+            .createHash('sha256')
+            .update(signed.signature, 'utf8')
+            .digest('hex')
+            .slice(0, 16);
+          routedBaseWire = {
+            t: 'RCHAT',
+            k: 'range_req',
+            g: wire.g,
+            ranges: ranges
+              .map((range) => authorRangeToCompactWireTuple(range))
+              .filter(
+                (range): range is [string, string, number, number] =>
+                  range != null
+              ),
+            q: [
+              this.compactRoutePeerHash(localPeerHash),
+              signed.authorPublicKey,
+              timestamp,
+              signed.signature,
+            ],
+          };
+        }
+      }
+      if (routedBaseWire.q && localPeerHash && routedRequestId) {
+        const compactRange = authorRangeToCompactWireTuple(ranges[0]);
+        if (compactRange) {
+          const routedWire: Extract<ReticulumChatWire, { k: 'rr' }> = {
+            t: 'RCHAT',
+            k: 'rr',
+            g: wire.g,
+            v: compactRange,
+            q: routedBaseWire.q,
+            d: this.compactRoutePeerHash(peer),
+            h: 0,
+          };
+          if (!wireFitsReticulumChat(routedWire)) {
+            result = { ok: false, reason: 'wire-too-large' };
+          } else {
+            if (routedRequestId !== requestId) {
+              this.pendingAuthorRangeRequests.delete(requestId);
+              requestId = routedRequestId;
+              this.pendingAuthorRangeRequests.set(requestId, {
+                groupId: wire.g,
+                peerHash: peer,
+                ranges,
+                persistedRanges: [persistedRange],
+                expiresAt:
+                  this.now() + RETICULUM_CHAT_AUTHOR_GAP_RESPONSE_TIMEOUT_MS,
+              });
+            }
+            result = await this.sendGroupTargetedRoutedControl(
+              wire.g,
+              peer,
+              routedWire,
+              { context: 'author-gap-direct-fallback' }
+            );
+          }
+        }
+      }
+    }
     if (result.ok === false) this.pendingAuthorRangeRequests.delete(requestId);
     else
       this.scheduleBackgroundAuthorGapRepair(
@@ -33110,6 +33429,14 @@ export class ReticulumChatManager extends EventEmitter {
       return;
     }
     if (
+      this.maybeRelayEventPageOffer(
+        offer as ReticulumChatEventPageOffer,
+        peerHash
+      )
+    ) {
+      return;
+    }
+    if (
       !this.subscribedGroups.has(offer.groupId) ||
       !this.localGroupIds.has(offer.groupId)
     ) {
@@ -33189,6 +33516,41 @@ export class ReticulumChatManager extends EventEmitter {
     }
     this.eventPageOffers.set(trackedOffer.transferId, trackedOffer);
     void this.acceptEventPageResource(sourcePeerHash, trackedOffer);
+  }
+
+  private maybeRelayEventPageOffer(
+    offer: ReticulumChatEventPageOffer,
+    inboundPeerHash: string
+  ): boolean {
+    const requestId = this.normalizeGroupControlRequestId(offer.relayRequestId);
+    if (!requestId) return false;
+    this.pruneGroupControlRoutes();
+    const route = this.historyRelayRoutes.get(
+      this.historyRelayRouteKey(offer.groupId, requestId)
+    );
+    if (!route || route.groupId !== offer.groupId) return false;
+    const local = this.localPeerHash();
+    if (local && route.originPeerHash === local) return false;
+    const sourcePeerHash =
+      this.routePeerHash(offer.sourcePeerHash) ??
+      this.routePeerHash(offer.senderReticulumDestinationHash) ??
+      this.routePeerHash(inboundPeerHash);
+    if (!sourcePeerHash || sourcePeerHash !== route.targetPeerHash) return true;
+    const relayOffer: ReticulumChatEventPageOffer = {
+      ...offer,
+      sourcePeerHash,
+      relayRequestId: requestId,
+    };
+    const wire = buildEventPageOfferControlWire(offer.groupId, relayOffer);
+    if (!wireFitsReticulumChat(wire)) return true;
+    void this.sendToPeer(route.reversePeerHash, wire).then((result) => {
+      if (result.ok === false) {
+        loggerWarn(
+          `[ReticulumChat] history_page_offer_relay_failed group=${offer.groupId} request=${requestId.slice(0, 12)} nextHop=${route.reversePeerHash.slice(0, 16)} reason=${result.reason}`
+        );
+      }
+    });
+    return true;
   }
 
   private isValidEventPageOffer(
@@ -37889,6 +38251,7 @@ export class ReticulumChatManager extends EventEmitter {
       case 'group_state_digest_v3':
       case 'feed_req':
       case 'range_req':
+      case 'rr':
       case 'event_req':
       case 'relay_query':
       case 'relay_digest':

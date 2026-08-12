@@ -13334,6 +13334,222 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('routes targeted author repairs to the provider and relays the page offer back to the requester', async () => {
+    const requester = 'a'.repeat(32);
+    const intermediateHash = 'b'.repeat(32);
+    const provider = 'c'.repeat(32);
+    const now = 1_786_000_000_000;
+    const compactRequester = Buffer.from(requester, 'hex').toString(
+      'base64url'
+    );
+    const compactProvider = Buffer.from(provider, 'hex').toString('base64url');
+    const compactAuthorStream = Buffer.from(
+      TEST_AUTHOR_STREAM_ID,
+      'hex'
+    ).toString('base64url');
+    const rangeAuthor = createDmIdentity().address;
+    const requesterIdentity = createDmIdentity();
+    const ranges: Array<{
+      a: string;
+      s: string;
+      from: number;
+      to: number;
+    }> = [{ a: rangeAuthor, s: TEST_AUTHOR_STREAM_ID, from: 2, to: 3 }];
+    const createRangeAuth = async (timestamp: number) => {
+      const signedFields = {
+        type: 'RCHAT_RANGE_REQ',
+        groupId: 73,
+        ranges,
+        limit: 100,
+        sourcePeerHash: requester,
+        timestamp,
+        authorAddress: requesterIdentity.address,
+        authorPublicKey: requesterIdentity.publicKey,
+      };
+      const signature = base58Encode(
+        nacl.sign.detached(
+          new Uint8Array(canonicalizeForSigning(signedFields)),
+          requesterIdentity.secretKey
+        )
+      );
+      return {
+        requestId: nodeCrypto
+          .createHash('sha256')
+          .update(signature, 'utf8')
+          .digest('hex')
+          .slice(0, 16),
+        auth: [
+          compactRequester,
+          requesterIdentity.publicKey,
+          timestamp,
+          signature,
+        ] as [string, string, number, string],
+      };
+    };
+    const firstAuth = await createRangeAuth(now);
+    const requestId = firstAuth.requestId;
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const accepted: unknown[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => intermediateHash,
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+        acceptReticulumChatResourceDetailed: async (payload: unknown) => {
+          accepted.push(payload);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+    });
+
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' },
+      requester
+    );
+    manager.handleWire(
+      { t: 'RCHAT', k: 'group_sub', groups: [73], mode: 'summary' },
+      provider
+    );
+    direct.length = 0;
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'range_req',
+        g: 73,
+        ranges: [[rangeAuthor, compactAuthorStream, 2, 3]],
+        d: compactProvider,
+        o: requester,
+        rid: 'f'.repeat(16),
+        h: 0,
+      },
+      requester
+    );
+    await flushQueuedWork();
+    expect(direct).toEqual([]);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'rr',
+        g: 73,
+        v: [rangeAuthor, compactAuthorStream, 2, 3],
+        q: firstAuth.auth,
+        d: compactProvider,
+        h: 0,
+      },
+      requester
+    );
+    await flushQueuedWork();
+
+    expect(direct).toContainEqual({
+      peer: provider,
+      wire: expect.objectContaining({
+        k: 'rr',
+        g: 73,
+        d: compactProvider,
+        q: firstAuth.auth,
+        h: 1,
+      }),
+    });
+    const forwardedRangeRequest = direct.find(
+      ({ peer, wire }) => peer === provider && wire.k === 'rr'
+    )?.wire;
+    expect(wireFitsReticulumChat(forwardedRangeRequest!)).toBe(true);
+    expect(
+      byteLengthUtf8JsonWithBridgeSenderOnly(forwardedRangeRequest!)
+    ).toBeLessThanOrEqual(RT_RETICULUM_MAX_WIRE_JSON_BYTES);
+
+    const retryAuth = await createRangeAuth(now + 1);
+    const retryRequestId = retryAuth.requestId;
+    direct.length = 0;
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'rr',
+        g: 73,
+        v: [rangeAuthor, compactAuthorStream, 2, 3],
+        q: retryAuth.auth,
+        d: compactProvider,
+        h: 0,
+      },
+      requester
+    );
+    await flushQueuedWork();
+    expect(direct).toContainEqual({
+      peer: provider,
+      wire: expect.objectContaining({
+        k: 'rr',
+        q: retryAuth.auth,
+      }),
+    });
+
+    direct.length = 0;
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_page_offer',
+        g: 73,
+        p: {
+          x: 'transfer-wrong-provider',
+          c: '*',
+          d: 'r',
+          ph: 'e'.repeat(64),
+          s: 128,
+          n: 1,
+          rr: requestId,
+          sd: compactRequester,
+        },
+      },
+      requester
+    );
+    await flushQueuedWork();
+    expect(direct).toEqual([]);
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'event_page_offer',
+        g: 73,
+        p: {
+          x: 'transfer-routed-range-page',
+          c: '*',
+          d: 'r',
+          ph: 'f'.repeat(64),
+          s: 128,
+          n: 1,
+          rr: requestId,
+          sp: provider,
+        },
+      },
+      provider
+    );
+    await flushQueuedWork();
+
+    expect(direct).toContainEqual({
+      peer: requester,
+      wire: expect.objectContaining({
+        k: 'event_page_offer',
+        g: 73,
+        p: expect.objectContaining({
+          rr: requestId,
+          sd: expect.any(String),
+        }),
+      }),
+    });
+    expect(accepted).toEqual([]);
+    manager.close();
+  });
+
   it('relays typing indicators only along subscribed group interest routes', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const manager = new ReticulumChatManager({
@@ -18209,15 +18425,21 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('keeps author range repair peer-targeted when direct route is unavailable', async () => {
+  it('routes author range repair through the group overlay when the provider is not a direct peer', async () => {
     let now = 100_000;
     const directWires: Record<string, unknown>[] = [];
     const fanoutWires: Record<string, unknown>[] = [];
+    const fanoutExclusions: string[][] = [];
     const bridge = {
       on: () => undefined,
       off: () => undefined,
-      fanoutReticulumChatDetailed: async (wires: Record<string, unknown>[]) => {
+      getLocalDestinationHash: () => 'b'.repeat(32),
+      fanoutReticulumChatDetailed: async (
+        wires: Record<string, unknown>[],
+        exclusions: string[] = []
+      ) => {
         fanoutWires.push(...wires);
+        fanoutExclusions.push([...exclusions]);
         return { ok: true as const };
       },
       sendReticulumChatDetailed: async (
@@ -18235,6 +18457,7 @@ describe('reticulum chat manager', () => {
       dbPath: tempDbPath(),
       bridge: bridge as any,
       now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
     });
     manager.setLocalGroupMemberships([72]);
     manager.subscribeGroup(72);
@@ -18268,6 +18491,8 @@ describe('reticulum chat manager', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(directWires.find((wire) => wire.k === 'range_req')).toBeUndefined();
+    fanoutWires.length = 0;
+    fanoutExclusions.length = 0;
 
     now += 60_000;
     (manager as any).processBackgroundAuthorGapRepair();
@@ -18276,12 +18501,21 @@ describe('reticulum chat manager', () => {
     expect(directWires).toContainEqual(
       expect.objectContaining({
         k: 'range_req',
-        ranges: [
-          expect.objectContaining({ a: first.authorAddress, from: 2, to: 2 }),
-        ],
+        ranges: expect.any(Array),
       })
     );
-    expect(fanoutWires.find((wire) => wire.k === 'range_req')).toBeUndefined();
+    expect(fanoutWires).toContainEqual(
+      expect.objectContaining({
+        k: 'rr',
+        g: 72,
+        d: 'peer-a',
+        h: 0,
+        v: expect.any(Array),
+      })
+    );
+    expect(
+      fanoutExclusions.some((excluded) => excluded.includes('peer-a'))
+    ).toBe(false);
     manager.close();
   });
 
