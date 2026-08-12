@@ -376,6 +376,8 @@ describe('useVoiceCall', () => {
       () =>
         useVoiceCall({
           callApi,
+          callApiSignsSignals: true,
+          enableDirectVoiceWebRtc: true,
           createCallId: () => 'native-capability-call',
           skipDirectFriendValidation: true,
           skipSystemReadiness: true,

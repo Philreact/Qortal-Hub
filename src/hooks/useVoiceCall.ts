@@ -364,6 +364,12 @@ export interface UseVoiceCallOptions {
    * authoritative nor consumed by that protocol.
    */
   callApiSignsSignals?: boolean;
+  /**
+   * Permit this custom call-control API to use the shared, session-bound DM
+   * media WebRTC path. The RTC envelope is still signed by the renderer and
+   * is carried only over the authenticated Reticulum audio-link channel.
+   */
+  enableDirectVoiceWebRtc?: boolean;
   skipSystemReadiness?: boolean;
   skipDirectFriendValidation?: boolean;
   getPeerPublicKey?: (address: string) => string | undefined;
@@ -441,7 +447,8 @@ export function useVoiceCall(
     null;
   const prefersDirectVoiceWebRtc =
     !isReticulumCallEnabled &&
-    options.callApiSignsSignals !== true &&
+    (options.callApiSignsSignals !== true ||
+      options.enableDirectVoiceWebRtc === true) &&
     typeof window.groupCall?.sendRtcSignal === 'function';
 
   const [callState, setCallState] = useState<CallState>('idle');

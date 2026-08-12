@@ -3403,6 +3403,7 @@ export function QortalLand({
   const landVoiceCall = useVoiceCall({
     callApi: landCallApi,
     callApiSignsSignals: true,
+    enableDirectVoiceWebRtc: true,
     skipSystemReadiness: true,
     skipDirectFriendValidation: true,
     getPeerPublicKey: (address) => landCallPeerPublicKeysRef.current.get(address),
