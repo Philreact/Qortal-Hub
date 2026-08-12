@@ -29595,13 +29595,50 @@ export class ReticulumChatManager extends EventEmitter {
     // event_req -> event_offer -> Resource transfer remains unchanged.
     // Route remote origins through their immediate reverse next hop instead
     // of attempting to open a new overlay link to every origin.
-    await this.sendGroupRoutedControl(event.groupId, wire, {
-      excludePeerHashes: excludePeerPresenceHashes,
-      fallbackFanout: true,
-      fallbackOnPartialFailure: true,
-      useRetryQueue: true,
-      context: 'event-hint',
-    });
+    const excluded = excludePeerPresenceHashes
+      .map((peerHash) => this.routePeerHash(peerHash))
+      .filter((peerHash): peerHash is string => !!peerHash);
+    if (excluded.length === 0) {
+      await this.sendGroupRoutedControl(event.groupId, wire, {
+        fallbackFanout: true,
+        fallbackOnPartialFailure: true,
+        useRetryQueue: true,
+        context: 'event-hint',
+      });
+      return;
+    }
+
+    // An imported event must not be reflected to the peer that supplied it.
+    // Try known group routes first, then one broad overlay fanout for peers
+    // whose subscription route has not arrived yet. If excluding the inbound
+    // peer leaves no route, this relay branch is complete rather than failed;
+    // retrying it cannot discover a new recipient and creates false churn.
+    const routedResult = await this.sendGroupRoutedControl(
+      event.groupId,
+      wire,
+      {
+        excludePeerHashes: excluded,
+        fallbackFanout: false,
+        useRetryQueue: true,
+        context: 'event-hint',
+      }
+    );
+    if (routedResult.ok) return;
+
+    const fanoutResult = await this.fanoutOnce(wire, excluded);
+    if (
+      fanoutResult.ok === false &&
+      fanoutResult.reason !== 'no-route' &&
+      this.shouldRetryControlSend(wire, fanoutResult.reason)
+    ) {
+      this.enqueueControlRetry({
+        wire,
+        excludePeerPresenceHashes: excluded,
+        // A later no-route result means the relayed branch has naturally
+        // reached its edge after the original inbound peer is excluded.
+        dropIfNoRoute: true,
+      });
+    }
   }
 
   private async buildSignedEventRequestWire(

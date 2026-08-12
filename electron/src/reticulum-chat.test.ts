@@ -12426,6 +12426,7 @@ describe('reticulum chat manager', () => {
   it('routes imported event notices through immediate group next hops without changing the legacy event transfer protocol', async () => {
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
     const now = 100_000;
+    const inboundPeer = 'f'.repeat(32);
     const sharedNextHop = 'd'.repeat(32);
     const directSubscriber = 'e'.repeat(32);
     const manager = new ReticulumChatManager({
@@ -12479,7 +12480,8 @@ describe('reticulum chat manager', () => {
         eventId: 'event-routed-import-hint',
         groupId: 73,
         timestamp: now,
-      })
+      }),
+      [inboundPeer]
     );
 
     expect(direct.map(({ peer }) => peer).sort()).toEqual(
@@ -12491,9 +12493,114 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('ends an imported event notice branch when excluding its only overlay peer leaves no route', async () => {
+    const now = 100_000;
+    const localPeer = 'a'.repeat(32);
+    const inboundPeer = 'b'.repeat(32);
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const fanout: Array<{
+      wires: Record<string, unknown>[];
+      excluded: string[];
+    }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => localPeer,
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+        fanoutReticulumChatDetailed: async (
+          wires: Record<string, unknown>[],
+          excluded: string[] = []
+        ) => {
+          fanout.push({ wires, excluded });
+          return {
+            ok: false as const,
+            reason: 'no-route' as const,
+            error: 'No established overlay route',
+          };
+        },
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+
+    await (manager as any).sendEventHintToInterestedPeers(
+      signedEvent({
+        eventId: 'event-imported-leaf-branch-complete',
+        groupId: 73,
+        timestamp: now,
+      }),
+      [inboundPeer]
+    );
+
+    expect(direct).toHaveLength(0);
+    expect(fanout).toHaveLength(1);
+    expect(fanout[0]).toEqual({
+      wires: [
+        expect.objectContaining({
+          k: 'event_notice_v3',
+          g: 73,
+        }),
+      ],
+      excluded: [inboundPeer],
+    });
+    expect(
+      [...(manager as any).controlRetryQueue.values()].some(
+        (item: { wire: ReticulumChatWire }) => item.wire.k === 'event_notice_v3'
+      )
+    ).toBe(false);
+    manager.close();
+  });
+
+  it('retains retry recovery for a transient imported event notice fanout failure', async () => {
+    const now = 100_000;
+    const inboundPeer = 'b'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        fanoutReticulumChatDetailed: async () => ({
+          ok: false as const,
+          reason: 'bridge-overloaded' as const,
+        }),
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+
+    await (manager as any).sendEventHintToInterestedPeers(
+      signedEvent({
+        eventId: 'event-imported-transient-fanout-retry',
+        groupId: 73,
+        timestamp: now,
+      }),
+      [inboundPeer]
+    );
+
+    const retries = [...(manager as any).controlRetryQueue.values()].filter(
+      (item: { wire: ReticulumChatWire }) => item.wire.k === 'event_notice_v3'
+    );
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({
+      excludePeerPresenceHashes: [inboundPeer],
+      dropIfNoRoute: true,
+    });
+    manager.close();
+  });
+
   it('falls back to fanout when an imported event notice next hop fails', async () => {
     const fanout: Record<string, unknown>[] = [];
     const now = 100_000;
+    const inboundPeer = 'f'.repeat(32);
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: {
@@ -12527,7 +12634,8 @@ describe('reticulum chat manager', () => {
         eventId: 'event-routed-import-hint-fallback',
         groupId: 73,
         timestamp: now,
-      })
+      }),
+      [inboundPeer]
     );
 
     expect(fanout).toContainEqual(
