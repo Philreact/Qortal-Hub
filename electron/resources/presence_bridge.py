@@ -202,6 +202,11 @@ _UNESTABLISHED_LINK_HARD_REFRESH_FAILURES = 3
 _UNESTABLISHED_LINK_HARD_REFRESH_COOLDOWN_SECONDS = 5 * 60.0
 _OVERLAY_LINK_HARD_REFRESH_COOLDOWN_SECONDS = 20.0
 _UNESTABLISHED_LINK_HARD_REFRESH_AWAIT_SECONDS = 2.0
+# Destructive route replacement is process-wide for a destination. A short
+# lease prevents independent overlay, call and resource recovery jobs from
+# expiring the same path concurrently while Reticulum is installing the
+# replacement in the shared transport instance.
+_DESTINATION_PATH_REFRESH_LEASE_SECONDS = 3.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_LIMIT = 2
 _OVERLAY_LINK_FAILURE_SUPPRESS_SECONDS = 5 * 60.0
 _OVERLAY_LINK_FAILURE_SUPPRESS_MAX_SECONDS = 30 * 60.0
@@ -7229,7 +7234,163 @@ def _format_reticulum_path_snapshot(info: Dict[str, Any]) -> str:
     )
 
 
-def _drop_reticulum_path(destination_hash: bytes) -> bool:
+def _link_state_peer_hash(state: Any) -> str:
+    if not isinstance(state, dict):
+        return ""
+    return str(
+        state.get("peerDestinationHash")
+        or state.get("peerPresenceHash")
+        or ""
+    ).strip().lower()
+
+
+def _peer_has_other_connecting_outbound_link(
+    peer_hash: str,
+    requester_state: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Protect an in-flight Link from an unrelated path invalidation."""
+    peer = str(peer_hash or "").strip().lower()
+    if not peer:
+        return False
+    with _state_lock:
+        collections = (
+            _overlay_links_by_id.values(),
+            _qchat_file_links_by_id.values(),
+            _audio_links_by_id.values(),
+            _land_call_links_by_id.values(),
+        )
+        for states in collections:
+            for state in states:
+                if not isinstance(state, dict) or state is requester_state:
+                    continue
+                if state.get("incoming") is True or state.get("closing") is True:
+                    continue
+                if state.get("established") is True:
+                    continue
+                if state.get("link") is None:
+                    continue
+                if _link_state_peer_hash(state) == peer:
+                    return True
+    return False
+
+
+def _destination_path_generation(peer_hash: str) -> int:
+    lifecycle = _lifecycle_state_for_peer(peer_hash)
+    if lifecycle is None:
+        return 0
+    with _state_lock:
+        return int(lifecycle.get("destination_path_generation") or 0)
+
+
+def _stamp_link_path_generation(state: Dict[str, Any], peer_hash: str) -> int:
+    generation = _destination_path_generation(peer_hash)
+    state["destinationPathGeneration"] = generation
+    return generation
+
+
+def _note_link_path_generation_proven(
+    state: Dict[str, Any],
+    peer_hash: str,
+    source: str,
+) -> None:
+    peer = str(peer_hash or "").strip().lower()
+    if not peer:
+        return
+    lifecycle = _lifecycle_state_for_peer(peer)
+    if lifecycle is None:
+        return
+    generation = int(
+        state.get("destinationPathGeneration")
+        if isinstance(state.get("destinationPathGeneration"), int)
+        else _destination_path_generation(peer)
+    )
+    with _state_lock:
+        previous_value = lifecycle.get("destination_path_proven_generation")
+        previous = int(previous_value) if isinstance(previous_value, int) else -1
+        if generation >= previous:
+            lifecycle["destination_path_proven_generation"] = generation
+            lifecycle["destination_path_proven_at"] = time.time()
+            lifecycle["destination_path_proven_source"] = source
+        refresh_generation = lifecycle.get("destination_path_refresh_generation")
+        if isinstance(refresh_generation, int) and refresh_generation <= generation:
+            lifecycle.pop("destination_path_refresh_generation", None)
+            lifecycle.pop("destination_path_refresh_until_monotonic", None)
+            lifecycle.pop("destination_path_refresh_reason", None)
+
+
+def _link_failure_can_invalidate_current_path(
+    state: Dict[str, Any],
+    peer_hash: str,
+) -> bool:
+    """Reject a late failure from an older or already-proven route."""
+    peer = str(peer_hash or "").strip().lower()
+    lifecycle = _lifecycle_state_for_peer(peer)
+    if lifecycle is None:
+        return True
+    attempt_generation = state.get("destinationPathGeneration")
+    if not isinstance(attempt_generation, int):
+        attempt_generation = _destination_path_generation(peer)
+    with _state_lock:
+        current_generation = int(
+            lifecycle.get("destination_path_generation") or 0
+        )
+        proven_value = lifecycle.get("destination_path_proven_generation")
+        proven_generation = int(proven_value) if isinstance(proven_value, int) else -1
+        proven_at = lifecycle.get("destination_path_proven_at")
+    proven_recently = (
+        proven_generation >= attempt_generation
+        and _epoch_timestamp_is_recent(
+            proven_at,
+            time.time(),
+            _DIRECT_LINK_PATH_PROVEN_SECONDS,
+        )
+    )
+    return (
+        attempt_generation == current_generation
+        and not proven_recently
+    )
+
+
+def _drop_reticulum_path(
+    destination_hash: bytes,
+    *,
+    requester_state: Optional[Dict[str, Any]] = None,
+    reason: str = "unspecified",
+) -> Optional[bool]:
+    peer_hash = destination_hash_hex(destination_hash)
+    if _peer_has_other_connecting_outbound_link(peer_hash, requester_state):
+        log(
+            "[presence_bridge] target=presence-reticulum "
+            f"path_refresh_deferred peer={peer_hash} reason={reason} "
+            "cause=other_link_connecting"
+        )
+        return None
+    lifecycle = _lifecycle_state_for_peer(peer_hash)
+    monotonic_now = time.monotonic()
+    if lifecycle is not None:
+        with _state_lock:
+            refresh_until = lifecycle.get(
+                "destination_path_refresh_until_monotonic"
+            )
+            if (
+                isinstance(refresh_until, (int, float))
+                and float(refresh_until) > monotonic_now
+            ):
+                log(
+                    "[presence_bridge] target=presence-reticulum "
+                    f"path_refresh_deferred peer={peer_hash} reason={reason} "
+                    "cause=refresh_in_progress"
+                )
+                return None
+            generation = int(
+                lifecycle.get("destination_path_generation") or 0
+            ) + 1
+            lifecycle["destination_path_generation"] = generation
+            lifecycle["destination_path_refresh_generation"] = generation
+            lifecycle["destination_path_refresh_until_monotonic"] = (
+                monotonic_now + _DESTINATION_PATH_REFRESH_LEASE_SECONDS
+            )
+            lifecycle["destination_path_refresh_reason"] = reason
     _invalidate_reticulum_path_availability(destination_hash)
     dropped = False
     try:
@@ -7336,7 +7497,12 @@ def _force_overlay_peer_path_refresh(
 
     before = _reticulum_path_snapshot(destination_hash)
     refresh_started_at = time.time()
-    dropped = _drop_reticulum_path(destination_hash)
+    dropped = _drop_reticulum_path(
+        destination_hash,
+        reason=f"overlay_hard_refresh:{reason}",
+    )
+    if dropped is None:
+        return _reticulum_local_has_path(destination_hash)
     if st is not None:
         st["last_overlay_link_hard_refresh_at"] = now
         st["last_overlay_link_hard_refresh_reason"] = reason
@@ -7470,7 +7636,12 @@ def _request_fresh_link_path(
         return True
     before = _reticulum_path_snapshot(destination_hash)
     if had_path and force_refresh:
-        _drop_reticulum_path(destination_hash)
+        dropped = _drop_reticulum_path(
+            destination_hash,
+            reason=f"fresh_link_path:{reason}",
+        )
+        if dropped is None:
+            return local_path_ready
         log(
             f"[presence_bridge] target={target} cached_path_force_refresh "
             f"peer={peer or destination_hash_hex(destination_hash)} reason={reason}"
@@ -7913,7 +8084,12 @@ def _request_and_await_destination_path(
             )
             return _await_destination_path(destination_hash, timeout_seconds), requested
         before = _reticulum_path_snapshot(destination_hash)
-        _drop_reticulum_path(destination_hash)
+        dropped = _drop_reticulum_path(
+            destination_hash,
+            reason=f"destination_path:{log_context}",
+        )
+        if dropped is None:
+            return local_path_ready, False
         refresh_started_at = time.time()
         log(
             f"[presence_bridge] target={target} cached_path_force_refresh "
@@ -9414,6 +9590,15 @@ def _maybe_request_path_after_unestablished_link_close(
     ).strip().lower()
     if not _valid_presence_destination_hash_hex(peer_hash):
         return
+    if not _link_failure_can_invalidate_current_path(state, peer_hash):
+        log(
+            f"[presence_bridge] target={target} stale_path_failure_ignored "
+            f"peer={peer_hash} "
+            f"attempt_generation={state.get('destinationPathGeneration')} "
+            f"current_generation={_destination_path_generation(peer_hash)} "
+            f"reason={reason}"
+        )
+        return
     try:
         destination_hash = bytes.fromhex(peer_hash)
     except Exception:
@@ -9457,7 +9642,13 @@ def _maybe_request_path_after_unestablished_link_close(
         else:
             before = _reticulum_path_snapshot(destination_hash)
             refresh_started_at = time.time()
-            dropped = _drop_reticulum_path(destination_hash)
+            dropped = _drop_reticulum_path(
+                destination_hash,
+                requester_state=state,
+                reason=f"unestablished_link:{target}:{reason}",
+            )
+            if dropped is None:
+                return
             if st is not None:
                 st["last_unestablished_link_hard_refresh_at"] = now
                 st["last_unestablished_link_hard_refresh_reason"] = (
@@ -10313,6 +10504,7 @@ def _create_overlay_migration_candidate(
         )
         return None
     link_id = str(uuid.uuid4())
+    path_generation = _destination_path_generation(peer_key)
     link = RNS.Link(
         outbound,
         established_callback=on_outgoing_overlay_link_established,
@@ -10333,6 +10525,7 @@ def _create_overlay_migration_candidate(
         "manager_kind": "overlay",
         "manager_state": _LINK_STATE_CONNECTING,
         "generation": 0,
+        "destinationPathGeneration": path_generation,
         "last_failure_reason": "",
         "backoff_until": 0.0,
         "migration_candidate": True,
@@ -11478,6 +11671,7 @@ def _ensure_overlay_link(
                 _prune_overlay_link_pressure("link_pressure_outbound", reserve_slots=1)
                 return None
         link_id = str(uuid.uuid4())
+        path_generation = _destination_path_generation(peer_key)
         link = RNS.Link(
             outbound,
             established_callback=on_outgoing_overlay_link_established,
@@ -11524,6 +11718,7 @@ def _ensure_overlay_link(
                     "manager_kind": "overlay",
                     "manager_state": _LINK_STATE_CONNECTING,
                     "generation": 0,
+                    "destinationPathGeneration": path_generation,
                     "last_failure_reason": "",
                     "backoff_until": 0.0,
                 }
@@ -14162,6 +14357,7 @@ def _open_qchat_file_link_for_state(state: Dict[str, Any]) -> bool:
             f"target=qchat-file-reticulum replace_previous_link transfer={state.get('transferId') or ''}",
         )
     link_id = str(uuid.uuid4())
+    _stamp_link_path_generation(state, peer_hash)
     link = RNS.Link(
         outbound,
         established_callback=on_outgoing_qchat_file_link_established,
@@ -15986,6 +16182,13 @@ def on_outgoing_qchat_file_link_established(link) -> None:
     link.set_remote_identified_callback(on_qchat_file_link_remote_identified)
     state["established"] = True
     state["established_at"] = time.time()
+    peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+    if _valid_presence_destination_hash_hex(peer_hash):
+        _note_link_path_generation_proven(
+            state,
+            peer_hash,
+            "qchat_file_link_established",
+        )
     _release_qchat_file_open_slot(state)
     _schedule_qchat_file_peer_open_drain(
         str(state.get("peerPresenceHash") or "").strip().lower()
@@ -16649,6 +16852,12 @@ def on_outgoing_overlay_link_established(link) -> None:
         return
     emit_overlay_link_state(link_id, state, "established")
     ph_out = str(state.get("peerPresenceHash") or "").strip().lower()
+    if ph_out and _valid_presence_destination_hash_hex(ph_out):
+        _note_link_path_generation_proven(
+            state,
+            ph_out,
+            "outgoing_overlay_link_established",
+        )
     if state.get("migration_candidate") is True:
         _send_overlay_hello_for_link(link_id, "migration_candidate_established")
         established_event = state.get("migration_established_event")
@@ -18525,6 +18734,7 @@ def _open_group_audio_link_for_peer(
             }, "No confirmed Reticulum path for group audio link"
         desired["retry_delay"] = _AUDIO_LINK_RETRY_MIN_SECONDS
         link_id = str(uuid.uuid4())
+        path_generation = _destination_path_generation(peer_key)
         try:
             link = RNS.Link(
                 outbound,
@@ -18551,6 +18761,7 @@ def _open_group_audio_link_for_peer(
             "generation": 0,
             "last_failure_reason": "",
             "backoff_until": 0.0,
+            "destinationPathGeneration": path_generation,
         }
         _ensure_audio_link_lifecycle_fields(audio_state)
         with _state_lock:
@@ -19305,6 +19516,11 @@ def on_outgoing_audio_link_established(link) -> None:
             pass
     peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
     if peer_key:
+        _note_link_path_generation_proven(
+            state,
+            peer_key,
+            "outgoing_audio_link_established",
+        )
         _register_active_audio_for_peer(peer_key, link_id)
     with _state_lock:
         desired = _audio_link_desired_by_peer_hash.get(peer_key)
@@ -19613,6 +19829,12 @@ def on_outgoing_land_call_link_established(link: Any) -> None:
     state["established_at"] = now
     state["last_activity_at"] = now
     peer_key = str(state.get("peerPresenceHash") or "").strip().lower()
+    if peer_key:
+        _note_link_path_generation_proven(
+            state,
+            peer_key,
+            "outgoing_land_call_link_established",
+        )
     with _state_lock:
         _active_land_call_link_id_by_peer_hash[peer_key] = link_id
     log(
@@ -19660,6 +19882,7 @@ def _ensure_land_call_link(peer_key: str) -> Optional[Dict[str, Any]]:
         if not _nudge_overlay_link_path(peer_key, outbound.hash, await_seconds=0.0):
             return None
         link_id = str(uuid.uuid4())
+        path_generation = _destination_path_generation(peer_key)
         link = RNS.Link(
             outbound,
             established_callback=on_outgoing_land_call_link_established,
@@ -19675,6 +19898,7 @@ def _ensure_land_call_link(peer_key: str) -> Optional[Dict[str, Any]]:
             "created_at": now,
             "last_activity_at": now,
             "remote_identity_verified": False,
+            "destinationPathGeneration": path_generation,
         }
         with _state_lock:
             existing_id = _active_land_call_link_id_by_peer_hash.get(peer_key) or ""
@@ -22054,6 +22278,16 @@ def _resource_session_note_failed_link_path(
     ).strip().lower()
     if not _valid_presence_destination_hash_hex(peer_hash):
         return
+    if not _link_failure_can_invalidate_current_path(state, peer_hash):
+        log(
+            "[presence_bridge] target=qchat-file-reticulum "
+            "resource_session_stale_path_failure_ignored "
+            f"peer={peer_hash} "
+            f"attempt_generation={state.get('destinationPathGeneration')} "
+            f"current_generation={_destination_path_generation(peer_hash)} "
+            f"reason={reason}"
+        )
+        return
     lifecycle = _lifecycle_state_for_peer(peer_hash)
     if lifecycle is None:
         return
@@ -22062,6 +22296,11 @@ def _resource_session_note_failed_link_path(
             lifecycle.get("resource_session_path_failure_generation") or 0
         ) + 1
         lifecycle["resource_session_path_failure_generation"] = generation
+        lifecycle["resource_session_path_failure_route_generation"] = int(
+            state.get("destinationPathGeneration")
+            if isinstance(state.get("destinationPathGeneration"), int)
+            else _destination_path_generation(peer_hash)
+        )
         lifecycle["resource_session_path_failure_at"] = time.time()
         lifecycle["resource_session_path_failure_reason"] = reason
         for key in (
@@ -22093,6 +22332,7 @@ def _resource_session_failed_path_ready(
     lifecycle = _lifecycle_state_for_peer(peer_hash)
     if lifecycle is None:
         return None
+    local_path_ready_now = _reticulum_local_has_path(destination_hash)
     recovered_path_needs_local_install = False
     with _state_lock:
         failure_generation = int(
@@ -22104,8 +22344,55 @@ def _resource_session_failed_path_ready(
         recovered_generation = int(
             lifecycle.get("resource_session_path_recovered_generation") or 0
         )
+        failed_route_generation = int(
+            lifecycle.get("resource_session_path_failure_route_generation")
+            if isinstance(
+                lifecycle.get("resource_session_path_failure_route_generation"),
+                int,
+            )
+            else lifecycle.get("destination_path_generation") or 0
+        )
+        current_route_generation = int(
+            lifecycle.get("destination_path_generation") or 0
+        )
+        central_proven_value = lifecycle.get(
+            "destination_path_proven_generation"
+        )
+        central_proven_generation = (
+            int(central_proven_value)
+            if isinstance(central_proven_value, int)
+            else -1
+        )
+        central_proven_at = lifecycle.get("destination_path_proven_at")
         if failure_generation <= proven_generation:
             return None
+        if (
+            central_proven_generation >= failed_route_generation
+            and _epoch_timestamp_is_recent(
+                central_proven_at,
+                time.time(),
+                _DIRECT_LINK_PATH_PROVEN_SECONDS,
+            )
+        ):
+            lifecycle["resource_session_path_recovered_generation"] = (
+                failure_generation
+            )
+            return local_path_ready_now
+        if current_route_generation > failed_route_generation:
+            # Another recovery owner already installed a newer route. Reuse
+            # it rather than deleting it again for this older failure.
+            lifecycle["resource_session_path_recovered_generation"] = (
+                failure_generation
+            )
+            for key in (
+                "resource_session_path_refresh_generation",
+                "resource_session_path_refresh_started_at",
+                "resource_session_path_refresh_before",
+                "resource_session_path_refresh_retry_at",
+                "resource_session_path_refresh_last_request_at",
+            ):
+                lifecycle.pop(key, None)
+            return local_path_ready_now
         if failure_generation <= recovered_generation:
             # A fresh path has been discovered for this failure generation.
             # Let parallel lanes share it while the first Link establishes;
@@ -22163,7 +22450,24 @@ def _resource_session_failed_path_ready(
         return False
 
     if start_refresh:
-        dropped = _drop_reticulum_path(destination_hash)
+        dropped = _drop_reticulum_path(
+            destination_hash,
+            reason=f"resource_session_failure:{failure_generation}",
+        )
+        if dropped is None:
+            with _state_lock:
+                if int(
+                    lifecycle.get("resource_session_path_refresh_generation")
+                    or 0
+                ) == failure_generation:
+                    for key in (
+                        "resource_session_path_refresh_generation",
+                        "resource_session_path_refresh_started_at",
+                        "resource_session_path_refresh_before",
+                        "resource_session_path_refresh_last_request_at",
+                    ):
+                        lifecycle.pop(key, None)
+            return False
         try:
             RNS.Transport.request_path(destination_hash)
             lifecycle["last_request_path_at"] = refresh_started_at
@@ -22266,6 +22570,8 @@ def _resource_session_create_link(state: Dict[str, Any], outbound) -> None:
     if state.get("closing") is True or state.get("link") is not None:
         return
     try:
+        peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
+        _stamp_link_path_generation(state, peer_hash)
         link = RNS.Link(
             outbound,
             established_callback=on_outgoing_resource_session_established,
@@ -22320,7 +22626,10 @@ def _resource_session_poll_path(state: Dict[str, Any]) -> None:
             else _request_qchat_file_path(
                 outbound.hash,
                 peer_hash,
-                allow_failed_path_refresh=True,
+                # Overlay failures do not prove that this dedicated resource
+                # path is stale. Only resource-session failure recovery above
+                # may destructively replace it.
+                allow_failed_path_refresh=False,
             )
         )
         if path_ready:
@@ -22611,6 +22920,11 @@ def on_outgoing_resource_session_established(link) -> None:
         ) + 1
     peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
     if _valid_presence_destination_hash_hex(peer_hash):
+        _note_link_path_generation_proven(
+            state,
+            peer_hash,
+            "resource_session_established",
+        )
         lifecycle = _lifecycle_state_for_peer(peer_hash)
         if lifecycle is not None:
             with _state_lock:
