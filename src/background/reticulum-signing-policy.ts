@@ -404,6 +404,15 @@ const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
     'timestamp',
   ]),
   RCHAT_EVENT_REQ: schema(['type', 'eventId', 'groupId', 'timestamp']),
+  RCHAT_LINKED_EVENT_REQUEST: schema([
+    'type',
+    'transferId',
+    'eventId',
+    'groupId',
+    'requesterPeerHash',
+    'providerPeerHash',
+    'timestamp',
+  ]),
   RCHAT_RESOURCE_AUTH: schema(['type', 'groupId', 'timestamp', 'transferId']),
   RCHAT_GROUP_KEY_DIGEST: schema([
     'type',
@@ -778,9 +787,7 @@ function assertSafeGroupRtcSignal(payload: Record<string, unknown>): void {
       'candidates',
       'ack',
       'reconnect',
-    ].includes(
-      String(payload.signalType)
-    ) ||
+    ].includes(String(payload.signalType)) ||
     typeof payload.payloadHash !== 'string' ||
     !/^[0-9a-f]{64}$/i.test(payload.payloadHash) ||
     !isQortalIdentity('fromPublicKey') ||

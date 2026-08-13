@@ -29,43 +29,92 @@ describe('Reticulum wallet signing policy', () => {
       expiresAt: now + 4 * 60 * 60 * 1000,
     };
     expectAllowed(assertAllowedPresenceSigningPayload, capability);
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, audio: 'bytes' })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, protocolVersion: 2 })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, nonce: 'short' })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, destinationHash: 'short' })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, groupId: '2147483648' })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, expiresAt: now + 5 * 60 * 60 * 1000 })).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...capability, audio: 'bytes' })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...capability, protocolVersion: 2 })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...capability, nonce: 'short' })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...capability,
+        destinationHash: 'short',
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...capability,
+        groupId: '2147483648',
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...capability,
+        expiresAt: now + 5 * 60 * 60 * 1000,
+      })
+    ).toThrow();
   });
 
   it('allows only the exact Qortal Land game handshake schemas', () => {
     const invite = {
-      type: 'QORTAL_LAND_GAME_INVITE', protocolVersion: 2,
-      game: 'connect-four', gameVersion: 1, rulesVersion: 1,
-      matchId: '00112233-4455-4677-8899-aabbccddeeff', groupId: '123',
+      type: 'QORTAL_LAND_GAME_INVITE',
+      protocolVersion: 2,
+      game: 'connect-four',
+      gameVersion: 1,
+      rulesVersion: 1,
+      matchId: '00112233-4455-4677-8899-aabbccddeeff',
+      groupId: '123',
       requesterAddress: 'QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q',
       recipientAddress: 'QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q',
-      sourceSessionId: 'source-session', targetSessionId: 'target-session',
-      sourceDestinationHash: '33'.repeat(16), targetDestinationHash: '44'.repeat(16),
+      sourceSessionId: 'source-session',
+      targetSessionId: 'target-session',
+      sourceDestinationHash: '33'.repeat(16),
+      targetDestinationHash: '44'.repeat(16),
       signerPublicKey: '1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE',
-      requesterNonce: '11'.repeat(16), linkId: '22'.repeat(16),
-      createdAt: 1, expiresAt: 2,
+      requesterNonce: '11'.repeat(16),
+      linkId: '22'.repeat(16),
+      createdAt: 1,
+      expiresAt: 2,
     };
     expectAllowed(assertAllowedPresenceSigningPayload, invite);
-    expectAllowed(assertAllowedPresenceSigningPayload, { ...invite, game: 'checkers' });
-    expectAllowed(assertAllowedPresenceSigningPayload, { ...invite, game: 'chess' });
-    expect(() => assertAllowedPresenceSigningPayload({ ...invite, game: 'backgammon' })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...invite, move: 3 })).toThrow();
+    expectAllowed(assertAllowedPresenceSigningPayload, {
+      ...invite,
+      game: 'checkers',
+    });
+    expectAllowed(assertAllowedPresenceSigningPayload, {
+      ...invite,
+      game: 'chess',
+    });
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...invite, game: 'backgammon' })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...invite, move: 3 })
+    ).toThrow();
     const { linkId: _linkId, ...missing } = invite;
     expect(() => assertAllowedPresenceSigningPayload(missing)).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({
-      type: 'QORTAL_LAND_GAME_MOVE', matchId: 'm', column: 3,
-    })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({
-      ...invite, signerPublicKey: { value: invite.signerPublicKey },
-    })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({
-      ...invite, groupId: 'x'.repeat(5_000),
-    })).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        type: 'QORTAL_LAND_GAME_MOVE',
+        matchId: 'm',
+        column: 3,
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...invite,
+        signerPublicKey: { value: invite.signerPublicKey },
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...invite,
+        groupId: 'x'.repeat(5_000),
+      })
+    ).toThrow();
     const resume = {
       type: 'QORTAL_LAND_GAME_RESUME_REQUEST',
       matchId: invite.matchId,
@@ -85,7 +134,9 @@ describe('Reticulum wallet signing policy', () => {
     };
     expectAllowed(assertAllowedPresenceSigningPayload, resume);
     const { roundId: _roundId, ...resumeWithoutRound } = resume;
-    expect(() => assertAllowedPresenceSigningPayload(resumeWithoutRound)).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload(resumeWithoutRound)
+    ).toThrow();
   });
   it('allows every current presence, call, and file-auth control type', () => {
     const now = Date.now();
@@ -449,6 +500,15 @@ describe('Reticulum wallet signing policy', () => {
         timestamp: 1,
       },
       { type: 'RCHAT_EVENT_REQ', eventId: 'e', groupId: 1, timestamp: 1 },
+      {
+        type: 'RCHAT_LINKED_EVENT_REQUEST',
+        transferId: '0123456789abcdef',
+        eventId: 'event-linked-request',
+        groupId: 1,
+        requesterPeerHash: 'a'.repeat(32),
+        providerPeerHash: 'b'.repeat(32),
+        timestamp: 1,
+      },
       {
         type: 'RCHAT_RESOURCE_AUTH',
         groupId: 1,
