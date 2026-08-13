@@ -2655,6 +2655,58 @@ class PresenceBridgeOverlayRouteMigrationTest(unittest.TestCase):
         self.bridge._overlay_link_ids_by_object[id(self.active_link)] = self.active_link_id
         self.bridge._active_overlay_link_id_by_peer_hash[self.peer_hash] = self.active_link_id
 
+    def test_periodic_overlay_ping_uses_fifteen_second_cadence(self):
+        self.active_state["last_ping_sent_at"] = 100.0
+
+        with mock.patch.object(
+            self.bridge.time,
+            "time",
+            return_value=114.999,
+        ), mock.patch.object(
+            self.bridge,
+            "_send_overlay_rtt_probe",
+            return_value={},
+        ) as probe:
+            self.assertEqual(
+                self.bridge._ping_established_overlay_links("periodic"),
+                0,
+            )
+        probe.assert_not_called()
+
+        with mock.patch.object(
+            self.bridge.time,
+            "time",
+            return_value=115.0,
+        ), mock.patch.object(
+            self.bridge,
+            "_send_overlay_rtt_probe",
+            return_value={},
+        ) as probe:
+            self.assertEqual(
+                self.bridge._ping_established_overlay_links("periodic"),
+                1,
+            )
+        probe.assert_called_once_with(self.active_link_id, "periodic")
+
+    def test_overlay_receive_idle_window_is_sixty_seconds(self):
+        now = 1_000.0
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["last_direct_rx_at"] = now - 59.999
+        self.assertTrue(
+            self.bridge._overlay_peer_recently_rx_active(
+                self.peer_hash,
+                now=now,
+            )
+        )
+
+        lifecycle["last_direct_rx_at"] = now - 60.001
+        self.assertFalse(
+            self.bridge._overlay_peer_recently_rx_active(
+                self.peer_hash,
+                now=now,
+            )
+        )
+
     def test_migration_uses_real_bounded_scheduler_lanes(self):
         for shard in range(self.bridge._SCHEDULER_OVERLAY_MIGRATION_SHARDS):
             lane = f"overlay-migration-{shard}"

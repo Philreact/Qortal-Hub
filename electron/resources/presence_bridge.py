@@ -262,9 +262,12 @@ _RNS_INTERNAL_TIMING_PROBES_ENABLED = (
 )
 # Overlay ping/pong is the app-level liveness signal. Keep it faster than
 # Reticulum's lower-level route purge so the app decides dead peers first.
-_OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS = 25.0
+# Overlay links are background routing neighbors, not media transports. A
+# 15-second liveness probe keeps dead-peer detection responsive without
+# creating excessive maintenance traffic on nodes with many Hub peers.
+_OVERLAY_LINK_RX_IDLE_TIMEOUT_SECONDS = 60.0
 _OVERLAY_TRANSPORT_MAINTENANCE_INTERVAL_SECONDS = 5.0
-_OVERLAY_TRANSPORT_PING_INTERVAL_SECONDS = 5.0
+_OVERLAY_TRANSPORT_PING_INTERVAL_SECONDS = 15.0
 _OVERLAY_HELLO_WIRE_TYPE = "OVERLAY_HELLO"
 _OVERLAY_PING_WIRE_TYPE = "OVERLAY_PING"
 _OVERLAY_PONG_WIRE_TYPE = "OVERLAY_PONG"
