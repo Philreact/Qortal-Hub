@@ -3961,8 +3961,8 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             "authMessage": auth,
         }
 
-    def session(self, lane="fast", established=True, slot=0):
-        session_id = f"session-{lane}-{slot}"
+    def session(self, lane="fast", established=True, slot=0, session_id=None):
+        session_id = session_id or f"session-{lane}-{slot}"
         link = FakeSessionLink()
         state = {
             "linkId": session_id,
@@ -3976,6 +3976,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             "remote_ready": established,
             "provider_ready_sent": established,
             "created_at": time.time(),
+            "link_created_monotonic": time.monotonic(),
             "last_used_at": time.time(),
             "pending_jobs": [],
             "active_requests": {},
@@ -4817,6 +4818,178 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         )
         self.assertNotIn(state["sessionKey"], self.bridge._resource_sessions_by_key)
 
+    def test_bulk_establishment_timeout_cannot_poison_fast_dm_session(self):
+        fast, _fast_link = self.session(lane="fast", established=True)
+        bulk, bulk_link = self.session(lane="bulk", established=False)
+        bulk["link_created_at"] = time.time() - 31
+        job = {
+            "pending": self.pending(
+                "image-range",
+                resource_type="reticulum_resource_dm_range",
+            ),
+            "created_at": time.time(),
+            "followers": [],
+            "session": bulk,
+        }
+        bulk["pending_jobs"] = [job]
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path, mock.patch.object(
+            self.bridge,
+            "_teardown_reticulum_link_bounded",
+        ) as teardown, mock.patch.object(self.bridge, "_qchat_file_emit"):
+            self.bridge._resource_session_open_timeout(bulk)
+
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertEqual(
+            lifecycle["resource_session_bulk_path_suspect_reason"],
+            "resource_session_establish_timeout",
+        )
+        request_path.assert_called_once_with(bytes.fromhex(self.peer_hash))
+        teardown.assert_called_once_with(bulk_link, mock.ANY)
+        self.assertTrue(job["completed"])
+        self.assertIs(
+            self.bridge._qchat_file_links_by_id.get(fast["linkId"]),
+            fast,
+        )
+        self.assertIs(
+            self.bridge._resource_sessions_by_key.get(fast["sessionKey"]),
+            fast["linkId"],
+        )
+        self.assertNotIn(
+            fast["sessionKey"],
+            self.bridge._resource_session_failures_by_key,
+        )
+
+    def test_fast_establishment_timeout_remains_authoritative_for_path_recovery(self):
+        state, _link = self.session(lane="fast", established=False)
+        state["link_created_at"] = time.time() - 31
+        job = {
+            "pending": self.pending("dm-page"),
+            "created_at": time.time(),
+            "followers": [],
+            "session": state,
+        }
+        state["pending_jobs"] = [job]
+
+        with mock.patch.object(
+            self.bridge,
+            "_teardown_reticulum_link_bounded",
+        ), mock.patch.object(self.bridge, "_qchat_file_emit"):
+            self.bridge._resource_session_open_timeout(state)
+
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertEqual(
+            lifecycle["resource_session_path_failure_generation"],
+            1,
+        )
+
+    def test_parallel_bulk_failures_coalesce_non_destructive_path_request(self):
+        first, _first_link = self.session(lane="bulk", established=False, slot=0)
+        second, _second_link = self.session(lane="bulk", established=False, slot=1)
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path, mock.patch.object(self.bridge, "log"):
+            self.bridge._resource_session_note_failed_link_path(
+                first,
+                "first_bulk_timeout",
+            )
+            self.bridge._resource_session_note_failed_link_path(
+                second,
+                "second_bulk_timeout",
+            )
+
+        request_path.assert_called_once_with(bytes.fromhex(self.peer_hash))
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertEqual(
+            lifecycle["resource_session_bulk_path_suspect_reason"],
+            "second_bulk_timeout",
+        )
+
+    def test_stale_bulk_failure_does_not_request_or_poison_newer_path(self):
+        state, _link = self.session(lane="bulk", established=False)
+        state["destinationPathGeneration"] = 3
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_generation"] = 4
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path, mock.patch.object(self.bridge, "log"):
+            self.bridge._resource_session_note_failed_link_path(
+                state,
+                "late_bulk_timeout",
+            )
+
+        request_path.assert_not_called()
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertNotIn("resource_session_bulk_path_suspect_at", lifecycle)
+
+    def test_bulk_failure_does_not_rediscover_recently_proven_path(self):
+        state, _link = self.session(lane="bulk", established=False)
+        state["destinationPathGeneration"] = 2
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_generation"] = 2
+        lifecycle["destination_path_proven_generation"] = 2
+        lifecycle["destination_path_proven_at"] = time.time()
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path, mock.patch.object(self.bridge, "log"):
+            self.bridge._resource_session_note_failed_link_path(
+                state,
+                "parallel_bulk_timeout",
+            )
+
+        request_path.assert_not_called()
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertNotIn("resource_session_bulk_path_suspect_at", lifecycle)
+
+    def test_established_session_clears_bulk_path_suspicion(self):
+        state, link = self.session(lane="fast", established=False)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["resource_session_bulk_path_suspect_at"] = time.time()
+        lifecycle["resource_session_bulk_path_suspect_reason"] = "bulk_timeout"
+        lifecycle["resource_session_bulk_path_suspect_generation"] = 3
+        lifecycle["resource_session_bulk_path_request_at"] = time.time()
+        lifecycle["resource_session_fast_retained_path_generation"] = 3
+        lifecycle["resource_session_fast_retained_path_at_monotonic"] = (
+            time.monotonic()
+        )
+
+        with mock.patch.object(
+            self.bridge,
+            "configure_qchat_file_link",
+        ), mock.patch.object(
+            link,
+            "set_remote_identified_callback",
+        ), mock.patch.object(
+            self.bridge,
+            "_send_packet_on_link",
+            return_value=True,
+        ):
+            self.bridge.on_outgoing_resource_session_established(link)
+
+        self.assertNotIn("resource_session_bulk_path_suspect_at", lifecycle)
+        self.assertNotIn("resource_session_bulk_path_suspect_reason", lifecycle)
+        self.assertNotIn("resource_session_bulk_path_suspect_generation", lifecycle)
+        self.assertNotIn("resource_session_bulk_path_request_at", lifecycle)
+        self.assertNotIn(
+            "resource_session_fast_retained_path_generation",
+            lifecycle,
+        )
+        self.assertNotIn(
+            "resource_session_fast_retained_path_at_monotonic",
+            lifecycle,
+        )
+
     def test_established_idle_peer_close_does_not_poison_path_or_backoff(self):
         state, link = self.session(established=True)
         link.teardown_reason = RNS.Link.DESTINATION_CLOSED
@@ -4838,22 +5011,160 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         emit_status.assert_not_called()
         self.assertNotIn(state["sessionKey"], self.bridge._resource_sessions_by_key)
 
-    def test_established_timeout_marks_path_stale_without_idle_backoff(self):
+    def test_established_timeout_retains_proven_path_for_one_retry(self):
         state, link = self.session(established=True)
         link.teardown_reason = RNS.Link.TIMEOUT
 
         with mock.patch.object(
+            self.bridge,
+            "_resource_session_note_failed_link_path",
+        ) as note_path_failure, mock.patch.object(
             self.bridge,
             "_resource_session_note_failure",
         ) as note_session_failure:
             self.bridge.on_qchat_file_link_closed(link)
 
         lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertEqual(
+            lifecycle["resource_session_fast_retained_path_generation"],
+            0,
+        )
+        self.assertIsInstance(
+            lifecycle["resource_session_fast_retained_path_at_monotonic"],
+            float,
+        )
+        note_path_failure.assert_not_called()
+        note_session_failure.assert_not_called()
+
+    def test_failed_replacement_after_established_timeout_refreshes_path(self):
+        established, established_link = self.session(established=True)
+        established_link.teardown_reason = RNS.Link.TIMEOUT
+        self.bridge.on_qchat_file_link_closed(established_link)
+
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_proven_generation"] = 0
+        lifecycle["destination_path_proven_at"] = time.time()
+
+        replacement, replacement_link = self.session(established=False)
+        replacement["destinationPathGeneration"] = 0
+        replacement["link_created_at"] = time.time()
+        replacement["link_created_monotonic"] = time.monotonic()
+        replacement_link.teardown_reason = RNS.Link.TIMEOUT
+        self.bridge.on_qchat_file_link_closed(replacement_link)
+
         self.assertEqual(
             lifecycle["resource_session_path_failure_generation"],
             1,
         )
-        note_session_failure.assert_not_called()
+        self.assertEqual(
+            lifecycle["resource_session_path_failure_reason"],
+            "resource_session_link_closed:timeout",
+        )
+        self.assertNotIn(
+            "resource_session_fast_retained_path_generation",
+            lifecycle,
+        )
+        self.assertNotIn(
+            "resource_session_fast_retained_path_at_monotonic",
+            lifecycle,
+        )
+
+    def test_parallel_fast_failure_cannot_confirm_established_timeout(self):
+        parallel, parallel_link = self.session(
+            established=False,
+            session_id="parallel-fast-session",
+        )
+        parallel["destinationPathGeneration"] = 0
+        parallel["link_created_at"] = time.time() - 10
+        parallel["link_created_monotonic"] = time.monotonic() - 10
+
+        established, established_link = self.session(
+            established=True,
+            session_id="established-fast-session",
+        )
+        established_link.teardown_reason = RNS.Link.TIMEOUT
+        self.bridge.on_qchat_file_link_closed(established_link)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_proven_generation"] = 0
+        lifecycle["destination_path_proven_at"] = time.time()
+
+        parallel_link.teardown_reason = RNS.Link.TIMEOUT
+        self.bridge.on_qchat_file_link_closed(parallel_link)
+
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertEqual(
+            lifecycle["resource_session_fast_retained_path_generation"],
+            0,
+        )
+
+    def test_late_established_timeout_cannot_replace_newer_session_marker(self):
+        old, old_link = self.session(
+            established=True,
+            session_id="old-fast-session",
+        )
+        old["destinationPathGeneration"] = 0
+        old_job = {
+            "pending": self.pending("old-fast-request"),
+            "created_at": time.time(),
+            "followers": [],
+            "session": old,
+        }
+        old["active_requests"] = {"old-fast-request": old_job}
+
+        newer, _newer_link = self.session(
+            established=True,
+            session_id="newer-fast-session",
+        )
+        newer["destinationPathGeneration"] = 0
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+
+        old_link.teardown_reason = RNS.Link.TIMEOUT
+        self.bridge.on_qchat_file_link_closed(old_link)
+
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertNotIn(
+            "resource_session_fast_retained_path_generation",
+            lifecycle,
+        )
+        self.assertTrue(old_job["completed"])
+        self.assertNotIn(
+            old["sessionKey"],
+            self.bridge._resource_session_failures_by_key,
+        )
+        self.assertIs(
+            self.bridge._qchat_file_links_by_id.get(newer["linkId"]),
+            newer,
+        )
+
+    def test_expired_retained_path_marker_cannot_confirm_late_failure(self):
+        state, _link = self.session(established=False)
+        state["destinationPathGeneration"] = 0
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_proven_generation"] = 0
+        lifecycle["destination_path_proven_at"] = time.time()
+        lifecycle["resource_session_fast_retained_path_generation"] = 0
+        lifecycle["resource_session_fast_retained_path_at_monotonic"] = (
+            time.monotonic()
+            - self.bridge._RESOURCE_SESSION_ESTABLISHED_TIMEOUT_RETRY_WINDOW_SECONDS
+            - 1
+        )
+
+        with mock.patch.object(self.bridge, "log"):
+            self.bridge._resource_session_note_failed_link_path(
+                state,
+                "late_replacement_timeout",
+            )
+
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertNotIn(
+            "resource_session_fast_retained_path_generation",
+            lifecycle,
+        )
+        self.assertNotIn(
+            "resource_session_fast_retained_path_at_monotonic",
+            lifecycle,
+        )
 
     def test_unestablished_peer_close_requires_fresh_path_recovery(self):
         state, link = self.session(established=False)

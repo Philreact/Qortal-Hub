@@ -331,6 +331,11 @@ _RESOURCE_SESSION_HELLO_TYPE = "RETICULUM_RESOURCE_SESSION_HELLO"
 _RESOURCE_SESSION_READY_TYPE = "RETICULUM_RESOURCE_SESSION_READY"
 _RESOURCE_SESSION_CANCEL_TYPE = "RETICULUM_RESOURCE_SESSION_CANCEL"
 _RESOURCE_SESSION_ESTABLISH_TIMEOUT_SECONDS = 30.0
+# An established Link timeout retains its proven route for one replacement
+# attempt. Keep the marker long enough for the lane backoff and a complete
+# replacement establishment timeout, but bounded so an unrelated later Link
+# failure cannot be mistaken for that confirmation.
+_RESOURCE_SESSION_ESTABLISHED_TIMEOUT_RETRY_WINDOW_SECONDS = 90.0
 _RESOURCE_SESSION_REQUEST_TIMEOUT_SECONDS = 60.0
 # Authorization normally completes from the local cache, but an uncached group
 # membership decision can use Electron's full 10-second Core request budget.
@@ -7340,6 +7345,33 @@ def _link_failure_can_invalidate_current_path(
         proven_value = lifecycle.get("destination_path_proven_generation")
         proven_generation = int(proven_value) if isinstance(proven_value, int) else -1
         proven_at = lifecycle.get("destination_path_proven_at")
+        retained_generation_value = lifecycle.get(
+            "resource_session_fast_retained_path_generation"
+        )
+        retained_generation = (
+            int(retained_generation_value)
+            if isinstance(retained_generation_value, int)
+            else -1
+        )
+        retained_at_monotonic = lifecycle.get(
+            "resource_session_fast_retained_path_at_monotonic"
+        )
+        monotonic_now = time.monotonic()
+        retained_marker_is_current = (
+            retained_generation == current_generation
+            and isinstance(retained_at_monotonic, (int, float))
+            and 0.0
+            <= monotonic_now - float(retained_at_monotonic)
+            <= _RESOURCE_SESSION_ESTABLISHED_TIMEOUT_RETRY_WINDOW_SECONDS
+        )
+        if not retained_marker_is_current:
+            lifecycle.pop("resource_session_fast_retained_path_generation", None)
+            lifecycle.pop(
+                "resource_session_fast_retained_path_at_monotonic",
+                None,
+            )
+            retained_generation = -1
+            retained_at_monotonic = None
     proven_recently = (
         proven_generation >= attempt_generation
         and _epoch_timestamp_is_recent(
@@ -7348,9 +7380,19 @@ def _link_failure_can_invalidate_current_path(
             _DIRECT_LINK_PATH_PROVEN_SECONDS,
         )
     )
+    link_created_monotonic = state.get("link_created_monotonic")
+    confirmed_replacement_failure = (
+        str(state.get("sessionLane") or "").strip().lower() == "fast"
+        and state.get("established") is not True
+        and retained_generation == attempt_generation
+        and isinstance(retained_at_monotonic, (int, float))
+        and isinstance(link_created_monotonic, (int, float))
+        and float(link_created_monotonic) >= float(retained_at_monotonic)
+        and retained_marker_is_current
+    )
     return (
         attempt_generation == current_generation
-        and not proven_recently
+        and (confirmed_replacement_failure or not proven_recently)
     )
 
 
@@ -14195,15 +14237,68 @@ def on_qchat_file_link_closed(link) -> None:
             getattr(link, "teardown_reason", None)
         )
         was_established = existing_state.get("established") is True
+        with _state_lock:
+            session_is_current = _resource_sessions_by_key.get(
+                str(existing_state.get("sessionKey") or "")
+            ) == str(existing_state.get("linkId") or "")
         path_failed = (
             existing_state.get("incoming") is not True
-            and (not was_established or reason == "timeout")
+            and not was_established
         )
         if path_failed:
             _resource_session_note_failed_link_path(
                 existing_state,
                 f"resource_session_link_closed:{reason}",
-                allow_established_timeout=(was_established and reason == "timeout"),
+            )
+        elif (
+            existing_state.get("incoming") is not True
+            and was_established
+            and reason == "timeout"
+        ):
+            # Establishment already proved that the cached route worked. A
+            # later Link timeout can be session-specific (peer retirement,
+            # sleep or a temporary stall), so retain the route and let the
+            # next requested session retry it. If that replacement cannot
+            # establish, its unestablished failure above becomes independent
+            # evidence and performs the normal destructive path refresh.
+            peer_hash = str(
+                existing_state.get("peerDestinationHash")
+                or existing_state.get("peerPresenceHash")
+                or ""
+            ).strip().lower()
+            lane = str(existing_state.get("sessionLane") or "fast").strip().lower()
+            retained_current_route = lane != "fast"
+            if lane == "fast" and _valid_presence_destination_hash_hex(peer_hash):
+                lifecycle = _lifecycle_state_for_peer(peer_hash)
+                if lifecycle is not None:
+                    with _state_lock:
+                        attempt_generation = int(
+                            existing_state.get("destinationPathGeneration")
+                            if isinstance(
+                                existing_state.get("destinationPathGeneration"),
+                                int,
+                            )
+                            else lifecycle.get("destination_path_generation") or 0
+                        )
+                        current_generation = int(
+                            lifecycle.get("destination_path_generation") or 0
+                        )
+                        retained_current_route = (
+                            attempt_generation == current_generation
+                            and session_is_current
+                        )
+                        if retained_current_route:
+                            lifecycle[
+                                "resource_session_fast_retained_path_generation"
+                            ] = attempt_generation
+                            lifecycle[
+                                "resource_session_fast_retained_path_at_monotonic"
+                            ] = time.monotonic()
+            log(
+                "[presence_bridge] target=qchat-file-reticulum "
+                f"resource_session_established_timeout_"
+                f"{'route_retained' if retained_current_route else 'stale_ignored'} "
+                f"peer={peer_hash} lane={lane}"
             )
         with _state_lock:
             _qchat_file_link_ids_by_object.pop(id(link), None)
@@ -14230,7 +14325,11 @@ def on_qchat_file_link_closed(link) -> None:
             # Resolve this under the state lock in _resource_session_fail_state
             # so a job queued concurrently with the close is still failed and
             # rehomed normally.
-            record_failure=None if was_established else True,
+            record_failure=(
+                False
+                if not session_is_current
+                else None if was_established else True
+            ),
         )
         return
     state = remove_qchat_file_link(link_id)
@@ -22267,12 +22366,10 @@ def _resource_session_open_timeout(state: Dict[str, Any]) -> None:
 def _resource_session_note_failed_link_path(
     state: Dict[str, Any],
     reason: str,
-    *,
-    allow_established_timeout: bool = False,
 ) -> None:
     if state.get("incoming") is True:
         return
-    if state.get("established") is True and not allow_established_timeout:
+    if state.get("established") is True:
         return
     peer_hash = str(
         state.get("peerDestinationHash")
@@ -22291,6 +22388,53 @@ def _resource_session_note_failed_link_path(
             f"reason={reason}"
         )
         return
+    lane = str(state.get("sessionLane") or "fast").strip().lower()
+    if lane == "bulk":
+        # A bulk attachment/history session timing out does not prove that the
+        # shared destination path is unusable. The provider may simply have
+        # retired that lane, declined a transfer or failed to send READY. If
+        # bulk traffic destructively expires the peer path here, the separate
+        # fast lane can no longer retrieve a DM page that was announced over
+        # the overlay. Keep bulk backoff session-local and let the normal path
+        # request below refresh a genuinely absent route. A failed fast Link
+        # remains authoritative and may run the peer-scoped destructive
+        # recovery path.
+        lifecycle = _lifecycle_state_for_peer(peer_hash)
+        request_path = lifecycle is None
+        if lifecycle is not None:
+            with _state_lock:
+                now = time.time()
+                lifecycle["resource_session_bulk_path_suspect_at"] = now
+                lifecycle["resource_session_bulk_path_suspect_reason"] = reason
+                lifecycle["resource_session_bulk_path_suspect_generation"] = int(
+                    state.get("destinationPathGeneration")
+                    if isinstance(state.get("destinationPathGeneration"), int)
+                    else _destination_path_generation(peer_hash)
+                )
+                last_request_at = lifecycle.get(
+                    "resource_session_bulk_path_request_at"
+                )
+                request_path = (
+                    not isinstance(last_request_at, (int, float))
+                    or now - float(last_request_at)
+                    >= _RESOURCE_SESSION_PATH_REFRESH_RETRY_SECONDS
+                )
+                if request_path:
+                    lifecycle["resource_session_bulk_path_request_at"] = now
+        request_action = "coalesced"
+        if request_path:
+            try:
+                RNS.Transport.request_path(bytes.fromhex(peer_hash))
+                request_action = "non_destructive_request"
+            except Exception as exc:
+                request_action = f"request_failed:{type(exc).__name__}"
+        log(
+            "[presence_bridge] target=qchat-file-reticulum "
+            "resource_session_bulk_path_suspected "
+            f"peer={peer_hash} reason={reason} "
+            f"action={request_action}"
+        )
+        return
     lifecycle = _lifecycle_state_for_peer(peer_hash)
     if lifecycle is None:
         return
@@ -22307,6 +22451,8 @@ def _resource_session_note_failed_link_path(
         lifecycle["resource_session_path_failure_at"] = time.time()
         lifecycle["resource_session_path_failure_reason"] = reason
         for key in (
+            "resource_session_fast_retained_path_generation",
+            "resource_session_fast_retained_path_at_monotonic",
             "resource_session_path_refresh_generation",
             "resource_session_path_refresh_started_at",
             "resource_session_path_refresh_before",
@@ -22582,6 +22728,7 @@ def _resource_session_create_link(state: Dict[str, Any], outbound) -> None:
         )
         state["link"] = link
         state["link_created_at"] = time.time()
+        state["link_created_monotonic"] = time.monotonic()
         state["peerDestinationHash"] = destination_hash_hex(outbound.hash)
         with _state_lock:
             _qchat_file_link_ids_by_object[id(link)] = str(state.get("linkId") or "")
@@ -22942,6 +23089,12 @@ def on_outgoing_resource_session_established(link) -> None:
                     failure_generation
                 )
                 for key in (
+                    "resource_session_fast_retained_path_generation",
+                    "resource_session_fast_retained_path_at_monotonic",
+                    "resource_session_bulk_path_suspect_at",
+                    "resource_session_bulk_path_suspect_reason",
+                    "resource_session_bulk_path_suspect_generation",
+                    "resource_session_bulk_path_request_at",
                     "resource_session_path_refresh_generation",
                     "resource_session_path_refresh_started_at",
                     "resource_session_path_refresh_before",
