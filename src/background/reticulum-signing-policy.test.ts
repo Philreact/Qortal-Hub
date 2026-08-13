@@ -510,6 +510,21 @@ describe('Reticulum wallet signing policy', () => {
         timestamp: 1,
       },
       {
+        type: 'RCHAT_LINKED_AUTHOR_RANGE_REQUEST',
+        transferId: '0123456789abcdef',
+        groupId: 1,
+        range: {
+          a: 'Qauthor',
+          s: 'a'.repeat(32),
+          from: 2,
+          to: 4,
+        },
+        limit: 100,
+        requesterPeerHash: 'a'.repeat(32),
+        providerPeerHash: 'b'.repeat(32),
+        timestamp: 1,
+      },
+      {
         type: 'RCHAT_RESOURCE_AUTH',
         groupId: 1,
         timestamp: 1,

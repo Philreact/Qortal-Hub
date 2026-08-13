@@ -23237,8 +23237,11 @@ export class ReticulumChatManager extends EventEmitter {
             return;
           }
           const retryAt = this.noteAuthorGapRouteFailure(groupId, peer);
+          const detail = result.error
+            ? `${result.reason}:${result.error}`
+            : result.reason;
           loggerWarn(
-            `[ReticulumChat] Targeted author gap repair failed group=${groupId} peer=${peer.slice(0, 16)} reason=${result.reason}; retrying after route backoff`
+            `[ReticulumChat] Targeted author gap repair failed group=${groupId} peer=${peer.slice(0, 16)} reason=${detail}; retrying after route backoff`
           );
           const replacement = this.selectAuthorGapRepairPeer(
             groupId,

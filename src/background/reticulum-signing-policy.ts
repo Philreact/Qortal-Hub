@@ -413,6 +413,16 @@ const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
     'providerPeerHash',
     'timestamp',
   ]),
+  RCHAT_LINKED_AUTHOR_RANGE_REQUEST: schema([
+    'type',
+    'transferId',
+    'groupId',
+    'range',
+    'limit',
+    'requesterPeerHash',
+    'providerPeerHash',
+    'timestamp',
+  ]),
   RCHAT_RESOURCE_AUTH: schema(['type', 'groupId', 'timestamp', 'transferId']),
   RCHAT_GROUP_KEY_DIGEST: schema([
     'type',
