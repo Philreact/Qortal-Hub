@@ -304,7 +304,7 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
 
         daemon.get_path_snapshot.assert_called_once_with(self.destination_hash)
 
-    def test_daemon_path_is_not_treated_as_locally_link_ready(self):
+    def test_daemon_path_can_exist_without_a_local_route_copy(self):
         daemon = mock.Mock()
         daemon.is_connected_to_shared_instance = True
         daemon.get_path_snapshot.return_value = {
@@ -319,22 +319,26 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
                 self.bridge._reticulum_local_has_path(self.destination_hash)
             )
 
-    def test_resource_link_waits_for_local_path_when_daemon_has_route(self):
+    def test_resource_link_opens_when_shared_daemon_has_route(self):
         peer_hash = self.destination_hash.hex()
+        daemon = mock.Mock()
+        daemon.is_connected_to_shared_instance = True
+        daemon.get_path_snapshot.return_value = {
+            "hops": 3,
+            "timestamp": time.time(),
+        }
+        self.bridge._reticulum = daemon
+
         with mock.patch.object(
-            self.bridge,
-            "_reticulum_local_has_path",
+            RNS.Transport,
+            "has_path",
             return_value=False,
-        ), mock.patch.object(
-            self.bridge,
-            "_reticulum_has_path",
-            return_value=True,
         ), mock.patch.object(
             self.bridge,
             "_nudge_cached_reticulum_path",
             return_value=True,
         ) as nudge:
-            self.assertFalse(
+            self.assertTrue(
                 self.bridge._request_qchat_file_path(
                     self.destination_hash,
                     peer_hash,
@@ -345,17 +349,14 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
             self.destination_hash,
             peer_hash,
             target="qchat-file-reticulum",
-            reason="qchat_file_link_install_local_path",
-            cooldown_seconds=self.bridge._LOCAL_PATH_INSTALL_REQUEST_COOLDOWN_SECONDS,
+            reason="qchat_file_link_open_cached_path",
+            cooldown_seconds=self.bridge._UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
         )
+        daemon.get_path_snapshot.assert_called_once_with(self.destination_hash)
 
-    def test_path_await_requires_local_path_after_daemon_route(self):
+    def test_path_await_accepts_shared_daemon_route_without_local_copy(self):
         peer_hash = self.destination_hash.hex()
         with mock.patch.object(
-            self.bridge,
-            "_reticulum_local_has_path",
-            side_effect=[False, False, True],
-        ), mock.patch.object(
             self.bridge,
             "_reticulum_has_path",
             return_value=True,
@@ -370,14 +371,14 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
             resolved, requested = self.bridge._request_and_await_destination_path(
                 self.destination_hash,
                 1.0,
-                log_context="test_local_path_install",
+                log_context="test_route_owner_path",
                 peer_key=peer_hash,
                 target="test",
             )
 
         self.assertTrue(resolved)
-        self.assertTrue(requested)
-        nudge.assert_called_once()
+        self.assertFalse(requested)
+        nudge.assert_not_called()
 
     def test_embedded_instance_uses_local_path_without_rpc(self):
         reticulum = mock.Mock()
@@ -591,7 +592,7 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
         }
         with mock.patch.object(
             self.bridge,
-            "_reticulum_local_has_path",
+            "_reticulum_has_path",
             return_value=True,
         ), mock.patch.object(
             self.bridge,
@@ -622,7 +623,7 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
         )
         with mock.patch.object(
             self.bridge,
-            "_reticulum_local_has_path",
+            "_reticulum_has_path",
             return_value=True,
         ), mock.patch.object(
             self.bridge,
@@ -646,7 +647,7 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
         }
         with mock.patch.object(
             self.bridge,
-            "_reticulum_local_has_path",
+            "_reticulum_has_path",
             return_value=True,
         ), mock.patch.object(RNS.Transport, "request_path") as request_path:
             self.assertTrue(
@@ -685,6 +686,13 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
                     self.destination_hash,
                 ),
                 "fresh",
+            )
+            self.assertEqual(
+                self.bridge._ensure_call_media_path(
+                    peer_hash,
+                    self.destination_hash,
+                ),
+                ("fresh", True),
             )
 
 
@@ -5246,7 +5254,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             side_effect=[stale, stale, fresh],
         ), mock.patch.object(
             self.bridge,
-            "_reticulum_local_has_path",
+            "_reticulum_has_path",
             return_value=True,
         ), mock.patch.object(
             self.bridge,
@@ -5293,7 +5301,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             1,
         )
 
-    def test_recovered_resource_path_waits_if_local_route_disappears(self):
+    def test_recovered_resource_path_uses_shared_daemon_route(self):
         destination_hash = bytes.fromhex(self.peer_hash)
         lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
         lifecycle["resource_session_path_failure_generation"] = 1
@@ -5301,30 +5309,42 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
 
         with mock.patch.object(
             self.bridge,
-            "_reticulum_local_has_path",
-            return_value=False,
-        ), mock.patch.object(
-            self.bridge,
-            "_nudge_cached_reticulum_path",
+            "_reticulum_has_path",
             return_value=True,
-        ) as nudge, mock.patch.object(
+        ), mock.patch.object(
             self.bridge,
             "_drop_reticulum_path",
         ) as drop_path:
-            self.assertFalse(
+            self.assertTrue(
                 self.bridge._resource_session_failed_path_ready(
                     destination_hash,
                     self.peer_hash,
                 )
             )
 
-        nudge.assert_called_once_with(
-            destination_hash,
-            self.peer_hash,
-            target="qchat-file-reticulum",
-            reason="resource_session_reinstall_local_path",
-            cooldown_seconds=self.bridge._LOCAL_PATH_INSTALL_REQUEST_COOLDOWN_SECONDS,
-        )
+        drop_path.assert_not_called()
+
+    def test_recovered_resource_path_defers_to_normal_discovery_if_route_is_gone(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["resource_session_path_failure_generation"] = 1
+        lifecycle["resource_session_path_recovered_generation"] = 1
+
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_has_path",
+            return_value=False,
+        ), mock.patch.object(
+            self.bridge,
+            "_drop_reticulum_path",
+        ) as drop_path:
+            self.assertIsNone(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+
         drop_path.assert_not_called()
 
     def test_unresolved_fresh_path_discovery_retries_once_per_interval(self):
@@ -5562,7 +5582,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
 
         with mock.patch.object(
             self.bridge,
-            "_reticulum_local_has_path",
+            "_reticulum_has_path",
             return_value=True,
         ), mock.patch.object(
             self.bridge,
@@ -5640,6 +5660,45 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             self.peer_hash,
             allow_failed_path_refresh=False,
         )
+
+    def test_resource_poll_opens_link_from_shared_daemon_route(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        outbound = type("Outbound", (), {"hash": destination_hash})()
+        state = {
+            "peerPresenceHash": self.peer_hash,
+            "peerIdentity": object(),
+            "closing": False,
+            "link": None,
+            "path_wait_started_at": time.time(),
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "build_outbound_destination",
+            return_value=outbound,
+        ), mock.patch.object(
+            self.bridge,
+            "_resource_session_failed_path_ready",
+            return_value=None,
+        ), mock.patch.object(
+            self.bridge,
+            "_reticulum_local_has_path",
+            side_effect=AssertionError("local route copy must not gate Link creation"),
+        ), mock.patch.object(
+            self.bridge,
+            "_reticulum_has_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_nudge_cached_reticulum_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_resource_session_create_link",
+        ) as create_link:
+            self.bridge._resource_session_poll_path(state)
+
+        create_link.assert_called_once_with(state, outbound)
 
     def test_session_failure_requeues_jobs_that_were_never_dispatched(self):
         failed, failed_link = self.session(lane="bulk", slot=0)
