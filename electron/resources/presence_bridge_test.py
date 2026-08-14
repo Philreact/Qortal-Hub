@@ -4846,7 +4846,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             lifecycle["resource_session_bulk_path_suspect_reason"],
             "second_bulk_timeout",
         )
-        request_path.assert_not_called()
+        request_path.assert_called_once_with(bytes.fromhex(self.peer_hash))
         self.assertIs(
             self.bridge._qchat_file_links_by_id.get(fast["linkId"]),
             fast,
@@ -4895,9 +4895,8 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             )
 
         lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
-        request_path.assert_not_called()
+        request_path.assert_called_once_with(bytes.fromhex(self.peer_hash))
         self.assertNotIn("resource_session_path_failure_generation", lifecycle)
-        self.assertEqual(lifecycle["resource_session_bulk_path_suspect_count"], 1)
 
     def test_fast_establishment_timeout_remains_authoritative_for_path_recovery(self):
         state, _link = self.session(lane="fast", established=False)
@@ -4922,7 +4921,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             1,
         )
 
-    def test_repeated_bulk_failures_escalate_one_coordinated_path_refresh(self):
+    def test_repeated_bulk_failures_never_escalate_shared_path_refresh(self):
         first, _first_link = self.session(lane="bulk", established=False, slot=0)
         second, _second_link = self.session(lane="bulk", established=False, slot=1)
         third, _third_link = self.session(lane="bulk", established=False, slot=2)
@@ -4946,16 +4945,11 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
 
         request_path.assert_called_once_with(bytes.fromhex(self.peer_hash))
         lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
-        self.assertEqual(lifecycle["resource_session_path_failure_generation"], 1)
-        self.assertEqual(
-            lifecycle["resource_session_path_failure_route_generation"],
-            0,
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertNotIn(
+            "resource_session_path_failure_route_generation",
+            lifecycle,
         )
-        self.assertEqual(
-            lifecycle["resource_session_bulk_path_escalated_generation"],
-            0,
-        )
-        self.assertEqual(lifecycle["resource_session_bulk_path_suspect_count"], 3)
         self.assertEqual(
             lifecycle["resource_session_bulk_path_suspect_reason"],
             "third_bulk_timeout",
@@ -5007,8 +5001,6 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         lifecycle["resource_session_bulk_path_suspect_at"] = time.time()
         lifecycle["resource_session_bulk_path_suspect_reason"] = "bulk_timeout"
         lifecycle["resource_session_bulk_path_suspect_generation"] = 3
-        lifecycle["resource_session_bulk_path_suspect_count"] = 2
-        lifecycle["resource_session_bulk_path_escalated_generation"] = 3
         lifecycle["resource_session_bulk_path_request_at"] = time.time()
         lifecycle["resource_session_fast_retained_path_generation"] = 3
         lifecycle["resource_session_fast_retained_path_at_monotonic"] = (
@@ -5031,11 +5023,6 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         self.assertNotIn("resource_session_bulk_path_suspect_at", lifecycle)
         self.assertNotIn("resource_session_bulk_path_suspect_reason", lifecycle)
         self.assertNotIn("resource_session_bulk_path_suspect_generation", lifecycle)
-        self.assertNotIn("resource_session_bulk_path_suspect_count", lifecycle)
-        self.assertNotIn(
-            "resource_session_bulk_path_escalated_generation",
-            lifecycle,
-        )
         self.assertNotIn("resource_session_bulk_path_request_at", lifecycle)
         self.assertNotIn(
             "resource_session_fast_retained_path_generation",
