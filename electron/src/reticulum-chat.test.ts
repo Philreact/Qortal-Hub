@@ -2177,6 +2177,7 @@ describe('reticulum chat protocol', () => {
   });
 
   it('keeps DM resource provider replies compact', () => {
+    const identityPublicKeyBase64 = Buffer.alloc(64).toString('base64');
     const wire = {
       t: 'RCHAT' as const,
       k: 'dm_resource_have' as const,
@@ -2184,14 +2185,15 @@ describe('reticulum chat protocol', () => {
       fh: 'f'.repeat(64),
       s: 194_393,
       rid: 'a1b2c3d4',
-      sp: 'b'.repeat(32),
+      sp: 'b'.repeat(22),
+      rk: identityPublicKeyBase64,
     };
 
-    expect(wire).not.toHaveProperty('rk');
+    expect(wire.rk).toBe(identityPublicKeyBase64);
     expect(byteLengthUtf8JsonWithBridgeSenderOnly(wire)).toBeLessThanOrEqual(
       RT_RETICULUM_MAX_WIRE_JSON_BYTES
     );
-    expect(wireFitsReticulum(wire)).toBe(true);
+    expect(wireFitsReticulumChat(wire)).toBe(true);
   });
 
   it('targets DM resource discovery at candidate providers before opening ranges', async () => {

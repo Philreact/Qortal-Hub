@@ -32778,6 +32778,7 @@ export class ReticulumChatManager extends EventEmitter {
       reticulumDmConversationId(requesterAddress, peerAddress) ===
         conversationId
     ) {
+      const localResourceIdentity = await this.localReticulumResourceIdentity();
       const response: ReticulumChatWire = {
         t: 'RCHAT',
         k: 'dm_resource_have',
@@ -32786,6 +32787,9 @@ export class ReticulumChatManager extends EventEmitter {
         s: sizeBytes,
         rid: requestId,
         sp: this.compactResourcePeerHash(localPeerHash),
+        ...(localResourceIdentity.identityPublicKeyBase64
+          ? { rk: localResourceIdentity.identityPublicKeyBase64 }
+          : {}),
       };
       if (!wireFitsReticulumChat(response)) {
         loggerWarn(
@@ -32886,6 +32890,8 @@ export class ReticulumChatManager extends EventEmitter {
         );
         return;
       }
+      const relayedIdentityPublicKey =
+        normalizeReticulumIdentityPublicKeyBase64(wire.rk);
       const response: ReticulumChatWire = {
         t: 'RCHAT',
         k: 'dm_resource_have',
@@ -32894,6 +32900,9 @@ export class ReticulumChatManager extends EventEmitter {
         s: sizeBytes,
         rid: requestId,
         sp: this.compactResourcePeerHash(sourcePeerHash),
+        ...(relayedIdentityPublicKey
+          ? { rk: relayedIdentityPublicKey }
+          : {}),
       };
       if (!wireFitsReticulumChat(response)) return;
       void this.sendToPeer(route.reversePeerHash, response);

@@ -359,6 +359,12 @@ _RESOURCE_SESSION_PROVIDER_IDLE_GUARD_SECONDS = 5.0
 _RESOURCE_SESSION_PATH_WAIT_TIMEOUT_SECONDS = 30.0
 _RESOURCE_SESSION_PATH_POLL_SECONDS = 1.0
 _RESOURCE_SESSION_PATH_REFRESH_RETRY_SECONDS = 5.0
+# A single bulk Link timeout can be caused by provider turnover or transient
+# load. Two failures against the same unchanged, unproven route are enough to
+# start the existing peer-scoped fresh-path recovery. Parallel lanes share the
+# same evidence and recovery generation, so they cannot repeatedly drop it.
+_RESOURCE_SESSION_BULK_PATH_FAILURE_THRESHOLD = 2
+_RESOURCE_SESSION_BULK_PATH_FAILURE_WINDOW_SECONDS = 90.0
 _RESOURCE_SESSION_MAX_QUEUE_PER_LANE = 64
 _RESOURCE_SESSION_MAX_QUEUE_TOTAL = 256
 _RESOURCE_SESSION_FAST_CONCURRENCY = 1
@@ -7280,6 +7286,34 @@ def _peer_has_other_connecting_outbound_link(
                 if _link_state_peer_hash(state) == peer:
                     return True
     return False
+
+
+def _peer_has_established_outbound_link(
+    peer_hash: str,
+    requester_state: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Treat any live outbound Link as proof that its destination route works."""
+    peer = str(peer_hash or "").strip().lower()
+    if not peer:
+        return False
+    with _state_lock:
+        collections = (
+            _overlay_links_by_id.values(),
+            _qchat_file_links_by_id.values(),
+            _audio_links_by_id.values(),
+            _land_call_links_by_id.values(),
+        )
+        return any(
+            isinstance(state, dict)
+            and state is not requester_state
+            and state.get("incoming") is not True
+            and state.get("closing") is not True
+            and state.get("established") is True
+            and state.get("link") is not None
+            and _link_state_peer_hash(state) == peer
+            for states in collections
+            for state in states
+        )
 
 
 def _destination_path_generation(peer_hash: str) -> int:
@@ -22390,38 +22424,114 @@ def _resource_session_note_failed_link_path(
         return
     lane = str(state.get("sessionLane") or "fast").strip().lower()
     if lane == "bulk":
-        # A bulk attachment/history session timing out does not prove that the
-        # shared destination path is unusable. The provider may simply have
-        # retired that lane, declined a transfer or failed to send READY. If
-        # bulk traffic destructively expires the peer path here, the separate
-        # fast lane can no longer retrieve a DM page that was announced over
-        # the overlay. Keep bulk backoff session-local and let the normal path
-        # request below refresh a genuinely absent route. A failed fast Link
-        # remains authoritative and may run the peer-scoped destructive
-        # recovery path.
+        # One bulk attachment/history timeout does not prove that the shared
+        # route is bad: a provider lane may be turning over or briefly busy.
+        # First nudge discovery without deleting the route. Only repeated Link
+        # establishment failures on the same route generation may enter the
+        # existing coordinated fresh-path recovery. Any established outbound
+        # Link proves the route and prevents bulk traffic from poisoning it.
+        active_direct_link = _peer_has_established_outbound_link(
+            peer_hash,
+            state,
+        )
         lifecycle = _lifecycle_state_for_peer(peer_hash)
         request_path = lifecycle is None
+        escalate_path = False
+        recovery_pending = False
+        attempt_generation = int(
+            state.get("destinationPathGeneration")
+            if isinstance(state.get("destinationPathGeneration"), int)
+            else _destination_path_generation(peer_hash)
+        )
         if lifecycle is not None:
             with _state_lock:
                 now = time.time()
+                previous_generation = lifecycle.get(
+                    "resource_session_bulk_path_suspect_generation"
+                )
+                previous_at = lifecycle.get("resource_session_bulk_path_suspect_at")
+                same_failure_window = (
+                    isinstance(previous_generation, int)
+                    and int(previous_generation) == attempt_generation
+                    and isinstance(previous_at, (int, float))
+                    and 0.0 <= now - float(previous_at)
+                    <= _RESOURCE_SESSION_BULK_PATH_FAILURE_WINDOW_SECONDS
+                )
+                previous_count = int(
+                    lifecycle.get("resource_session_bulk_path_suspect_count") or 0
+                )
+                suspect_count = (
+                    1
+                    if active_direct_link
+                    else previous_count + 1
+                    if same_failure_window
+                    else 1
+                )
                 lifecycle["resource_session_bulk_path_suspect_at"] = now
                 lifecycle["resource_session_bulk_path_suspect_reason"] = reason
-                lifecycle["resource_session_bulk_path_suspect_generation"] = int(
-                    state.get("destinationPathGeneration")
-                    if isinstance(state.get("destinationPathGeneration"), int)
-                    else _destination_path_generation(peer_hash)
+                lifecycle["resource_session_bulk_path_suspect_generation"] = (
+                    attempt_generation
                 )
+                lifecycle["resource_session_bulk_path_suspect_count"] = suspect_count
+                already_escalated = (
+                    lifecycle.get("resource_session_bulk_path_escalated_generation")
+                    == attempt_generation
+                )
+                recovery_pending = already_escalated
+                if (
+                    suspect_count >= _RESOURCE_SESSION_BULK_PATH_FAILURE_THRESHOLD
+                    and not already_escalated
+                    and not active_direct_link
+                ):
+                    failure_generation = int(
+                        lifecycle.get("resource_session_path_failure_generation") or 0
+                    ) + 1
+                    lifecycle["resource_session_path_failure_generation"] = (
+                        failure_generation
+                    )
+                    lifecycle["resource_session_path_failure_route_generation"] = (
+                        attempt_generation
+                    )
+                    lifecycle["resource_session_path_failure_at"] = now
+                    lifecycle["resource_session_path_failure_reason"] = reason
+                    lifecycle["resource_session_bulk_path_escalated_generation"] = (
+                        attempt_generation
+                    )
+                    for key in (
+                        "resource_session_fast_retained_path_generation",
+                        "resource_session_fast_retained_path_at_monotonic",
+                        "resource_session_path_refresh_generation",
+                        "resource_session_path_refresh_started_at",
+                        "resource_session_path_refresh_before",
+                        "resource_session_path_refresh_retry_at",
+                        "resource_session_path_refresh_last_request_at",
+                    ):
+                        lifecycle.pop(key, None)
+                    escalate_path = True
                 last_request_at = lifecycle.get(
                     "resource_session_bulk_path_request_at"
                 )
                 request_path = (
-                    not isinstance(last_request_at, (int, float))
-                    or now - float(last_request_at)
-                    >= _RESOURCE_SESSION_PATH_REFRESH_RETRY_SECONDS
+                    not escalate_path
+                    and not recovery_pending
+                    and not active_direct_link
+                    and (
+                        not isinstance(last_request_at, (int, float))
+                        or now - float(last_request_at)
+                        >= _RESOURCE_SESSION_PATH_REFRESH_RETRY_SECONDS
+                    )
                 )
                 if request_path:
                     lifecycle["resource_session_bulk_path_request_at"] = now
-        request_action = "coalesced"
+        request_action = (
+            "active_direct_link_retained"
+            if active_direct_link
+            else "escalated_stale_path"
+            if escalate_path
+            else "recovery_pending"
+            if recovery_pending
+            else "coalesced"
+        )
         if request_path:
             try:
                 RNS.Transport.request_path(bytes.fromhex(peer_hash))
@@ -23094,6 +23204,8 @@ def on_outgoing_resource_session_established(link) -> None:
                     "resource_session_bulk_path_suspect_at",
                     "resource_session_bulk_path_suspect_reason",
                     "resource_session_bulk_path_suspect_generation",
+                    "resource_session_bulk_path_suspect_count",
+                    "resource_session_bulk_path_escalated_generation",
                     "resource_session_bulk_path_request_at",
                     "resource_session_path_refresh_generation",
                     "resource_session_path_refresh_started_at",
