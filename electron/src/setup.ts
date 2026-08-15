@@ -3988,19 +3988,22 @@ ipcMain.handle(
   'reticulumChat:setLocalDmAddresses',
   async (_event, addresses: string[]) => {
     const accountGeneration = reticulumLocalAccountLifecycleGeneration;
+    const normalizedAddresses = Array.isArray(addresses) ? addresses : [];
     const settings = await readAppSettings();
     if (accountGeneration !== reticulumLocalAccountLifecycleGeneration) {
       return { success: false, error: 'Account session changed' };
     }
     const manager = getReticulumChatManager();
     if (!manager) {
+      if (normalizedAddresses.length === 0) return { success: true };
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
     if (!isReticulumChatEffectivelyEnabled(settings)) {
       manager.setLocalDmAddresses([]);
+      if (normalizedAddresses.length === 0) return { success: true };
       return { success: false, error: 'Reticulum chat is disabled' };
     }
-    manager.setLocalDmAddresses(Array.isArray(addresses) ? addresses : []);
+    manager.setLocalDmAddresses(normalizedAddresses);
     return { success: true };
   }
 );
@@ -4342,7 +4345,6 @@ ipcMain.handle(
     const manager = getReticulumChatManager();
     if (!manager) return [];
     const address = typeof myAddress === 'string' ? myAddress.trim() : '';
-    if (address) manager.setLocalDmAddresses([address]);
     return manager.getDirectSummaries(
       address,
       typeof peerAddress === 'string' ? peerAddress.trim() : undefined
