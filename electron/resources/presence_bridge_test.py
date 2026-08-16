@@ -2628,6 +2628,222 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
         self.assertFalse(link.teardown_called)
 
 
+class PresenceBridgeInboundOverlayAdmissionTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.bridge._destination = FakeDestination()
+        self.peer_hash = "ab" * 16
+
+    def hello_wire(self):
+        return json.dumps(
+            {
+                "t": self.bridge._OVERLAY_HELLO_WIRE_TYPE,
+                "r": self.peer_hash,
+                "v": self.bridge.PRESENCE_VERSION,
+                "c": [],
+            }
+        ).encode("utf-8")
+
+    def test_incoming_overlay_hello_waits_for_matching_remote_identity(self):
+        link = FakeLink()
+        packet = FakePacket(link)
+        self.bridge._pending_inbound_classify_link_ids.add(id(link))
+
+        with mock.patch.object(
+            self.bridge,
+            "_send_overlay_transport_control",
+            return_value=True,
+        ) as send_control:
+            self.bridge._handle_inbound_link_first_packet(self.hello_wire(), packet)
+
+            link_id = self.bridge.get_overlay_link_id(link)
+            state = self.bridge.get_overlay_link_state(link_id)
+            self.assertIsNotNone(state)
+            self.assertFalse(state.get("overlay_transport_admitted") is True)
+            self.assertTrue(state.get("overlay_quarantined"))
+            self.assertEqual(state.get("pending_overlay_peer_hash"), self.peer_hash)
+            self.assertIsInstance(state.get("pending_overlay_hello"), dict)
+            self.assertNotIn(self.peer_hash, self.bridge._inbound_overlay_neighbors)
+            self.assertNotIn(
+                self.peer_hash,
+                self.bridge._active_overlay_link_id_by_peer_hash,
+            )
+            send_control.assert_not_called()
+
+            identity = object()
+            link.remote_identity = identity
+            with mock.patch.object(
+                self.bridge,
+                "derive_presence_destination_hash_for_identity",
+                return_value=self.peer_hash,
+            ), mock.patch.object(
+                self.bridge,
+                "find_peer_hash_for_identity",
+                return_value=self.peer_hash,
+            ):
+                self.bridge.on_overlay_link_remote_identified(link, identity)
+
+        self.assertTrue(state.get("overlay_transport_admitted"))
+        self.assertTrue(state.get("overlay_identity_verified"))
+        self.assertFalse(state.get("overlay_quarantined"))
+        self.assertNotIn("pending_overlay_hello", state)
+        self.assertEqual(
+            self.bridge._active_overlay_link_id_by_peer_hash.get(self.peer_hash),
+            link_id,
+        )
+        self.assertIn(self.peer_hash, self.bridge._inbound_overlay_neighbors)
+        send_control.assert_called_once()
+
+    def test_remote_identity_before_hello_admits_without_a_callback_race(self):
+        link = FakeLink()
+        identity = object()
+        link.remote_identity = identity
+        packet = FakePacket(link)
+        self.bridge._incoming_unified_peer_hash_by_object[id(link)] = self.peer_hash
+        self.bridge._pending_inbound_classify_link_ids.add(id(link))
+
+        with mock.patch.object(
+            self.bridge,
+            "derive_presence_destination_hash_for_identity",
+            return_value=self.peer_hash,
+        ), mock.patch.object(
+            self.bridge,
+            "_send_overlay_transport_control",
+            return_value=True,
+        ):
+            self.bridge._handle_inbound_link_first_packet(self.hello_wire(), packet)
+
+        state = self.bridge.get_overlay_link_state(
+            self.bridge.get_overlay_link_id(link)
+        )
+        self.assertIsNotNone(state)
+        self.assertTrue(state.get("overlay_transport_admitted"))
+        self.assertTrue(state.get("overlay_identity_verified"))
+
+    def test_mismatched_overlay_identity_never_enters_neighbor_sets(self):
+        link = FakeLink()
+        link.remote_identity = object()
+        packet = FakePacket(link)
+        self.bridge._pending_inbound_classify_link_ids.add(id(link))
+
+        with mock.patch.object(
+            self.bridge,
+            "derive_presence_destination_hash_for_identity",
+            return_value="cd" * 16,
+        ), mock.patch.object(
+            self.bridge,
+            "_overlay_enqueue_close",
+            return_value=True,
+        ) as close:
+            self.bridge._handle_inbound_link_first_packet(self.hello_wire(), packet)
+
+        state = self.bridge.get_overlay_link_state(
+            self.bridge.get_overlay_link_id(link)
+        )
+        self.assertIsNotNone(state)
+        self.assertFalse(state.get("overlay_transport_admitted") is True)
+        self.assertNotIn(self.peer_hash, self.bridge._inbound_overlay_neighbors)
+        self.assertNotIn(
+            self.peer_hash,
+            self.bridge._active_overlay_link_id_by_peer_hash,
+        )
+        close.assert_called_once_with(
+            mock.ANY,
+            "overlay_transport_identity_mismatch",
+        )
+
+    def test_capacity_race_keeps_rejected_incoming_link_quarantined(self):
+        link = FakeLink()
+        link.remote_identity = object()
+        packet = FakePacket(link)
+        self.bridge._pending_inbound_classify_link_ids.add(id(link))
+
+        with mock.patch.object(
+            self.bridge,
+            "derive_presence_destination_hash_for_identity",
+            return_value=self.peer_hash,
+        ), mock.patch.object(
+            self.bridge,
+            "_register_active_overlay_for_peer",
+            return_value=None,
+        ):
+            self.bridge._handle_inbound_link_first_packet(self.hello_wire(), packet)
+
+        state = self.bridge.get_overlay_link_state(
+            self.bridge.get_overlay_link_id(link)
+        )
+        self.assertIsNotNone(state)
+        self.assertFalse(state.get("overlay_transport_admitted") is True)
+        self.assertTrue(state.get("overlay_quarantined"))
+
+    def test_quarantined_link_cannot_deliver_overlay_payloads(self):
+        link = FakeLink()
+        link_id = self.bridge._register_incoming_overlay_link(
+            link,
+            reason="classify_timeout",
+        )
+        packet = FakePacket(link)
+        wire = json.dumps(
+            {"t": self.bridge._RETICULUM_CHAT_WIRE_TYPE, "k": "dm_notify"}
+        ).encode("utf-8")
+
+        with mock.patch.object(
+            self.bridge,
+            "_emit_call_bridge_message",
+        ) as emit:
+            self.bridge.on_overlay_link_packet(wire, packet)
+
+        state = self.bridge.get_overlay_link_state(link_id)
+        self.assertTrue(state.get("overlay_quarantined"))
+        self.assertFalse(self.bridge._overlay_link_is_fanout_usable(state))
+        emit.assert_not_called()
+
+    def test_classifier_capacity_rejects_without_allocating_state_or_timer(self):
+        self.bridge._pending_inbound_classify_link_ids.update(
+            range(self.bridge._INBOUND_LINK_CLASSIFY_MAX_PENDING)
+        )
+        link = FakeLink()
+
+        self.bridge.on_incoming_unified_link_established(link)
+
+        self.assertTrue(link.teardown_called)
+        self.assertNotIn(id(link), self.bridge._pending_inbound_classify_link_ids)
+        self.assertNotIn(id(link), self.bridge._inbound_classify_timers)
+        self.assertIsNone(self.bridge.get_overlay_link_id(link))
+        self.assertIsNone(self.bridge.get_audio_link_id(link))
+        self.assertIsNone(self.bridge.get_qchat_file_link_id(link))
+
+    def test_classifier_timer_is_not_installed_after_classification_wins(self):
+        link = FakeLink()
+
+        with mock.patch.object(self.bridge.threading, "Timer") as timer:
+            self.bridge._schedule_inbound_classify_fallback(link)
+
+        timer.assert_not_called()
+        self.assertNotIn(id(link), self.bridge._inbound_classify_timers)
+
+    def test_audio_capability_first_packet_bypasses_overlay_quarantine(self):
+        link = FakeLink()
+        packet = FakePacket(link)
+        self.bridge._pending_inbound_classify_link_ids.add(id(link))
+        wire = json.dumps(
+            {
+                "t": self.bridge._GROUP_AUDIO_CONTROL_CAPABILITY_WIRE_TYPE,
+                "c": self.bridge._GROUP_AUDIO_CONTROL_CAPABILITY_HELLO,
+            }
+        ).encode("utf-8")
+
+        with mock.patch.object(
+            self.bridge,
+            "on_audio_link_packet",
+        ) as audio_packet:
+            self.bridge._handle_inbound_link_first_packet(wire, packet)
+
+        self.assertIsNotNone(self.bridge.get_audio_link_id(link))
+        self.assertIsNone(self.bridge.get_overlay_link_id(link))
+        audio_packet.assert_called_once_with(wire, packet)
+
+
 class PresenceBridgeOverlayRouteMigrationTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()

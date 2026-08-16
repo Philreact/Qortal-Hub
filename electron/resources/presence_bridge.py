@@ -222,6 +222,9 @@ _OVERLAY_MAX_TOTAL_LINKS = (
     + 4
 )
 _OVERLAY_UNESTABLISHED_LINK_TIMEOUT_SECONDS = 60.0
+# Unknown shared-destination Links may remain eligible for late dedicated-link
+# promotion, but traffic on them must not keep that probation alive forever.
+_OVERLAY_QUARANTINE_MAX_AGE_SECONDS = 60.0
 _OVERLAY_PENDING_UNESTABLISHED_LIMIT = 4
 _OVERLAY_ESTABLISHED_REPLAY_DELAY_SECONDS = 0.75
 _OVERLAY_DUPLICATE_CLOSE_GRACE_SECONDS = 2.0
@@ -405,10 +408,18 @@ _RESOURCE_SESSION_RESPONSE_INITIAL_PROGRESS_TIMEOUT_SECONDS = 15.0
 _RESOURCE_SESSION_RESPONSE_STALL_TIMEOUT_SECONDS = 30.0
 _RESOURCE_SESSION_FAILURE_BACKOFF_SECONDS = (2.0, 5.0, 15.0, 30.0, 60.0)
 _RESOURCE_SESSION_FAILURE_RECORD_MAX = 4096
-# Inbound RNS.Link: classify overlay vs audio by first JSON packet; if none, default to overlay.
+# Inbound RNS.Link: classify the shared destination by its first protocol packet.
 _INBOUND_LINK_CLASSIFY_TIMEOUT_SEC = 5.0
+# Every incoming feature Link initially shares the same destination and is
+# therefore unknown until its first protocol packet arrives. Keep that brief
+# classifier window bounded without constraining established audio, resource,
+# game, call, or overlay Links. The limit intentionally exceeds the largest
+# normal burst (a full single-forwarder group call plus resource-session pool).
+_INBOUND_LINK_CLASSIFY_MAX_PENDING = 64
 _pending_inbound_classify_link_ids: Set[int] = set()
 _inbound_classify_timers: Dict[int, threading.Timer] = {}
+_inbound_classify_rejected_since_log = 0
+_inbound_classify_rejected_last_log_at = 0.0
 
 # Qortal Land call controls use short-lived, endpoint-authenticated Links that
 # are deliberately separate from the presence overlay mesh. A call must not be
@@ -9531,6 +9542,7 @@ def remove_overlay_link(link_id: str) -> Optional[Dict[str, Any]]:
         link = state.get("link")
         if link is not None:
             _overlay_link_ids_by_object.pop(id(link), None)
+            _incoming_unified_peer_hash_by_object.pop(id(link), None)
         peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
         if peer_hash:
             _overlay_open_pending_by_peer_hash.discard(peer_hash)
@@ -10935,6 +10947,44 @@ def _admit_overlay_peer_from_transport(
         )
         _overlay_enqueue_close(link_id, "overlay_transport_peer_mismatch")
         return False
+    incoming = state.get("incoming") is True
+    already_admitted = state.get("overlay_transport_admitted") is True
+    if incoming and not already_admitted:
+        # A claimed hash in OVERLAY_HELLO is not proof that the initiator owns
+        # that destination. All current Hub overlay initiators identify their
+        # Link before sending HELLO. Accommodate callback ordering by accepting
+        # either the live remote identity or the hash recorded by the unified
+        # classifier's remote-identification callback.
+        if reason != _OVERLAY_HELLO_WIRE_TYPE.lower():
+            state["pending_overlay_peer_hash"] = peer_key
+            return False
+        link = state.get("link")
+        remote_identity = _overlay_link_remote_identity(link)
+        identified_peer_hash = (
+            derive_presence_destination_hash_for_identity(remote_identity)
+            if remote_identity is not None
+            else ""
+        )
+        if not identified_peer_hash and link is not None:
+            identified_peer_hash = str(
+                _incoming_unified_peer_hash_by_object.get(id(link)) or ""
+            ).strip().lower()
+        if not identified_peer_hash:
+            state["pending_overlay_peer_hash"] = peer_key
+            state["pending_overlay_admission_reason"] = reason
+            return False
+        if identified_peer_hash != peer_key:
+            log(
+                "[presence_bridge] target=presence-reticulum "
+                "overlay_transport_identity_mismatch "
+                f"link={link_id} claimed={peer_key} identified={identified_peer_hash}"
+            )
+            _overlay_enqueue_close(link_id, "overlay_transport_identity_mismatch")
+            return False
+        state["overlay_identity_verified"] = True
+        state["overlay_quarantined"] = False
+        state.pop("pending_overlay_peer_hash", None)
+        state.pop("pending_overlay_admission_reason", None)
     state["peerPresenceHash"] = peer_key
     now = time.time()
     if state.get("migration_candidate") is True:
@@ -10958,6 +11008,14 @@ def _admit_overlay_peer_from_transport(
     _note_peer_direct_activity(peer_key, "rx", reason, now=now)
     admitted_state = _register_active_overlay_for_peer(peer_key, link_id)
     if admitted_state is None:
+        state["overlay_transport_admitted"] = False
+        state.pop("overlay_transport_admitted_at", None)
+        if incoming:
+            # Admission may lose a capacity race after identity verification.
+            # Keep the Link under the absolute probation deadline until the
+            # queued close completes; subsequent control packets must not be
+            # able to keep a rejected Link resident indefinitely.
+            state["overlay_quarantined"] = True
         return False
     _mark_overlay_peer_admitted_neighbor(peer_key, admitted_state, now)
     active_link_id = _active_overlay_link_id_by_peer_hash.get(peer_key) or link_id
@@ -10995,7 +11053,13 @@ def _handle_overlay_transport_control(
     state["last_failure_reason"] = ""
     state["backoff_until"] = 0.0
     if not _admit_overlay_peer_from_transport(peer_key, link_id, state, message_type.lower()):
+        if message_type == _OVERLAY_HELLO_WIRE_TYPE:
+            # Remote identification and HELLO can arrive in either order. Hold
+            # one bounded HELLO in Link state and finish admission from the
+            # identity callback instead of forcing a reconnect race.
+            state["pending_overlay_hello"] = dict(decoded)
         return True
+    state.pop("pending_overlay_hello", None)
     _note_peer_inbound_capacity_hint(peer_key, {
         "inboundFull": decoded.get("f") is True,
     })
@@ -11314,15 +11378,23 @@ def _admit_overlay_peer_if_allowed(peer_key: str, reason: str, incoming: bool = 
     return True
 
 
-def _overlay_unknown_inbound_allowed() -> bool:
-    if len(_inbound_overlay_neighbors) >= _OVERLAY_MAX_INBOUND_NEIGHBORS:
-        return False
+def _overlay_incoming_probation_allowed(peer_key: str) -> bool:
+    """Check capacity without trusting or admitting the claimed peer hash."""
+    peer_key = str(peer_key or "").strip().lower()
+    call_pinned = _prune_pinned_call_overlay_peers()
     with _state_lock:
-        return _overlay_mesh_link_count_locked() < (
-            _OVERLAY_MAX_OUTBOUND_NEIGHBORS
-            + _OVERLAY_MAX_INBOUND_NEIGHBORS
-            + _OVERLAY_MAX_PINNED_CHAT_PEERS
-            + _OVERLAY_MAX_PINNED_CALL_PEERS
+        inbound_limit = _OVERLAY_MAX_INBOUND_NEIGHBORS
+        if peer_key and peer_key in call_pinned:
+            inbound_limit += _OVERLAY_MAX_PINNED_CALL_PEERS
+        return (
+            len(_inbound_overlay_neighbors) < inbound_limit
+            and _overlay_mesh_link_count_locked()
+            < (
+                _OVERLAY_MAX_OUTBOUND_NEIGHBORS
+                + _OVERLAY_MAX_INBOUND_NEIGHBORS
+                + _OVERLAY_MAX_PINNED_CHAT_PEERS
+                + _OVERLAY_MAX_PINNED_CALL_PEERS
+            )
         )
 
 
@@ -12031,6 +12103,15 @@ def _sync_overlay_links() -> None:
                     )
                     state["last_failure_reason"] = stale_reason
                     stale_ids.append((link_id, stale_reason))
+                continue
+            if (
+                state.get("overlay_quarantined") is True
+                and isinstance(created_at, (int, float))
+                and now - float(created_at) > _OVERLAY_QUARANTINE_MAX_AGE_SECONDS
+            ):
+                state["manager_state"] = _LINK_STATE_BACKOFF
+                state["last_failure_reason"] = "overlay_quarantine_expired"
+                stale_ids.append((link_id, "overlay_quarantine_expired"))
                 continue
             last_rx = state.get("last_rx_at")
             if not isinstance(last_rx, (int, float)):
@@ -12810,6 +12891,9 @@ def on_overlay_link_remote_identified(link, identity) -> None:
     if state is None:
         return
     derived_peer_hash = derive_presence_destination_hash_for_identity(identity)
+    if derived_peer_hash:
+        _incoming_unified_peer_hash_by_object[id(link)] = derived_peer_hash
+        state["remoteIdentity"] = identity
     local_hex = _local_presence_hash_hex()
     migration_candidate = state.get("migration_candidate") is True
     expected = str(state.get("peerPresenceHash") or "").strip().lower()
@@ -12887,10 +12971,23 @@ def on_overlay_link_remote_identified(link, identity) -> None:
     ph_reg = str(state.get("peerPresenceHash") or "").strip().lower()
     if ph_reg and _valid_presence_destination_hash_hex(ph_reg):
         _note_peer_direct_activity(ph_reg, "rx", "remote_identified")
-        _register_active_overlay_for_peer(ph_reg, link_id)
-        _overlay_enqueue_dedup(ph_reg, reason="dedup_same_peer")
+        if state.get("overlay_transport_admitted") is True:
+            _register_active_overlay_for_peer(ph_reg, link_id)
+            _overlay_enqueue_dedup(ph_reg, reason="dedup_same_peer")
         if migration_candidate and state.get("incoming") is True:
             _send_overlay_hello_for_link(link_id, "migration_identity_verified")
+    pending_hello = state.get("pending_overlay_hello")
+    if (
+        state.get("incoming") is True
+        and state.get("overlay_transport_admitted") is not True
+        and isinstance(pending_hello, dict)
+    ):
+        _handle_overlay_transport_control(
+            dict(pending_hello),
+            link,
+            link_id,
+            state,
+        )
 
 
 def _audio_overlay_promotion_allowed(peer_key: str) -> bool:
@@ -13535,6 +13632,11 @@ def _handle_overlay_link_packet(message, packet) -> None:
         return
     compact_proximity = _decode_qortalland_proximity_discovery(message)
     if compact_proximity is not None:
+        if (
+            state.get("incoming") is True
+            and state.get("overlay_transport_admitted") is not True
+        ):
+            return
         _note_presence_pressure("source:overlay")
         state["last_activity_at"] = time.time()
         state["last_rx_at"] = time.time()
@@ -13601,6 +13703,13 @@ def _handle_overlay_link_packet(message, packet) -> None:
     state["backoff_until"] = 0.0
     t = decoded.get("t")
     if _handle_overlay_transport_control(decoded, link, link_id, state):
+        return
+    if (
+        state.get("incoming") is True
+        and state.get("overlay_transport_admitted") is not True
+    ):
+        # Late audio/resource promotion was handled above. Nothing else from a
+        # quarantined incoming Link may enter the overlay or Electron queues.
         return
     if t == "QLPV1":
         source_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
@@ -19652,7 +19761,8 @@ def on_outgoing_audio_link_established(link) -> None:
 
 
 def _cancel_inbound_classify_timer(link_key: int) -> None:
-    timer = _inbound_classify_timers.pop(link_key, None)
+    with _state_lock:
+        timer = _inbound_classify_timers.pop(link_key, None)
     if timer is not None:
         try:
             timer.cancel()
@@ -20136,8 +20246,6 @@ def _register_incoming_overlay_link(
                 f"target=presence-reticulum {reject_reason} peer={peer_key or 'unknown'}",
             )
             return ""
-    else:
-        _prune_overlay_link_pressure("link_pressure_inbound", reserve_slots=1)
     with _state_lock:
         pressure_links = len(_overlay_links_by_id)
     if pressure_links >= _OVERLAY_MAX_TOTAL_LINKS:
@@ -20146,31 +20254,19 @@ def _register_incoming_overlay_link(
             f"peer={peer_key or 'unknown'} reason={reason} "
             f"links={pressure_links} max={_OVERLAY_MAX_TOTAL_LINKS}"
         )
-    if peer_key:
-        if not _admit_overlay_peer_if_allowed(peer_key, f"inbound:{reason}", incoming=True):
-            verbose_presence_log(
-                "[presence_bridge] target=presence-reticulum overlay_inbound_rejected "
-                f"peer={peer_key} reason={reason}"
-            )
-            _enqueue_scheduler_task(
-                _overlay_io_lane_for_peer(peer_key),
-                f"overlay-inbound-reject:admission:{peer_key[:8]}",
-                _teardown_reticulum_link_bounded,
-                link,
-                f"target=presence-reticulum overlay_inbound_reject peer={peer_key} reason={reason}",
-            )
-            return ""
-    elif not _overlay_unknown_inbound_allowed():
+    if not migration_candidate and not _overlay_incoming_probation_allowed(peer_key):
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum overlay_inbound_rejected "
-            f"peer=unknown reason={reason} active={len(_inbound_overlay_neighbors)}"
+            f"peer={peer_key or 'unknown'} reason={reason} "
+            f"active={len(_inbound_overlay_neighbors)} stage=probation"
         )
         _enqueue_scheduler_task(
-            _overlay_io_lane_for_peer("unknown"),
-            "overlay-inbound-reject:unknown",
+            _overlay_io_lane_for_peer(peer_key or "unknown"),
+            f"overlay-inbound-reject:probation:{peer_key[:8] or 'unknown'}",
             _teardown_reticulum_link_bounded,
             link,
-            f"target=presence-reticulum overlay_inbound_reject peer=unknown reason={reason}",
+            "target=presence-reticulum overlay_inbound_reject "
+            f"peer={peer_key or 'unknown'} reason={reason} stage=probation",
         )
         return ""
     link_id = str(uuid.uuid4())
@@ -20195,6 +20291,16 @@ def _register_incoming_overlay_link(
         "last_failure_reason": "",
         "backoff_until": 0.0,
         "migration_candidate": bool(migration_candidate),
+        # A shared-destination Link whose purpose was not identifiable remains
+        # usable for late promotion to audio/resource, but it is never eligible
+        # for overlay fanout until an authenticated OVERLAY_HELLO arrives.
+        # Every ordinary incoming Link starts in probation.  Admission clears
+        # this only after the claimed peer hash matches the Reticulum-authenticated
+        # remote identity.  The absolute probation deadline therefore also
+        # covers a peer that keeps repeating HELLO while identity resolution is
+        # unavailable.
+        "overlay_quarantined": not migration_candidate,
+        "overlay_identity_verified": False,
         "migration_source_link_id": migration_source_link_id,
         "migration_peer_authenticated": bool(migration_peer_authenticated),
         "migration_ready_event": threading.Event() if migration_candidate else None,
@@ -20202,12 +20308,10 @@ def _register_incoming_overlay_link(
     with _state_lock:
         _overlay_links_by_id[link_id] = state
     configure_overlay_link(link, link_id)
-    if peer_key and not migration_candidate:
-        _register_active_overlay_for_peer(peer_key, link_id)
     emit_overlay_link_state(link_id, state, "incoming")
-    if not migration_candidate or migration_peer_authenticated:
+    if migration_candidate and migration_peer_authenticated:
         _send_overlay_hello_for_link(link_id, f"incoming:{reason}")
-    else:
+    elif migration_candidate:
         log(
             "[presence_bridge] target=presence-reticulum "
             "overlay_migration_candidate_waiting_identity "
@@ -20219,12 +20323,16 @@ def _register_incoming_overlay_link(
 def _schedule_inbound_classify_fallback(link) -> None:
     link_key = id(link)
 
+    with _state_lock:
+        if link_key not in _pending_inbound_classify_link_ids:
+            return
+
     def fire() -> None:
         with _state_lock:
+            _inbound_classify_timers.pop(link_key, None)
             if link_key not in _pending_inbound_classify_link_ids:
                 return
             _pending_inbound_classify_link_ids.discard(link_key)
-        _cancel_inbound_classify_timer(link_key)
         if (
             get_overlay_link_id(link) is not None
             or get_audio_link_id(link) is not None
@@ -20236,7 +20344,7 @@ def _schedule_inbound_classify_fallback(link) -> None:
             peer_hash = ""
         reason = "classify_timeout_identity" if peer_hash else "classify_timeout"
         log(
-            "[presence_bridge] WARNING inbound_link_classify_timeout defaulting_to_overlay "
+            "[presence_bridge] inbound_link_classify_timeout quarantined "
             f"link_obj={link_key} peer={peer_hash or 'unknown'} reason={reason}"
         )
         try:
@@ -20250,7 +20358,13 @@ def _schedule_inbound_classify_fallback(link) -> None:
 
     timer = threading.Timer(_INBOUND_LINK_CLASSIFY_TIMEOUT_SEC, fire)
     timer.daemon = True
-    _inbound_classify_timers[link_key] = timer
+    with _state_lock:
+        # The first packet or close callback can win immediately after the Link
+        # is registered. Do not install a dead timer after either has already
+        # removed the Link from the pending classifier set.
+        if link_key not in _pending_inbound_classify_link_ids:
+            return
+        _inbound_classify_timers[link_key] = timer
     timer.start()
 
 
@@ -20314,10 +20428,16 @@ def _handle_inbound_link_first_packet(message, packet) -> None:
         decoded = json.loads(message.decode("utf-8"))
     except Exception as exc:
         log(f"[presence_bridge] inbound_link_first_packet non-json err={exc}")
-        _register_incoming_overlay_link(link, reason="first_packet_non_json")
+        _register_incoming_overlay_link(
+            link,
+            reason="first_packet_non_json",
+        )
         return
     if not isinstance(decoded, dict):
-        _register_incoming_overlay_link(link, reason="first_packet_non_object")
+        _register_incoming_overlay_link(
+            link,
+            reason="first_packet_non_object",
+        )
         return
     if (
         decoded.get("t") == _RETICULUM_CHAT_WIRE_TYPE
@@ -20391,15 +20511,46 @@ def on_inbound_link_first_packet(message, packet) -> None:
 
 
 def on_incoming_unified_link_established(link) -> None:
+    global _inbound_classify_rejected_since_log
+    global _inbound_classify_rejected_last_log_at
     link_key = id(link)
-    with _state_lock:
-        _pending_inbound_classify_link_ids.add(link_key)
     link.set_link_closed_callback(on_inbound_unified_link_closed)
     link.set_packet_callback(on_inbound_link_first_packet)
     link.set_remote_identified_callback(on_qchat_file_link_remote_identified)
     link.set_resource_strategy(RNS.Link.ACCEPT_APP)
     link.set_resource_callback(on_qchat_file_resource_advertised)
     link.set_resource_concluded_callback(on_qchat_file_resource_concluded)
+    with _state_lock:
+        over_capacity = (
+            len(_pending_inbound_classify_link_ids)
+            >= _INBOUND_LINK_CLASSIFY_MAX_PENDING
+        )
+        if not over_capacity:
+            _pending_inbound_classify_link_ids.add(link_key)
+    if over_capacity:
+        now = time.monotonic()
+        with _state_lock:
+            _inbound_classify_rejected_since_log += 1
+            should_log = (
+                now - _inbound_classify_rejected_last_log_at >= 10.0
+            )
+            rejected = _inbound_classify_rejected_since_log
+            if should_log:
+                _inbound_classify_rejected_since_log = 0
+                _inbound_classify_rejected_last_log_at = now
+        if should_log:
+            log(
+                "[presence_bridge] inbound_link_classify_pressure "
+                f"rejected={rejected} pending={_INBOUND_LINK_CLASSIFY_MAX_PENDING}"
+            )
+        # RNS.Link.teardown() is normally non-blocking. Keep overload rejection
+        # on this callback instead of spawning an attacker-controlled thread per
+        # rejected Link.
+        try:
+            link.teardown()
+        except Exception:
+            pass
+        return
     _schedule_inbound_classify_fallback(link)
 
 
