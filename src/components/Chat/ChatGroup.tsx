@@ -182,8 +182,10 @@ import { mergeReticulumPayloadWithVerifiedEnvelope } from '../../utils/reticulum
 import {
   buildReticulumMessageExpiryPayload,
   formatReticulumExpiryDuration,
-  isReticulumMessageExpiryOptionAllowed,
+  loadReticulumMessageExpiryPreference,
   RETICULUM_MESSAGE_EXPIRY_OPTIONS,
+  resolveReticulumPreferredMessageExpiryDurationMs,
+  saveReticulumMessageExpiryPreference,
 } from './reticulumMessageExpiry';
 
 type PendingReticulumResourceFile = {
@@ -218,9 +220,7 @@ type ReticulumGroupChannel = {
 type ReticulumGroupChannelWriteMode = 'members' | 'admins';
 type ReticulumGroupChannelReadMode = 'members' | 'admins';
 type ReticulumGroupChannelAccessMode =
-  | 'regular'
-  | 'admin_write'
-  | 'admin_private';
+  'regular' | 'admin_write' | 'admin_private';
 
 type ReticulumSearchResult = {
   event: {
@@ -1490,6 +1490,10 @@ export const ChatGroup = ({
     reticulumMessageExpiryDurationMs,
     setReticulumMessageExpiryDurationMs,
   ] = useState<number | undefined>(undefined);
+  const [
+    reticulumPreferredExpiryDurationMs,
+    setReticulumPreferredExpiryDurationMs,
+  ] = useState<number | undefined>(undefined);
   const [reticulumChannels, setReticulumChannels] = useState<
     ReticulumGroupChannel[]
   >([]);
@@ -2356,24 +2360,49 @@ export const ChatGroup = ({
         : undefined);
 
   useEffect(() => {
-    setReticulumMessageExpiryDurationMs(undefined);
-  }, [selectedGroup, selectedReticulumChannelId]);
-
-  useEffect(() => {
-    setReticulumMessageExpiryDurationMs((current) =>
-      current === undefined ||
-      isReticulumMessageExpiryOptionAllowed(
-        current,
-        selectedReticulumChannelExpiryDurationMs
-      )
-        ? current
-        : undefined
+    setReticulumPreferredExpiryDurationMs(
+      loadReticulumMessageExpiryPreference(myAddress, selectedGroup)
     );
-  }, [selectedReticulumChannelExpiryDurationMs]);
+  }, [myAddress, selectedGroup]);
 
   useEffect(() => {
-    if (onEditMessage) setReticulumMessageExpiryDurationMs(undefined);
-  }, [onEditMessage]);
+    setReticulumMessageExpiryDurationMs(
+      onEditMessage
+        ? undefined
+        : resolveReticulumPreferredMessageExpiryDurationMs(
+            reticulumPreferredExpiryDurationMs,
+            selectedReticulumChannelExpiryDurationMs
+          )
+    );
+  }, [
+    onEditMessage,
+    reticulumPreferredExpiryDurationMs,
+    selectedGroup,
+    selectedReticulumChannelExpiryDurationMs,
+    selectedReticulumChannelId,
+  ]);
+
+  const changeReticulumPreferredExpiry = useCallback(
+    (durationMs: number | undefined) => {
+      if (
+        !saveReticulumMessageExpiryPreference(
+          myAddress,
+          selectedGroup,
+          durationMs
+        )
+      ) {
+        return;
+      }
+      setReticulumPreferredExpiryDurationMs(durationMs);
+      setReticulumMessageExpiryDurationMs(
+        resolveReticulumPreferredMessageExpiryDurationMs(
+          durationMs,
+          selectedReticulumChannelExpiryDurationMs
+        )
+      );
+    },
+    [myAddress, selectedGroup, selectedReticulumChannelExpiryDurationMs]
+  );
   const reticulumVisibleChannelIds = useMemo(
     () =>
       new Set(
@@ -6460,7 +6489,12 @@ export const ChatGroup = ({
         setIsDeleteImage(false);
         setChatImagesToSave([]);
         clearPendingReticulumFiles();
-        setReticulumMessageExpiryDurationMs(undefined);
+        setReticulumMessageExpiryDurationMs(
+          resolveReticulumPreferredMessageExpiryDurationMs(
+            reticulumPreferredExpiryDurationMs,
+            selectedReticulumChannelExpiryDurationMs
+          )
+        );
       }
       // send chat message
     } catch (error) {
@@ -10165,6 +10199,12 @@ export const ChatGroup = ({
                               : t('group:chat_group.write_not_allowed')
                           }
                           onChange={setReticulumMessageExpiryDurationMs}
+                          onPreferredExpiryChange={
+                            changeReticulumPreferredExpiry
+                          }
+                          preferredExpiryDurationMs={
+                            reticulumPreferredExpiryDurationMs
+                          }
                           segmented
                           value={reticulumMessageExpiryDurationMs}
                         />
@@ -13064,12 +13104,14 @@ export const ChatGroup = ({
         messages={reticulumDiscussionMessages}
         myAddress={myAddress}
         onClose={closeReticulumDiscussion}
+        onPreferredExpiryChange={changeReticulumPreferredExpiry}
         onRemoveFile={removeReticulumDiscussionFile}
         onSelectFiles={insertReticulumDiscussionFiles}
         onSend={sendReticulumDiscussionReply}
         onTypingChange={noteReticulumComposerActivity}
         open={Boolean(reticulumDiscussionRootId)}
         preparingFile={isPreparingReticulumDiscussionFile}
+        preferredExpiryDurationMs={reticulumPreferredExpiryDurationMs}
         replyCount={activeReticulumDiscussionReplyCount}
         reticulumGroupAvatarOwnerName={reticulumGroupOwnerName}
         reticulumGroupDisplayName={selectedGroupName}

@@ -39,10 +39,104 @@ export const RETICULUM_MESSAGE_EXPIRY_OPTIONS: readonly ReticulumMessageExpiryOp
     },
   ];
 
+const RETICULUM_EXPIRY_PREFERENCE_STORAGE_PREFIX =
+  'qchat-reticulum-expiry-preference-v1';
+
 function normalizeExpiryDurationMs(value: unknown): number | undefined {
   const duration = Number(value);
   if (!Number.isFinite(duration) || duration <= 0) return undefined;
   return Math.floor(duration);
+}
+
+function normalizeMessageExpiryOption(value: unknown): number | undefined {
+  const duration = normalizeExpiryDurationMs(value);
+  return RETICULUM_MESSAGE_EXPIRY_OPTIONS.some(
+    (option) => option.durationMs === duration
+  )
+    ? duration
+    : undefined;
+}
+
+export function resolveReticulumPreferredMessageExpiryDurationMs(
+  preferredDurationMs: number | undefined,
+  channelExpiryDurationMs?: number
+): number | undefined {
+  const preferredDuration = normalizeMessageExpiryOption(preferredDurationMs);
+  return preferredDuration !== undefined &&
+    isReticulumMessageExpiryOptionAllowed(
+      preferredDuration,
+      channelExpiryDurationMs
+    )
+    ? preferredDuration
+    : undefined;
+}
+
+export function reticulumMessageExpiryPreferenceStorageKey(
+  accountAddress: string,
+  groupId: number | string
+): string | null {
+  const normalizedAddress = String(accountAddress || '')
+    .trim()
+    .toLowerCase();
+  const normalizedGroupId = Number(groupId);
+  if (
+    !normalizedAddress ||
+    !Number.isInteger(normalizedGroupId) ||
+    normalizedGroupId <= 0
+  ) {
+    return null;
+  }
+  return `${RETICULUM_EXPIRY_PREFERENCE_STORAGE_PREFIX}:${encodeURIComponent(
+    normalizedAddress
+  )}:${normalizedGroupId}`;
+}
+
+export function loadReticulumMessageExpiryPreference(
+  accountAddress: string,
+  groupId: number | string,
+  storage?: Pick<Storage, 'getItem'>
+): number | undefined {
+  const key = reticulumMessageExpiryPreferenceStorageKey(
+    accountAddress,
+    groupId
+  );
+  if (!key) return undefined;
+  try {
+    const resolvedStorage =
+      storage ??
+      (typeof window === 'undefined' ? undefined : window.localStorage);
+    return normalizeMessageExpiryOption(resolvedStorage?.getItem(key));
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveReticulumMessageExpiryPreference(
+  accountAddress: string,
+  groupId: number | string,
+  durationMs: number | undefined,
+  storage?: Pick<Storage, 'removeItem' | 'setItem'>
+): boolean {
+  const key = reticulumMessageExpiryPreferenceStorageKey(
+    accountAddress,
+    groupId
+  );
+  if (!key) return false;
+  try {
+    const resolvedStorage =
+      storage ??
+      (typeof window === 'undefined' ? undefined : window.localStorage);
+    if (!resolvedStorage) return false;
+    const normalizedDuration = normalizeMessageExpiryOption(durationMs);
+    if (normalizedDuration === undefined) {
+      resolvedStorage.removeItem(key);
+    } else {
+      resolvedStorage.setItem(key, String(normalizedDuration));
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function formatReticulumExpiryDuration(value: unknown): string {

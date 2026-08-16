@@ -24,6 +24,7 @@ import { MessageItem } from './MessageItem';
 import type { ReticulumChannelLinkAccess } from './MessageDisplay';
 import { ReticulumGifCompressionStatus } from './ReticulumGifCompressionStatus';
 import { ReticulumMessageExpiryButton } from './ReticulumMessageExpiryButton';
+import { resolveReticulumPreferredMessageExpiryDurationMs } from './reticulumMessageExpiry';
 import { ReactionPicker } from '../ReactionPicker';
 import { MessageSizeLimitLip } from './MessageSizeLimitLip';
 
@@ -59,6 +60,7 @@ type ReticulumDiscussionDialogProps = {
   messages: any[];
   myAddress: string;
   onClose: () => void;
+  onPreferredExpiryChange: (durationMs: number | undefined) => void;
   onRemoveFile: (index: number) => void;
   onSelectFiles: (files: File[]) => void | Promise<void>;
   onSend: (draft: ReticulumDiscussionDraft) => Promise<boolean>;
@@ -76,6 +78,7 @@ type ReticulumDiscussionDialogProps = {
   >;
   reticulumChannelLinkAccess?: ReticulumChannelLinkAccess;
   preparingFile: boolean;
+  preferredExpiryDurationMs?: number;
   selectedGroup: number | string;
 };
 
@@ -90,6 +93,7 @@ export const ReticulumDiscussionDialog = ({
   messages,
   myAddress,
   onClose,
+  onPreferredExpiryChange,
   onRemoveFile,
   onSelectFiles,
   onSend,
@@ -104,6 +108,7 @@ export const ReticulumDiscussionDialog = ({
   reticulumMentionUsers,
   reticulumChannelLinkAccess,
   preparingFile,
+  preferredExpiryDurationMs,
   selectedGroup,
 }: ReticulumDiscussionDialogProps) => {
   const theme = useTheme();
@@ -136,12 +141,20 @@ export const ReticulumDiscussionDialog = ({
   });
 
   useEffect(() => {
-    if (open) return;
-    editor?.commands.clearContent();
-    setExpiryDurationMs(undefined);
-    setMessageSize(0);
-    setFormattingResetKey((key) => key + 1);
-  }, [editor, open]);
+    if (!open) {
+      editor?.commands.clearContent();
+      setExpiryDurationMs(undefined);
+      setMessageSize(0);
+      setFormattingResetKey((key) => key + 1);
+      return;
+    }
+    setExpiryDurationMs(
+      resolveReticulumPreferredMessageExpiryDurationMs(
+        preferredExpiryDurationMs,
+        channelExpiryDurationMs
+      )
+    );
+  }, [channelExpiryDurationMs, editor, open, preferredExpiryDurationMs]);
 
   useEffect(() => {
     if (!open || messages.length === 0) return;
@@ -178,7 +191,12 @@ export const ReticulumDiscussionDialog = ({
         })
       ) {
         editor.commands.clearContent();
-        setExpiryDurationMs(undefined);
+        setExpiryDurationMs(
+          resolveReticulumPreferredMessageExpiryDurationMs(
+            preferredExpiryDurationMs,
+            channelExpiryDurationMs
+          )
+        );
         setMessageSize(0);
         setFormattingResetKey((key) => key + 1);
       }
@@ -640,6 +658,8 @@ export const ReticulumDiscussionDialog = ({
                 postProcess: 'capitalizeFirstChar',
               })}
               onChange={setExpiryDurationMs}
+              onPreferredExpiryChange={onPreferredExpiryChange}
+              preferredExpiryDurationMs={preferredExpiryDurationMs}
               segmented
               value={expiryDurationMs}
             />
