@@ -566,6 +566,7 @@
       "password_enter": "anna salasana",
       "payment_request": "sovellus <br/><italic>{{hostname}}</italic> <br/><span>pyytää maksua</span>",
       "people_reaction": "käyttäjät, jotka reagoivat merkillä {{ reaction }}",
+      "presence_status": "Tila: {{status}}",
       "processing_transaction": "käsittelee tapahtumaa, odota hetki...",
       "publish_data": "julkaise dataa Qortaliin: sovelluksista videoihin asti. Täysin hajautettua!",
       "publishing": "julkaistaan... odota hetki",

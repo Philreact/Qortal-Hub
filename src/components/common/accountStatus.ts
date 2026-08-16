@@ -45,17 +45,23 @@ function useAccountStatusColor() {
   );
 }
 
-function useAccountStatusLabel() {
+/**
+ * Translated label for any presence status, the local account's or a peer's.
+ * Widened to `string | null` to match `statusDotColor`, its colour counterpart:
+ * `null` — a peer we hold no presence for — reads as offline, and anything
+ * unrecognised falls through to online, exactly as the dot colour does.
+ */
+export function usePresenceStatusLabel() {
   const { t } = useTranslation(['group']);
 
   return useMemo(
-    () => (status: PresenceDisplayStatus) => {
+    () => (status: PresenceDisplayStatus | string | null) => {
       if (status === 'busy')
         return t('group:dashboard.account_status_busy', {
           defaultValue: 'Busy',
         });
 
-      if (status === 'offline')
+      if (!status || status === 'offline')
         return t('group:dashboard.account_status_offline', {
           defaultValue: 'Offline',
         });
@@ -76,7 +82,7 @@ function useAccountStatusLabel() {
 /** The selectable statuses, with their label and dot colour. */
 export function useAccountStatusOptions(): AccountStatusOption[] {
   const getColor = useAccountStatusColor();
-  const getLabel = useAccountStatusLabel();
+  const getLabel = usePresenceStatusLabel();
 
   return useMemo(
     () =>
@@ -104,7 +110,7 @@ export function useAccountStatusDisplay(): {
   const [myStatus, setMyStatus] = useMyStatus();
   const isIdle = useAtomValue(isIdleAtom);
   const getColor = useAccountStatusColor();
-  const getLabel = useAccountStatusLabel();
+  const getLabel = usePresenceStatusLabel();
   const displayStatus: PresenceDisplayStatus =
     isIdle && myStatus !== 'offline' ? 'idle' : myStatus;
 

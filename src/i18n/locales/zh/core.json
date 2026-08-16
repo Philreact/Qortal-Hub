@@ -566,6 +566,7 @@
       "password_enter": "请输入密码",
       "payment_request": "应用 <br/><italic>{{hostname}}</italic> <br/><span>正在请求付款</span>",
       "people_reaction": "使用 {{ reaction }} 回应的人",
+      "presence_status": "状态：{{status}}",
       "processing_transaction": "正在处理交易，请等待...",
       "publish_data": "将数据发布到Qortal：从应用到视频的任何内容。完全分散！",
       "publishing": "出版...请等待。",

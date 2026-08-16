@@ -566,6 +566,7 @@
       "password_enter": "الرجاء إدخال كلمة المرور",
       "payment_request": "التطبيق <br/><italic>{{hostname}}</italic> <br/><span>يطلب دفعة</span>",
       "people_reaction": "الأشخاص الذين تفاعلوا بـ {{ reaction }}",
+      "presence_status": "الحالة: {{status}}",
       "processing_transaction": "جاري معالجة المعاملة، الرجاء الانتظار...",
       "publish_data": "نشر البيانات على كورتال: من التطبيقات إلى الفيديوهات. لامركزية بالكامل!",
       "publishing": "جاري النشر... الرجاء الانتظار.",

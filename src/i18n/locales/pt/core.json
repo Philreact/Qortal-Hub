@@ -566,6 +566,7 @@
       "password_enter": "por favor, insira uma senha",
       "payment_request": "o Aplicativo <br/><italic>{{hostname}}</italic> <br/><span>está solicitando um pagamento</span>",
       "people_reaction": "pessoas que reagiram com {{ reaction }}",
+      "presence_status": "Estado: {{status}}",
       "processing_transaction": "processando transação, por favor aguarde...",
       "publish_data": "publique dados na QDN: qualquer coisa, de aplicativos a vídeos. Totalmente descentralizado!",
       "publishing": "publicando... Por favor, aguarde.",

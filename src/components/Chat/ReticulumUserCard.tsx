@@ -22,6 +22,7 @@ import { getBaseApiReact } from '../../App';
 import { getNameInfo } from '../Group/groupApi';
 import { executeEvent } from '../../utils/events';
 import { statusDotColor } from '../../hooks/usePresence';
+import { usePresenceStatusLabel } from '../common/accountStatus';
 import { MinterAvatarOrnament } from './MinterAvatarOrnament';
 import { AvatarPreviewModal } from './AvatarPreviewModal';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
@@ -59,13 +60,6 @@ type CardProfile = {
   name: string;
 };
 
-const getStatusLabel = (status: string | null) => {
-  if (!status || status === 'offline') return 'Offline';
-  if (status === 'idle') return 'Away';
-  if (status === 'busy') return 'Busy';
-  return 'Online';
-};
-
 const shortenAddress = (address: string) =>
   address.length <= 14
     ? address
@@ -94,6 +88,7 @@ export const ReticulumUserCard = ({
   silenceContext,
 }: ReticulumUserCardProps) => {
   const { t } = useTranslation(['core', 'reticulum']);
+  const getPresenceStatusLabel = usePresenceStatusLabel();
   const theme = useTheme();
   const open = Boolean(anchorEl || anchorPosition);
   const [profile, setProfile] = useState<CardProfile | null>(null);
@@ -207,7 +202,7 @@ export const ReticulumUserCard = ({
   );
   const isMinter = typeof resolvedMinterLevel === 'number';
   const isOwnCard = data.isOwn;
-  const statusLabel = getStatusLabel(data.status);
+  const statusLabel = getPresenceStatusLabel(data.status);
   const statusColor = statusDotColor(data.status);
   const cardAvatar = (
     <Avatar

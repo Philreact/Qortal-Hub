@@ -568,6 +568,7 @@
       "password_enter": "Пожалуйста, введите пароль",
       "payment_request": "приложение <br/><italic>{{hostname}}</italic> <br/><span>запрашивает платёж</span>",
       "people_reaction": "люди, отреагировавшие {{ reaction }}",
+      "presence_status": "Статус: {{status}}",
       "processing_transaction": "Обработка транзакции, подождите ...",
       "publish_data": "Опубликовать данные в Qortal: все, от приложений до видео. Полностью децентрализован!",
       "publishing": "Публикация ... пожалуйста, подождите.",

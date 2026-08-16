@@ -566,6 +566,7 @@
       "password_enter": "パスワードを入力してください",
       "payment_request": "アプリ <br/><italic>{{hostname}}</italic> <br/><span>が支払いを要求しています</span>",
       "people_reaction": "{{ reaction }} で反応した人",
+      "presence_status": "ステータス: {{status}}",
       "processing_transaction": "トランザクションを処理していますか、お待ちください...",
       "publish_data": "Qortalにデータを公開：アプリからビデオまで何でも。完全に分散化されました！",
       "publishing": "出版...待ってください。",

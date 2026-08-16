@@ -566,6 +566,7 @@
       "password_enter": "Ingrese una contraseña",
       "payment_request": "la aplicación <br/><italic>{{hostname}}</italic> <br/><span>solicita un pago</span>",
       "people_reaction": "personas que reaccionaron con {{ reaction }}",
+      "presence_status": "Estado: {{status}}",
       "processing_transaction": "está procesando transacciones, espere ...",
       "publish_data": "Publicar datos en Qortal: cualquier cosa, desde aplicaciones hasta videos. Totalmente descentralizado!",
       "publishing": "Publicación ... por favor espera.",
