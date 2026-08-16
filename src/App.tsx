@@ -728,6 +728,7 @@ function App() {
 
   useReticulumDmAccountRegistration({
     managed: isMainWindow,
+    authenticated: extState === 'authenticated',
     enabled: reticulumEnabled && reticulumChatEnabled,
     address,
   });
