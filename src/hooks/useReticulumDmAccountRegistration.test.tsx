@@ -6,24 +6,21 @@ import {
 } from './useReticulumDmAccountRegistration';
 
 describe('useReticulumDmAccountRegistration', () => {
-  it('only registers an address for an enabled authenticated account', () => {
+  it('only registers a loaded wallet address while Reticulum Chat is enabled', () => {
     expect(
       resolveReticulumDmAccountAddresses({
-        authenticated: true,
         enabled: true,
         address: ' Qowner ',
       })
     ).toEqual(['Qowner']);
     expect(
       resolveReticulumDmAccountAddresses({
-        authenticated: false,
         enabled: true,
-        address: 'Qowner',
+        address: '',
       })
     ).toEqual([]);
     expect(
       resolveReticulumDmAccountAddresses({
-        authenticated: true,
         enabled: false,
         address: 'Qowner',
       })
@@ -34,7 +31,6 @@ describe('useReticulumDmAccountRegistration', () => {
     const register = vi.fn(async () => ({ success: true }));
     const { unmount } = renderHook(() =>
       useReticulumDmAccountRegistration({
-        authenticated: true,
         enabled: true,
         address: 'Qowner',
         register,
@@ -51,7 +47,6 @@ describe('useReticulumDmAccountRegistration', () => {
     renderHook(() =>
       useReticulumDmAccountRegistration({
         managed: false,
-        authenticated: false,
         enabled: true,
         address: '',
         register,
@@ -78,7 +73,6 @@ describe('useReticulumDmAccountRegistration', () => {
     const { rerender } = renderHook(
       ({ address }) =>
         useReticulumDmAccountRegistration({
-          authenticated: true,
           enabled: true,
           address,
           register,
@@ -98,7 +92,6 @@ describe('useReticulumDmAccountRegistration', () => {
     const { rerender } = renderHook(
       ({ enabled }) =>
         useReticulumDmAccountRegistration({
-          authenticated: true,
           enabled,
           address: 'Qowner',
           register,
@@ -132,7 +125,6 @@ describe('useReticulumDmAccountRegistration', () => {
 
     renderHook(() =>
       useReticulumDmAccountRegistration({
-        authenticated: true,
         enabled: true,
         address: 'Qowner',
         register,

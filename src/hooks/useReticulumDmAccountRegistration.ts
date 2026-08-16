@@ -16,7 +16,6 @@ type ReticulumReadinessSubscriber = (
 
 type ReticulumDmAccountRegistrationOptions = {
   managed?: boolean;
-  authenticated: boolean;
   enabled: boolean;
   address: string;
   register?: ReticulumDmAddressRegistrar;
@@ -24,14 +23,11 @@ type ReticulumDmAccountRegistrationOptions = {
 };
 
 export const resolveReticulumDmAccountAddresses = ({
-  authenticated,
   enabled,
   address,
 }: Omit<ReticulumDmAccountRegistrationOptions, 'register'>): string[] => {
   const normalizedAddress = String(address || '').trim();
-  return authenticated && enabled && normalizedAddress
-    ? [normalizedAddress]
-    : [];
+  return enabled && normalizedAddress ? [normalizedAddress] : [];
 };
 
 /**
@@ -44,7 +40,6 @@ export const resolveReticulumDmAccountAddresses = ({
  */
 export const useReticulumDmAccountRegistration = ({
   managed = true,
-  authenticated,
   enabled,
   address,
   register = window.reticulumChat?.setLocalDmAddresses,
@@ -55,7 +50,6 @@ export const useReticulumDmAccountRegistration = ({
   const desiredAddressesRef = useRef<string[]>([]);
 
   desiredAddressesRef.current = resolveReticulumDmAccountAddresses({
-    authenticated,
     enabled,
     address,
   });
@@ -96,7 +90,7 @@ export const useReticulumDmAccountRegistration = ({
     // must never clear or replace the primary window's account registration.
     if (!managed) return;
     queueRegistration(desiredAddressesRef.current);
-  }, [address, authenticated, enabled, managed, queueRegistration]);
+  }, [address, enabled, managed, queueRegistration]);
 
   useEffect(() => {
     if (!managed || typeof onReadinessChanged !== 'function') return;
