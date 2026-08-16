@@ -215,6 +215,7 @@
     "account_overview": "账户概览",
     "account_settings_tooltip": "账户设置",
     "account_status_busy": "忙碌",
+    "account_status_idle": "闲置",
     "account_status_invisible": "隐身",
     "account_status_offline": "离线",
     "account_status_online": "在线",

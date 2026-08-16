@@ -492,6 +492,7 @@
     },
     "generic": {
       "account_menu": "Menu da conta",
+      "account_menu_status": "Menu da conta, estado: {{status}}",
       "address": "Endereço",
       "address_copied": "endereço copiado para a área de transferência.",
       "already_voted": "você já votou.",
@@ -586,6 +587,7 @@
       "sending": "enviando...",
       "settings": "você está usando a forma de exportar/importar para salvar configurações.",
       "space_for_admins": "desculpe, este espaço é apenas para administradores.",
+      "status": "Estado",
       "unread_messages": "mensagens não lidas abaixo",
       "unsaved_changes": "você tem alterações não salvas nos seus aplicativos fixados. Salve-os na QDN.",
       "updating": "atualizando",

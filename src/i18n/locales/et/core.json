@@ -492,6 +492,7 @@
     },
     "generic": {
       "account_menu": "Konto menüü",
+      "account_menu_status": "Konto menüü, olek: {{status}}",
       "address": "Aadress",
       "address_copied": "aadress kopeeriti lõikelauale.",
       "already_voted": "oled juba hääletanud.",
@@ -586,6 +587,7 @@
       "sending": "saatmine...",
       "settings": "kasutad seadete salvestamiseks eksport/impordi viisi.",
       "space_for_admins": "vabandust, see ala on ainult administraatoritele.",
+      "status": "Olek",
       "unread_messages": "lugemata sõnumid allpool",
       "unsaved_changes": "sul on salvestamata muudatusi kinnitatud rakendustes. Salvesta need QDN-i.",
       "updating": "uuendamine",

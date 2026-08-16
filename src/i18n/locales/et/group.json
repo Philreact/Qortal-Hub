@@ -215,6 +215,7 @@
     "account_overview": "Konto ülevaade",
     "account_settings_tooltip": "Konto seaded",
     "account_status_busy": "Hõivatud",
+    "account_status_idle": "Eemal",
     "account_status_invisible": "Nähtamatu",
     "account_status_offline": "Võrgust väljas",
     "account_status_online": "Võrgus",

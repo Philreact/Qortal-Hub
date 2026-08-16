@@ -492,6 +492,7 @@
     },
     "generic": {
       "account_menu": "Menu du compte",
+      "account_menu_status": "Menu du compte, statut : {{status}}",
       "address": "Adresse",
       "address_copied": "adresse copiée dans le presse-papiers.",
       "already_voted": "Vous avez déjà voté.",
@@ -586,6 +587,7 @@
       "sending": "envoi...",
       "settings": "vous utilisez la manière d'exportation / importation d'enregistrement des paramètres.",
       "space_for_admins": "désolé, cet espace est uniquement pour les administrateurs.",
+      "status": "Statut",
       "unread_messages": "messages non lus ci-dessous",
       "unsaved_changes": "vous avez des modifications non enregistrées à vos applications épinglées. Enregistrez-les sur QDN.",
       "updating": "mise à jour",

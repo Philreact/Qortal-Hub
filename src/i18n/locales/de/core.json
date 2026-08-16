@@ -492,6 +492,7 @@
     },
     "generic": {
       "account_menu": "Kontomenü",
+      "account_menu_status": "Kontomenü, Status: {{status}}",
       "address": "Adresse",
       "address_copied": "adresse in die zwischenablage kopiert.",
       "already_voted": "Sie haben bereits gestimmt.",
@@ -586,6 +587,7 @@
       "sending": "Senden ...",
       "settings": "Sie verwenden den Export-/Import -Weg zum Speichern von Einstellungen.",
       "space_for_admins": "Entschuldigung, dieser Raum gilt nur für Administratoren.",
+      "status": "Status",
       "unread_messages": "ungelesene Nachrichten unten",
       "unsaved_changes": "sie haben nicht gespeicherte Änderungen an Ihren angestellten Apps. Speichern Sie sie bei QDN.",
       "updating": "aktualisierung",

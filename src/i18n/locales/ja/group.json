@@ -215,6 +215,7 @@
     "account_overview": "アカウント概要",
     "account_settings_tooltip": "アカウント設定",
     "account_status_busy": "取り込み中",
+    "account_status_idle": "離席中",
     "account_status_invisible": "非表示",
     "account_status_offline": "オフライン",
     "account_status_online": "オンライン",

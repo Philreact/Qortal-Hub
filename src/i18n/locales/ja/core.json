@@ -492,6 +492,7 @@
     },
     "generic": {
       "account_menu": "アカウントメニュー",
+      "account_menu_status": "アカウントメニュー、ステータス: {{status}}",
       "address": "アドレス",
       "address_copied": "アドレスをクリップボードにコピーしました。",
       "already_voted": "あなたはすでに投票しました。",
@@ -586,6 +587,7 @@
       "sending": "送信...",
       "settings": "設定を保存するエクスポート/インポート方法を使用しています。",
       "space_for_admins": "申し訳ありませんが、このスペースは管理者専用です。",
+      "status": "ステータス",
       "unread_messages": "以下の未読メッセージ",
       "unsaved_changes": "ピン留めアプリに救われていない変更があります。それらをqdnに保存します。",
       "updating": "更新",

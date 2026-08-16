@@ -215,6 +215,7 @@
     "account_overview": "Обзор аккаунта",
     "account_settings_tooltip": "Настройки аккаунта",
     "account_status_busy": "Занят",
+    "account_status_idle": "Не активен",
     "account_status_invisible": "Невидимый",
     "account_status_offline": "Не в сети",
     "account_status_online": "В сети",

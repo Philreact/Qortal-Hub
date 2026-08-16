@@ -492,6 +492,7 @@
     },
     "generic": {
       "account_menu": "Tilivalikko",
+      "account_menu_status": "Tilivalikko, tila: {{status}}",
       "address": "Osoite",
       "address_copied": "osoite kopioitu leikepöydälle.",
       "already_voted": "olet jo äänestänyt.",
@@ -586,6 +587,7 @@
       "sending": "lähetetään...",
       "settings": "käytät vienti/tuontiasetuksia",
       "space_for_admins": "valitettavasti tämä tila on vain ylläpitäjille.",
+      "status": "Tila",
       "unread_messages": "lukemattomat viestit alla",
       "unsaved_changes": "sinulla on tallentamattomia muutoksia kiinnitettyihin sovelluksiin. Tallenna ne QDN:ään.",
       "updating": "päivitetään",

@@ -492,6 +492,7 @@
     },
     "generic": {
       "account_menu": "账户菜单",
+      "account_menu_status": "账户菜单，状态：{{status}}",
       "address": "地址",
       "address_copied": "地址已复制到剪贴板。",
       "already_voted": "您已经投票了。",
@@ -586,6 +587,7 @@
       "sending": "发送...",
       "settings": "您正在使用保存设置的导出/导入方式。",
       "space_for_admins": "抱歉，这个空间仅适用于管理员。",
+      "status": "状态",
       "unread_messages": "下面未读消息",
       "unsaved_changes": "您对固定应用程序有未保存的更改。将它们保存到QDN。",
       "updating": "更新",
