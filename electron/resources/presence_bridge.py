@@ -337,6 +337,11 @@ _RESOURCE_SESSION_ESTABLISH_TIMEOUT_SECONDS = 30.0
 # failure cannot be mistaken for that confirmation.
 _RESOURCE_SESSION_ESTABLISHED_TIMEOUT_RETRY_WINDOW_SECONDS = 90.0
 _RESOURCE_SESSION_REQUEST_TIMEOUT_SECONDS = 60.0
+# A dispatched DM page is a small live-chat response. Once a reusable Link is
+# ready, receiving no response progress for this long means the session itself
+# is stale. Retire only that session and let the existing DM pull retry on a
+# fresh Link; bulk history and attachment requests retain their longer timeout.
+_RESOURCE_SESSION_LIVE_DM_INITIAL_RESPONSE_TIMEOUT_SECONDS = 5.0
 # Authorization normally completes from the local cache, but an uncached group
 # membership decision can use Electron's full 10-second Core request budget.
 # Leave bounded scheduling margin so the bridge does not expire the waiter at
@@ -21599,6 +21604,90 @@ def _resource_session_job_class(job: Dict[str, Any]) -> str:
     )
 
 
+def _resource_session_is_live_dm_job(job: Dict[str, Any]) -> bool:
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
+    return (
+        str(metadata.get("logicalResourceType") or "").strip().lower()
+        == "reticulum_chat_dm_page"
+    )
+
+
+def _resource_session_cancel_live_dm_watchdog(job: Dict[str, Any]) -> None:
+    with _state_lock:
+        timer = job.pop("live_dm_response_timer", None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+
+
+def _resource_session_live_dm_watchdog_fired(
+    state: Dict[str, Any],
+    job: Dict[str, Any],
+) -> None:
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    transfer_id = str(pending.get("transferId") or job.get("transferId") or "")
+    with _state_lock:
+        job.pop("live_dm_response_timer", None)
+        active_requests = state.get("active_requests")
+        if (
+            job.get("completed") is True
+            or job.get("response_started") is True
+            or state.get("closing") is True
+            or not isinstance(active_requests, dict)
+            or active_requests.get(transfer_id) is not job
+        ):
+            return
+        receipt = job.get("receipt")
+    if receipt is not None:
+        _resource_session_cancel_request_receipt(receipt, transfer_id)
+    log(
+        "[presence_bridge] resource_session_live_dm_no_response "
+        f"peer={str(state.get('peerPresenceHash') or '')[:16]} "
+        f"transfer={transfer_id[:16]} timeout_ms="
+        f"{int(_RESOURCE_SESSION_LIVE_DM_INITIAL_RESPONSE_TIMEOUT_SECONDS * 1000)}"
+    )
+    # Establishment already proved the destination route. This watchdog only
+    # proves that this reusable session stopped carrying requests, so do not
+    # invalidate the shared Reticulum path or impose connection backoff.
+    _resource_session_fail_state(
+        state,
+        "resource_live_dm_no_response",
+        record_failure=False,
+    )
+
+
+def _resource_session_arm_live_dm_watchdog(
+    state: Dict[str, Any],
+    job: Dict[str, Any],
+) -> None:
+    if not _resource_session_is_live_dm_job(job):
+        return
+    timer = threading.Timer(
+        _RESOURCE_SESSION_LIVE_DM_INITIAL_RESPONSE_TIMEOUT_SECONDS,
+        _resource_session_live_dm_watchdog_fired,
+        args=(state, job),
+    )
+    timer.daemon = True
+    with _state_lock:
+        if (
+            job.get("completed") is True
+            or job.get("response_started") is True
+            or state.get("closing") is True
+        ):
+            return
+        previous_timer = job.get("live_dm_response_timer")
+        job["live_dm_response_timer"] = timer
+    if previous_timer is not None:
+        try:
+            previous_timer.cancel()
+        except Exception:
+            pass
+    timer.start()
+
+
 def _resource_session_job_fairness_group(job: Dict[str, Any]) -> str:
     pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
     metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
@@ -21973,6 +22062,7 @@ def _resource_session_finish_job(
     reason: str = "",
     error: str = "",
 ) -> None:
+    _resource_session_cancel_live_dm_watchdog(job)
     pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
     transfer_id = str(pending.get("transferId") or job.get("transferId") or "")
     semantic_key = str(job.get("semanticKey") or "")
@@ -22017,6 +22107,10 @@ def _resource_session_response_progress(job: Dict[str, Any], receipt) -> None:
         progress = float(receipt.get_progress())
     except Exception:
         progress = 0.0
+    if progress > 0:
+        with _state_lock:
+            job["response_started"] = True
+        _resource_session_cancel_live_dm_watchdog(job)
     if not _should_emit_qchat_file_progress(pending, progress):
         return
     _qchat_file_emit(
@@ -22041,6 +22135,9 @@ def _resource_session_response_received(job: Dict[str, Any], receipt) -> None:
         except Exception:
             pass
         return
+    with _state_lock:
+        job["response_started"] = True
+    _resource_session_cancel_live_dm_watchdog(job)
     pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
     response = receipt.get_response()
     metadata = receipt.metadata if isinstance(getattr(receipt, "metadata", None), dict) else {}
@@ -22187,6 +22284,7 @@ def _resource_session_dispatch_job(state: Dict[str, Any], job: Dict[str, Any]) -
     if cancelled_during_dispatch:
         _resource_session_cancel_request_receipt(receipt, transfer_id)
         return False
+    _resource_session_arm_live_dm_watchdog(state, job)
     _qchat_file_emit(
         "auth_sent",
         {
@@ -22813,6 +22911,8 @@ def _resource_session_get_or_create(
     peer_hash: str,
     peer_identity,
     lane: str,
+    *,
+    reserve_for_job: bool = False,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     peer_key = str(peer_hash or "").strip().lower()
     session_lane = "bulk" if lane == "bulk" else "fast"
@@ -22855,10 +22955,16 @@ def _resource_session_get_or_create(
         ):
             if not least_loaded.get("peerIdentity") and peer_identity:
                 least_loaded["peerIdentity"] = peer_identity
-            least_loaded["last_used_at"] = now
-            least_loaded["activity_generation"] = int(
-                least_loaded.get("activity_generation") or 0
-            ) + 1
+            if reserve_for_job:
+                # Reserve real queued work while the session registry is
+                # locked so its idle timer cannot retire the session between
+                # this lookup and enqueue. A prepare/warm lookup deliberately
+                # does not enter here: it sends no traffic and must not keep a
+                # requester-side session alive after the provider retires it.
+                least_loaded["last_used_at"] = now
+                least_loaded["activity_generation"] = int(
+                    least_loaded.get("activity_generation") or 0
+                ) + 1
             return least_loaded, ""
 
     if not available_slots:
@@ -22910,6 +23016,7 @@ def _resource_session_enqueue_job(job: Dict[str, Any]) -> Tuple[bool, str]:
         peer_hash,
         pending.get("peerIdentity"),
         lane,
+        reserve_for_job=True,
     )
     if not isinstance(state, dict):
         return False, reason or "resource_session_open_failed"

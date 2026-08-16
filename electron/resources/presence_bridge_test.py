@@ -3933,6 +3933,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         transfer_id,
         *,
         resource_type=None,
+        logical_resource_type="",
         event_id="",
         sha256="",
         timestamp=None,
@@ -3955,6 +3956,11 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             "resourceType": resource_type,
             "metadata": {
                 "groupId": 716,
+                **(
+                    {"logicalResourceType": logical_resource_type}
+                    if logical_resource_type
+                    else {}
+                ),
                 **({"eventId": event_id} if event_id else {}),
             },
             "peerIdentity": object(),
@@ -3989,6 +3995,151 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         self.bridge._qchat_file_link_ids_by_object[id(link)] = session_id
         self.bridge._resource_sessions_by_key[state["sessionKey"]] = session_id
         return state, link
+
+    def test_prepare_reuse_does_not_extend_an_idle_session(self):
+        state, _link = self.session(lane="fast")
+        idle_at = time.time() - 30
+        state["last_used_at"] = idle_at
+        state["activity_generation"] = 7
+
+        reused, reason = self.bridge._resource_session_get_or_create(
+            self.peer_hash,
+            object(),
+            "fast",
+        )
+
+        self.assertIs(reused, state)
+        self.assertEqual(reason, "")
+        self.assertEqual(state["last_used_at"], idle_at)
+        self.assertEqual(state["activity_generation"], 7)
+
+    def test_job_reservation_keeps_session_open_until_enqueue(self):
+        state, _link = self.session(lane="fast")
+        idle_at = time.time() - 30
+        state["last_used_at"] = idle_at
+        state["activity_generation"] = 7
+
+        reused, reason = self.bridge._resource_session_get_or_create(
+            self.peer_hash,
+            object(),
+            "fast",
+            reserve_for_job=True,
+        )
+
+        self.assertIs(reused, state)
+        self.assertEqual(reason, "")
+        self.assertGreater(state["last_used_at"], idle_at)
+        self.assertEqual(state["activity_generation"], 8)
+
+    def test_live_dm_without_response_retires_only_the_stale_session(self):
+        state, link = self.session(lane="fast")
+        pending = self.pending(
+            "stalled-live-dm",
+            logical_resource_type="reticulum_chat_dm_page",
+        )
+        job = {
+            "transferId": pending["transferId"],
+            "pending": pending,
+            "created_at": time.time(),
+            "followers": [],
+        }
+        self.bridge._qchat_file_store_pending_receive(self.peer_hash, pending)
+        state["pending_jobs"].append(job)
+        timers = []
+
+        class CapturedTimer:
+            def __init__(self, delay, callback, args=(), kwargs=None):
+                self.delay = delay
+                self.callback = callback
+                self.args = args
+                self.kwargs = kwargs or {}
+                self.cancelled = False
+
+            def start(self):
+                timers.append(self)
+
+            def cancel(self):
+                self.cancelled = True
+
+        with mock.patch.object(
+            self.bridge.threading,
+            "Timer",
+            CapturedTimer,
+        ), mock.patch.object(
+            self.bridge,
+            "_resource_session_note_failed_link_path",
+        ) as note_failed_path, mock.patch.object(
+            self.bridge,
+            "_teardown_reticulum_link_bounded",
+        ), mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
+            self.bridge._resource_session_dispatch_pending(state)
+
+            self.assertEqual(len(link.requests), 1)
+            self.assertEqual(len(timers), 1)
+            receipt = link.requests[0][3]
+            self.assertFalse(receipt.cancelled)
+
+            timers[0].callback(*timers[0].args, **timers[0].kwargs)
+
+        self.assertEqual(receipt.status, receipt.FAILED)
+        self.assertIsNotNone(receipt.concluded_at)
+        self.assertTrue(job["completed"])
+        self.assertTrue(state["closing"])
+        self.assertNotIn(state["sessionKey"], self.bridge._resource_sessions_by_key)
+        self.assertNotIn(state["linkId"], self.bridge._qchat_file_links_by_id)
+        self.assertNotIn(state["sessionKey"], self.bridge._resource_session_failures_by_key)
+        note_failed_path.assert_not_called()
+        failures = [
+            call
+            for call in emit.call_args_list
+            if call.args and call.args[0] == "failed"
+        ]
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(
+            failures[0].args[1]["reason"],
+            "resource_live_dm_no_response",
+        )
+
+    def test_live_dm_response_progress_cancels_the_stale_session_watchdog(self):
+        state, link = self.session(lane="fast")
+        pending = self.pending(
+            "progressing-live-dm",
+            logical_resource_type="reticulum_chat_dm_page",
+        )
+        job = {
+            "transferId": pending["transferId"],
+            "pending": pending,
+            "created_at": time.time(),
+            "followers": [],
+        }
+        self.bridge._qchat_file_store_pending_receive(self.peer_hash, pending)
+        state["pending_jobs"].append(job)
+        timers = []
+
+        class CapturedTimer:
+            def __init__(self, delay, callback, args=(), kwargs=None):
+                self.delay = delay
+                self.callback = callback
+                self.args = args
+                self.kwargs = kwargs or {}
+                self.cancelled = False
+
+            def start(self):
+                timers.append(self)
+
+            def cancel(self):
+                self.cancelled = True
+
+        with mock.patch.object(self.bridge.threading, "Timer", CapturedTimer):
+            self.bridge._resource_session_dispatch_pending(state)
+            receipt = link.requests[0][3]
+            receipt.progress = 0.25
+            link.requests[0][2]["progress_callback"](receipt)
+
+        self.assertTrue(job["response_started"])
+        self.assertTrue(timers[0].cancelled)
+        self.assertNotIn("live_dm_response_timer", job)
+        self.assertFalse(state.get("closing", False))
 
     def test_parallel_peer_lookup_requires_an_exact_transfer_id(self):
         first = self.pending("first-range", resource_type="reticulum_group_resource_range")
