@@ -45,6 +45,7 @@ import {
 } from '../../utils/events';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { getBaseApiReactForAvatar } from '../../utils/globalApi';
+import { formatQortAmount } from '../../utils/numberFunctions';
 import {
   APP_NAV_BAR_HEIGHT,
   type CustomTitleBarRightNavProps,
@@ -132,19 +133,9 @@ function shortenAddress(address?: string) {
   return `${address.slice(0, 8)}...${address.slice(-6)}`;
 }
 
-function formatQortBalance(balance: unknown) {
-  const numericBalance =
-    typeof balance === 'number'
-      ? balance
-      : typeof balance === 'string'
-        ? Number(balance)
-        : NaN;
-
-  if (!Number.isFinite(numericBalance)) return '--';
-  return numericBalance.toLocaleString(undefined, {
-    maximumFractionDigits: 2,
-    minimumFractionDigits: 2,
-  });
+function formatQortBalance(balance: unknown, locale: string) {
+  if (typeof balance !== 'number' && typeof balance !== 'string') return '--';
+  return formatQortAmount(balance, locale) ?? '--';
 }
 
 function isSamePinnedApp(item: any, candidate: any) {
@@ -227,12 +218,12 @@ function AuthenticatedUserMenu({
   onCopyFailed: () => void;
 }) {
   const theme = useTheme();
-  const { t } = useTranslation(['core']);
+  const { i18n, t } = useTranslation(['core']);
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [avatarError, setAvatarError] = useState(false);
   const address = userInfo?.address || '';
   const primaryName = (userInfo?.name || userInfo?.primaryName || '').trim();
-  const formattedBalance = formatQortBalance(balance);
+  const formattedBalance = formatQortBalance(balance, i18n.language);
   const avatarUrl =
     primaryName && !avatarError
       ? `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${encodeURIComponent(

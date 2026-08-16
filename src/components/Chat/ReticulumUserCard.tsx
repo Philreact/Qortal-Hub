@@ -21,6 +21,7 @@ import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import { getBaseApiReact } from '../../App';
 import { getNameInfo } from '../Group/groupApi';
 import { executeEvent } from '../../utils/events';
+import { formatQortAmount } from '../../utils/numberFunctions';
 import { statusDotColor } from '../../hooks/usePresence';
 import { MinterAvatarOrnament } from './MinterAvatarOrnament';
 import { AvatarPreviewModal } from './AvatarPreviewModal';
@@ -71,19 +72,6 @@ const shortenAddress = (address: string) =>
     ? address
     : `${address.slice(0, 6)}...${address.slice(-6)}`;
 
-const formatWholeQort = (balance: string | number | null) => {
-  if (balance === null || balance === undefined || balance === '') return null;
-  const normalized = String(balance).replaceAll(',', '').trim();
-  const whole = normalized.match(/^(-?\d+)/)?.[1];
-  if (!whole) return null;
-
-  try {
-    return BigInt(whole).toLocaleString('en-US');
-  } catch {
-    return null;
-  }
-};
-
 export const ReticulumUserCard = ({
   anchorEl,
   anchorPlacement = 'below',
@@ -93,7 +81,7 @@ export const ReticulumUserCard = ({
   onClose,
   silenceContext,
 }: ReticulumUserCardProps) => {
-  const { t } = useTranslation(['core', 'reticulum']);
+  const { i18n, t } = useTranslation(['core', 'reticulum']);
   const theme = useTheme();
   const open = Boolean(anchorEl || anchorPosition);
   const [profile, setProfile] = useState<CardProfile | null>(null);
@@ -201,9 +189,9 @@ export const ReticulumUserCard = ({
   const avatarUrl = avatarName
     ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(avatarName)}/qortal_avatar?async=true`
     : data.avatarUrl;
-  const wholeBalance = useMemo(
-    () => formatWholeQort(profile?.balance ?? null),
-    [profile?.balance]
+  const formattedBalance = useMemo(
+    () => formatQortAmount(profile?.balance ?? null, i18n.language),
+    [i18n.language, profile?.balance]
   );
   const isMinter = typeof resolvedMinterLevel === 'number';
   const isOwnCard = data.isOwn;
@@ -520,10 +508,10 @@ export const ReticulumUserCard = ({
                   ? t('core:loading_ellipsis', {
                       postProcess: 'capitalizeFirstChar',
                     })
-                  : wholeBalance === null
+                  : formattedBalance === null
                     ? t('core:not_available', { postProcess: 'capitalizeAll' })
                     : t('reticulum:user_card.qort_balance_value', {
-                        amount: wholeBalance,
+                        amount: formattedBalance,
                       })
               }
             />
