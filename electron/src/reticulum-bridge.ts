@@ -1757,8 +1757,11 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     const peerPresenceHash = payload.peerPresenceHash.trim().toLowerCase();
     const logicalResourceType = payload.logicalResourceType ?? '';
     const lane =
-      logicalResourceType === 'reticulum_chat_dm_page' ||
+      ['reticulum_chat_dm_page', 'reticulum_chat_live_event'].includes(
+        logicalResourceType
+      ) ||
       (![
+        'reticulum_chat_author_range',
         'reticulum_chat_history_page',
         'reticulum_chat_metadata_snapshot',
         'reticulum_chat_event_page',

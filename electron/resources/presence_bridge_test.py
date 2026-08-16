@@ -4446,6 +4446,38 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             "fast",
         )
 
+    def test_author_range_uses_bulk_lane_without_displacing_live_messages(self):
+        self.assertEqual(
+            self.bridge._resource_session_lane(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_author_range",
+            ),
+            "bulk",
+        )
+        self.assertEqual(
+            self.bridge._resource_session_lane(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_live_event",
+            ),
+            "fast",
+        )
+
+    def test_author_range_uses_history_provider_capacity(self):
+        self.assertEqual(
+            self.bridge._resource_session_provider_class(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_author_range",
+            ),
+            "history",
+        )
+        self.assertEqual(
+            self.bridge._resource_session_provider_class(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_live_event",
+            ),
+            "live",
+        )
+
     def test_prepare_command_reports_fast_lane_for_dm_history(self):
         payload = {
             "peerPresenceHash": self.peer_hash,

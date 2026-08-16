@@ -1894,6 +1894,66 @@ describe('ReticulumBridge chat forwarding support', () => {
     expect(internal.resourceSessionPreparations.size).toBe(0);
   });
 
+  it('keeps author-range repair on bulk while live group events stay fast', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.start = vi.fn(async () => {});
+    const commandResolvers: Array<(value: Record<string, unknown>) => void> =
+      [];
+    internal.sendCommand = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          commandResolvers.push(resolve);
+        })
+    );
+    const peer = 'e'.repeat(32);
+
+    const repairPreparation = bridge.ensureReticulumResourceSessionDetailed({
+      peerPresenceHash: peer,
+      reticulumIdentityPublicKeyBase64: 'identity',
+      resourceType: 'reticulum_chat_event',
+      logicalResourceType: 'reticulum_chat_author_range',
+    });
+    await vi.waitFor(() =>
+      expect(internal.sendCommand).toHaveBeenCalledTimes(1)
+    );
+    expect(internal.resourceSessionPreparations.has(`${peer}:bulk`)).toBe(true);
+    commandResolvers[0]?.({
+      type: 'resp',
+      id: 'prepare-author-range',
+      ok: true,
+      payload: {
+        status: 'ready',
+        linkId: 'author-range-link',
+        lane: 'bulk',
+      },
+    });
+    await expect(repairPreparation).resolves.toEqual({ ok: true });
+
+    const livePreparation = bridge.ensureReticulumResourceSessionDetailed({
+      peerPresenceHash: peer,
+      reticulumIdentityPublicKeyBase64: 'identity',
+      resourceType: 'reticulum_chat_event',
+      logicalResourceType: 'reticulum_chat_live_event',
+    });
+    await vi.waitFor(() =>
+      expect(internal.sendCommand).toHaveBeenCalledTimes(2)
+    );
+    expect(internal.resourceSessionPreparations.has(`${peer}:fast`)).toBe(true);
+    commandResolvers[1]?.({
+      type: 'resp',
+      id: 'prepare-live-event',
+      ok: true,
+      payload: {
+        status: 'ready',
+        linkId: 'live-event-link',
+        lane: 'fast',
+      },
+    });
+    await expect(livePreparation).resolves.toEqual({ ok: true });
+  });
+
   it('uses the bridge-reported lane when resolving session preparation', async () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;
