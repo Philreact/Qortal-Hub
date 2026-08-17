@@ -404,6 +404,14 @@ const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
     'timestamp',
   ]),
   RCHAT_EVENT_REQ: schema(['type', 'eventId', 'groupId', 'timestamp']),
+  RCHAT_RANGE_REQ: schema([
+    'type',
+    'groupId',
+    'ranges',
+    'limit',
+    'sourcePeerHash',
+    'timestamp',
+  ]),
   RCHAT_LINKED_EVENT_REQUEST: schema([
     'type',
     'transferId',
@@ -809,6 +817,51 @@ function assertSafeGroupRtcSignal(payload: Record<string, unknown>): void {
   }
 }
 
+function assertSafeRchatRangeRequest(payload: Record<string, unknown>): void {
+  const ranges = payload.ranges;
+  if (
+    !Number.isSafeInteger(payload.groupId) ||
+    Number(payload.groupId) <= 0 ||
+    !Number.isSafeInteger(payload.limit) ||
+    Number(payload.limit) < 1 ||
+    Number(payload.limit) > 100 ||
+    typeof payload.sourcePeerHash !== 'string' ||
+    !/^[0-9a-f]{32}$/iu.test(payload.sourcePeerHash) ||
+    !Number.isSafeInteger(payload.timestamp) ||
+    Number(payload.timestamp) <= 0 ||
+    !Array.isArray(ranges) ||
+    ranges.length < 1 ||
+    ranges.length > 100
+  ) {
+    throw new Error('Reticulum author range request is invalid');
+  }
+  for (const range of ranges) {
+    if (!isRecord(range)) {
+      throw new Error('Reticulum author range request is invalid');
+    }
+    const keys = Object.keys(range).sort();
+    if (
+      keys.length !== 4 ||
+      keys[0] !== 'a' ||
+      keys[1] !== 'from' ||
+      keys[2] !== 's' ||
+      keys[3] !== 'to' ||
+      typeof range.a !== 'string' ||
+      range.a.length < 20 ||
+      range.a.length > 64 ||
+      !/^[1-9A-HJ-NP-Za-km-z]+$/u.test(range.a) ||
+      typeof range.s !== 'string' ||
+      !/^[0-9a-f]{32}$/iu.test(range.s) ||
+      !Number.isSafeInteger(range.from) ||
+      Number(range.from) <= 0 ||
+      !Number.isSafeInteger(range.to) ||
+      Number(range.to) < Number(range.from)
+    ) {
+      throw new Error('Reticulum author range request is invalid');
+    }
+  }
+}
+
 function assertPayload(
   payload: unknown,
   schemas: Readonly<Record<string, SigningSchema>>,
@@ -899,4 +952,7 @@ export function assertAllowedReticulumSigningPayload(
     [groupEventSchema, directEventSchema, directEventStreamSchema],
     RCHAT_SIGNING_MAX_BYTES
   );
+  if (payload.type === 'RCHAT_RANGE_REQ') {
+    assertSafeRchatRangeRequest(payload);
+  }
 }

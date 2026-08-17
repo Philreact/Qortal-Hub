@@ -18609,6 +18609,183 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('keeps a legacy author repair on its current peer when local signing is unavailable', async () => {
+    const providerHash = 'a'.repeat(32);
+    const replacementHash = 'c'.repeat(32);
+    const localHash = 'b'.repeat(32);
+    const now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => localHash,
+      } as any,
+      now: () => now,
+      signLocalFields: async () => null,
+      getVerifiedReticulumPeers: () => [
+        { destinationHash: providerHash, address: 'Qprovider', lastSeen: 2 },
+        {
+          destinationHash: replacementHash,
+          address: 'Qreplacement',
+          lastSeen: 1,
+        },
+      ],
+    });
+    manager.setLocalGroupMemberships([72]);
+    manager.subscribeGroup(72);
+    const event = signedEvent({
+      eventId: 'legacy-author-gap-local-signing-backoff',
+      groupId: 72,
+      authorSeq: 3,
+      timestamp: now,
+    });
+    const range = {
+      a: event.authorAddress,
+      s: event.authorStreamId,
+      from: 1,
+      to: 2,
+    };
+    (manager as any).db.upsertMissingRange(
+      72,
+      range.a,
+      range.s,
+      range.from,
+      range.to,
+      providerHash,
+      now
+    );
+
+    expect(
+      (manager as any).sendAuthorRangeRepairRequests(
+        72,
+        providerHash,
+        [range],
+        'test-legacy-local-signing-backoff'
+      )
+    ).toBe(1);
+    await flushQueuedWork();
+
+    expect(
+      (manager as any).db.getMissingRange(
+        72,
+        range.a,
+        range.s,
+        range.from,
+        range.to
+      )
+    ).toMatchObject({
+      preferredPeer: providerHash,
+      nextAttemptAt: now + 30_000,
+    });
+    expect((manager as any).authorGapRouteBackoffs.size).toBe(0);
+    for (const reason of ['bridge-timeout', 'bridge-exception']) {
+      expect(
+        (manager as any).isLocalAuthorGapSendFailure({
+          ok: false,
+          reason,
+          error: 'temporary local bridge failure',
+        })
+      ).toBe(true);
+    }
+    manager.close();
+  });
+
+  it('coalesces simultaneous author repair route failures before rotating peers', async () => {
+    const providerHash = 'a'.repeat(32);
+    const localHash = 'b'.repeat(32);
+    const replacementHash = 'c'.repeat(32);
+    const now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => localHash,
+      } as any,
+      now: () => now,
+      signLocalFields: createReticulumChatTestSigner(),
+      getVerifiedReticulumPeers: () => [
+        { destinationHash: providerHash, address: 'Qprovider', lastSeen: 2 },
+        {
+          destinationHash: replacementHash,
+          address: 'Qreplacement',
+          lastSeen: 1,
+        },
+      ],
+    });
+    manager.setLocalGroupMemberships([72]);
+    manager.subscribeGroup(72);
+    vi.spyOn(
+      manager as any,
+      'sendGroupTargetedRoutedControl'
+    ).mockResolvedValue({ ok: false, reason: 'packet-send-false' });
+    const first = signedEvent({
+      eventId: 'legacy-author-gap-route-first',
+      groupId: 72,
+      authorSeq: 3,
+      timestamp: now,
+    });
+    const second = signedEvent({
+      eventId: 'legacy-author-gap-route-second',
+      groupId: 72,
+      authorStreamId: 'd'.repeat(32),
+      authorSeq: 4,
+      timestamp: now,
+    });
+    const ranges = [
+      { a: first.authorAddress, s: first.authorStreamId, from: 1, to: 1 },
+      { a: second.authorAddress, s: second.authorStreamId, from: 2, to: 2 },
+    ];
+    for (const range of ranges) {
+      (manager as any).db.upsertMissingRange(
+        72,
+        range.a,
+        range.s,
+        range.from,
+        range.to,
+        providerHash,
+        now
+      );
+    }
+
+    expect(
+      (manager as any).sendAuthorRangeRepairRequests(
+        72,
+        providerHash,
+        ranges,
+        'test-route-failure-coalescing'
+      )
+    ).toBe(2);
+    await flushQueuedWork();
+
+    const stored = ranges.map((range) =>
+      (manager as any).db.getMissingRange(
+        72,
+        range.a,
+        range.s,
+        range.from,
+        range.to
+      )
+    );
+    expect(
+      stored.filter((range) => range?.preferredPeer === replacementHash)
+    ).toHaveLength(1);
+    expect(
+      stored.filter((range) => range?.preferredPeer === providerHash)
+    ).toHaveLength(1);
+    expect(
+      stored.find((range) => range?.preferredPeer === replacementHash)
+        ?.nextAttemptAt
+    ).toBe(now + 3_000);
+    expect(
+      stored.find((range) => range?.preferredPeer === providerHash)
+        ?.nextAttemptAt
+    ).toBeGreaterThanOrEqual(now + 30_000);
+    expect((manager as any).authorGapRouteBackoffs.size).toBe(1);
+    manager.close();
+  });
+
   it('serves an authenticated author range on the requesting dedicated link', async () => {
     const providerHash = 'a'.repeat(32);
     const requesterHash = 'b'.repeat(32);

@@ -594,6 +594,21 @@ describe('Reticulum wallet signing policy', () => {
         timestamp: 1,
       },
       {
+        type: 'RCHAT_RANGE_REQ',
+        groupId: 1,
+        ranges: [
+          {
+            a: 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91',
+            s: '0123456789abcdef0123456789abcdef',
+            from: 2,
+            to: 4,
+          },
+        ],
+        limit: 100,
+        sourcePeerHash: '0123456789abcdef0123456789abcdef',
+        timestamp: 1,
+      },
+      {
         type: 'RCHAT_DIRECT_CALL_HISTORY_V1',
         ownerAddress: 'Qowner',
         callId: 'call_history_1',
@@ -680,6 +695,23 @@ describe('Reticulum wallet signing policy', () => {
     expect(() =>
       assertAllowedReticulumSigningPayload({ arbitrary: true })
     ).toThrow();
+    expect(() =>
+      assertAllowedReticulumSigningPayload({
+        type: 'RCHAT_RANGE_REQ',
+        groupId: 1,
+        ranges: [
+          {
+            a: 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91',
+            s: 'not-an-author-stream',
+            from: 2,
+            to: 4,
+          },
+        ],
+        limit: 100,
+        sourcePeerHash: '0123456789abcdef0123456789abcdef',
+        timestamp: 1,
+      })
+    ).toThrow('author range request is invalid');
     expect(() =>
       assertAllowedPresenceSigningPayload({
         authorAddress: 'a',

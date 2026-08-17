@@ -22206,6 +22206,26 @@ export class ReticulumChatManager extends EventEmitter {
     );
   }
 
+  private isLocalAuthorGapSendFailure(
+    result: Exclude<ReticulumSendResult, { ok: true }>
+  ): boolean {
+    if (
+      result.reason === 'bridge-unavailable' ||
+      result.reason === 'bridge-not-ready' ||
+      result.reason === 'bridge-timeout' ||
+      result.reason === 'bridge-overloaded' ||
+      result.reason === 'bridge-not-started' ||
+      result.reason === 'bridge-exception' ||
+      result.reason === 'wire-too-large'
+    ) {
+      return true;
+    }
+    return (
+      result.reason === 'send-command-failed' &&
+      result.error?.startsWith('Unable to sign ') === true
+    );
+  }
+
   private isAuthorGapRouteBackedOff(
     groupId: number,
     peerHash: string,
@@ -23285,18 +23305,50 @@ export class ReticulumChatManager extends EventEmitter {
             this.clearAuthorGapRouteFailure(groupId, peer);
             return;
           }
-          const retryAt = this.noteAuthorGapRouteFailure(groupId, peer);
           const detail = result.error
             ? `${result.reason}:${result.error}`
             : result.reason;
+          if (this.isLocalAuthorGapSendFailure(result)) {
+            const retryAt = Math.max(claimed.nextAttemptAt, this.now() + 1);
+            this.db.rescheduleMissingRange(
+              groupId,
+              normalizedRange.a,
+              normalizedRange.s,
+              normalizedRange.from,
+              normalizedRange.to,
+              peer,
+              retryAt,
+              peer
+            );
+            loggerWarn(
+              `[ReticulumChat] Author gap repair paused group=${groupId} reason=${detail}; retrying after local backoff`
+            );
+            this.scheduleBackgroundAuthorGapRepair(
+              Math.max(1, retryAt - this.now())
+            );
+            return;
+          }
+          const routeWasAlreadyBackedOff = this.isAuthorGapRouteBackedOff(
+            groupId,
+            peer
+          );
+          const retryAt = this.noteAuthorGapRouteFailure(groupId, peer);
           loggerWarn(
             `[ReticulumChat] Targeted author gap repair failed group=${groupId} peer=${peer.slice(0, 16)} reason=${detail}; retrying after route backoff`
           );
-          const replacement = this.selectAuthorGapRepairPeer(
-            groupId,
-            normalizedRange,
-            peer
-          );
+          // Several ranges can fail together on one shared route. Only the
+          // first failure chooses a replacement; the rest observe the same
+          // route backoff instead of fanning out across every known peer.
+          const replacement = routeWasAlreadyBackedOff
+            ? ''
+            : this.selectAuthorGapRepairPeer(
+                groupId,
+                normalizedRange,
+                peer
+              );
+          const nextAttemptAt = replacement
+            ? retryAt
+            : Math.max(claimed.nextAttemptAt, retryAt);
           this.db.rescheduleMissingRange(
             groupId,
             normalizedRange.a,
@@ -23304,21 +23356,19 @@ export class ReticulumChatManager extends EventEmitter {
             normalizedRange.from,
             normalizedRange.to,
             replacement || peer,
-            replacement ? this.now() : Math.max(claimed.nextAttemptAt, retryAt),
+            nextAttemptAt,
             peer
           );
           this.scheduleBackgroundAuthorGapRepair(
-            replacement
-              ? 1
-              : Math.max(
-                  1,
-                  Math.max(claimed.nextAttemptAt, retryAt) - this.now()
-                )
+            Math.max(1, nextAttemptAt - this.now())
           );
         })
         .catch((error) => {
           if (this.isClosed) return;
-          const retryAt = this.noteAuthorGapRouteFailure(groupId, peer);
+          // An exception is a local execution failure, not proof that the
+          // selected peer or route is bad. Preserve that route and use the
+          // persisted range backoff.
+          const retryAt = Math.max(claimed.nextAttemptAt, this.now() + 1);
           this.db.rescheduleMissingRange(
             groupId,
             normalizedRange.a,
@@ -23330,7 +23380,7 @@ export class ReticulumChatManager extends EventEmitter {
             peer
           );
           loggerWarn(
-            `[ReticulumChat] Targeted author gap repair failed group=${groupId} peer=${peer.slice(0, 16)} reason=${error instanceof Error ? error.message : String(error)}; retrying after route backoff`
+            `[ReticulumChat] Author gap repair paused group=${groupId} reason=${error instanceof Error ? error.message : String(error)}; retrying after local backoff`
           );
           this.scheduleBackgroundAuthorGapRepair(
             Math.max(1, Math.max(claimed.nextAttemptAt, retryAt) - this.now())
@@ -23517,7 +23567,11 @@ export class ReticulumChatManager extends EventEmitter {
       })
     ).catch(() => null);
     if (!signed || this.isClosed) {
-      return { ok: false, reason: 'send-command-failed' };
+      return {
+        ok: false,
+        reason: 'send-command-failed',
+        error: 'Unable to sign legacy author range request',
+      };
     }
     const requestId = nodeCrypto
       .createHash('sha256')
