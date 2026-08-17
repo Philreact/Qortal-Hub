@@ -9135,6 +9135,16 @@ export class ReticulumChatManager extends EventEmitter {
       nextAddresses.size === this.localDmAddresses.size &&
       [...nextAddresses].every((address) => this.localDmAddresses.has(address));
     if (unchanged) return;
+    const replacesAuthenticatedAccount =
+      this.localDmAddresses.size > 0 && nextAddresses.size > 0;
+    if (replacesAuthenticatedAccount) {
+      // A non-empty -> non-empty replacement is an account boundary just as
+      // much as an explicit logout. Keep durable, account-keyed DB contents,
+      // but do not let pulls, routes, timers, memberships, or transfers from
+      // the previous account continue under the new signer.
+      this.localAccountGeneration += 1;
+      this.clearLocalAccountRuntimeState();
+    }
     this.localDmAddresses = nextAddresses;
     this.lastDmSummaryBroadcastAt = null;
     void this.reconcileSelfDmWarmLinks();
@@ -9161,6 +9171,11 @@ export class ReticulumChatManager extends EventEmitter {
   async clearLocalAccountState(): Promise<void> {
     this.localAccountGeneration += 1;
 
+    this.clearLocalAccountRuntimeState();
+    await this.reconcileSelfDmWarmLinks();
+  }
+
+  private clearLocalAccountRuntimeState(): void {
     if (this.readSyncRetryTimer) clearTimeout(this.readSyncRetryTimer);
     this.readSyncRetryTimer = null;
     this.readSyncRetryDelayMs = RETICULUM_CHAT_READ_SYNC_RETRY_INITIAL_MS;
@@ -9187,6 +9202,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.dmProbeRoutes.clear();
     this.dmNotifyRoutes.clear();
     this.dmConversationRouteIds.clear();
+    this.directDmPageNoProgressSuppressions.clear();
     this.directDmPageRequests.clear();
     this.cancelAllDirectHistoryPageRequests('account_cleared');
     this.directHistoryPageRequestBackoffs.clear();
@@ -9214,7 +9230,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.resourceTransfer = this.createResourceTransfer();
     this.directResourceTransfer = this.createDirectResourceTransfer();
 
-    this.setLocalDmAddresses([]);
+    this.localDmAddresses = new Set();
+    this.lastDmSummaryBroadcastAt = null;
     this.setLocalGroupMemberships([]);
     // The generic membership setter normally hydrates deferred read state.
     // During logout there is intentionally no active owner to hydrate, and an
@@ -9223,7 +9240,6 @@ export class ReticulumChatManager extends EventEmitter {
     this.readSyncRetryTimer = null;
     this.pendingReadSync.clear();
     this.readSyncReplayPending = false;
-    await this.reconcileSelfDmWarmLinks();
   }
 
   getSilence(
@@ -14741,11 +14757,12 @@ export class ReticulumChatManager extends EventEmitter {
       }
     } finally {
       this.readSyncFlushActive = false;
-      if (
-        !this.isClosed &&
-        accountGeneration === this.localAccountGeneration &&
-        this.pendingReadSync.size > 0
-      ) {
+      if (!this.isClosed && accountGeneration !== this.localAccountGeneration) {
+        // A replacement account may have hydrated its own durable read state
+        // while the previous account's signer was still unwinding. Hand off
+        // immediately instead of leaving the new work to the retry timer.
+        this.hydrateAllPendingReadSync();
+      } else if (!this.isClosed && this.pendingReadSync.size > 0) {
         const pending = this.pendingReadSync.values().next().value as
           | ReticulumChatPendingReadSync
           | undefined;
@@ -26208,6 +26225,7 @@ export class ReticulumChatManager extends EventEmitter {
     const triggerReason = reason || 'unknown';
     void this.reconcileSelfDmWarmLinks();
     if (this.dmDiscoveryInFlight) {
+      this.pendingInitialDmDiscovery = this.localDmAddresses.size > 0;
       if (RETICULUM_CHAT_TRACE) {
         loggerLog(
           `[ReticulumChat] dm_discovery_skipped reason=${triggerReason} status=in_flight`
@@ -26224,10 +26242,15 @@ export class ReticulumChatManager extends EventEmitter {
       }
       return;
     }
+    this.pendingInitialDmDiscovery = false;
     this.dmDiscoveryInFlight = true;
+    const accountGeneration = this.localAccountGeneration;
     const startedAt = this.now();
     try {
       await this.broadcastDmProbes(triggerReason === 'timer');
+      if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+        return;
+      }
       const now = this.now();
       if (
         this.lastDmSummaryBroadcastAt === null ||
@@ -26235,9 +26258,18 @@ export class ReticulumChatManager extends EventEmitter {
           RETICULUM_CHAT_DM_SUMMARY_REFRESH_MS
       ) {
         await this.broadcastDmNotificationsForLocalAddresses();
+        if (
+          this.isClosed ||
+          accountGeneration !== this.localAccountGeneration
+        ) {
+          return;
+        }
         this.lastDmSummaryBroadcastAt = this.now();
       }
       await this.broadcastSelfDmNotifications();
+      if (this.isClosed || accountGeneration !== this.localAccountGeneration) {
+        return;
+      }
       this.hydrateAllPendingReadSync();
       void this.replayReadStatesToOwnDevices();
       if (RETICULUM_CHAT_TRACE) {
@@ -26251,6 +26283,15 @@ export class ReticulumChatManager extends EventEmitter {
       );
     } finally {
       this.dmDiscoveryInFlight = false;
+      if (
+        !this.isClosed &&
+        this.pendingInitialDmDiscovery &&
+        this.isOverlayHealthyForDmDiscovery()
+      ) {
+        queueMicrotask(() =>
+          this.flushPendingDmDiscoveryIfHealthy('pending-account-state')
+        );
+      }
     }
   }
 
@@ -37829,9 +37870,17 @@ export class ReticulumChatManager extends EventEmitter {
       await reject('unverified_self_dm_device');
       return;
     }
+    const providerOwnsPeer = ownAddressMatches(
+      this.localDmAddresses,
+      peerAddress
+    );
+    const verifiedRequesterDevice =
+      ownAddressMatches(this.localDmAddresses, requesterAddress) &&
+      this.isVerifiedSelfDmPeer(requesterAddress, authenticatedPeerHash);
     if (
       requesterAddress !== peerAddress &&
-      !ownAddressMatches(this.localDmAddresses, peerAddress)
+      !providerOwnsPeer &&
+      !verifiedRequesterDevice
     ) {
       await reject('dm_provider_account_mismatch');
       return;

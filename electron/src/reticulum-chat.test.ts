@@ -1907,6 +1907,170 @@ describe('reticulum chat protocol', () => {
     }
   });
 
+  it('hands pending read sync to the replacement account after an old signer unwinds', async () => {
+    const first = createDmIdentity();
+    const second = createDmIdentity();
+    const peer = createDmIdentity();
+    let activeIdentity = first;
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    let signingCalls = 0;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      signLocalFields: async (fields) => {
+        signingCalls += 1;
+        if (signingCalls === 1) {
+          markFirstStarted();
+          await firstGate;
+        }
+        return createDmSigner(activeIdentity)(fields);
+      },
+      hasGoodOverlayHealth: () => false,
+    });
+    try {
+      manager.setLocalDmAddresses([first.address]);
+      const firstConversation = reticulumDmConversationId(
+        first.address,
+        peer.address
+      );
+      (manager as any).queueReadSync({
+        scopeType: 'dm',
+        ownerAddress: first.address,
+        conversationId: firstConversation,
+        peerAddress: peer.address,
+        upToTimestamp: 1_000,
+      });
+      await firstStarted;
+
+      const secondConversation = reticulumDmConversationId(
+        second.address,
+        peer.address
+      );
+      (manager as any).db.upsertPendingDeviceReadState({
+        ownerAddress: second.address,
+        scopeType: 'dm',
+        scopeId: secondConversation,
+        conversationId: secondConversation,
+        peerAddress: peer.address,
+        upToTimestamp: 2_000,
+        updatedAt: Date.now(),
+      });
+      activeIdentity = second;
+      manager.setLocalDmAddresses([second.address]);
+      releaseFirst();
+      await flushAsyncWork(20);
+
+      expect(
+        (manager as any).db.getDeviceReadStates(second.address, 10)
+      ).toEqual([
+        expect.objectContaining({
+          ownerAddress: second.address,
+          conversationId: secondConversation,
+          upToTimestamp: 2_000,
+        }),
+      ]);
+    } finally {
+      releaseFirst();
+      manager.close();
+    }
+  });
+
+  it('clears account-scoped runtime state when one authenticated account replaces another', async () => {
+    const first = createDmIdentity();
+    const second = createDmIdentity();
+    const peer = createDmIdentity();
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      hasGoodOverlayHealth: () => false,
+    });
+    manager.setLocalDmAddresses([first.address]);
+    manager.setLocalGroupMemberships([
+      { groupId: 1144, localAddress: first.address },
+    ]);
+    const conversationId = reticulumDmConversationId(
+      first.address,
+      peer.address
+    );
+    (manager as any).directDmPulls.set('old-account-pull', {
+      key: 'old-account-pull',
+      conversationId,
+      addressA: peer.address,
+      addressB: first.address,
+      sourcePeerHash: 'a'.repeat(32),
+      remoteEventId: 'old-account-event',
+      remoteTimestamp: Date.now(),
+      requestId: 'old-account-request',
+      attempts: 1,
+      createdAt: Date.now(),
+      inFlight: false,
+      activeRequestId: '',
+      retryTimer: null,
+    });
+    (manager as any).dmProbeRoutes.set('old-account-probe', {
+      peerHash: 'a'.repeat(32),
+      expiresAt: Date.now() + 60_000,
+    });
+    (manager as any).directDmPageNoProgressSuppressions.set(
+      'old-account-conversation',
+      Date.now() + 60_000
+    );
+    const previousGeneration = (manager as any).localAccountGeneration;
+
+    manager.setLocalDmAddresses([second.address]);
+
+    expect([...(manager as any).localDmAddresses]).toEqual([second.address]);
+    expect((manager as any).localAccountGeneration).toBe(
+      previousGeneration + 1
+    );
+    expect((manager as any).directDmPulls.size).toBe(0);
+    expect((manager as any).dmProbeRoutes.size).toBe(0);
+    expect((manager as any).directDmPageNoProgressSuppressions.size).toBe(0);
+    expect((manager as any).localGroupIds.size).toBe(0);
+    manager.close();
+  });
+
+  it('runs discovery for the replacement account after the previous discovery unwinds', async () => {
+    const first = createDmIdentity();
+    const second = createDmIdentity();
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const observedAddresses: string[][] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      hasGoodOverlayHealth: () => true,
+    });
+    vi.spyOn(manager as any, 'broadcastDmProbes').mockImplementation(
+      async () => {
+        observedAddresses.push([...(manager as any).localDmAddresses]);
+        if (observedAddresses.length === 1) {
+          markFirstStarted();
+          await firstGate;
+        }
+      }
+    );
+
+    manager.setLocalDmAddresses([first.address]);
+    await firstStarted;
+    manager.setLocalDmAddresses([second.address]);
+    releaseFirst();
+    await flushAsyncWork(16);
+
+    expect(observedAddresses).toEqual([[first.address], [second.address]]);
+    manager.close();
+  });
+
   it('keeps public group activity in bounded rolling counters', () => {
     const now = 20 * 24 * 60 * 60_000;
     const state = createReticulumPublicGroupActivityState();
@@ -7887,6 +8051,106 @@ describe('reticulum chat manager', () => {
       'dm_provider_account_mismatch',
     ]);
     expect(sendResource).not.toHaveBeenCalled();
+    manager.close();
+  });
+
+  it('allows a verified second device on the requester account to serve a direct DM page', async () => {
+    const owner = createDmIdentity();
+    const remote = createDmIdentity();
+    const requesterPeerHash = 'b'.repeat(32);
+    const sentResources: Array<Record<string, any>> = [];
+    const rejected: Array<Record<string, unknown>> = [];
+    const bridge = Object.assign(new EventEmitter(), {
+      getLocalDestinationHash: () => 'a'.repeat(32),
+      sendReticulumChatResourceDetailed: async (
+        payload: Record<string, any>
+      ) => {
+        sentResources.push(payload);
+        return { ok: true as const };
+      },
+      authorizeReticulumChatResourceDetailed: async () => ({
+        ok: true as const,
+      }),
+      rejectReticulumChatResourceDetailed: async (
+        payload: Record<string, unknown>
+      ) => {
+        rejected.push(payload);
+        return { ok: true as const };
+      },
+    });
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      getAccountEndpointLeases: () => [
+        {
+          destinationHash: requesterPeerHash,
+          address: owner.address,
+          sessionId: 'other-owner-device',
+          lastSeen: Date.now(),
+          expiresAt: Date.now() + 60_000,
+          verification: 'direct-bound',
+        },
+      ],
+    });
+    manager.setLocalDmAddresses([owner.address]);
+    (manager as any).peerProtocolFeatures.set(
+      requesterPeerHash,
+      new Set(['dm', 'dm_author_streams_v1', 'self_dm_v1'])
+    );
+    const event = signedDmEvent({
+      sender: remote,
+      recipient: owner,
+      eventId: 'dm-page-from-verified-owner-device',
+      senderSeq: 1,
+      timestamp: Date.now() - 1_000,
+    });
+    (manager as any).db.getDirectEventsAfter = () => [event];
+    const transferId = '3'.repeat(16);
+    const timestamp = Date.now();
+    const signedFields = buildReticulumDmRequestSignedFields({
+      peerAddress: remote.address,
+      after: 0,
+      limit: 50,
+      requesterPeerHash,
+      requestId: transferId,
+      authorAddress: owner.address,
+      authorPublicKey: owner.publicKey,
+      timestamp,
+    });
+
+    await (manager as any).authorizeDirectDmPageResource(
+      {
+        status: 'auth',
+        linkId: 'verified-owner-device-link',
+        transferId,
+        peerPresenceHash: requesterPeerHash,
+      },
+      {
+        transferId,
+        b: remote.address,
+        a: 0,
+        l: 50,
+        q: transferId,
+        rp: requesterPeerHash,
+        p: owner.publicKey,
+        n: timestamp,
+        z: base58Encode(
+          nacl.sign.detached(
+            new Uint8Array(canonicalizeForSigning(signedFields)),
+            owner.secretKey
+          )
+        ),
+      }
+    );
+
+    expect(rejected).toEqual([]);
+    expect(sentResources).toHaveLength(1);
+    expect(sentResources[0].metadata).toMatchObject({
+      logicalResourceType: 'reticulum_chat_dm_page',
+      conversationId: event.conversationId,
+      eventCount: 1,
+    });
+    fs.rmSync(String(sentResources[0].filePath), { force: true });
     manager.close();
   });
 
