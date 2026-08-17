@@ -5,16 +5,16 @@ import CallMadeRoundedIcon from '@mui/icons-material/CallMadeRounded';
 import { useTranslation } from 'react-i18next';
 
 const LABEL_KEYS: Record<string, string> = {
-  answered: 'group:reticulum.call_history.answered',
-  declined: 'group:reticulum.call_history.declined',
-  missed: 'group:reticulum.call_history.missed',
-  cancelled: 'group:reticulum.call_history.cancelled',
-  no_answer: 'group:reticulum.call_history.no_answer',
+  answered: 'reticulum:call_history.answered',
+  declined: 'reticulum:call_history.declined',
+  missed: 'reticulum:call_history.missed',
+  cancelled: 'reticulum:call_history.cancelled',
+  no_answer: 'reticulum:call_history.no_answer',
 };
 
 export const DirectCallHistoryRow = ({ record }: { record: any }) => {
   const theme = useTheme();
-  const { t } = useTranslation(['group']);
+  const { t } = useTranslation(['reticulum']);
   const missed = record?.outcome === 'missed';
   const answered = record?.outcome === 'answered';
   const color = missed
@@ -47,11 +47,9 @@ export const DirectCallHistoryRow = ({ record }: { record: any }) => {
     >
       <Icon sx={{ color, fontSize: 18 }} />
       <Typography sx={{ color, fontSize: 13, fontWeight: missed ? 600 : 500 }}>
-        {t(
-          LABEL_KEYS[record?.outcome] ||
-            'group:reticulum.call_history.answered',
-          { postProcess: 'capitalizeFirstChar' }
-        )}
+        {t(LABEL_KEYS[record?.outcome] || 'reticulum:call_history.answered', {
+          postProcess: 'capitalizeFirstChar',
+        })}
       </Typography>
       {timestamp > 0 && (
         <Typography sx={{ color: 'text.secondary', fontSize: 11 }}>

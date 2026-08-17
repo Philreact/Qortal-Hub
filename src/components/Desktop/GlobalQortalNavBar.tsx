@@ -45,6 +45,11 @@ import {
 } from '../../utils/events';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { getBaseApiReactForAvatar } from '../../utils/globalApi';
+import { formatQortAmount } from '../../utils/numberFunctions';
+import {
+  useAccountStatusDisplay,
+  useAccountStatusOptions,
+} from '../common/accountStatus';
 import {
   APP_NAV_BAR_HEIGHT,
   type CustomTitleBarRightNavProps,
@@ -132,19 +137,9 @@ function shortenAddress(address?: string) {
   return `${address.slice(0, 8)}...${address.slice(-6)}`;
 }
 
-function formatQortBalance(balance: unknown) {
-  const numericBalance =
-    typeof balance === 'number'
-      ? balance
-      : typeof balance === 'string'
-        ? Number(balance)
-        : NaN;
-
-  if (!Number.isFinite(numericBalance)) return '--';
-  return numericBalance.toLocaleString(undefined, {
-    maximumFractionDigits: 2,
-    minimumFractionDigits: 2,
-  });
+function formatQortBalance(balance: unknown, locale: string) {
+  if (typeof balance !== 'number' && typeof balance !== 'string') return '--';
+  return formatQortAmount(balance, locale) ?? '--';
 }
 
 function isSamePinnedApp(item: any, candidate: any) {
@@ -212,6 +207,7 @@ function AuthenticatedUserMenu({
   balance,
   isBalanceLoading,
   buttonSx,
+  badgeOutlineColor,
   tooltipSlotProps,
   tooltipTitle,
   onCopied,
@@ -221,18 +217,26 @@ function AuthenticatedUserMenu({
   balance: unknown;
   isBalanceLoading: boolean;
   buttonSx: Record<string, any>;
+  badgeOutlineColor: string;
   tooltipSlotProps: Record<string, any>;
   tooltipTitle: (text: string) => React.ReactNode;
   onCopied: () => void;
   onCopyFailed: () => void;
 }) {
   const theme = useTheme();
-  const { t } = useTranslation(['core']);
+  const { i18n, t } = useTranslation(['core']);
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [avatarError, setAvatarError] = useState(false);
+  const {
+    color: accountStatusColor,
+    label: accountStatusLabel,
+    myStatus,
+    setMyStatus,
+  } = useAccountStatusDisplay();
+  const accountStatusOptions = useAccountStatusOptions();
   const address = userInfo?.address || '';
   const primaryName = (userInfo?.name || userInfo?.primaryName || '').trim();
-  const formattedBalance = formatQortBalance(balance);
+  const formattedBalance = formatQortBalance(balance, i18n.language);
   const avatarUrl =
     primaryName && !avatarError
       ? `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${encodeURIComponent(
@@ -275,8 +279,8 @@ function AuthenticatedUserMenu({
       <IconButton
         size="small"
         aria-describedby={popoverId}
-        aria-label={t('core:message.generic.account_menu', {
-          defaultValue: 'Account menu',
+        aria-label={t('core:message.generic.account_menu_status', {
+          status: accountStatusLabel,
         })}
         onClick={(event) => setAnchorEl(event.currentTarget)}
         sx={{
@@ -284,8 +288,9 @@ function AuthenticatedUserMenu({
           backgroundColor: 'transparent',
           border: 'none',
           borderRadius: '50%',
-          overflow: 'hidden',
+          overflow: 'visible',
           padding: 0,
+          position: 'relative',
           '&:hover': {
             backgroundColor: 'transparent',
             transform: 'translateY(-1px)',
@@ -349,6 +354,20 @@ function AuthenticatedUserMenu({
             onAvatarError={() => setAvatarError(true)}
           />
         </Box>
+        <Box
+          aria-hidden="true"
+          sx={{
+            backgroundColor: accountStatusColor,
+            border: `2px solid ${badgeOutlineColor}`,
+            borderRadius: '50%',
+            bottom: -1,
+            boxSizing: 'content-box',
+            height: 7,
+            position: 'absolute',
+            right: -1,
+            width: 7,
+          }}
+        />
       </IconButton>
     </Box>
   );
@@ -356,14 +375,14 @@ function AuthenticatedUserMenu({
   return (
     <>
       {primaryName ? (
-        <Tooltip
+      <Tooltip
           title={tooltipTitle(primaryName)}
-          placement="bottom"
-          arrow
-          slotProps={tooltipSlotProps}
-        >
-          {accountButton}
-        </Tooltip>
+        placement="bottom"
+        arrow
+        slotProps={tooltipSlotProps}
+      >
+        {accountButton}
+      </Tooltip>
       ) : (
         accountButton
       )}
@@ -456,6 +475,104 @@ function AuthenticatedUserMenu({
                   defaultValue: 'Authenticated account',
                 })}
               </Typography>
+            </Box>
+          </Box>
+
+          <Box
+            sx={{
+              backgroundColor: isDarkMode
+                ? alpha(theme.palette.common.white, 0.04)
+                : alpha(theme.palette.common.black, 0.035),
+              border: `1px solid ${theme.palette.border.subtle}`,
+              borderRadius: '10px',
+              mt: 0.5,
+              p: 1,
+            }}
+          >
+            <Typography
+              id="nav-account-status-label"
+              sx={{
+                color: theme.palette.text.secondary,
+                fontSize: 11,
+                fontWeight: 700,
+                lineHeight: 1,
+                mb: 0.75,
+                textTransform: 'uppercase',
+              }}
+            >
+              {t('core:message.generic.status', {
+                defaultValue: 'Status',
+              })}
+            </Typography>
+            <Box
+              role="group"
+              aria-labelledby="nav-account-status-label"
+              sx={{ display: 'flex', gap: 0.75 }}
+            >
+              {accountStatusOptions.map((option) => {
+                const isSelected = option.key === myStatus;
+
+                return (
+                  <ButtonBase
+                    key={option.key}
+                    aria-pressed={isSelected}
+                    onClick={() => setMyStatus(option.key)}
+                    sx={{
+                      alignItems: 'center',
+                      backgroundColor: isSelected
+                        ? alpha(
+                            theme.palette.primary.main,
+                            isDarkMode ? 0.2 : 0.12
+                          )
+                        : 'transparent',
+                      border: `1px solid ${
+                        isSelected
+                          ? alpha(theme.palette.primary.main, 0.45)
+                          : theme.palette.border.subtle
+                      }`,
+                      borderRadius: '999px',
+                      color: isSelected
+                        ? theme.palette.text.primary
+                        : theme.palette.text.secondary,
+                      display: 'flex',
+                      flex: 1,
+                      gap: 0.65,
+                      justifyContent: 'center',
+                      minHeight: 30,
+                      px: 1,
+                      transition:
+                        'background-color 140ms ease, border-color 140ms ease, color 140ms ease',
+                      '&:hover': {
+                        backgroundColor: theme.palette.action.hover,
+                      },
+                      '&:focus-visible': {
+                        outline: `1px solid ${theme.palette.primary.main}`,
+                        outlineOffset: '2px',
+                      },
+                    }}
+                  >
+                    <Box
+                      aria-hidden="true"
+                      sx={{
+                        backgroundColor: option.color,
+                        borderRadius: '50%',
+                        flexShrink: 0,
+                        height: 8,
+                        width: 8,
+                      }}
+                    />
+                    <Typography
+                      sx={{
+                        fontSize: 12.5,
+                        fontWeight: isSelected ? 700 : 600,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {option.label}
+                    </Typography>
+                  </ButtonBase>
+                );
+              })}
             </Box>
           </Box>
 
@@ -1761,6 +1878,7 @@ export function GlobalQortalNavBar({
                     balance={balance}
                     isBalanceLoading={qortBalanceLoading}
                     buttonSx={utilityModuleButtonSx}
+                    badgeOutlineColor={chromeBackground}
                     tooltipSlotProps={tooltipSlotProps}
                     tooltipTitle={tooltipTitle}
                     onCopied={handleCopyAddressSuccess}

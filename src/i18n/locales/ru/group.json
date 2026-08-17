@@ -184,14 +184,6 @@
     "remove_file": "Удалить файл",
     "remove_image": "Удалить изображение",
     "resize_channel_list": "Изменить размер списка каналов",
-    "reticulum_author_mismatch": "Подписанный автор чата Reticulum не совпадает",
-    "reticulum_delete_failed": "Не удалось удалить сообщение в чате Reticulum",
-    "reticulum_disabled": "Чат Reticulum отключён",
-    "reticulum_publish_failed": "Не удалось опубликовать сообщение в чате Reticulum",
-    "reticulum_release_seq_failed": "Не удалось освободить последовательность событий чата Reticulum",
-    "reticulum_reserve_seq_failed": "Не удалось зарезервировать последовательность событий чата Reticulum",
-    "reticulum_sign_failed": "Не удалось подписать событие чата Reticulum",
-    "reticulum_welcome_failed": "Не удалось опубликовать приветствие Reticulum",
     "save_changes": "Сохранить изменения",
     "search_chat": "Поиск в чате",
     "search_failed": "Поиск не удался",
@@ -206,6 +198,14 @@
     "write_not_allowed": "Вы не можете писать в этом канале"
   },
   "context_menu": {
+    "about_group": "О группе",
+    "change_group_avatar": "Изменить аватар группы",
+    "create_category": "Создать категорию",
+    "create_channel": "Создать канал",
+    "hidden_users": "Скрытые пользователи",
+    "invite_link_copied": "Ссылка-приглашение скопирована",
+    "invite_link_copy_failed": "Не удалось скопировать ссылку-приглашение",
+    "leave_group": "Покинуть группу",
     "mark_all_read": "Отметить все как прочитанные",
     "mark_as_read": "Отметить как прочитанное",
     "mute_push_notifications": "Отключить push-уведомления",
@@ -215,6 +215,7 @@
     "account_overview": "Обзор аккаунта",
     "account_settings_tooltip": "Настройки аккаунта",
     "account_status_busy": "Занят",
+    "account_status_idle": "Не активен",
     "account_status_invisible": "Невидимый",
     "account_status_offline": "Не в сети",
     "account_status_online": "В сети",
@@ -232,9 +233,6 @@
     "close_action_update_error": "Сейчас не удалось изменить поведение при закрытии окна.",
     "close_receive_qort_modal": "Закрыть окно получения QORT",
     "close_send_qort_modal": "Закрыть окно отправки QORT",
-    "community_stun_contribution": "Поддержка звонков сообществом",
-    "community_stun_contribution_desc": "Помогите прямым звонкам устанавливать соединение, предоставив небольшой сетевой сервис.",
-    "community_stun_update_error": "Не удалось обновить поддержку звонков сообществом.",
     "copy_address": "Копировать адрес",
     "copy_key": "Копировать ключ",
     "core": "Core",
@@ -426,7 +424,6 @@
     "message_failed": "Личное сообщение Reticulum не отправлено",
     "missing_participants": "Отсутствуют участники личного чата",
     "missing_public_key": "Отсутствует локальный открытый ключ Qortal",
-    "reticulum_required_for_attachments": "Для прямых вложений требуется личный чат Reticulum",
     "select_valid_name": "Выберите корректное имя или адрес Qortal",
     "selected_file": "Выбранный файл",
     "send_placeholder": "Отправить сообщение...",
@@ -602,10 +599,6 @@
     "requests_empty_description": "Заявки на вступление из групп под вашим управлением появятся здесь.",
     "requests_empty_title": "Нет ожидающих заявок",
     "restore": "Restore",
-    "reticulum_mentions_one": "{{count}} упоминание",
-    "reticulum_mentions_other": "{{count}} упоминаний",
-    "reticulum_new_messages_one": "{{count}} новое сообщение",
-    "reticulum_new_messages_other": "{{count}} новых сообщений",
     "select_admin_group": "Выберите группу, где вы администратор",
     "show_ignored": "Show ignored",
     "tab_invites": "Приглашения",
@@ -662,6 +655,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Вы",
   "latest_mails": "последние Q-сообщения",
+  "member_category": {
+    "admins": "администраторы",
+    "collapse": "свернуть {{category}}",
+    "expand": "развернуть {{category}}",
+    "lounge": "лаунж",
+    "members": "участники",
+    "offline": "не в сети",
+    "park": "парк"
+  },
   "message": {
     "error": {
       "access_name": "нельзя отправить сообщение без доступа к вашему имени",
@@ -786,185 +788,6 @@
     "try_again": "Повторить",
     "unencrypted": "Не зашифровано",
     "verification_failed": "Проверка не пройдена"
-  },
-  "reticulum": {
-    "call_history": {
-      "answered": "голосовой вызов",
-      "cancelled": "отменённый голосовой вызов",
-      "declined": "отклонённый голосовой вызов",
-      "missed": "пропущенный голосовой вызов",
-      "no_answer": "нет ответа"
-    },
-    "discussion": {
-      "choose_emoji": "choose emoji",
-      "close": "close discussion",
-      "initial_post": "initial post",
-      "remove_attachment": "remove attachment",
-      "remove_file": "remove {{fileName}}",
-      "replies": "replies:",
-      "reply_placeholder": "reply to discussion...",
-      "wait_until_ready": "wait until the discussion is ready"
-    },
-    "event_preview": {
-      "all_day": "all day",
-      "calendar_unavailable": "calendar is unavailable",
-      "join_failed": "unable to join this group. Please try again.",
-      "loading": "loading event preview",
-      "member_required": "you must be a member of the source group to view this event.",
-      "not_found": "event not found",
-      "request_join_question": "request to join this group?",
-      "unavailable": "event unavailable",
-      "unavailable_temporarily": "event preview is temporarily unavailable",
-      "view_group": "view group"
-    },
-    "expiry": {
-      "channel_default": "настройка канала по умолчанию",
-      "channel_default_no_expiry": "настройка канала по умолчанию (без срока)",
-      "channel_default_with": "настройка канала по умолчанию ({{duration}})",
-      "do_not_auto_delete": "не удалять автоматически",
-      "lock_preferred": "Установить {{duration}} как предпочтительный срок",
-      "maximum": "максимум {{duration}}",
-      "no_expiry": "без срока",
-      "preferred_locked": "Предпочтительный срок установлен",
-      "remove_preferred": "Убрать предпочтительный срок {{duration}}",
-      "set": "задать срок хранения сообщения",
-      "title": "срок хранения сообщения",
-      "tooltip_value": "срок хранения сообщения: {{value}}",
-      "unavailable": "срок хранения сообщений недоступен"
-    },
-    "hide_user": {
-      "error_hide": "не удалось скрыть пользователя",
-      "error_unhide": "не удалось показать пользователя",
-      "for_1_hour": "скрыть на 1 час",
-      "for_24_hours": "скрыть на 24 часа",
-      "hide": "скрыть",
-      "unhide": "показать",
-      "until_unhidden": "скрыть до отмены"
-    },
-    "image_viewer": {
-      "actions": "image actions",
-      "chat_image": "chat image",
-      "clipboard_unavailable": "image clipboard is unavailable",
-      "close": "close image viewer",
-      "copied": "image copied",
-      "copy": "copy image",
-      "copy_failed": "unable to copy image",
-      "download": "download image",
-      "download_failed": "unable to download image",
-      "prepare_failed": "unable to prepare image for clipboard",
-      "read_failed": "unable to read image",
-      "zoom_in": "zoom in",
-      "zoom_out": "zoom out"
-    },
-    "invite": {
-      "apply": "apply",
-      "apply_question": "apply to join this group?",
-      "closed_group": "closed group",
-      "joined": "joined",
-      "open_group": "open group",
-      "pending": "pending"
-    },
-    "join_group_question": "join this group?",
-    "mention": {
-      "channels": "каналы",
-      "empty": "совпадений не найдено",
-      "people": "люди",
-      "special": "особые упоминания",
-      "suggestions": "подсказки упоминаний"
-    },
-    "mode_pill": {
-      "chat": "Чат",
-      "enter_qortal_land": "Войти в Qortal Land",
-      "return_to_chat": "Вернуться в чат"
-    },
-    "qapp_preview": {
-      "check_again": "check again",
-      "no_resource": "no Q-App resource was found for this link.",
-      "open_in_quitter": "open this post in Quitter.",
-      "open_publication": "open this publication to read the full article.",
-      "preview_failed": "the resource exists, but its preview could not be loaded right now.",
-      "preview_unavailable": "preview unavailable",
-      "resource_not_found": "resource not found",
-      "shared_photo": "shared a photo",
-      "shared_video": "shared a video",
-      "shared_video_titled": "shared a video: {{title}}",
-      "view_on_quitter": "view this post on Quitter",
-      "watch_on_qtube": "watch this video on Q-Tube."
-    },
-    "rail": {
-      "find_groups": "Поиск групп",
-      "group_settings": "Настройки группы",
-      "whats_new": "Открыть новинки"
-    },
-    "settings": {
-      "category": {
-        "accessibility": "Доступность",
-        "legacy": "Прежняя версия"
-      },
-      "legacy": {
-        "description": "Показывать прежние элементы Threads и Admin в заголовке Q-Chat.",
-        "title": "Threads",
-        "toggle": {
-          "aria": "Показывать прежние Threads",
-          "description": "Отображает прежние значки Threads и Admin.",
-          "label": "Threads"
-        },
-        "warning": "Threads будут удалены в следующем выпуске. Перед обновлением перенесите важную информацию из тем в надёжное место или в новый канал Q-Chat."
-      },
-      "messages": {
-        "description": "Настройте вид ваших собственных сообщений в Reticulum Q-Chat.",
-        "highlight_own": {
-          "description": "Добавляет слабый фон к отправленным вами сообщениям.",
-          "label": "Выделять мои сообщения"
-        },
-        "title": "Сообщения"
-      },
-      "nav": {
-        "mentions": "Упоминания",
-        "messages": "Сообщения",
-        "text_size": "Размер текста",
-        "threads": "Threads"
-      },
-      "notifications": {
-        "description": "Показывать упоминания из Reticulum Q-Chat на панели уведомлений Hub. Обычные непрочитанные сообщения не создают уведомлений Hub.",
-        "mentions": {
-          "description": "Уведомлять меня, когда кто-то упоминает меня в канале.",
-          "label": "Уведомления об упоминаниях"
-        },
-        "title": "Уведомления"
-      },
-      "text_size": {
-        "default": {
-          "detail": "Текущий размер текста чата",
-          "label": "По умолчанию"
-        },
-        "description": "Выберите размер для чтения сообщений Reticulum, названий каналов и списка участников. Предпросмотр приглашений сохраняет фиксированную вёрстку.",
-        "high": {
-          "detail": "Самый крупный читаемый текст чата",
-          "label": "Крупный"
-        },
-        "medium": {
-          "detail": "Комфортное увеличение",
-          "label": "Средний"
-        },
-        "title": "Размер текста"
-      }
-    },
-    "user_card": {
-      "address_copied": "адрес скопирован",
-      "copy_address": "копировать адрес",
-      "copy_full_address": "копировать полный адрес qortal",
-      "hide_user": "скрыть пользователя",
-      "message": "сообщение",
-      "minter_level": "уровень минтера",
-      "minter_level_value": "уровень {{level}}",
-      "qort_balance": "баланс qort",
-      "qort_balance_value": "{{amount}} QORT",
-      "qortal_address": "адрес qortal",
-      "send_qort": "отправить QORT",
-      "view_profile": "открыть профиль",
-      "view_profile_of": "открыть профиль {{name}}"
-    }
   },
   "subscription": {
     "actions_badge_one": "{{count}} действие",
@@ -1091,7 +914,7 @@
     },
     "highlights": {
       "calls": {
-        "description": "Начинайте личные и групповые звонки, не покидая Q-Chat. Групповые звонки поддерживают до пятнадцати человек и начинаются в компактном виде, который можно развернуть в любой момент.",
+        "description": "Начинайте личные и групповые звонки, не покидая Q-Chat. Групповые звонки поддерживают до семи человек и начинаются в компактном виде, который можно развернуть в любой момент.",
         "title": "Звонки, которые не мешают"
       },
       "channels": {

@@ -22,9 +22,9 @@ type MentionListHandle = {
 };
 
 const SECTION_LABEL_KEYS: Record<MentionSuggestionItem['section'], string> = {
-  people: 'group:reticulum.mention.people',
-  special: 'group:reticulum.mention.special',
-  channels: 'group:reticulum.mention.channels',
+  people: 'reticulum:mention.people',
+  special: 'reticulum:mention.special',
+  channels: 'reticulum:mention.channels',
 };
 
 const SECTION_ORDER: MentionSuggestionItem['section'][] = [
@@ -36,7 +36,7 @@ const SECTION_ORDER: MentionSuggestionItem['section'][] = [
 const MentionList = forwardRef<MentionListHandle, MentionListProps>(
   ({ command, items }, ref) => {
     const theme = useTheme();
-    const { t } = useTranslation(['group']);
+    const { t } = useTranslation(['reticulum']);
     const [selectedIndex, setSelectedIndex] = useState(0);
 
     const groupedItems = useMemo(
@@ -88,7 +88,7 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(
 
     return (
       <div
-        aria-label={t('group:reticulum.mention.suggestions', {
+        aria-label={t('reticulum:mention.suggestions', {
           postProcess: 'capitalizeFirstChar',
         })}
         className="qchat-mention-menu"
@@ -162,7 +162,7 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(
             ))
           ) : (
             <div className="qchat-mention-menu__empty">
-              {t('group:reticulum.mention.empty', {
+              {t('reticulum:mention.empty', {
                 postProcess: 'capitalizeFirstChar',
               })}
             </div>

@@ -232,7 +232,7 @@ const loadEventPreview = async (
     if (cached) return cached;
     if (hasCachedPreviewFailure(key)) {
       throw new Error(
-        i18n.t('group:reticulum.event_preview.unavailable_temporarily', {
+        i18n.t('reticulum:event_preview.unavailable_temporarily', {
           postProcess: 'capitalizeFirstChar',
         })
       );
@@ -245,7 +245,7 @@ const loadEventPreview = async (
   const request = (async () => {
     if (!window.reticulumChat?.getCalendarEvent) {
       throw new Error(
-        i18n.t('group:reticulum.event_preview.calendar_unavailable', {
+        i18n.t('reticulum:event_preview.calendar_unavailable', {
           postProcess: 'capitalizeFirstChar',
         })
       );
@@ -257,7 +257,7 @@ const loadEventPreview = async (
     );
     if (!occurrence)
       throw new Error(
-        i18n.t('group:reticulum.event_preview.not_found', {
+        i18n.t('reticulum:event_preview.not_found', {
           postProcess: 'capitalizeFirstChar',
         })
       );
@@ -990,7 +990,7 @@ function EventPreview({ link }: { link: ReticulumEventLink }) {
   if (!membershipResolved || (!isMember && (!groupLoadFinished || !group))) {
     return (
       <Box
-        aria-label={t('group:reticulum.event_preview.loading', {
+        aria-label={t('reticulum:event_preview.loading', {
           postProcess: 'capitalizeFirstChar',
         })}
         sx={{

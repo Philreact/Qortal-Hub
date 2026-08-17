@@ -31,10 +31,17 @@ import sys
 from pathlib import Path
 
 # .agents/skills/i18n/<this file> -> repo root
-REPO_ROOT = Path(__file__).resolve().parents[3]
+def _find_repo_root(start: Path) -> Path:
+    for parent in [start, *start.parents]:
+        if (parent / 'src' / 'i18n' / 'locales').is_dir():
+            return parent
+    return start.parents[2]
+
+
+REPO_ROOT = _find_repo_root(Path(__file__).resolve().parent)
 LOCALES = REPO_ROOT / 'src' / 'i18n' / 'locales'
 LANGS = ['ar', 'de', 'en', 'es', 'et', 'fi', 'fr', 'it', 'ja', 'pt', 'ru', 'zh']
-NAMESPACES = ['auth', 'core', 'group', 'node', 'question']
+NAMESPACES = ['auth', 'core', 'group', 'node', 'question', 'reticulum']
 
 
 def sort_node(node):

@@ -184,14 +184,6 @@
     "remove_file": "Poista tiedosto",
     "remove_image": "Poista kuva",
     "resize_channel_list": "Muuta kanavaluettelon kokoa",
-    "reticulum_author_mismatch": "Allekirjoitetun Reticulum-keskustelun tekijä ei täsmää",
-    "reticulum_delete_failed": "Reticulum-keskustelun poisto epäonnistui",
-    "reticulum_disabled": "Reticulum-keskustelu on poistettu käytöstä",
-    "reticulum_publish_failed": "Reticulum-keskustelun julkaisu epäonnistui",
-    "reticulum_release_seq_failed": "Reticulum-keskustelun tapahtumasarjaa ei voitu vapauttaa",
-    "reticulum_reserve_seq_failed": "Reticulum-keskustelun tapahtumasarjaa ei voitu varata",
-    "reticulum_sign_failed": "Reticulum-keskustelutapahtumaa ei voitu allekirjoittaa",
-    "reticulum_welcome_failed": "Reticulum-tervetuloviestin julkaisu epäonnistui",
     "save_changes": "Tallenna muutokset",
     "search_chat": "Hae keskustelusta",
     "search_failed": "Haku epäonnistui",
@@ -206,6 +198,14 @@
     "write_not_allowed": "Et voi kirjoittaa tähän kanavaan"
   },
   "context_menu": {
+    "about_group": "Tietoja ryhmästä",
+    "change_group_avatar": "Vaihda ryhmän profiilikuva",
+    "create_category": "Luo kategoria",
+    "create_channel": "Luo kanava",
+    "hidden_users": "Piilotetut käyttäjät",
+    "invite_link_copied": "Kutsulinkki kopioitu",
+    "invite_link_copy_failed": "Kutsulinkin kopiointi epäonnistui",
+    "leave_group": "Poistu ryhmästä",
     "mark_all_read": "Merkitse kaikki luetuksi",
     "mark_as_read": "Merkitse luetuksi",
     "mute_push_notifications": "Mykistä push-ilmoitukset",
@@ -215,6 +215,7 @@
     "account_overview": "Tilin yleiskatsaus",
     "account_settings_tooltip": "Tilin asetukset",
     "account_status_busy": "Varattu",
+    "account_status_idle": "Poissa",
     "account_status_invisible": "Näkymätön",
     "account_status_offline": "Offline",
     "account_status_online": "Paikalla",
@@ -232,9 +233,6 @@
     "close_action_update_error": "Ikkunan sulkemisen toimintaa ei voitu päivittää juuri nyt.",
     "close_receive_qort_modal": "Sulje QORTin vastaanottoikkuna",
     "close_send_qort_modal": "Sulje QORTin lähetysikkuna",
-    "community_stun_contribution": "Yhteisön puhelutuki",
-    "community_stun_contribution_desc": "Auta suoria puheluita muodostamaan yhteys tarjoamalla pieni verkkopalvelu.",
-    "community_stun_update_error": "Yhteisön puhelutukea ei voitu päivittää juuri nyt.",
     "copy_address": "Kopioi osoite",
     "copy_key": "Kopioi avain",
     "core": "Core",
@@ -426,7 +424,6 @@
     "message_failed": "Reticulum-yksityisviesti epäonnistui",
     "missing_participants": "Yksityiskeskustelun osallistujat puuttuvat",
     "missing_public_key": "Paikallinen Qortal-julkisavain puuttuu",
-    "reticulum_required_for_attachments": "Suorat liitteet vaativat Reticulum-yksityiskeskustelun",
     "select_valid_name": "Valitse kelvollinen Qortal-nimi tai -osoite",
     "selected_file": "Valittu tiedosto",
     "send_placeholder": "Lähetä viesti...",
@@ -602,10 +599,6 @@
     "requests_empty_description": "Hallitsemiesi ryhmien liittymispyynnöt näkyvät täällä.",
     "requests_empty_title": "Ei odottavia pyyntöjä",
     "restore": "Restore",
-    "reticulum_mentions_one": "{{count}} maininta",
-    "reticulum_mentions_other": "{{count}} mainintaa",
-    "reticulum_new_messages_one": "{{count}} uusi viesti",
-    "reticulum_new_messages_other": "{{count}} uutta viestiä",
     "select_admin_group": "Valitse ryhmä, jossa olet ylläpitäjä",
     "show_ignored": "Show ignored",
     "tab_invites": "Kutsut",
@@ -662,6 +655,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Sinä",
   "latest_mails": "uusimmat Q-Mailit",
+  "member_category": {
+    "admins": "ylläpitäjät",
+    "collapse": "tiivistä {{category}}",
+    "expand": "laajenna {{category}}",
+    "lounge": "oleskelutila",
+    "members": "jäsenet",
+    "offline": "ei verkossa",
+    "park": "puisto"
+  },
   "message": {
     "error": {
       "access_name": "viestiä ei voi lähettää ilman pääsyä nimeesi",
@@ -786,185 +788,6 @@
     "try_again": "Yritä uudelleen",
     "unencrypted": "Salaamaton",
     "verification_failed": "Vahvistus epäonnistui"
-  },
-  "reticulum": {
-    "call_history": {
-      "answered": "puhelu",
-      "cancelled": "peruttu puhelu",
-      "declined": "hylätty puhelu",
-      "missed": "vastaamaton puhelu",
-      "no_answer": "ei vastausta"
-    },
-    "discussion": {
-      "choose_emoji": "choose emoji",
-      "close": "close discussion",
-      "initial_post": "initial post",
-      "remove_attachment": "remove attachment",
-      "remove_file": "remove {{fileName}}",
-      "replies": "replies:",
-      "reply_placeholder": "reply to discussion...",
-      "wait_until_ready": "wait until the discussion is ready"
-    },
-    "event_preview": {
-      "all_day": "all day",
-      "calendar_unavailable": "calendar is unavailable",
-      "join_failed": "unable to join this group. Please try again.",
-      "loading": "loading event preview",
-      "member_required": "you must be a member of the source group to view this event.",
-      "not_found": "event not found",
-      "request_join_question": "request to join this group?",
-      "unavailable": "event unavailable",
-      "unavailable_temporarily": "event preview is temporarily unavailable",
-      "view_group": "view group"
-    },
-    "expiry": {
-      "channel_default": "kanavan oletus",
-      "channel_default_no_expiry": "kanavan oletus (ei vanhenemista)",
-      "channel_default_with": "kanavan oletus ({{duration}})",
-      "do_not_auto_delete": "älä poista automaattisesti",
-      "lock_preferred": "Aseta {{duration}} ensisijaiseksi vanhenemisajaksi",
-      "maximum": "enintään {{duration}}",
-      "no_expiry": "ei vanhenemista",
-      "preferred_locked": "Ensisijainen vanhenemisaika asetettu",
-      "remove_preferred": "Poista ensisijainen vanhenemisaika {{duration}}",
-      "set": "aseta viestin vanheneminen",
-      "title": "viestin vanheneminen",
-      "tooltip_value": "viestin vanheneminen: {{value}}",
-      "unavailable": "viestin vanheneminen ei ole käytettävissä"
-    },
-    "hide_user": {
-      "error_hide": "käyttäjän piilottaminen epäonnistui",
-      "error_unhide": "käyttäjän näyttäminen epäonnistui",
-      "for_1_hour": "piilota 1 tunniksi",
-      "for_24_hours": "piilota 24 tunniksi",
-      "hide": "piilota",
-      "unhide": "näytä",
-      "until_unhidden": "piilota toistaiseksi"
-    },
-    "image_viewer": {
-      "actions": "image actions",
-      "chat_image": "chat image",
-      "clipboard_unavailable": "image clipboard is unavailable",
-      "close": "close image viewer",
-      "copied": "image copied",
-      "copy": "copy image",
-      "copy_failed": "unable to copy image",
-      "download": "download image",
-      "download_failed": "unable to download image",
-      "prepare_failed": "unable to prepare image for clipboard",
-      "read_failed": "unable to read image",
-      "zoom_in": "zoom in",
-      "zoom_out": "zoom out"
-    },
-    "invite": {
-      "apply": "apply",
-      "apply_question": "apply to join this group?",
-      "closed_group": "closed group",
-      "joined": "joined",
-      "open_group": "open group",
-      "pending": "pending"
-    },
-    "join_group_question": "join this group?",
-    "mention": {
-      "channels": "kanavat",
-      "empty": "ei osumia",
-      "people": "ihmiset",
-      "special": "erikoismaininnat",
-      "suggestions": "mainintaehdotukset"
-    },
-    "mode_pill": {
-      "chat": "Keskustelu",
-      "enter_qortal_land": "Siirry Qortal Landiin",
-      "return_to_chat": "Palaa keskusteluun"
-    },
-    "qapp_preview": {
-      "check_again": "check again",
-      "no_resource": "no Q-App resource was found for this link.",
-      "open_in_quitter": "open this post in Quitter.",
-      "open_publication": "open this publication to read the full article.",
-      "preview_failed": "the resource exists, but its preview could not be loaded right now.",
-      "preview_unavailable": "preview unavailable",
-      "resource_not_found": "resource not found",
-      "shared_photo": "shared a photo",
-      "shared_video": "shared a video",
-      "shared_video_titled": "shared a video: {{title}}",
-      "view_on_quitter": "view this post on Quitter",
-      "watch_on_qtube": "watch this video on Q-Tube."
-    },
-    "rail": {
-      "find_groups": "Etsi ryhmiä",
-      "group_settings": "Ryhmän asetukset",
-      "whats_new": "Avaa uutuudet"
-    },
-    "settings": {
-      "category": {
-        "accessibility": "Saavutettavuus",
-        "legacy": "Vanha versio"
-      },
-      "legacy": {
-        "description": "Näytä vanhat Threads- ja Admin-painikkeet Q-Chatin yläpalkissa.",
-        "title": "Threads",
-        "toggle": {
-          "aria": "Näytä vanhat Threads",
-          "description": "Näyttää vanhat Threads- ja Admin-kuvakkeet.",
-          "label": "Threads"
-        },
-        "warning": "Threads poistetaan tulevassa julkaisussa. Siirrä tärkeät ketjujen tiedot turvalliseen paikkaan tai uudelle Q-Chat-kanavalle ennen päivitystä."
-      },
-      "messages": {
-        "description": "Säädä, miten omat viestisi näkyvät Reticulum Q-Chatissa.",
-        "highlight_own": {
-          "description": "Lisää lähettämiisi viesteihin hillityn taustan.",
-          "label": "Korosta omat viestini"
-        },
-        "title": "Viestit"
-      },
-      "nav": {
-        "mentions": "Maininnat",
-        "messages": "Viestit",
-        "text_size": "Tekstin koko",
-        "threads": "Threads"
-      },
-      "notifications": {
-        "description": "Näytä Reticulum Q-Chatin maininnat Hubin ilmoituspaneelissa. Tavalliset lukemattomat viestit eivät luo Hub-ilmoituksia.",
-        "mentions": {
-          "description": "Ilmoita minulle, kun joku mainitsee minut kanavalla.",
-          "label": "Mainintojen ilmoitukset"
-        },
-        "title": "Ilmoitukset"
-      },
-      "text_size": {
-        "default": {
-          "detail": "Nykyinen keskustelun tekstikoko",
-          "label": "Oletus"
-        },
-        "description": "Valitse lukukoko Reticulum-viesteille, kanavien nimille ja jäsenlistalle. Kutsujen esikatselut säilyttävät kiinteän asettelunsa.",
-        "high": {
-          "detail": "Suurin luettava keskustelun teksti",
-          "label": "Suuri"
-        },
-        "medium": {
-          "detail": "Miellyttävä suurennus",
-          "label": "Keskikokoinen"
-        },
-        "title": "Tekstin koko"
-      }
-    },
-    "user_card": {
-      "address_copied": "osoite kopioitu",
-      "copy_address": "kopioi osoite",
-      "copy_full_address": "kopioi koko qortal-osoite",
-      "hide_user": "piilota käyttäjä",
-      "message": "viesti",
-      "minter_level": "minter-taso",
-      "minter_level_value": "taso {{level}}",
-      "qort_balance": "qort-saldo",
-      "qort_balance_value": "{{amount}} QORT",
-      "qortal_address": "qortal-osoite",
-      "send_qort": "lähetä QORT",
-      "view_profile": "näytä profiili",
-      "view_profile_of": "näytä käyttäjän {{name}} profiili"
-    }
   },
   "subscription": {
     "actions_badge_one": "{{count}} toimenpide",
@@ -1091,7 +914,7 @@
     },
     "highlights": {
       "calls": {
-        "description": "Aloita kahdenkeskisiä ja ryhmäpuheluita poistumatta Q-Chatista. Ryhmäpuheluihin mahtuu jopa viisitoista henkilöä, ja ne alkavat kompaktissa näkymässä, jonka voi laajentaa milloin tahansa.",
+        "description": "Aloita kahdenkeskisiä ja ryhmäpuheluita poistumatta Q-Chatista. Ryhmäpuheluihin mahtuu jopa seitsemän henkilöä, ja ne alkavat kompaktissa näkymässä, jonka voi laajentaa milloin tahansa.",
         "title": "Puhelut, jotka eivät ole tiellä"
       },
       "channels": {

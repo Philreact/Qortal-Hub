@@ -268,7 +268,7 @@ const ListOfMembers = ({
     );
     const admins = allAdmins.filter(isMemberOnline).sort(sortAdmins);
     const allRegularMembers = allMembers.filter(
-      (member) => member?.member !== ownerAddress && !Boolean(member?.isAdmin)
+      (member) => member?.member !== ownerAddress && !member?.isAdmin
     );
     const loungeMembers = allRegularMembers
       .filter(
@@ -301,7 +301,7 @@ const ListOfMembers = ({
         totalCount: allAdmins.length,
         expanded: expandedSections.admins,
         first: true,
-        label: 'Admins',
+        label: t('group:member_category.admins'),
         section: 'admins',
         type: 'section',
       },
@@ -313,7 +313,7 @@ const ListOfMembers = ({
         totalCount: allRegularMembers.length,
         expanded: expandedSections.lounge,
         first: false,
-        label: 'Lounge',
+        label: t('group:member_category.lounge'),
         section: 'lounge',
         type: 'section',
       },
@@ -325,7 +325,7 @@ const ListOfMembers = ({
         totalCount: allRegularMembers.length,
         expanded: expandedSections.park,
         first: false,
-        label: 'Park',
+        label: t('group:member_category.park'),
         section: 'park',
         type: 'section',
       },
@@ -337,7 +337,7 @@ const ListOfMembers = ({
         totalCount: allRegularMembers.length,
         expanded: expandedSections.members,
         first: false,
-        label: 'Members',
+        label: t('group:member_category.members'),
         section: 'members',
         type: 'section',
       },
@@ -348,7 +348,7 @@ const ListOfMembers = ({
         count: offlineMembers.length,
         expanded: expandedSections.offline,
         first: false,
-        label: 'Offline',
+        label: t('group:member_category.offline'),
         section: 'offline',
         type: 'section',
       },
@@ -373,6 +373,7 @@ const ListOfMembers = ({
     ownerAddress,
     sortedMembers,
     statusMap,
+    t,
   ]);
 
   const handlePopoverOpen = (event, index) => {

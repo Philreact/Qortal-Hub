@@ -497,6 +497,7 @@
     },
     "generic": {
       "account_menu": "Menú de cuenta",
+      "account_menu_status": "Menú de cuenta, estado: {{status}}",
       "address": "Dirección",
       "address_copied": "dirección copiada al portapapeles.",
       "already_voted": "ya has votado.",
@@ -570,6 +571,7 @@
       "password_enter": "Ingrese una contraseña",
       "payment_request": "la aplicación <br/><italic>{{hostname}}</italic> <br/><span>solicita un pago</span>",
       "people_reaction": "personas que reaccionaron con {{ reaction }}",
+      "presence_status": "Estado: {{status}}",
       "processing_transaction": "está procesando transacciones, espere ...",
       "publish_data": "Publicar datos en Qortal: cualquier cosa, desde aplicaciones hasta videos. Totalmente descentralizado!",
       "publishing": "Publicación ... por favor espera.",
@@ -591,6 +593,7 @@
       "sending": "envío...",
       "settings": "está utilizando la forma de exportación/importación de la configuración de ahorro.",
       "space_for_admins": "lo siento, este espacio es solo para administradores.",
+      "status": "Estado",
       "unread_messages": "mensajes no leídos a continuación",
       "unsaved_changes": "tiene cambios no salvos en sus aplicaciones fijadas. Guárdelos a QDN.",
       "updating": "actualización",

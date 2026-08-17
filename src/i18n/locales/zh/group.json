@@ -184,14 +184,6 @@
     "remove_file": "移除文件",
     "remove_image": "移除图片",
     "resize_channel_list": "调整频道列表大小",
-    "reticulum_author_mismatch": "已签名的 Reticulum 聊天作者不匹配",
-    "reticulum_delete_failed": "Reticulum 聊天删除失败",
-    "reticulum_disabled": "Reticulum 聊天已停用",
-    "reticulum_publish_failed": "Reticulum 聊天发布失败",
-    "reticulum_release_seq_failed": "无法释放 Reticulum 聊天事件序列",
-    "reticulum_reserve_seq_failed": "无法预留 Reticulum 聊天事件序列",
-    "reticulum_sign_failed": "无法签名 Reticulum 聊天事件",
-    "reticulum_welcome_failed": "Reticulum 欢迎消息发布失败",
     "save_changes": "保存更改",
     "search_chat": "搜索聊天",
     "search_failed": "搜索失败",
@@ -206,6 +198,14 @@
     "write_not_allowed": "你无法在此频道发言"
   },
   "context_menu": {
+    "about_group": "关于群组",
+    "change_group_avatar": "更改群组头像",
+    "create_category": "创建分类",
+    "create_channel": "创建频道",
+    "hidden_users": "已隐藏的用户",
+    "invite_link_copied": "已复制邀请链接",
+    "invite_link_copy_failed": "无法复制邀请链接",
+    "leave_group": "退出群组",
     "mark_all_read": "全部标为已读",
     "mark_as_read": "标记为已读",
     "mute_push_notifications": "静音推送通知",
@@ -215,6 +215,7 @@
     "account_overview": "账户概览",
     "account_settings_tooltip": "账户设置",
     "account_status_busy": "忙碌",
+    "account_status_idle": "闲置",
     "account_status_invisible": "隐身",
     "account_status_offline": "离线",
     "account_status_online": "在线",
@@ -232,9 +233,6 @@
     "close_action_update_error": "目前无法更新关闭窗口的行为。",
     "close_receive_qort_modal": "关闭接收 QORT 窗口",
     "close_send_qort_modal": "关闭发送 QORT 窗口",
-    "community_stun_contribution": "社区通话支持",
-    "community_stun_contribution_desc": "通过提供一项小型网络服务来帮助直连通话建立连接。",
-    "community_stun_update_error": "目前无法更新社区通话支持。",
     "copy_address": "复制地址",
     "copy_key": "复制密钥",
     "core": "Core",
@@ -426,7 +424,6 @@
     "message_failed": "Reticulum 私信发送失败",
     "missing_participants": "缺少私聊参与者",
     "missing_public_key": "缺少本地 Qortal 公钥",
-    "reticulum_required_for_attachments": "直接附件需要 Reticulum 私聊",
     "select_valid_name": "请选择有效的 Qortal 名称或地址",
     "selected_file": "已选择的文件",
     "send_placeholder": "发送消息...",
@@ -602,10 +599,6 @@
     "requests_empty_description": "您所管理群组的加入请求将显示在这里。",
     "requests_empty_title": "暂无待处理请求",
     "restore": "Restore",
-    "reticulum_mentions_one": "{{count}} 条提及",
-    "reticulum_mentions_other": "{{count}} 条提及",
-    "reticulum_new_messages_one": "{{count}} 条新消息",
-    "reticulum_new_messages_other": "{{count}} 条新消息",
     "select_admin_group": "选择您担任管理员的群组",
     "show_ignored": "Show ignored",
     "tab_invites": "邀请",
@@ -662,6 +655,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "你",
   "latest_mails": "最新 Q 邮件",
+  "member_category": {
+    "admins": "管理员",
+    "collapse": "收起{{category}}",
+    "expand": "展开{{category}}",
+    "lounge": "休息区",
+    "members": "成员",
+    "offline": "离线",
+    "park": "公园"
+  },
   "message": {
     "error": {
       "access_name": "无法发送消息：缺少姓名访问权限",
@@ -786,185 +788,6 @@
     "try_again": "重试",
     "unencrypted": "未加密",
     "verification_failed": "验证失败"
-  },
-  "reticulum": {
-    "call_history": {
-      "answered": "语音通话",
-      "cancelled": "已取消的语音通话",
-      "declined": "已拒绝的语音通话",
-      "missed": "未接语音通话",
-      "no_answer": "无人接听"
-    },
-    "discussion": {
-      "choose_emoji": "choose emoji",
-      "close": "close discussion",
-      "initial_post": "initial post",
-      "remove_attachment": "remove attachment",
-      "remove_file": "remove {{fileName}}",
-      "replies": "replies:",
-      "reply_placeholder": "reply to discussion...",
-      "wait_until_ready": "wait until the discussion is ready"
-    },
-    "event_preview": {
-      "all_day": "all day",
-      "calendar_unavailable": "calendar is unavailable",
-      "join_failed": "unable to join this group. Please try again.",
-      "loading": "loading event preview",
-      "member_required": "you must be a member of the source group to view this event.",
-      "not_found": "event not found",
-      "request_join_question": "request to join this group?",
-      "unavailable": "event unavailable",
-      "unavailable_temporarily": "event preview is temporarily unavailable",
-      "view_group": "view group"
-    },
-    "expiry": {
-      "channel_default": "频道默认设置",
-      "channel_default_no_expiry": "频道默认设置（永不过期）",
-      "channel_default_with": "频道默认设置（{{duration}}）",
-      "do_not_auto_delete": "不自动删除",
-      "lock_preferred": "将 {{duration}} 设为首选过期时间",
-      "maximum": "最长 {{duration}}",
-      "no_expiry": "永不过期",
-      "preferred_locked": "已设置首选过期时间",
-      "remove_preferred": "移除 {{duration}} 的首选过期时间",
-      "set": "设置消息过期时间",
-      "title": "消息过期时间",
-      "tooltip_value": "消息过期时间：{{value}}",
-      "unavailable": "消息过期功能不可用"
-    },
-    "hide_user": {
-      "error_hide": "无法隐藏该用户",
-      "error_unhide": "无法取消隐藏该用户",
-      "for_1_hour": "隐藏 1 小时",
-      "for_24_hours": "隐藏 24 小时",
-      "hide": "隐藏",
-      "unhide": "取消隐藏",
-      "until_unhidden": "隐藏至手动取消"
-    },
-    "image_viewer": {
-      "actions": "image actions",
-      "chat_image": "chat image",
-      "clipboard_unavailable": "image clipboard is unavailable",
-      "close": "close image viewer",
-      "copied": "image copied",
-      "copy": "copy image",
-      "copy_failed": "unable to copy image",
-      "download": "download image",
-      "download_failed": "unable to download image",
-      "prepare_failed": "unable to prepare image for clipboard",
-      "read_failed": "unable to read image",
-      "zoom_in": "zoom in",
-      "zoom_out": "zoom out"
-    },
-    "invite": {
-      "apply": "apply",
-      "apply_question": "apply to join this group?",
-      "closed_group": "closed group",
-      "joined": "joined",
-      "open_group": "open group",
-      "pending": "pending"
-    },
-    "join_group_question": "join this group?",
-    "mention": {
-      "channels": "频道",
-      "empty": "未找到匹配项",
-      "people": "成员",
-      "special": "特殊提及",
-      "suggestions": "提及建议"
-    },
-    "mode_pill": {
-      "chat": "聊天",
-      "enter_qortal_land": "进入 Qortal Land",
-      "return_to_chat": "返回聊天"
-    },
-    "qapp_preview": {
-      "check_again": "check again",
-      "no_resource": "no Q-App resource was found for this link.",
-      "open_in_quitter": "open this post in Quitter.",
-      "open_publication": "open this publication to read the full article.",
-      "preview_failed": "the resource exists, but its preview could not be loaded right now.",
-      "preview_unavailable": "preview unavailable",
-      "resource_not_found": "resource not found",
-      "shared_photo": "shared a photo",
-      "shared_video": "shared a video",
-      "shared_video_titled": "shared a video: {{title}}",
-      "view_on_quitter": "view this post on Quitter",
-      "watch_on_qtube": "watch this video on Q-Tube."
-    },
-    "rail": {
-      "find_groups": "查找群组",
-      "group_settings": "群组设置",
-      "whats_new": "打开新功能介绍"
-    },
-    "settings": {
-      "category": {
-        "accessibility": "无障碍",
-        "legacy": "旧版"
-      },
-      "legacy": {
-        "description": "在 Q-Chat 顶栏显示旧版的 Threads 和 Admin 控件。",
-        "title": "Threads",
-        "toggle": {
-          "aria": "显示旧版 Threads",
-          "description": "显示旧版的 Threads 和 Admin 图标。",
-          "label": "Threads"
-        },
-        "warning": "Threads 将在下一个版本中移除。更新前请把重要的主题信息转移到安全的位置或 Q-Chat 的新频道。"
-      },
-      "messages": {
-        "description": "调整你自己的消息在 Reticulum Q-Chat 中的显示方式。",
-        "highlight_own": {
-          "description": "为你发送的消息添加淡淡的背景。",
-          "label": "突出显示我的消息"
-        },
-        "title": "消息"
-      },
-      "nav": {
-        "mentions": "提及",
-        "messages": "消息",
-        "text_size": "文字大小",
-        "threads": "Threads"
-      },
-      "notifications": {
-        "description": "在 Hub 通知面板中显示 Reticulum Q-Chat 的提及。普通未读消息不会产生 Hub 通知。",
-        "mentions": {
-          "description": "当有人在频道中提及我时通知我。",
-          "label": "提及通知"
-        },
-        "title": "通知"
-      },
-      "text_size": {
-        "default": {
-          "detail": "当前的聊天文字大小",
-          "label": "默认"
-        },
-        "description": "为 Reticulum 消息、频道标签和成员列表选择阅读大小。邀请预览保持其固定布局。",
-        "high": {
-          "detail": "在保持易读的前提下最大的聊天文字",
-          "label": "大"
-        },
-        "medium": {
-          "detail": "适度放大",
-          "label": "中"
-        },
-        "title": "文字大小"
-      }
-    },
-    "user_card": {
-      "address_copied": "地址已复制",
-      "copy_address": "复制地址",
-      "copy_full_address": "复制完整的 qortal 地址",
-      "hide_user": "隐藏用户",
-      "message": "消息",
-      "minter_level": "铸造者等级",
-      "minter_level_value": "等级 {{level}}",
-      "qort_balance": "qort 余额",
-      "qort_balance_value": "{{amount}} QORT",
-      "qortal_address": "qortal 地址",
-      "send_qort": "发送 QORT",
-      "view_profile": "查看资料",
-      "view_profile_of": "查看 {{name}} 的资料"
-    }
   },
   "subscription": {
     "actions_badge_one": "{{count}} 项操作",
@@ -1091,7 +914,7 @@
     },
     "highlights": {
       "calls": {
-        "description": "无需离开Q-Chat即可发起一对一通话和群组通话。群组通话最多支持十五人，并以紧凑视图开始，随时可以展开。",
+        "description": "无需离开 Q-Chat 即可发起一对一通话和群组通话。群组通话最多支持七人，并以紧凑视图开始，随时可以展开。",
         "title": "不打扰的通话"
       },
       "channels": {

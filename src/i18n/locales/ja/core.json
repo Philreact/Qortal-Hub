@@ -497,6 +497,7 @@
     },
     "generic": {
       "account_menu": "アカウントメニュー",
+      "account_menu_status": "アカウントメニュー、ステータス: {{status}}",
       "address": "アドレス",
       "address_copied": "アドレスをクリップボードにコピーしました。",
       "already_voted": "あなたはすでに投票しました。",
@@ -570,6 +571,7 @@
       "password_enter": "パスワードを入力してください",
       "payment_request": "アプリ <br/><italic>{{hostname}}</italic> <br/><span>が支払いを要求しています</span>",
       "people_reaction": "{{ reaction }} で反応した人",
+      "presence_status": "ステータス: {{status}}",
       "processing_transaction": "トランザクションを処理していますか、お待ちください...",
       "publish_data": "Qortalにデータを公開：アプリからビデオまで何でも。完全に分散化されました！",
       "publishing": "出版...待ってください。",
@@ -591,6 +593,7 @@
       "sending": "送信...",
       "settings": "設定を保存するエクスポート/インポート方法を使用しています。",
       "space_for_admins": "申し訳ありませんが、このスペースは管理者専用です。",
+      "status": "ステータス",
       "unread_messages": "以下の未読メッセージ",
       "unsaved_changes": "ピン留めアプリに救われていない変更があります。それらをqdnに保存します。",
       "updating": "更新",

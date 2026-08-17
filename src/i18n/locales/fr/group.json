@@ -184,14 +184,6 @@
     "remove_file": "Retirer le fichier",
     "remove_image": "Retirer l'image",
     "resize_channel_list": "Redimensionner la liste des canaux",
-    "reticulum_author_mismatch": "L'auteur signé du chat Reticulum ne correspond pas",
-    "reticulum_delete_failed": "Échec de la suppression du chat Reticulum",
-    "reticulum_disabled": "Le chat Reticulum est désactivé",
-    "reticulum_publish_failed": "Échec de la publication du chat Reticulum",
-    "reticulum_release_seq_failed": "Impossible de libérer la séquence d'événements du chat Reticulum",
-    "reticulum_reserve_seq_failed": "Impossible de réserver la séquence d'événements du chat Reticulum",
-    "reticulum_sign_failed": "Impossible de signer l'événement du chat Reticulum",
-    "reticulum_welcome_failed": "Échec de la publication du message de bienvenue Reticulum",
     "save_changes": "Enregistrer les modifications",
     "search_chat": "Rechercher dans le chat",
     "search_failed": "Échec de la recherche",
@@ -206,6 +198,14 @@
     "write_not_allowed": "Vous ne pouvez pas écrire dans ce canal"
   },
   "context_menu": {
+    "about_group": "À propos du groupe",
+    "change_group_avatar": "Changer l'avatar du groupe",
+    "create_category": "Créer une catégorie",
+    "create_channel": "Créer un canal",
+    "hidden_users": "Utilisateurs masqués",
+    "invite_link_copied": "Lien d'invitation copié",
+    "invite_link_copy_failed": "Impossible de copier le lien d'invitation",
+    "leave_group": "Quitter le groupe",
     "mark_all_read": "Tout marquer comme lu",
     "mark_as_read": "Marquer comme lu",
     "mute_push_notifications": "Couper les notifications push",
@@ -215,6 +215,7 @@
     "account_overview": "Vue du compte",
     "account_settings_tooltip": "Paramètres du compte",
     "account_status_busy": "Occupé",
+    "account_status_idle": "Inactif",
     "account_status_invisible": "Invisible",
     "account_status_offline": "Hors ligne",
     "account_status_online": "En ligne",
@@ -232,9 +233,6 @@
     "close_action_update_error": "Impossible de mettre à jour le comportement de fermeture de la fenêtre pour le moment.",
     "close_receive_qort_modal": "Fermer la fenêtre de réception de QORT",
     "close_send_qort_modal": "Fermer la fenêtre d’envoi de QORT",
-    "community_stun_contribution": "Assistance communautaire aux appels",
-    "community_stun_contribution_desc": "Aidez les appels directs à se connecter en proposant un petit service réseau.",
-    "community_stun_update_error": "Impossible de mettre à jour l’assistance communautaire aux appels pour le moment.",
     "copy_address": "Copier l’adresse",
     "copy_key": "Copier la clé",
     "core": "Core",
@@ -426,7 +424,6 @@
     "message_failed": "Échec du message direct Reticulum",
     "missing_participants": "Participants du chat direct manquants",
     "missing_public_key": "Clé publique Qortal locale manquante",
-    "reticulum_required_for_attachments": "Le chat direct Reticulum est requis pour les pièces jointes directes",
     "select_valid_name": "Sélectionnez un nom ou une adresse Qortal valides",
     "selected_file": "Fichier sélectionné",
     "send_placeholder": "Envoyer un message...",
@@ -602,10 +599,6 @@
     "requests_empty_description": "Les demandes d’adhésion des groupes que vous gérez apparaîtront ici.",
     "requests_empty_title": "Aucune demande en attente",
     "restore": "Restore",
-    "reticulum_mentions_one": "{{count}} mention",
-    "reticulum_mentions_other": "{{count}} mentions",
-    "reticulum_new_messages_one": "{{count}} nouveau message",
-    "reticulum_new_messages_other": "{{count}} nouveaux messages",
     "select_admin_group": "Sélectionnez un groupe dont vous êtes administrateur",
     "show_ignored": "Show ignored",
     "tab_invites": "Invitations",
@@ -662,6 +655,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "Vous",
   "latest_mails": "derniers Q-Mails",
+  "member_category": {
+    "admins": "administrateurs",
+    "collapse": "réduire {{category}}",
+    "expand": "développer {{category}}",
+    "lounge": "salon",
+    "members": "membres",
+    "offline": "hors ligne",
+    "park": "parc"
+  },
   "message": {
     "error": {
       "access_name": "impossible d’envoyer un message sans accès à votre nom",
@@ -786,185 +788,6 @@
     "try_again": "Réessayer",
     "unencrypted": "Non chiffré",
     "verification_failed": "Échec de la vérification"
-  },
-  "reticulum": {
-    "call_history": {
-      "answered": "appel vocal",
-      "cancelled": "appel vocal annulé",
-      "declined": "appel vocal refusé",
-      "missed": "appel vocal manqué",
-      "no_answer": "sans réponse"
-    },
-    "discussion": {
-      "choose_emoji": "choose emoji",
-      "close": "close discussion",
-      "initial_post": "initial post",
-      "remove_attachment": "remove attachment",
-      "remove_file": "remove {{fileName}}",
-      "replies": "replies:",
-      "reply_placeholder": "reply to discussion...",
-      "wait_until_ready": "wait until the discussion is ready"
-    },
-    "event_preview": {
-      "all_day": "all day",
-      "calendar_unavailable": "calendar is unavailable",
-      "join_failed": "unable to join this group. Please try again.",
-      "loading": "loading event preview",
-      "member_required": "you must be a member of the source group to view this event.",
-      "not_found": "event not found",
-      "request_join_question": "request to join this group?",
-      "unavailable": "event unavailable",
-      "unavailable_temporarily": "event preview is temporarily unavailable",
-      "view_group": "view group"
-    },
-    "expiry": {
-      "channel_default": "valeur par défaut du canal",
-      "channel_default_no_expiry": "valeur par défaut du canal (aucune expiration)",
-      "channel_default_with": "valeur par défaut du canal ({{duration}})",
-      "do_not_auto_delete": "ne pas supprimer automatiquement",
-      "lock_preferred": "Définir {{duration}} comme expiration préférée",
-      "maximum": "maximum {{duration}}",
-      "no_expiry": "aucune expiration",
-      "preferred_locked": "Expiration préférée définie",
-      "remove_preferred": "Retirer l’expiration préférée de {{duration}}",
-      "set": "définir l'expiration du message",
-      "title": "expiration du message",
-      "tooltip_value": "expiration du message : {{value}}",
-      "unavailable": "l'expiration des messages est indisponible"
-    },
-    "hide_user": {
-      "error_hide": "impossible de masquer l'utilisateur",
-      "error_unhide": "impossible d'afficher l'utilisateur",
-      "for_1_hour": "masquer pendant 1 heure",
-      "for_24_hours": "masquer pendant 24 heures",
-      "hide": "masquer",
-      "unhide": "afficher",
-      "until_unhidden": "masquer jusqu'à réaffichage"
-    },
-    "image_viewer": {
-      "actions": "image actions",
-      "chat_image": "chat image",
-      "clipboard_unavailable": "image clipboard is unavailable",
-      "close": "close image viewer",
-      "copied": "image copied",
-      "copy": "copy image",
-      "copy_failed": "unable to copy image",
-      "download": "download image",
-      "download_failed": "unable to download image",
-      "prepare_failed": "unable to prepare image for clipboard",
-      "read_failed": "unable to read image",
-      "zoom_in": "zoom in",
-      "zoom_out": "zoom out"
-    },
-    "invite": {
-      "apply": "apply",
-      "apply_question": "apply to join this group?",
-      "closed_group": "closed group",
-      "joined": "joined",
-      "open_group": "open group",
-      "pending": "pending"
-    },
-    "join_group_question": "join this group?",
-    "mention": {
-      "channels": "canaux",
-      "empty": "aucun résultat trouvé",
-      "people": "personnes",
-      "special": "mentions spéciales",
-      "suggestions": "suggestions de mentions"
-    },
-    "mode_pill": {
-      "chat": "Chat",
-      "enter_qortal_land": "Entrer dans Qortal Land",
-      "return_to_chat": "Retour au chat"
-    },
-    "qapp_preview": {
-      "check_again": "check again",
-      "no_resource": "no Q-App resource was found for this link.",
-      "open_in_quitter": "open this post in Quitter.",
-      "open_publication": "open this publication to read the full article.",
-      "preview_failed": "the resource exists, but its preview could not be loaded right now.",
-      "preview_unavailable": "preview unavailable",
-      "resource_not_found": "resource not found",
-      "shared_photo": "shared a photo",
-      "shared_video": "shared a video",
-      "shared_video_titled": "shared a video: {{title}}",
-      "view_on_quitter": "view this post on Quitter",
-      "watch_on_qtube": "watch this video on Q-Tube."
-    },
-    "rail": {
-      "find_groups": "Trouver des groupes",
-      "group_settings": "Paramètres du groupe",
-      "whats_new": "Ouvrir les nouveautés"
-    },
-    "settings": {
-      "category": {
-        "accessibility": "Accessibilité",
-        "legacy": "Ancienne version"
-      },
-      "legacy": {
-        "description": "Afficher les anciens contrôles Threads et Admin dans l'en-tête de Q-Chat.",
-        "title": "Threads",
-        "toggle": {
-          "aria": "Afficher les anciens Threads",
-          "description": "Affiche les anciennes icônes Threads et Admin.",
-          "label": "Threads"
-        },
-        "warning": "Les Threads seront supprimés dans la prochaine version. Déplacez toute information importante vers un endroit sûr ou vers un nouveau canal de Q-Chat avant la mise à jour."
-      },
-      "messages": {
-        "description": "Ajustez l'apparence de vos propres messages dans Reticulum Q-Chat.",
-        "highlight_own": {
-          "description": "Ajoute un léger fond aux messages que vous envoyez.",
-          "label": "Mettre en évidence mes messages"
-        },
-        "title": "Messages"
-      },
-      "nav": {
-        "mentions": "Mentions",
-        "messages": "Messages",
-        "text_size": "Taille du texte",
-        "threads": "Threads"
-      },
-      "notifications": {
-        "description": "Afficher les mentions de Reticulum Q-Chat dans le panneau de notifications du Hub. Les messages non lus ordinaires ne créent pas de notifications du Hub.",
-        "mentions": {
-          "description": "M'alerter lorsque quelqu'un me mentionne dans un canal.",
-          "label": "Notifications de mention"
-        },
-        "title": "Notifications"
-      },
-      "text_size": {
-        "default": {
-          "detail": "Taille actuelle du texte du chat",
-          "label": "Par défaut"
-        },
-        "description": "Choisissez une taille de lecture pour les messages Reticulum, les libellés de canaux et la liste des membres. Les aperçus d'invitation conservent leur mise en page fixe.",
-        "high": {
-          "detail": "Texte de chat le plus grand tout en restant lisible",
-          "label": "Élevée"
-        },
-        "medium": {
-          "detail": "Une augmentation confortable",
-          "label": "Moyenne"
-        },
-        "title": "Taille du texte"
-      }
-    },
-    "user_card": {
-      "address_copied": "adresse copiée",
-      "copy_address": "copier l'adresse",
-      "copy_full_address": "copier l'adresse qortal complète",
-      "hide_user": "masquer l'utilisateur",
-      "message": "message",
-      "minter_level": "niveau de minter",
-      "minter_level_value": "niveau {{level}}",
-      "qort_balance": "solde qort",
-      "qort_balance_value": "{{amount}} QORT",
-      "qortal_address": "adresse qortal",
-      "send_qort": "envoyer des QORT",
-      "view_profile": "voir le profil",
-      "view_profile_of": "voir le profil de {{name}}"
-    }
   },
   "subscription": {
     "actions_badge_one": "{{count}} action",
@@ -1091,7 +914,7 @@
     },
     "highlights": {
       "calls": {
-        "description": "Lancez des appels individuels et de groupe sans quitter Q-Chat. Les appels de groupe acceptent jusqu'à quinze personnes et démarrent dans une vue compacte que vous pouvez agrandir à tout moment.",
+        "description": "Lancez des appels individuels et de groupe sans quitter Q-Chat. Les appels de groupe acceptent jusqu'à sept personnes et démarrent dans une vue compacte que vous pouvez agrandir à tout moment.",
         "title": "Des appels qui ne dérangent pas"
       },
       "channels": {

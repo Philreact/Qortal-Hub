@@ -558,7 +558,13 @@ function ReticulumChannelExpiryField({
   onChange: (durationMs: number | undefined) => void;
   value?: number;
 }) {
-  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
+  const { t } = useTranslation([
+    'auth',
+    'core',
+    'group',
+    'question',
+    'reticulum',
+  ]);
   const normalizedValue =
     Number.isFinite(value) && Number(value) > 0 ? Number(value) : '';
   const hasCustomValue =
@@ -599,7 +605,7 @@ function ReticulumChannelExpiryField({
             const durationMs = Number(selected);
             return Number.isFinite(durationMs) && durationMs > 0
               ? formatReticulumExpiryDuration(durationMs)
-              : t('group:reticulum.expiry.no_expiry', {
+              : t('reticulum:expiry.no_expiry', {
                   postProcess: 'capitalizeEachFirstChar',
                 });
           },
@@ -608,7 +614,7 @@ function ReticulumChannelExpiryField({
         value={normalizedValue}
       >
         <MenuItem value="">
-          {t('group:reticulum.expiry.no_expiry', {
+          {t('reticulum:expiry.no_expiry', {
             postProcess: 'capitalizeEachFirstChar',
           })}
         </MenuItem>
@@ -1879,7 +1885,13 @@ export const ChatGroup = ({
   const [isResizingQManager, setIsResizingQManager] = useState(false);
   const qManagerResizeInitialSizeRef = useRef(qManagerSize);
 
-  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
+  const { t } = useTranslation([
+    'auth',
+    'core',
+    'group',
+    'question',
+    'reticulum',
+  ]);
 
   const maxQManagerWidth = Math.max(Q_MANAGER_MIN_WIDTH, windowSize.width);
   const maxQManagerHeight = Math.max(
@@ -2899,7 +2911,7 @@ export const ChatGroup = ({
         if (!result?.success) {
           throw new Error(
             result?.error ||
-              t('group:reticulum.hide_user.error_unhide', {
+              t('reticulum:hide_user.error_unhide', {
                 postProcess: 'capitalizeFirstChar',
               })
           );
@@ -2914,7 +2926,7 @@ export const ChatGroup = ({
         setReticulumHiddenUsersError(
           error instanceof Error
             ? error.message
-            : t('group:reticulum.hide_user.error_unhide', {
+            : t('reticulum:hide_user.error_unhide', {
                 postProcess: 'capitalizeFirstChar',
               })
         );
@@ -2990,28 +3002,36 @@ export const ChatGroup = ({
     selectedReticulumChannelId,
   ]);
   const reticulumSearchAuthorFilterLabel = useMemo(() => {
-    if (!reticulumSearchAuthorFilter) return 'Anyone';
+    if (!reticulumSearchAuthorFilter)
+      return t('group:chat_group.filter_anyone');
     return (
       reticulumSearchAuthorOptions.find(
         (author) => author.address === reticulumSearchAuthorFilter
       )?.name || reticulumSearchAuthorFilter
     );
-  }, [reticulumSearchAuthorFilter, reticulumSearchAuthorOptions]);
-  const reticulumSearchHasFilterLabel =
+  }, [reticulumSearchAuthorFilter, reticulumSearchAuthorOptions, t]);
+  const reticulumSearchHasFilterLabel = t(
     reticulumSearchHasFilter === RETICULUM_SEARCH_HAS_ATTACHMENT
-      ? 'Attachment'
+      ? 'reticulum:search.has.attachment'
       : reticulumSearchHasFilter === RETICULUM_SEARCH_HAS_LINK
-        ? 'Link'
-        : 'Anything';
-  const reticulumSearchSortLabel =
+        ? 'reticulum:search.has.link'
+        : 'reticulum:search.has.any',
+    { postProcess: 'capitalizeFirstChar' }
+  );
+  const reticulumSearchSortLabel = t(
     reticulumSearchSort === 'newest'
-      ? 'Newest'
+      ? 'reticulum:search.sort.newest'
       : reticulumSearchSort === 'oldest'
-        ? 'Oldest'
-        : 'Relevant';
+        ? 'reticulum:search.sort.oldest'
+        : 'reticulum:search.sort.relevance',
+    { postProcess: 'capitalizeFirstChar' }
+  );
   const reticulumSearchDateFilterLabel =
     reticulumSearchAfterDate || reticulumSearchBeforeDate
-      ? `${reticulumSearchAfterDate || 'any'} -> ${reticulumSearchBeforeDate || 'any'}`
+      ? t('reticulum:search.date_range', {
+          after: reticulumSearchAfterDate || t('reticulum:search.date_any'),
+          before: reticulumSearchBeforeDate || t('reticulum:search.date_any'),
+        })
       : t('group:chat_group.any_time');
   const reticulumSearchVisiblePageNumbers = useMemo(() => {
     const pages = new Set<number>([0, reticulumSearchPage]);
@@ -4315,7 +4335,7 @@ export const ChatGroup = ({
       if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0) {
         return {
           success: false,
-          error: t('group:chat_group.reticulum_disabled'),
+          error: t('reticulum:chat_group.disabled'),
         };
       }
       const timestamp = Date.now();
@@ -4340,7 +4360,7 @@ export const ChatGroup = ({
         !Number.isInteger(authorSequence.authorSeq) ||
         authorSequence.authorSeq <= 0
       ) {
-        throw new Error(t('group:chat_group.reticulum_reserve_seq_failed'));
+        throw new Error(t('reticulum:chat_group.reserve_seq_failed'));
       }
       let sequenceCommitted = false;
       try {
@@ -4367,11 +4387,11 @@ export const ChatGroup = ({
         );
         if (!signed || signed.error) {
           throw new Error(
-            signed?.error || t('group:chat_group.reticulum_sign_failed')
+            signed?.error || t('reticulum:chat_group.sign_failed')
           );
         }
         if (signed.authorAddress !== myAddress) {
-          throw new Error(t('group:chat_group.reticulum_author_mismatch'));
+          throw new Error(t('reticulum:chat_group.author_mismatch'));
         }
         const event = {
           ...baseFields,
@@ -4382,7 +4402,7 @@ export const ChatGroup = ({
         const result = await publishReticulumChatEvent(event);
         if (!result?.success) {
           throw new Error(
-            result?.error || t('group:chat_group.reticulum_publish_failed')
+            result?.error || t('reticulum:chat_group.publish_failed')
           );
         }
         sequenceCommitted = true;
@@ -4398,7 +4418,7 @@ export const ChatGroup = ({
             );
           } catch (releaseError) {
             console.warn(
-              t('group:chat_group.reticulum_release_seq_failed'),
+              t('reticulum:chat_group.release_seq_failed'),
               releaseError
             );
           }
@@ -4531,7 +4551,7 @@ export const ChatGroup = ({
         });
         if (!result?.success) {
           throw new Error(
-            result?.error || t('group:chat_group.reticulum_welcome_failed')
+            result?.error || t('reticulum:chat_group.welcome_failed')
           );
         }
         try {
@@ -6745,7 +6765,7 @@ export const ChatGroup = ({
         });
         if (!result?.success) {
           throw new Error(
-            result?.error || t('group:chat_group.reticulum_delete_failed')
+            result?.error || t('reticulum:chat_group.delete_failed')
           );
         }
         const eventId =
@@ -7628,12 +7648,12 @@ export const ChatGroup = ({
   ) => (
     <InputAdornment position="end">
       <Tooltip
-        title={t('group:reticulum.discussion.choose_emoji', {
+        title={t('reticulum:discussion.choose_emoji', {
           postProcess: 'capitalizeFirstChar',
         })}
       >
         <IconButton
-          aria-label={t('group:reticulum.discussion.choose_emoji', {
+          aria-label={t('reticulum:discussion.choose_emoji', {
             postProcess: 'capitalizeFirstChar',
           })}
           edge="end"
@@ -10143,7 +10163,7 @@ export const ChatGroup = ({
                     {reticulumChatEnabled && (
                       <>
                         <Tooltip
-                          title={t('group:reticulum.discussion.choose_emoji', {
+                          title={t('reticulum:discussion.choose_emoji', {
                             postProcess: 'capitalizeEachFirstChar',
                           })}
                         >
@@ -10412,12 +10432,14 @@ export const ChatGroup = ({
               autoFocus
               fullWidth
               onChange={(event) => setReticulumSearchQuery(event.target.value)}
-              placeholder={`Search ${
+              placeholder={
                 reticulumSearchChannelFilter ===
                 RETICULUM_SEARCH_CHANNEL_CURRENT
-                  ? reticulumSearchChannelFilterLabel
-                  : 'messages'
-              }`}
+                  ? t('reticulum:search.placeholder_channel', {
+                      channel: reticulumSearchChannelFilterLabel,
+                    })
+                  : t('reticulum:search.placeholder_messages')
+              }
               size="small"
               sx={{
                 '& .MuiOutlinedInput-root': {
@@ -10443,7 +10465,9 @@ export const ChatGroup = ({
                 {reticulumSearchChannelFilter !==
                   RETICULUM_SEARCH_CHANNEL_CURRENT && (
                   <Chip
-                    label={`in: ${reticulumSearchChannelFilterLabel}`}
+                    label={t('reticulum:search.chip.in', {
+                      value: reticulumSearchChannelFilterLabel,
+                    })}
                     onDelete={() =>
                       setReticulumSearchChannelFilter(
                         RETICULUM_SEARCH_CHANNEL_CURRENT
@@ -10460,7 +10484,9 @@ export const ChatGroup = ({
                 )}
                 {reticulumSearchAuthorFilter && (
                   <Chip
-                    label={`from: ${reticulumSearchAuthorFilterLabel}`}
+                    label={t('reticulum:search.chip.from', {
+                      value: reticulumSearchAuthorFilterLabel,
+                    })}
                     onDelete={() => setReticulumSearchAuthorFilter('')}
                     size="small"
                     sx={{
@@ -10473,7 +10499,9 @@ export const ChatGroup = ({
                 )}
                 {reticulumSearchHasFilter !== RETICULUM_SEARCH_HAS_ANY && (
                   <Chip
-                    label={`has: ${reticulumSearchHasFilterLabel}`}
+                    label={t('reticulum:search.chip.has', {
+                      value: reticulumSearchHasFilterLabel,
+                    })}
                     onDelete={() =>
                       setReticulumSearchHasFilter(RETICULUM_SEARCH_HAS_ANY)
                     }
@@ -10488,7 +10516,9 @@ export const ChatGroup = ({
                 )}
                 {(reticulumSearchAfterDate || reticulumSearchBeforeDate) && (
                   <Chip
-                    label={`date: ${reticulumSearchDateFilterLabel}`}
+                    label={t('reticulum:search.chip.date', {
+                      value: reticulumSearchDateFilterLabel,
+                    })}
                     onDelete={() => {
                       setReticulumSearchAfterDate('');
                       setReticulumSearchBeforeDate('');
@@ -10504,7 +10534,9 @@ export const ChatGroup = ({
                 )}
                 {reticulumSearchSort !== 'relevance' && (
                   <Chip
-                    label={`sort: ${reticulumSearchSortLabel}`}
+                    label={t('reticulum:search.chip.sort', {
+                      value: reticulumSearchSortLabel,
+                    })}
                     onDelete={() => setReticulumSearchSort('relevance')}
                     size="small"
                     sx={{
@@ -10552,14 +10584,14 @@ export const ChatGroup = ({
                 {[
                   {
                     key: 'from' as const,
-                    label: 'from:',
+                    labelKey: 'reticulum:search.facet.from',
                     value: reticulumSearchAuthorFilter
                       ? reticulumSearchAuthorFilterLabel
                       : '',
                   },
                   {
                     key: 'in' as const,
-                    label: 'in:',
+                    labelKey: 'reticulum:search.facet.in',
                     value:
                       reticulumSearchChannelFilter !==
                       RETICULUM_SEARCH_CHANNEL_CURRENT
@@ -10568,7 +10600,7 @@ export const ChatGroup = ({
                   },
                   {
                     key: 'has' as const,
-                    label: 'has:',
+                    labelKey: 'reticulum:search.facet.has',
                     value:
                       reticulumSearchHasFilter !== RETICULUM_SEARCH_HAS_ANY
                         ? reticulumSearchHasFilterLabel
@@ -10576,7 +10608,7 @@ export const ChatGroup = ({
                   },
                   {
                     key: 'date' as const,
-                    label: 'date:',
+                    labelKey: 'reticulum:search.facet.date',
                     value:
                       reticulumSearchAfterDate || reticulumSearchBeforeDate
                         ? reticulumSearchDateFilterLabel
@@ -10584,7 +10616,7 @@ export const ChatGroup = ({
                   },
                   {
                     key: 'sort' as const,
-                    label: 'sort:',
+                    labelKey: 'reticulum:search.facet.sort',
                     value:
                       reticulumSearchSort !== 'relevance'
                         ? reticulumSearchSortLabel
@@ -10743,10 +10775,13 @@ export const ChatGroup = ({
             {reticulumSearchFilterMenu === 'has' && (
               <>
                 {[
-                  [RETICULUM_SEARCH_HAS_ANY, 'Anything'],
-                  [RETICULUM_SEARCH_HAS_ATTACHMENT, 'Attachment'],
-                  [RETICULUM_SEARCH_HAS_LINK, 'Link'],
-                ].map(([value, label]) => (
+                  [RETICULUM_SEARCH_HAS_ANY, 'reticulum:search.has.any'],
+                  [
+                    RETICULUM_SEARCH_HAS_ATTACHMENT,
+                    'reticulum:search.has.attachment',
+                  ],
+                  [RETICULUM_SEARCH_HAS_LINK, 'reticulum:search.has.link'],
+                ].map(([value, labelKey]) => (
                   <MenuItem
                     key={value}
                     onClick={() => {
@@ -10754,7 +10789,7 @@ export const ChatGroup = ({
                       closeReticulumSearchFilterMenu();
                     }}
                   >
-                    {label}
+                    {t(labelKey, { postProcess: 'capitalizeFirstChar' })}
                   </MenuItem>
                 ))}
               </>
@@ -10762,10 +10797,10 @@ export const ChatGroup = ({
             {reticulumSearchFilterMenu === 'sort' && (
               <>
                 {[
-                  ['relevance', 'Relevant'],
-                  ['newest', 'Newest'],
-                  ['oldest', 'Oldest'],
-                ].map(([value, label]) => (
+                  ['relevance', 'reticulum:search.sort.relevance'],
+                  ['newest', 'reticulum:search.sort.newest'],
+                  ['oldest', 'reticulum:search.sort.oldest'],
+                ].map(([value, labelKey]) => (
                   <MenuItem
                     key={value}
                     onClick={() => {
@@ -10775,7 +10810,7 @@ export const ChatGroup = ({
                       closeReticulumSearchFilterMenu();
                     }}
                   >
-                    {label}
+                    {t(labelKey, { postProcess: 'capitalizeFirstChar' })}
                   </MenuItem>
                 ))}
               </>
@@ -13056,7 +13091,7 @@ export const ChatGroup = ({
                       )}
                     </Box>
                     <Tooltip
-                      title={t('group:reticulum.hide_user.unhide', {
+                      title={t('reticulum:hide_user.unhide', {
                         postProcess: 'capitalizeFirstChar',
                       })}
                     >

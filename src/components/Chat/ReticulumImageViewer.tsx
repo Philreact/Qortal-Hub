@@ -50,7 +50,7 @@ const toClipboardPng = async (blob: Blob, t: TFunction) => {
     const context = canvas.getContext('2d');
     if (!context)
       throw new Error(
-        t('group:reticulum.image_viewer.prepare_failed', {
+        t('reticulum:image_viewer.prepare_failed', {
           postProcess: 'capitalizeFirstChar',
         })
       );
@@ -60,7 +60,7 @@ const toClipboardPng = async (blob: Blob, t: TFunction) => {
     });
     if (!pngBlob)
       throw new Error(
-        t('group:reticulum.image_viewer.prepare_failed', {
+        t('reticulum:image_viewer.prepare_failed', {
           postProcess: 'capitalizeFirstChar',
         })
       );
@@ -80,10 +80,10 @@ export const ReticulumImageViewer = ({
   src,
 }: ReticulumImageViewerProps) => {
   const theme = useTheme();
-  const { t } = useTranslation(['core', 'group']);
+  const { t } = useTranslation(['core', 'reticulum']);
   const altText =
     alt ??
-    t('group:reticulum.image_viewer.chat_image', {
+    t('reticulum:image_viewer.chat_image', {
       postProcess: 'capitalizeFirstChar',
     });
   const [zoom, setZoom] = useState(MIN_ZOOM);
@@ -213,7 +213,7 @@ export const ReticulumImageViewer = ({
     const response = await fetch(src);
     if (!response.ok)
       throw new Error(
-        t('group:reticulum.image_viewer.read_failed', {
+        t('reticulum:image_viewer.read_failed', {
           postProcess: 'capitalizeFirstChar',
         })
       );
@@ -224,7 +224,7 @@ export const ReticulumImageViewer = ({
     try {
       if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
         throw new Error(
-          t('group:reticulum.image_viewer.clipboard_unavailable', {
+          t('reticulum:image_viewer.clipboard_unavailable', {
             postProcess: 'capitalizeFirstChar',
           })
         );
@@ -237,13 +237,13 @@ export const ReticulumImageViewer = ({
         }),
       ]);
       setActionStatus(
-        t('group:reticulum.image_viewer.copied', {
+        t('reticulum:image_viewer.copied', {
           postProcess: 'capitalizeFirstChar',
         })
       );
     } catch {
       setActionStatus(
-        t('group:reticulum.image_viewer.copy_failed', {
+        t('reticulum:image_viewer.copy_failed', {
           postProcess: 'capitalizeFirstChar',
         })
       );
@@ -264,7 +264,7 @@ export const ReticulumImageViewer = ({
       window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0);
     } catch {
       setActionStatus(
-        t('group:reticulum.image_viewer.download_failed', {
+        t('reticulum:image_viewer.download_failed', {
           postProcess: 'capitalizeFirstChar',
         })
       );
@@ -309,7 +309,7 @@ export const ReticulumImageViewer = ({
         }}
       >
         <Box
-          aria-label={t('group:reticulum.image_viewer.actions', {
+          aria-label={t('reticulum:image_viewer.actions', {
             postProcess: 'capitalizeFirstChar',
           })}
           onClick={(event) => event.stopPropagation()}
@@ -324,13 +324,13 @@ export const ReticulumImageViewer = ({
           }}
         >
           <Tooltip
-            title={t('group:reticulum.image_viewer.copy', {
+            title={t('reticulum:image_viewer.copy', {
               postProcess: 'capitalizeFirstChar',
             })}
             disableFocusListener
           >
             <IconButton
-              aria-label={t('group:reticulum.image_viewer.copy', {
+              aria-label={t('reticulum:image_viewer.copy', {
                 postProcess: 'capitalizeFirstChar',
               })}
               onClick={() => void handleCopy()}
@@ -340,14 +340,14 @@ export const ReticulumImageViewer = ({
             </IconButton>
           </Tooltip>
           <Tooltip
-            title={t('group:reticulum.image_viewer.zoom_out', {
+            title={t('reticulum:image_viewer.zoom_out', {
               postProcess: 'capitalizeFirstChar',
             })}
             disableFocusListener
           >
             <span>
               <IconButton
-                aria-label={t('group:reticulum.image_viewer.zoom_out', {
+                aria-label={t('reticulum:image_viewer.zoom_out', {
                   postProcess: 'capitalizeFirstChar',
                 })}
                 disabled={zoom <= MIN_ZOOM}
@@ -359,14 +359,14 @@ export const ReticulumImageViewer = ({
             </span>
           </Tooltip>
           <Tooltip
-            title={t('group:reticulum.image_viewer.zoom_in', {
+            title={t('reticulum:image_viewer.zoom_in', {
               postProcess: 'capitalizeFirstChar',
             })}
             disableFocusListener
           >
             <span>
               <IconButton
-                aria-label={t('group:reticulum.image_viewer.zoom_in', {
+                aria-label={t('reticulum:image_viewer.zoom_in', {
                   postProcess: 'capitalizeFirstChar',
                 })}
                 disabled={zoom >= MAX_ZOOM}
@@ -378,13 +378,13 @@ export const ReticulumImageViewer = ({
             </span>
           </Tooltip>
           <Tooltip
-            title={t('group:reticulum.image_viewer.download', {
+            title={t('reticulum:image_viewer.download', {
               postProcess: 'capitalizeFirstChar',
             })}
             disableFocusListener
           >
             <IconButton
-              aria-label={t('group:reticulum.image_viewer.download', {
+              aria-label={t('reticulum:image_viewer.download', {
                 postProcess: 'capitalizeFirstChar',
               })}
               onClick={() => void handleDownload()}
@@ -400,7 +400,7 @@ export const ReticulumImageViewer = ({
             disableFocusListener
           >
             <IconButton
-              aria-label={t('group:reticulum.image_viewer.close', {
+              aria-label={t('reticulum:image_viewer.close', {
                 postProcess: 'capitalizeFirstChar',
               })}
               onClick={onClose}

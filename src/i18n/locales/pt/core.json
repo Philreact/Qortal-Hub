@@ -497,6 +497,7 @@
     },
     "generic": {
       "account_menu": "Menu da conta",
+      "account_menu_status": "Menu da conta, estado: {{status}}",
       "address": "Endereço",
       "address_copied": "endereço copiado para a área de transferência.",
       "already_voted": "você já votou.",
@@ -570,6 +571,7 @@
       "password_enter": "por favor, insira uma senha",
       "payment_request": "o Aplicativo <br/><italic>{{hostname}}</italic> <br/><span>está solicitando um pagamento</span>",
       "people_reaction": "pessoas que reagiram com {{ reaction }}",
+      "presence_status": "Estado: {{status}}",
       "processing_transaction": "processando transação, por favor aguarde...",
       "publish_data": "publique dados na QDN: qualquer coisa, de aplicativos a vídeos. Totalmente descentralizado!",
       "publishing": "publicando... Por favor, aguarde.",
@@ -591,6 +593,7 @@
       "sending": "enviando...",
       "settings": "você está usando a forma de exportar/importar para salvar configurações.",
       "space_for_admins": "desculpe, este espaço é apenas para administradores.",
+      "status": "Estado",
       "unread_messages": "mensagens não lidas abaixo",
       "unsaved_changes": "você tem alterações não salvas nos seus aplicativos fixados. Salve-os na QDN.",
       "updating": "atualizando",

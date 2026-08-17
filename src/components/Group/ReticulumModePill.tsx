@@ -16,17 +16,17 @@ const RETICULUM_ACTIVE_BLUE = '#2563eb';
 let hasPlayedQortalLandSweep = false;
 
 export function ReticulumModePill({ target, onClick }: ReticulumModePillProps) {
-  const { t } = useTranslation(['group']);
+  const { t } = useTranslation(['group', 'reticulum']);
   const theme = useTheme();
   const isQortalLandTarget = target === 'qortal_land';
   const [playSweep, setPlaySweep] = useState(false);
   const hoveredRef = useRef(false);
   const actionLabel = isQortalLandTarget
-    ? t('group:reticulum.mode_pill.enter_qortal_land')
-    : t('group:reticulum.mode_pill.return_to_chat');
+    ? t('reticulum:mode_pill.enter_qortal_land')
+    : t('reticulum:mode_pill.return_to_chat');
   const compactLabel = isQortalLandTarget
     ? t('group:chat_group.qortal_land')
-    : t('group:reticulum.mode_pill.chat');
+    : t('reticulum:mode_pill.chat');
 
   useEffect(() => {
     if (!isQortalLandTarget || hasPlayedQortalLandSweep) return;
@@ -116,7 +116,7 @@ export function ReticulumModePill({ target, onClick }: ReticulumModePillProps) {
               : 'none',
             background:
               'linear-gradient(90deg, transparent, rgba(185,220,255,0.24), transparent)',
-            content: '\"\"',
+            content: '""',
             inset: 0,
             pointerEvents: 'none',
             position: 'absolute',

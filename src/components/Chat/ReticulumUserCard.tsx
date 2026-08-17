@@ -21,7 +21,9 @@ import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import { getBaseApiReact } from '../../App';
 import { getNameInfo } from '../Group/groupApi';
 import { executeEvent } from '../../utils/events';
+import { formatQortAmount } from '../../utils/numberFunctions';
 import { statusDotColor } from '../../hooks/usePresence';
+import { usePresenceStatusLabel } from '../common/accountStatus';
 import { MinterAvatarOrnament } from './MinterAvatarOrnament';
 import { AvatarPreviewModal } from './AvatarPreviewModal';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
@@ -59,30 +61,10 @@ type CardProfile = {
   name: string;
 };
 
-const getStatusLabel = (status: string | null) => {
-  if (!status || status === 'offline') return 'Offline';
-  if (status === 'idle') return 'Away';
-  if (status === 'busy') return 'Busy';
-  return 'Online';
-};
-
 const shortenAddress = (address: string) =>
   address.length <= 14
     ? address
     : `${address.slice(0, 6)}...${address.slice(-6)}`;
-
-const formatWholeQort = (balance: string | number | null) => {
-  if (balance === null || balance === undefined || balance === '') return null;
-  const normalized = String(balance).replaceAll(',', '').trim();
-  const whole = normalized.match(/^(-?\d+)/)?.[1];
-  if (!whole) return null;
-
-  try {
-    return BigInt(whole).toLocaleString('en-US');
-  } catch {
-    return null;
-  }
-};
 
 export const ReticulumUserCard = ({
   anchorEl,
@@ -93,7 +75,10 @@ export const ReticulumUserCard = ({
   onClose,
   silenceContext,
 }: ReticulumUserCardProps) => {
-  const { t } = useTranslation(['core', 'group']);
+
+  const { t } = useTranslation(['core', 'reticulum']);
+  const getPresenceStatusLabel = usePresenceStatusLabel();
+
   const theme = useTheme();
   const open = Boolean(anchorEl || anchorPosition);
   const [profile, setProfile] = useState<CardProfile | null>(null);
@@ -201,13 +186,13 @@ export const ReticulumUserCard = ({
   const avatarUrl = avatarName
     ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(avatarName)}/qortal_avatar?async=true`
     : data.avatarUrl;
-  const wholeBalance = useMemo(
-    () => formatWholeQort(profile?.balance ?? null),
-    [profile?.balance]
+  const formattedBalance = useMemo(
+    () => formatQortAmount(profile?.balance ?? null, i18n.language),
+    [i18n.language, profile?.balance]
   );
   const isMinter = typeof resolvedMinterLevel === 'number';
   const isOwnCard = data.isOwn;
-  const statusLabel = getStatusLabel(data.status);
+  const statusLabel = getPresenceStatusLabel(data.status);
   const statusColor = statusDotColor(data.status);
   const cardAvatar = (
     <Avatar
@@ -410,7 +395,7 @@ export const ReticulumUserCard = ({
               </Box>
               <Box sx={{ transform: 'translateY(16px)' }}>
                 <Typography sx={cardLabelSx}>
-                  {t('group:reticulum.user_card.qortal_address', {
+                  {t('reticulum:user_card.qortal_address', {
                     postProcess: 'capitalizeAll',
                   })}
                 </Typography>
@@ -439,21 +424,18 @@ export const ReticulumUserCard = ({
                   <Tooltip
                     title={
                       copyState === 'copied'
-                        ? t('group:reticulum.user_card.address_copied', {
+                        ? t('reticulum:user_card.address_copied', {
                             postProcess: 'capitalizeFirstChar',
                           })
-                        : t('group:reticulum.user_card.copy_address', {
+                        : t('reticulum:user_card.copy_address', {
                             postProcess: 'capitalizeFirstChar',
                           })
                     }
                   >
                     <IconButton
-                      aria-label={t(
-                        'group:reticulum.user_card.copy_full_address',
-                        {
-                          postProcess: 'capitalizeFirstChar',
-                        }
-                      )}
+                      aria-label={t('reticulum:user_card.copy_full_address', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
                       onClick={handleCopy}
                       size="small"
                       sx={{
@@ -472,12 +454,12 @@ export const ReticulumUserCard = ({
               </Box>
             </Box>
             <Tooltip
-              title={t('group:reticulum.user_card.view_profile', {
+              title={t('reticulum:user_card.view_profile', {
                 postProcess: 'capitalizeFirstChar',
               })}
             >
               <IconButton
-                aria-label={t('group:reticulum.user_card.view_profile_of', {
+                aria-label={t('reticulum:user_card.view_profile_of', {
                   name: displayName,
                   postProcess: 'capitalizeFirstChar',
                 })}
@@ -515,7 +497,7 @@ export const ReticulumUserCard = ({
             }}
           >
             <CardStat
-              label={t('group:reticulum.user_card.qort_balance', {
+              label={t('reticulum:user_card.qort_balance', {
                 postProcess: 'capitalizeAll',
               })}
               value={
@@ -523,16 +505,16 @@ export const ReticulumUserCard = ({
                   ? t('core:loading_ellipsis', {
                       postProcess: 'capitalizeFirstChar',
                     })
-                  : wholeBalance === null
+                  : formattedBalance === null
                     ? t('core:not_available', { postProcess: 'capitalizeAll' })
-                    : t('group:reticulum.user_card.qort_balance_value', {
-                        amount: wholeBalance,
+                    : t('reticulum:user_card.qort_balance_value', {
+                        amount: formattedBalance,
                       })
               }
             />
             <CardStat
               bordered
-              label={t('group:reticulum.user_card.minter_level', {
+              label={t('reticulum:user_card.minter_level', {
                 postProcess: 'capitalizeAll',
               })}
               value={
@@ -542,7 +524,7 @@ export const ReticulumUserCard = ({
                     })
                   : !isMinter
                     ? t('core:not_available', { postProcess: 'capitalizeAll' })
-                    : t('group:reticulum.user_card.minter_level_value', {
+                    : t('reticulum:user_card.minter_level_value', {
                         level: resolvedMinterLevel,
                         postProcess: 'capitalizeFirstChar',
                       })
@@ -575,7 +557,7 @@ export const ReticulumUserCard = ({
                   onClick={handleMessage}
                   sx={primaryActionSx}
                 >
-                  {t('group:reticulum.user_card.message', {
+                  {t('reticulum:user_card.message', {
                     postProcess: 'capitalizeFirstChar',
                   })}
                 </Button>
@@ -585,12 +567,12 @@ export const ReticulumUserCard = ({
                   onClick={handleSendQort}
                   sx={secondaryActionSx}
                 >
-                  {t('group:reticulum.user_card.send_qort', {
+                  {t('reticulum:user_card.send_qort', {
                     postProcess: 'capitalizeFirstChar',
                   })}
                 </Button>
                 <Button
-                  aria-label={t('group:reticulum.user_card.hide_user', {
+                  aria-label={t('reticulum:user_card.hide_user', {
                     postProcess: 'capitalizeFirstChar',
                   })}
                   disabled={!silenceContext}

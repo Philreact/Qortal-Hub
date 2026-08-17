@@ -184,14 +184,6 @@
     "remove_file": "ファイルを削除",
     "remove_image": "画像を削除",
     "resize_channel_list": "チャンネル一覧のサイズを変更",
-    "reticulum_author_mismatch": "署名された Reticulum チャットの作成者が一致しません",
-    "reticulum_delete_failed": "Reticulum チャットの削除に失敗しました",
-    "reticulum_disabled": "Reticulum チャットは無効です",
-    "reticulum_publish_failed": "Reticulum チャットの公開に失敗しました",
-    "reticulum_release_seq_failed": "Reticulum チャットのイベントシーケンスを解放できませんでした",
-    "reticulum_reserve_seq_failed": "Reticulum チャットのイベントシーケンスを予約できませんでした",
-    "reticulum_sign_failed": "Reticulum チャットのイベントに署名できませんでした",
-    "reticulum_welcome_failed": "Reticulum のウェルカム公開に失敗しました",
     "save_changes": "変更を保存",
     "search_chat": "チャットを検索",
     "search_failed": "検索に失敗しました",
@@ -206,6 +198,14 @@
     "write_not_allowed": "このチャンネルには書き込めません"
   },
   "context_menu": {
+    "about_group": "グループについて",
+    "change_group_avatar": "グループのアバターを変更",
+    "create_category": "カテゴリを作成",
+    "create_channel": "チャンネルを作成",
+    "hidden_users": "非表示のユーザー",
+    "invite_link_copied": "招待リンクをコピーしました",
+    "invite_link_copy_failed": "招待リンクをコピーできませんでした",
+    "leave_group": "グループを退出",
     "mark_all_read": "すべて既読にする",
     "mark_as_read": "既読にする",
     "mute_push_notifications": "プッシュ通知をオフ",
@@ -215,6 +215,7 @@
     "account_overview": "アカウント概要",
     "account_settings_tooltip": "アカウント設定",
     "account_status_busy": "取り込み中",
+    "account_status_idle": "離席中",
     "account_status_invisible": "非表示",
     "account_status_offline": "オフライン",
     "account_status_online": "オンライン",
@@ -232,9 +233,6 @@
     "close_action_update_error": "ウィンドウを閉じるときの動作を今は更新できませんでした。",
     "close_receive_qort_modal": "QORT 受取モーダルを閉じる",
     "close_send_qort_modal": "QORT 送金モーダルを閉じる",
-    "community_stun_contribution": "コミュニティ通話サポート",
-    "community_stun_contribution_desc": "小規模なネットワークサービスを提供して、直接通話の接続を支援します。",
-    "community_stun_update_error": "現在、コミュニティ通話サポートを更新できませんでした。",
     "copy_address": "アドレスをコピー",
     "copy_key": "鍵をコピー",
     "core": "Core",
@@ -426,7 +424,6 @@
     "message_failed": "Reticulum のダイレクトメッセージに失敗しました",
     "missing_participants": "ダイレクトチャットの参加者がありません",
     "missing_public_key": "ローカルの Qortal 公開鍵がありません",
-    "reticulum_required_for_attachments": "ダイレクト添付には Reticulum のダイレクトチャットが必要です",
     "select_valid_name": "有効な Qortal の名前またはアドレスを選択してください",
     "selected_file": "選択したファイル",
     "send_placeholder": "メッセージを送信...",
@@ -602,10 +599,6 @@
     "requests_empty_description": "管理しているグループからの参加リクエストがここに表示されます。",
     "requests_empty_title": "保留中のリクエストはありません",
     "restore": "Restore",
-    "reticulum_mentions_one": "{{count}} 件のメンション",
-    "reticulum_mentions_other": "{{count}} 件のメンション",
-    "reticulum_new_messages_one": "{{count}} 件の新着メッセージ",
-    "reticulum_new_messages_other": "{{count}} 件の新着メッセージ",
     "select_admin_group": "管理者であるグループを選択",
     "show_ignored": "Show ignored",
     "tab_invites": "招待",
@@ -662,6 +655,15 @@
   "last_message_from": "{{sender}} • {{date}}",
   "last_message_you": "あなた",
   "latest_mails": "最新のQメール",
+  "member_category": {
+    "admins": "管理者",
+    "collapse": "{{category}}を折りたたむ",
+    "expand": "{{category}}を展開",
+    "lounge": "ラウンジ",
+    "members": "メンバー",
+    "offline": "オフライン",
+    "park": "パーク"
+  },
   "message": {
     "error": {
       "access_name": "名前にアクセスできないため、メッセージを送信できません",
@@ -786,185 +788,6 @@
     "try_again": "再試行",
     "unencrypted": "暗号化されていません",
     "verification_failed": "検証に失敗しました"
-  },
-  "reticulum": {
-    "call_history": {
-      "answered": "音声通話",
-      "cancelled": "キャンセルされた音声通話",
-      "declined": "拒否された音声通話",
-      "missed": "不在の音声通話",
-      "no_answer": "応答なし"
-    },
-    "discussion": {
-      "choose_emoji": "choose emoji",
-      "close": "close discussion",
-      "initial_post": "initial post",
-      "remove_attachment": "remove attachment",
-      "remove_file": "remove {{fileName}}",
-      "replies": "replies:",
-      "reply_placeholder": "reply to discussion...",
-      "wait_until_ready": "wait until the discussion is ready"
-    },
-    "event_preview": {
-      "all_day": "all day",
-      "calendar_unavailable": "calendar is unavailable",
-      "join_failed": "unable to join this group. Please try again.",
-      "loading": "loading event preview",
-      "member_required": "you must be a member of the source group to view this event.",
-      "not_found": "event not found",
-      "request_join_question": "request to join this group?",
-      "unavailable": "event unavailable",
-      "unavailable_temporarily": "event preview is temporarily unavailable",
-      "view_group": "view group"
-    },
-    "expiry": {
-      "channel_default": "チャンネルの既定",
-      "channel_default_no_expiry": "チャンネルの既定（有効期限なし）",
-      "channel_default_with": "チャンネルの既定（{{duration}}）",
-      "do_not_auto_delete": "自動削除しない",
-      "lock_preferred": "{{duration}}を優先有効期限に設定",
-      "maximum": "最大 {{duration}}",
-      "no_expiry": "有効期限なし",
-      "preferred_locked": "優先有効期限を設定済み",
-      "remove_preferred": "{{duration}}の優先有効期限を解除",
-      "set": "メッセージの有効期限を設定",
-      "title": "メッセージの有効期限",
-      "tooltip_value": "メッセージの有効期限: {{value}}",
-      "unavailable": "メッセージの有効期限は利用できません"
-    },
-    "hide_user": {
-      "error_hide": "ユーザーを非表示にできません",
-      "error_unhide": "ユーザーを再表示できません",
-      "for_1_hour": "1時間非表示にする",
-      "for_24_hours": "24時間非表示にする",
-      "hide": "非表示",
-      "unhide": "再表示",
-      "until_unhidden": "再表示するまで非表示"
-    },
-    "image_viewer": {
-      "actions": "image actions",
-      "chat_image": "chat image",
-      "clipboard_unavailable": "image clipboard is unavailable",
-      "close": "close image viewer",
-      "copied": "image copied",
-      "copy": "copy image",
-      "copy_failed": "unable to copy image",
-      "download": "download image",
-      "download_failed": "unable to download image",
-      "prepare_failed": "unable to prepare image for clipboard",
-      "read_failed": "unable to read image",
-      "zoom_in": "zoom in",
-      "zoom_out": "zoom out"
-    },
-    "invite": {
-      "apply": "apply",
-      "apply_question": "apply to join this group?",
-      "closed_group": "closed group",
-      "joined": "joined",
-      "open_group": "open group",
-      "pending": "pending"
-    },
-    "join_group_question": "join this group?",
-    "mention": {
-      "channels": "チャンネル",
-      "empty": "一致するものがありません",
-      "people": "ユーザー",
-      "special": "特別なメンション",
-      "suggestions": "メンションの候補"
-    },
-    "mode_pill": {
-      "chat": "チャット",
-      "enter_qortal_land": "Qortal Landに入る",
-      "return_to_chat": "チャットに戻る"
-    },
-    "qapp_preview": {
-      "check_again": "check again",
-      "no_resource": "no Q-App resource was found for this link.",
-      "open_in_quitter": "open this post in Quitter.",
-      "open_publication": "open this publication to read the full article.",
-      "preview_failed": "the resource exists, but its preview could not be loaded right now.",
-      "preview_unavailable": "preview unavailable",
-      "resource_not_found": "resource not found",
-      "shared_photo": "shared a photo",
-      "shared_video": "shared a video",
-      "shared_video_titled": "shared a video: {{title}}",
-      "view_on_quitter": "view this post on Quitter",
-      "watch_on_qtube": "watch this video on Q-Tube."
-    },
-    "rail": {
-      "find_groups": "グループを探す",
-      "group_settings": "グループ設定",
-      "whats_new": "新着情報を開く"
-    },
-    "settings": {
-      "category": {
-        "accessibility": "アクセシビリティ",
-        "legacy": "旧バージョン"
-      },
-      "legacy": {
-        "description": "Q-Chatのヘッダーに旧来のThreadsとAdminのコントロールを表示します。",
-        "title": "Threads",
-        "toggle": {
-          "aria": "旧来のThreadsを表示",
-          "description": "旧来のThreadsとAdminのアイコンを表示します。",
-          "label": "Threads"
-        },
-        "warning": "Threadsは次回のリリースで削除されます。更新する前に、重要なスレッドの情報を安全な場所かQ-Chatの新しいチャンネルに移してください。"
-      },
-      "messages": {
-        "description": "Reticulum Q-Chatでの自分のメッセージの表示を調整します。",
-        "highlight_own": {
-          "description": "自分が送信したメッセージに薄い背景を付けます。",
-          "label": "自分のメッセージを強調表示"
-        },
-        "title": "メッセージ"
-      },
-      "nav": {
-        "mentions": "メンション",
-        "messages": "メッセージ",
-        "text_size": "文字サイズ",
-        "threads": "Threads"
-      },
-      "notifications": {
-        "description": "Reticulum Q-ChatのメンションをHubの通知パネルに表示します。通常の未読メッセージではHubの通知は作成されません。",
-        "mentions": {
-          "description": "チャンネルで誰かが自分をメンションしたときに知らせます。",
-          "label": "メンションの通知"
-        },
-        "title": "通知"
-      },
-      "text_size": {
-        "default": {
-          "detail": "現在のチャットの文字サイズ",
-          "label": "標準"
-        },
-        "description": "Reticulumのメッセージ、チャンネル名、メンバー一覧の文字サイズを選びます。招待のプレビューは固定のレイアウトのままです。",
-        "high": {
-          "detail": "読みやすい範囲で最大のチャット文字",
-          "label": "大"
-        },
-        "medium": {
-          "detail": "ほどよく大きめ",
-          "label": "中"
-        },
-        "title": "文字サイズ"
-      }
-    },
-    "user_card": {
-      "address_copied": "アドレスをコピーしました",
-      "copy_address": "アドレスをコピー",
-      "copy_full_address": "qortal アドレス全体をコピー",
-      "hide_user": "ユーザーを非表示",
-      "message": "メッセージ",
-      "minter_level": "マインターレベル",
-      "minter_level_value": "レベル {{level}}",
-      "qort_balance": "qort 残高",
-      "qort_balance_value": "{{amount}} QORT",
-      "qortal_address": "qortal アドレス",
-      "send_qort": "QORT を送る",
-      "view_profile": "プロフィールを表示",
-      "view_profile_of": "{{name}} のプロフィールを表示"
-    }
   },
   "subscription": {
     "actions_badge_one": "{{count}} 件",
@@ -1091,7 +914,7 @@
     },
     "highlights": {
       "calls": {
-        "description": "Q-Chatを離れずに1対1通話やグループ通話を始められます。グループ通話は最大15人まで対応し、必要に応じて広げられるコンパクトな表示で始まります。",
+        "description": "Q-Chatを離れずに1対1通話やグループ通話を始められます。グループ通話は最大7人まで対応し、必要に応じて広げられるコンパクトな表示で始まります。",
         "title": "邪魔にならない通話"
       },
       "channels": {

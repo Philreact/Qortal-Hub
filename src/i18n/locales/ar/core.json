@@ -497,6 +497,7 @@
     },
     "generic": {
       "account_menu": "قائمة الحساب",
+      "account_menu_status": "قائمة الحساب، الحالة: {{status}}",
       "address": "العنوان",
       "address_copied": "تم نسخ العنوان إلى الحافظة.",
       "already_voted": "لقد قمت بالتصويت بالفعل.",
@@ -570,6 +571,7 @@
       "password_enter": "الرجاء إدخال كلمة المرور",
       "payment_request": "التطبيق <br/><italic>{{hostname}}</italic> <br/><span>يطلب دفعة</span>",
       "people_reaction": "الأشخاص الذين تفاعلوا بـ {{ reaction }}",
+      "presence_status": "الحالة: {{status}}",
       "processing_transaction": "جاري معالجة المعاملة، الرجاء الانتظار...",
       "publish_data": "نشر البيانات على كورتال: من التطبيقات إلى الفيديوهات. لامركزية بالكامل!",
       "publishing": "جاري النشر... الرجاء الانتظار.",
@@ -591,6 +593,7 @@
       "sending": "جاري الإرسال...",
       "settings": "أنت تستخدم طريقة الاستيراد/التصدير لحفظ الإعدادات.",
       "space_for_admins": "عذراً، هذه المساحة مخصصة للإداريين فقط.",
+      "status": "الحالة",
       "unread_messages": "رسائل غير مقروءة أدناه",
       "unsaved_changes": "لديك تغييرات غير محفوظة على تطبيقاتك المثبتة. احفظها على QDN.",
       "updating": "جاري التحديث",
