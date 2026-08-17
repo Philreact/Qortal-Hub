@@ -492,6 +492,7 @@
     },
     "generic": {
       "account_menu": "Account menu",
+      "account_menu_status": "Account menu, status: {{status}}",
       "address": "Address",
       "address_copied": "address copied to clipboard.",
       "already_voted": "you've already voted.",
@@ -565,6 +566,7 @@
       "password_enter": "please enter a password",
       "payment_request": "the Application <br/><italic>{{hostname}}</italic> <br/><span>is requesting a payment</span>",
       "people_reaction": "people who reacted with {{ reaction }}",
+      "presence_status": "Status: {{status}}",
       "processing_transaction": "is processing transaction, please wait...",
       "publish_data": "publish data to Qortal: anything from apps to videos. Fully decentralized!",
       "publishing": "publishing... Please wait.",
@@ -586,6 +588,7 @@
       "sending": "sending...",
       "settings": "you are using the export/import way of saving settings.",
       "space_for_admins": "sorry, this space is only for Admins.",
+      "status": "Status",
       "unread_messages": "unread messages below",
       "unsaved_changes": "you have unsaved changes to your pinned apps. Save them to QDN.",
       "updating": "updating",

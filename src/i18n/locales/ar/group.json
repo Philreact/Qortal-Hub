@@ -215,6 +215,7 @@
     "account_overview": "نظرة عامة على الحساب",
     "account_settings_tooltip": "إعدادات الحساب",
     "account_status_busy": "مشغول",
+    "account_status_idle": "خامل",
     "account_status_invisible": "مخفي",
     "account_status_offline": "غير متصل",
     "account_status_online": "متصل",

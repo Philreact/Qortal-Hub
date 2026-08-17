@@ -215,6 +215,7 @@
     "account_overview": "Tilin yleiskatsaus",
     "account_settings_tooltip": "Tilin asetukset",
     "account_status_busy": "Varattu",
+    "account_status_idle": "Poissa",
     "account_status_invisible": "Näkymätön",
     "account_status_offline": "Offline",
     "account_status_online": "Paikalla",

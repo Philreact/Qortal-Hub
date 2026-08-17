@@ -492,6 +492,7 @@
     },
     "generic": {
       "account_menu": "Tilivalikko",
+      "account_menu_status": "Tilivalikko, tila: {{status}}",
       "address": "Osoite",
       "address_copied": "osoite kopioitu leikepöydälle.",
       "already_voted": "olet jo äänestänyt.",
@@ -565,6 +566,7 @@
       "password_enter": "anna salasana",
       "payment_request": "sovellus <br/><italic>{{hostname}}</italic> <br/><span>pyytää maksua</span>",
       "people_reaction": "käyttäjät, jotka reagoivat merkillä {{ reaction }}",
+      "presence_status": "Tila: {{status}}",
       "processing_transaction": "käsittelee tapahtumaa, odota hetki...",
       "publish_data": "julkaise dataa Qortaliin: sovelluksista videoihin asti. Täysin hajautettua!",
       "publishing": "julkaistaan... odota hetki",
@@ -586,6 +588,7 @@
       "sending": "lähetetään...",
       "settings": "käytät vienti/tuontiasetuksia",
       "space_for_admins": "valitettavasti tämä tila on vain ylläpitäjille.",
+      "status": "Tila",
       "unread_messages": "lukemattomat viestit alla",
       "unsaved_changes": "sinulla on tallentamattomia muutoksia kiinnitettyihin sovelluksiin. Tallenna ne QDN:ään.",
       "updating": "päivitetään",
