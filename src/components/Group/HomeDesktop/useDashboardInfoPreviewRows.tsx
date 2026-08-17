@@ -28,6 +28,7 @@ import {
 import { useHandleUserInfo } from '../../../hooks/useHandleUserInfo';
 import { isLocalNodeUrl } from '../../../constants/constants';
 import { nodeDisplay } from '../../../utils/helpers';
+import { formatQortAmount } from '../../../utils/numberFunctions';
 import { BlockHeightValue } from './BlockHeightValue';
 import type {
   InfoPreviewPanelRows,
@@ -52,7 +53,7 @@ export function useDashboardInfoPreviewRows({
   const selectedNode = useAtomValue(selectedNodeInfoAtom);
   const userInfo = useAtomValue(userInfoAtom);
   const userAddress = userInfo?.address;
-  const { t } = useTranslation(['core', 'group', 'auth']);
+  const { i18n, t } = useTranslation(['core', 'group', 'auth']);
   const td = useCallback(
     (
       key: string,
@@ -201,8 +202,9 @@ export function useDashboardInfoPreviewRows({
     };
   }, []);
 
+  const formattedBalance = formatQortAmount(balance, i18n.language);
   const balanceLabel =
-    balance != null ? `${Number(balance).toFixed(2)} QORT` : '—';
+    formattedBalance != null ? `${formattedBalance} QORT` : '—';
 
   const hasLiveNodeConnection = nodeInfos?.height != null;
   const liveSyncPercent =
