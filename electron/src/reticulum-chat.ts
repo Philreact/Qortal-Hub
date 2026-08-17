@@ -872,6 +872,7 @@ type ReticulumChatPullQueueItem = {
   nextAttemptAt: number;
   inFlight: boolean;
   linkedAttemptStartedAt?: number;
+  legacyFallbackAttempted?: boolean;
 };
 
 type ReticulumPendingDmNotifyDelivery = {
@@ -964,7 +965,9 @@ export type ReticulumChatProtocolFeature =
   | 'self_dm_v1'
   | 'read_sync_v2'
   | 'call_history_v1'
-  | 'calendar_v1';
+  | 'calendar_v1'
+  | 'linked_event_v1'
+  | 'linked_author_range_v1';
 
 export type ReticulumChatDigestWire = {
   c: string;
@@ -2073,9 +2076,22 @@ const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   'read_sync_v2',
   'call_history_v1',
   'calendar_v1',
+  'linked_event_v1',
+  'linked_author_range_v1',
   ...(!isDisabledRelayCache ? ['relay_cache' as const] : []),
   ...(!isDisableReticulumGroupKeys ? ['group_keys' as const] : []),
 ];
+const RETICULUM_CHAT_OPTIONAL_PROTOCOL_FEATURES =
+  new Set<ReticulumChatProtocolFeature>([
+    'range_auth_v1',
+    'dm_author_streams_v1',
+    'self_dm_v1',
+    'read_sync_v2',
+    'call_history_v1',
+    'calendar_v1',
+    'linked_event_v1',
+    'linked_author_range_v1',
+  ]);
 const RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS = 100;
 const RETICULUM_CHAT_SEARCH_NETWORK_WAIT_MS = 2_000;
 const RETICULUM_CHAT_SEARCH_NETWORK_POLL_MS = 200;
@@ -2715,6 +2731,12 @@ type ReticulumDmActiveLinkPreference = {
 type ReticulumChatEventRelayRoute = {
   reversePeerHash: string;
   originPeerHash: string;
+  groupId: number;
+  eventId: string;
+  expiresAt: number;
+};
+
+type ReticulumChatLocalLegacyEventRequest = {
   groupId: number;
   eventId: string;
   expiresAt: number;
@@ -7299,6 +7321,11 @@ export class ReticulumChatManager extends EventEmitter {
     { requestId: string; expiresAt: number }
   >();
   private eventRelayRoutes = new Map<string, ReticulumChatEventRelayRoute>();
+  private localLegacyEventRequestIds = new Map<
+    string,
+    ReticulumChatLocalLegacyEventRequest
+  >();
+  private orphanOfferLogCooldowns = new Map<string, number>();
   private historyRelayRoutes = new Map<
     string,
     ReticulumChatHistoryRelayRoute
@@ -8231,6 +8258,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.forwardedGroupSubKeys.clear();
     this.directPeerSubscriptions.clear();
     this.forwardedGroupControlKeys.clear();
+    this.localLegacyEventRequestIds.clear();
+    this.orphanOfferLogCooldowns.clear();
     this.forwardedLandControlKeys.clear();
     this.lastForwardedLandControlPruneAt = 0;
     this.recentDmRequests.clear();
@@ -10249,6 +10278,15 @@ export class ReticulumChatManager extends EventEmitter {
     return (
       !!peer && this.peerProtocolFeatures.get(peer)?.has('calendar_v1') === true
     );
+  }
+
+  private peerSupportsLinkedFeature(
+    peerHash: string,
+    feature: 'linked_event_v1' | 'linked_author_range_v1'
+  ): boolean {
+    const peer = this.normalizeResourcePeerHash(peerHash);
+    if (!peer) return false;
+    return this.peerProtocolFeatures.get(peer)?.has(feature) === true;
   }
 
   private calendarStateFingerprint(groupId: number): {
@@ -17161,13 +17199,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (!Array.isArray(wire.f)) return false;
     const features = new Set(wire.f.map((item) => String(item)));
     return RETICULUM_CHAT_PROTOCOL_FEATURES.filter(
-      (feature) =>
-        feature !== 'range_auth_v1' &&
-        feature !== 'dm_author_streams_v1' &&
-        feature !== 'self_dm_v1' &&
-        feature !== 'read_sync_v2' &&
-        feature !== 'call_history_v1' &&
-        feature !== 'calendar_v1'
+      (feature) => !RETICULUM_CHAT_OPTIONAL_PROTOCOL_FEATURES.has(feature)
     ).every((feature) => features.has(feature));
   }
 
@@ -23328,6 +23360,9 @@ export class ReticulumChatManager extends EventEmitter {
     const requestedRange = normalizeAuthorRangeWire(wire.ranges[0]);
     const normalizedPersistedRange =
       normalizeReticulumChatAuthorRange(persistedRange);
+    if (!this.peerSupportsLinkedFeature(peer, 'linked_author_range_v1')) {
+      return this.sendLegacyAuthorRangeRequest(peer, wire, persistedRange);
+    }
     if (
       !peer ||
       !requestedRange?.s ||
@@ -23453,6 +23488,94 @@ export class ReticulumChatManager extends EventEmitter {
       `[ReticulumChat] author_gap_link_requested group=${wire.g} peer=${peer.slice(0, 16)} author=${requestedRange.a} from=${requestedRange.from} to=${requestedRange.to} transfer=${transferId}`
     );
     return { ok: true };
+  }
+
+  private async sendLegacyAuthorRangeRequest(
+    peer: string,
+    wire: Extract<ReticulumChatWire, { k: 'range_req' }>,
+    persistedRange: ReticulumChatAuthorRange
+  ): Promise<ReticulumSendResult> {
+    const requestedRange = normalizeAuthorRangeWire(wire.ranges[0]);
+    const providerPeerHash = this.normalizeResourcePeerHash(peer);
+    const sourcePeerHash = this.localPeerHash();
+    if (!providerPeerHash) {
+      return { ok: false, reason: 'unknown-peer-presence-hash' };
+    }
+    if (!requestedRange?.s || !sourcePeerHash || !this.signLocalFields) {
+      return { ok: false, reason: 'bridge-unavailable' };
+    }
+    const ranges = [requestedRange];
+    const limit = this.normalizeFeedLimit(wire.limit);
+    const timestamp = this.now();
+    const signed = await this.signLocalFields(
+      buildReticulumChatRangeRequestSignedFields({
+        groupId: wire.g,
+        ranges,
+        limit,
+        sourcePeerHash,
+        timestamp,
+      })
+    ).catch(() => null);
+    if (!signed || this.isClosed) {
+      return { ok: false, reason: 'send-command-failed' };
+    }
+    const requestId = nodeCrypto
+      .createHash('sha256')
+      .update(signed.signature, 'utf8')
+      .digest('hex')
+      .slice(0, 16);
+    const routedWire: Extract<ReticulumChatWire, { k: 'range_req' }> = {
+      t: 'RCHAT',
+      k: 'range_req',
+      g: wire.g,
+      d: this.compactRoutePeerHash(providerPeerHash),
+      ranges: ranges
+        .map((range) => authorRangeToWireTuple(range))
+        .filter(
+          (range): range is [string, string, number, number] => range != null
+        ),
+      q: [
+        this.compactRoutePeerHash(sourcePeerHash),
+        signed.authorPublicKey,
+        timestamp,
+        signed.signature,
+      ],
+      h: 0,
+    };
+    if (!wireFitsReticulumChat(routedWire)) {
+      return { ok: false, reason: 'wire-too-large' };
+    }
+    this.pendingAuthorRangeRequests.set(requestId, {
+      groupId: wire.g,
+      peerHash: providerPeerHash,
+      ranges,
+      persistedRanges: [persistedRange],
+      expiresAt: this.now() + RETICULUM_CHAT_AUTHOR_GAP_RESPONSE_TIMEOUT_MS,
+    });
+    while (this.pendingAuthorRangeRequests.size > 2_048) {
+      const oldest = this.pendingAuthorRangeRequests.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.pendingAuthorRangeRequests.delete(oldest);
+    }
+    const result = await this.sendGroupTargetedRoutedControl(
+      wire.g,
+      providerPeerHash,
+      routedWire,
+      {
+        context: 'legacy-author-range',
+        useRetryQueue: false,
+      }
+    );
+    if (result.ok === false) {
+      this.pendingAuthorRangeRequests.delete(requestId);
+    } else {
+      this.scheduleBackgroundAuthorGapRepair(
+        RETICULUM_CHAT_AUTHOR_GAP_RESPONSE_TIMEOUT_MS
+      );
+    }
+    return result;
   }
 
   private newestAuthorRangePage(
@@ -30535,6 +30658,13 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return;
     }
+    if (
+      item.legacyFallbackAttempted === true ||
+      !this.peerSupportsLinkedFeature(peerKey, 'linked_event_v1')
+    ) {
+      await this.requestLegacyEventPull(peerKey, item);
+      return;
+    }
     const pullKey = this.eventPullKey(hint.groupId, hint.eventId);
     const activeTransferId = this.linkedEventTransferByPull.get(pullKey);
     if (activeTransferId) {
@@ -30692,6 +30822,110 @@ export class ReticulumChatManager extends EventEmitter {
     item.nextAttemptAt = now + RETICULUM_CHAT_PULL_THROTTLE_MS;
   }
 
+  private async requestLegacyEventPull(
+    peerKey: string,
+    item: ReticulumChatPullQueueItem
+  ): Promise<void> {
+    const hint = item.hint;
+    const providerPeerHash = this.normalizeResourcePeerHash(peerKey);
+    const localPeerHash = this.localPeerHash();
+    const now = this.now();
+    if (!providerPeerHash || !localPeerHash || this.isClosed) {
+      item.inFlight = false;
+      item.nextAttemptAt = now + RETICULUM_CHAT_PULL_RETRY_MS;
+      return;
+    }
+    const requestKey = `${hint.groupId}:${providerPeerHash}:${hint.eventId}:legacy`;
+    if (
+      now - (this.requestedEventPulls.get(requestKey) ?? 0) <
+      RETICULUM_CHAT_PULL_THROTTLE_MS
+    ) {
+      item.inFlight = false;
+      item.nextAttemptAt = now + RETICULUM_CHAT_PULL_RETRY_MS;
+      return;
+    }
+    this.requestedEventPulls.set(requestKey, now);
+    item.attempts += 1;
+    const signedRequest = await this.buildSignedEventRequestWire(
+      hint.groupId,
+      hint.eventId
+    );
+    if (this.isClosed) return;
+    if (!signedRequest) {
+      item.inFlight = false;
+      item.nextAttemptAt = this.now() + RETICULUM_CHAT_PULL_RETRY_MS;
+      return;
+    }
+    let requestId = nodeCrypto.randomBytes(8).toString('hex');
+    const wire: Extract<ReticulumChatWire, { k: 'event_req' }> = {
+      t: 'RCHAT',
+      k: 'event_req',
+      g: hint.groupId,
+      q: signedRequest,
+      o: this.compactRoutePeerHash(localPeerHash),
+      rid: requestId,
+      h: 0,
+    };
+    // Older event requests already sit close to the encrypted MDU limit. Keep
+    // the explicit request id when it fits; otherwise use the deterministic id
+    // that legacy relays derive from the signed event and origin.
+    if (!wireFitsReticulumChat(wire)) {
+      requestId = this.eventRelayRequestId(
+        hint.groupId,
+        hint.eventId,
+        localPeerHash
+      );
+      delete wire.rid;
+    }
+    if (!wireFitsReticulumChat(wire)) {
+      item.inFlight = false;
+      item.nextAttemptAt = this.now() + RETICULUM_CHAT_PULL_RETRY_MS;
+      return;
+    }
+    for (const [id, request] of this.localLegacyEventRequestIds) {
+      if (request.expiresAt <= now) {
+        this.localLegacyEventRequestIds.delete(id);
+      }
+    }
+    this.localLegacyEventRequestIds.set(requestId, {
+      groupId: hint.groupId,
+      eventId: hint.eventId,
+      expiresAt: now + RETICULUM_CHAT_GROUP_CONTROL_RELAY_TTL_MS,
+    });
+    while (
+      this.localLegacyEventRequestIds.size >
+      RETICULUM_CHAT_GROUP_CONTROL_RELAY_MAX_ROUTES
+    ) {
+      const oldest = this.localLegacyEventRequestIds.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.localLegacyEventRequestIds.delete(oldest);
+    }
+    const result = await this.sendGroupTargetedRoutedControl(
+      hint.groupId,
+      providerPeerHash,
+      wire,
+      {
+        context: 'legacy-event-pull',
+        useRetryQueue: false,
+      }
+    );
+    item.inFlight = false;
+    if (this.isClosed) return;
+    if (this.db.hasEvent(hint.eventId)) {
+      this.pendingEventPulls.delete(
+        this.eventPullKey(hint.groupId, hint.eventId)
+      );
+      return;
+    }
+    if (result.ok === false) {
+      item.nextAttemptAt = this.now() + RETICULUM_CHAT_PULL_RETRY_MS;
+      return;
+    }
+    item.nextAttemptAt = this.now() + RETICULUM_CHAT_PULL_THROTTLE_MS;
+  }
+
   private failLinkedEventPull(
     item: ReticulumChatPullQueueItem,
     failedPeer: string,
@@ -30699,6 +30933,19 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     item.inFlight = false;
     item.linkedAttemptStartedAt = undefined;
+    if (!this.isClosed && item.legacyFallbackAttempted !== true) {
+      item.legacyFallbackAttempted = true;
+      item.inFlight = true;
+      loggerLog(
+        `[ReticulumChat] linked_event_legacy_fallback group=${item.hint.groupId} event=${item.hint.eventId} peer=${failedPeer.slice(0, 16)} reason=${reason}`
+      );
+      void this.requestLegacyEventPull(failedPeer, item).catch(() => {
+        item.inFlight = false;
+        item.nextAttemptAt = this.now() + RETICULUM_CHAT_PULL_RETRY_MS;
+        this.scheduleEventPullQueue(RETICULUM_CHAT_PULL_RETRY_MS);
+      });
+      return;
+    }
     const terminal = this.isTerminalLinkedEventFailure(reason);
     if (terminal || item.peerHashes.size > 1) {
       item.peerHashes.delete(failedPeer);
@@ -34082,9 +34329,46 @@ export class ReticulumChatManager extends EventEmitter {
       offer as ReticulumChatEventOffer,
       peerHash
     ).then((relayed) => {
-      if (relayed) return;
+      if (relayed || this.isClosed) return;
+      if (relayRequestId) {
+        const request = this.localLegacyEventRequestIds.get(relayRequestId);
+        const now = this.now();
+        if (
+          !request ||
+          request.expiresAt <= now ||
+          request.groupId !== offer.groupId ||
+          request.eventId !== offer.eventId
+        ) {
+          if (request && request.expiresAt <= now) {
+            this.localLegacyEventRequestIds.delete(relayRequestId);
+          }
+          this.logOrphanOfferOnce(
+            `event:${offer.groupId}:${offer.eventId}:${relayRequestId}`,
+            `[ReticulumChat] Dropping orphaned routed event offer group=${offer.groupId} event=${offer.eventId} request=${relayRequestId.slice(0, 12)}`
+          );
+          return;
+        }
+      }
       this.acceptLocalEventOffer(offer as ReticulumChatEventOffer, peerHash);
     });
+  }
+
+  private logOrphanOfferOnce(key: string, message: string): void {
+    const now = this.now();
+    const existing = this.orphanOfferLogCooldowns.get(key) ?? 0;
+    if (existing > now) return;
+    this.orphanOfferLogCooldowns.set(key, now + 60_000);
+    for (const [entryKey, expiresAt] of this.orphanOfferLogCooldowns) {
+      if (expiresAt <= now) this.orphanOfferLogCooldowns.delete(entryKey);
+    }
+    while (this.orphanOfferLogCooldowns.size > 4_096) {
+      const oldest = this.orphanOfferLogCooldowns.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.orphanOfferLogCooldowns.delete(oldest);
+    }
+    loggerLog(message);
   }
 
   private handleEventPageOffer(candidate: unknown, peerHash: string): void {
@@ -34117,7 +34401,8 @@ export class ReticulumChatManager extends EventEmitter {
       !this.subscribedGroups.has(offer.groupId) ||
       !this.localGroupIds.has(offer.groupId)
     ) {
-      loggerWarn(
+      this.logOrphanOfferOnce(
+        `nonmember-page:${offer.groupId}:${offer.pageHash}:${offer.sourcePeerHash ?? peerHash}`,
         `[ReticulumChat] Dropping inbound event page offer group=${offer.groupId}: subscribed=${this.subscribedGroups.has(offer.groupId)} localMember=${this.localGroupIds.has(offer.groupId)}`
       );
       return;
@@ -34295,7 +34580,8 @@ export class ReticulumChatManager extends EventEmitter {
       !this.subscribedGroups.has(offer.groupId) ||
       !this.localGroupIds.has(offer.groupId)
     ) {
-      loggerWarn(
+      this.logOrphanOfferOnce(
+        `nonmember-event:${offer.groupId}:${offer.eventId}:${offer.sourcePeerHash ?? peerHash}`,
         `[ReticulumChat] Dropping inbound event offer ${offer.eventId}: group=${offer.groupId} subscribed=${this.subscribedGroups.has(offer.groupId)} localMember=${this.localGroupIds.has(offer.groupId)}`
       );
       return;

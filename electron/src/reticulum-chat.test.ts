@@ -46,6 +46,7 @@ import {
   validateReticulumDmEventShape,
   validateReticulumChatEventShape,
   verifyReticulumChatEvent,
+  verifyReticulumChatEventRequest,
   verifyReticulumChatLinkedEventRequest,
   verifyReticulumChatResourceReceipt,
   verifyReticulumDmEvent,
@@ -10843,6 +10844,10 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([69]);
     manager.subscribeGroup(69);
+    (manager as any).peerProtocolFeatures.set(
+      'b'.repeat(32),
+      new Set(['linked_event_v1'])
+    );
     await flushQueuedWork();
     direct.length = 0;
 
@@ -18455,6 +18460,10 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([72]);
     manager.subscribeGroup(72);
+    (manager as any).peerProtocolFeatures.set(
+      providerHash,
+      new Set(['linked_author_range_v1'])
+    );
     const event = signedEvent({
       eventId: 'linked-author-gap-source',
       groupId: 72,
@@ -18808,6 +18817,14 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([72]);
     manager.subscribeGroup(72);
+    (manager as any).peerProtocolFeatures.set(
+      firstPeer,
+      new Set(['linked_author_range_v1'])
+    );
+    (manager as any).peerProtocolFeatures.set(
+      secondPeer,
+      new Set(['linked_author_range_v1'])
+    );
     const event = signedEvent({ groupId: 72, authorSeq: 3 });
     const range = {
       a: event.authorAddress,
@@ -22070,9 +22087,30 @@ describe('reticulum chat manager', () => {
     expect(sent).toContainEqual(
       expect.objectContaining({ t: 'RCHAT', k: 'hello_v3', v: 3 })
     );
-    expect(
-      (sent.find((wire) => wire.k === 'hello_v3')?.f as string[]) ?? []
-    ).not.toContain('public_activity_v1');
+    const advertisedFeatures =
+      (sent.find((wire) => wire.k === 'hello_v3')?.f as string[]) ?? [];
+    expect(advertisedFeatures).not.toContain('public_activity_v1');
+    expect(advertisedFeatures).toEqual(
+      expect.arrayContaining(['linked_event_v1', 'linked_author_range_v1'])
+    );
+    const olderPeer = 'b'.repeat(32);
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'hello_v3',
+        v: 3,
+        f: advertisedFeatures.filter(
+          (feature) =>
+            feature !== 'linked_event_v1' &&
+            feature !== 'linked_author_range_v1'
+        ),
+      },
+      olderPeer
+    );
+    expect((manager as any).peerProtocolFeatures.has(olderPeer)).toBe(true);
+    expect((manager as any).peerProtocolFeatures.get(olderPeer)).not.toContain(
+      'linked_event_v1'
+    );
     expect(sent).toContainEqual(
       expect.objectContaining({
         t: 'RCHAT',
@@ -32304,6 +32342,7 @@ describe('reticulum chat manager', () => {
       bridge: {
         on: () => undefined,
         off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
         sendReticulumChatDetailed: async () => pendingSend,
       } as any,
     });
@@ -32403,6 +32442,10 @@ describe('reticulum chat manager', () => {
       nextAttemptAt: 0,
       inFlight: true,
     };
+    (manager as any).peerProtocolFeatures.set(
+      providerPeer,
+      new Set(['linked_event_v1'])
+    );
 
     await (manager as any).requestEventPull(providerPeer, item);
     await (manager as any).requestEventPull(providerPeer, item);
@@ -32426,6 +32469,155 @@ describe('reticulum chat manager', () => {
       true
     );
     expect(overlaySends).not.toHaveBeenCalled();
+    manager.close();
+  });
+
+  it('uses the compatible event request path when a peer has not advertised linked pulls', async () => {
+    const requesterPeer = 'a'.repeat(32);
+    const providerPeer = 'b'.repeat(32);
+    const accepted = vi.fn(async () => ({ ok: true as const }));
+    const sent: Array<{ peer: string; wire: Record<string, any> }> = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => requesterPeer,
+        acceptReticulumChatResourceDetailed: accepted,
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, any>
+        ) => {
+          sent.push({ peer, wire });
+          return { ok: true as const };
+        },
+        fanoutReticulumChatDetailed: async (wires: Record<string, any>[]) => {
+          sent.push(...wires.map((wire) => ({ peer: '', wire })));
+          return { ok: true as const };
+        },
+      } as any,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const item = {
+      hint: {
+        eventId: 'event-compatible-live-request',
+        groupId: 744,
+        channelId: '*',
+        authorAddress: '',
+        authorSeq: 0,
+        timestamp: Date.now(),
+        eventType: 'message',
+        payloadHash: '',
+        mentionAddressHashes: [],
+      },
+      peerHashes: new Set([providerPeer]),
+      digestFingerprint: '',
+      attempts: 0,
+      nextAttemptAt: 0,
+      inFlight: true,
+    };
+
+    await (manager as any).requestEventPull(providerPeer, item);
+
+    expect(accepted).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      wire: {
+        t: 'RCHAT',
+        k: 'event_req',
+        g: 744,
+        o: expect.any(String),
+      },
+    });
+    expect(wireFitsReticulumChat(sent[0].wire)).toBe(true);
+    expect((manager as any).localLegacyEventRequestIds.size).toBe(1);
+    expect(
+      verifyReticulumChatEventRequest(744, sent[0].wire.q, Date.now())
+    ).toBe(true);
+    manager.close();
+  });
+
+  it('binds compatible event offers to their request while allowing transfer retries', async () => {
+    const now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+      } as any,
+      now: () => now,
+    });
+    const acceptLocalEventOffer = vi
+      .spyOn(manager as any, 'acceptLocalEventOffer')
+      .mockImplementation(() => undefined);
+    const requestId = 'c'.repeat(16);
+    const requestedEventId = 'event-compatible-offer-retry';
+    (manager as any).localLegacyEventRequestIds.set(requestId, {
+      groupId: 744,
+      eventId: requestedEventId,
+      expiresAt: now + 60_000,
+    });
+    const offer = {
+      eventId: requestedEventId,
+      groupId: 744,
+      payloadHash: 'a'.repeat(64),
+      wireHash: 'b'.repeat(64),
+      sizeBytes: 128,
+      relayRequestId: requestId,
+    };
+
+    (manager as any).handleEventOffer(
+      { ...offer, transferId: 'transfer-compatible-offer-1' },
+      'peer-a'
+    );
+    await flushQueuedWork();
+    (manager as any).handleEventOffer(
+      { ...offer, transferId: 'transfer-compatible-offer-2' },
+      'peer-a'
+    );
+    await flushQueuedWork();
+
+    expect(acceptLocalEventOffer).toHaveBeenCalledTimes(2);
+    expect((manager as any).localLegacyEventRequestIds.has(requestId)).toBe(
+      true
+    );
+
+    (manager as any).handleEventOffer(
+      {
+        ...offer,
+        transferId: 'transfer-compatible-offer-wrong-event',
+        eventId: 'event-compatible-offer-unrequested',
+      },
+      'peer-a'
+    );
+    (manager as any).handleEventOffer(
+      {
+        ...offer,
+        transferId: 'transfer-compatible-offer-wrong-group',
+        groupId: 745,
+      },
+      'peer-a'
+    );
+    const expiredRequestId = 'd'.repeat(16);
+    (manager as any).localLegacyEventRequestIds.set(expiredRequestId, {
+      groupId: 744,
+      eventId: requestedEventId,
+      expiresAt: now,
+    });
+    (manager as any).handleEventOffer(
+      {
+        ...offer,
+        transferId: 'transfer-compatible-offer-expired',
+        relayRequestId: expiredRequestId,
+      },
+      'peer-a'
+    );
+    await flushQueuedWork();
+
+    expect(acceptLocalEventOffer).toHaveBeenCalledTimes(2);
+    expect(
+      (manager as any).localLegacyEventRequestIds.has(expiredRequestId)
+    ).toBe(false);
     manager.close();
   });
 
@@ -32465,6 +32657,10 @@ describe('reticulum chat manager', () => {
       nextAttemptAt: 0,
       inFlight: true,
     };
+    (manager as any).peerProtocolFeatures.set(
+      providerPeer,
+      new Set(['linked_event_v1'])
+    );
     (manager as any).linkedEventTransferByPull.set(
       '744:event-linked-stale-bookkeeping',
       'missing-transfer'
@@ -32484,6 +32680,8 @@ describe('reticulum chat manager', () => {
   it('releases a linked event pull when opening its resource receive throws', async () => {
     const requesterPeer = 'a'.repeat(32);
     const providerPeer = 'b'.repeat(32);
+    const overlaySends = vi.fn(async () => ({ ok: true as const }));
+    const overlayFanout = vi.fn(async () => ({ ok: true as const }));
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: {
@@ -32497,6 +32695,8 @@ describe('reticulum chat manager', () => {
         acceptReticulumChatResourceDetailed: async () => {
           throw new Error('simulated resource receive failure');
         },
+        sendReticulumChatDetailed: overlaySends,
+        fanoutReticulumChatDetailed: overlayFanout,
       } as any,
       signLocalFields: createReticulumChatTestSigner(),
     });
@@ -32518,14 +32718,23 @@ describe('reticulum chat manager', () => {
       nextAttemptAt: 0,
       inFlight: true,
     };
+    (manager as any).peerProtocolFeatures.set(
+      providerPeer,
+      new Set(['linked_event_v1'])
+    );
 
     await expect(
       (manager as any).requestEventPull(providerPeer, item)
     ).resolves.toBeUndefined();
+    await flushQueuedWork();
 
     expect(item.inFlight).toBe(false);
     expect((manager as any).linkedEventTransferByPull.size).toBe(0);
     expect((manager as any).resourceOffers.size).toBe(0);
+    expect(overlayFanout).toHaveBeenCalledWith(
+      [expect.objectContaining({ k: 'event_req', g: 744 })],
+      []
+    );
     manager.close();
   });
 
@@ -32568,6 +32777,10 @@ describe('reticulum chat manager', () => {
       nextAttemptAt: 0,
       inFlight: true,
     };
+    (manager as any).peerProtocolFeatures.set(
+      providerPeer,
+      new Set(['linked_event_v1'])
+    );
     await (manager as any).requestEventPull(providerPeer, item);
     const transferId = (manager as any).linkedEventTransferByPull.get(
       '744:event-linked-close'

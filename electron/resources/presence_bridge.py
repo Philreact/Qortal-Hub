@@ -309,6 +309,7 @@ _RETICULUM_CHAT_IDENTITY_DEDUP_TTL_SECONDS = 35.0
 _RETICULUM_CHAT_TYPING_DEDUP_TTL_SECONDS = 35.0
 _RETICULUM_CHAT_DISCOVERY_DEDUP_TTL_SECONDS = 6 * 60.0
 _RETICULUM_CHAT_ROUTED_CONTROL_DEDUP_TTL_SECONDS = 2.0
+_RETICULUM_CHAT_RESOURCE_OFFER_DEDUP_TTL_SECONDS = 30.0
 _RETICULUM_CHAT_ROUTED_CONTROL_DEDUP_MAX = 32768
 _RETICULUM_CHAT_ROUTED_CONTROL_PRUNE_INTERVAL_SECONDS = 2.0
 _reticulum_chat_inbound_dedup: Dict[str, float] = {}
@@ -12467,6 +12468,46 @@ def _reticulum_chat_inbound_dedup_key(
     message: Dict[str, Any],
 ) -> Optional[Tuple[str, float]]:
     message_type = message.get("k")
+    if message_type in {"event_offer", "event_page_offer"}:
+        body = (
+            message.get("o")
+            if message_type == "event_offer"
+            else message.get("p")
+        )
+        group_id = message.get("g")
+        if (
+            not isinstance(body, dict)
+            or isinstance(group_id, bool)
+            or not isinstance(group_id, int)
+        ):
+            return None
+        transfer_id = body.get("x")
+        resource_id = (
+            body.get("id") if message_type == "event_offer" else body.get("ph")
+        )
+        if (
+            not isinstance(transfer_id, str)
+            or not transfer_id.strip()
+            or not isinstance(resource_id, str)
+            or not resource_id.strip()
+        ):
+            return None
+        request_id = body.get("rr")
+        provider = body.get("sd") or body.get("sp") or ""
+        identity = ":".join(
+            (
+                message_type,
+                str(group_id),
+                transfer_id.strip().lower(),
+                resource_id.strip().lower(),
+                str(request_id).lower(),
+                str(provider).lower(),
+            )
+        )
+        return (
+            identity,
+            _RETICULUM_CHAT_RESOURCE_OFFER_DEDUP_TTL_SECONDS,
+        )
     if message_type in {"dm_probe", "dm_notify"}:
         body = message.get("q") if message_type == "dm_probe" else message.get("d")
         request_id = body.get("q") if isinstance(body, dict) else None

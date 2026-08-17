@@ -1093,6 +1093,64 @@ class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
             )
         )
 
+    def test_event_resource_offer_dedup_keeps_distinct_transfers(self):
+        offer = {
+            "t": "RCHAT",
+            "k": "event_offer",
+            "g": 73,
+            "o": {
+                "x": "transfer-one",
+                "id": "event-one",
+                "rr": "request-one",
+                "sp": "aa" * 16,
+            },
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(offer)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**offer, "r": "bb" * 16}
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {
+                    **offer,
+                    "o": {**offer["o"], "x": "transfer-two"},
+                }
+            )
+        )
+
+    def test_event_page_offer_dedup_keeps_distinct_requests(self):
+        offer = {
+            "t": "RCHAT",
+            "k": "event_page_offer",
+            "g": 73,
+            "p": {
+                "x": "page-transfer",
+                "ph": "ab" * 32,
+                "rr": "request-one",
+                "sp": "aa" * 16,
+            },
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(offer)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(offer)
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {
+                    **offer,
+                    "p": {**offer["p"], "rr": "request-two"},
+                }
+            )
+        )
+
     def test_group_subscription_dedup_preserves_a_better_hop_count(self):
         subscription = {
             "t": "RCHAT",
