@@ -76,7 +76,7 @@ export const ReticulumUserCard = ({
   silenceContext,
 }: ReticulumUserCardProps) => {
 
-  const { t } = useTranslation(['core', 'reticulum']);
+  const { i18n, t } = useTranslation(['core', 'reticulum']);
   const getPresenceStatusLabel = usePresenceStatusLabel();
 
   const theme = useTheme();
