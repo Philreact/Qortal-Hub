@@ -1,8 +1,10 @@
 import { Badge, Box, Tooltip, Typography, useTheme } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { UserStatus } from '../../atoms/presence';
 import { statusDotColor } from '../../hooks/usePresence';
+import { usePresenceStatusLabel } from './accountStatus';
 
 type PresenceStatus = UserStatus | 'offline' | null;
 
@@ -12,19 +14,14 @@ type PresenceStatusBadgeProps = {
   status: PresenceStatus;
 };
 
-const getPresenceLabel = (status: Exclude<PresenceStatus, null>) => {
-  if (status === 'busy') return 'Busy';
-  if (status === 'idle') return 'Idle';
-  if (status === 'offline') return 'Offline';
-  return 'Online';
-};
-
 export const PresenceStatusBadge = ({
   children,
   online,
   status,
 }: PresenceStatusBadgeProps) => {
   const theme = useTheme();
+  const { t } = useTranslation(['core']);
+  const getPresenceLabel = usePresenceStatusLabel();
   const effectiveStatus: Exclude<PresenceStatus, null> =
     online === false || !status ? 'offline' : status;
   const label = getPresenceLabel(effectiveStatus);
@@ -127,9 +124,13 @@ export const PresenceStatusBadge = ({
           }}
         >
           <Box
-            aria-label={`${label} status`}
+            aria-label={t('core:message.generic.presence_status', {
+              status: label,
+            })}
             sx={{
-              background: isOffline ? theme.palette.background.paper : statusColor,
+              background: isOffline
+                ? theme.palette.background.paper
+                : statusColor,
               border: `3px solid ${theme.palette.background.paper}`,
               borderRadius: '50%',
               boxSizing: 'content-box',

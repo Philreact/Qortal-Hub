@@ -215,6 +215,7 @@
     "account_overview": "Panoramica account",
     "account_settings_tooltip": "Impostazioni account",
     "account_status_busy": "Occupato",
+    "account_status_idle": "Inattivo",
     "account_status_invisible": "Invisibile",
     "account_status_offline": "Offline",
     "account_status_online": "Online",

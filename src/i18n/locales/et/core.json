@@ -492,6 +492,7 @@
     },
     "generic": {
       "account_menu": "Konto menüü",
+      "account_menu_status": "Konto menüü, olek: {{status}}",
       "address": "Aadress",
       "address_copied": "aadress kopeeriti lõikelauale.",
       "already_voted": "oled juba hääletanud.",
@@ -565,6 +566,7 @@
       "password_enter": "palun sisesta parool",
       "payment_request": "rakendus <br/><italic>{{hostname}}</italic> <br/><span>taotleb makset</span>",
       "people_reaction": "inimesed, kes reageerisid {{ reaction }}",
+      "presence_status": "Olek: {{status}}",
       "processing_transaction": "tehingu töötlemine, palun oota...",
       "publish_data": "avalda andmeid Qortalisse: rakendused, videod ja palju muud. Täiesti detsentraliseeritud!",
       "publishing": "avalden... palun oota.",
@@ -586,6 +588,7 @@
       "sending": "saatmine...",
       "settings": "kasutad seadete salvestamiseks eksport/impordi viisi.",
       "space_for_admins": "vabandust, see ala on ainult administraatoritele.",
+      "status": "Olek",
       "unread_messages": "lugemata sõnumid allpool",
       "unsaved_changes": "sul on salvestamata muudatusi kinnitatud rakendustes. Salvesta need QDN-i.",
       "updating": "uuendamine",

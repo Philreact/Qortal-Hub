@@ -492,6 +492,7 @@
     },
     "generic": {
       "account_menu": "Menu du compte",
+      "account_menu_status": "Menu du compte, statut : {{status}}",
       "address": "Adresse",
       "address_copied": "adresse copiée dans le presse-papiers.",
       "already_voted": "Vous avez déjà voté.",
@@ -565,6 +566,7 @@
       "password_enter": "Veuillez saisir un mot de passe",
       "payment_request": "l’application <br/><italic>{{hostname}}</italic> <br/><span>demande un paiement</span>",
       "people_reaction": "personnes ayant réagi avec {{ reaction }}",
+      "presence_status": "Statut : {{status}}",
       "processing_transaction": "La transaction de traitement est-elle, veuillez patienter ...",
       "publish_data": "Publier des données à Qortal: n'importe quoi, des applications aux vidéos. Entièrement décentralisé!",
       "publishing": "Publication ... Veuillez patienter.",
@@ -586,6 +588,7 @@
       "sending": "envoi...",
       "settings": "vous utilisez la manière d'exportation / importation d'enregistrement des paramètres.",
       "space_for_admins": "désolé, cet espace est uniquement pour les administrateurs.",
+      "status": "Statut",
       "unread_messages": "messages non lus ci-dessous",
       "unsaved_changes": "vous avez des modifications non enregistrées à vos applications épinglées. Enregistrez-les sur QDN.",
       "updating": "mise à jour",
