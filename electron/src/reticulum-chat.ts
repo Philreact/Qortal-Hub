@@ -21800,7 +21800,7 @@ export class ReticulumChatManager extends EventEmitter {
     const normalized = normalizeReticulumChatAuthorRange(range);
     if (!peer || !normalized?.s) return;
     this.markAuthorGapRangeNoProgress(peer, groupId, normalized, reason, false);
-    const unavailablePeerCount = this.db.recordMissingRangePeerUnavailable(
+    this.db.recordMissingRangePeerUnavailable(
       groupId,
       normalized.a,
       normalized.s,
@@ -21810,16 +21810,28 @@ export class ReticulumChatManager extends EventEmitter {
       this.now(),
       RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS
     );
-    const localPeer = this.localPeerHash() ?? '';
-    const eligiblePeerCount = new Set(
-      (this.getVerifiedReticulumPeers?.() ?? [])
-        .map((candidate) => candidate.destinationHash.trim().toLowerCase())
-        .filter((candidate) => candidate && candidate !== localPeer)
-    ).size;
+    // The responding peer was eligible when this request was opened. Retain
+    // it for this result even if its short subscription lease expired while
+    // the dedicated transfer was in flight.
+    const eligiblePeers = [
+      ...new Set([
+        peer,
+        ...this.getAuthorGapRepairCandidates(groupId, normalized),
+      ]),
+    ];
+    const unavailablePeerCount = this.countUnavailableAuthorGapCandidates(
+      groupId,
+      normalized,
+      eligiblePeers
+    );
+    const eligiblePeerCount = eligiblePeers.length;
     const quarantineThreshold = Math.min(
       RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_PEERS,
       Math.max(1, eligiblePeerCount)
     );
+    // A remote denial is not authoritative by itself. Require the bounded
+    // provider quorum so one stale or dishonest provider cannot suppress
+    // readable history for the requester.
     const shouldQuarantine = unavailablePeerCount >= quarantineThreshold;
     const replacement = shouldQuarantine
       ? ''
@@ -22870,23 +22882,20 @@ export class ReticulumChatManager extends EventEmitter {
         normalized.from,
         normalized.to
       );
-      const localPeer = this.localPeerHash() ?? '';
-      const eligiblePeerCount = new Set(
-        (this.getVerifiedReticulumPeers?.() ?? [])
-          .map((candidate) => candidate.destinationHash.trim().toLowerCase())
-          .filter((candidate) => candidate && candidate !== localPeer)
-      ).size;
+      const eligiblePeers = this.getAuthorGapRepairCandidates(
+        groupId,
+        normalized,
+        peer
+      );
+      const eligiblePeerCount = eligiblePeers.length;
       const quarantineThreshold = Math.min(
         RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_PEERS,
         Math.max(1, eligiblePeerCount)
       );
-      const unavailablePeerCount = this.db.countMissingRangePeerUnavailable(
+      const unavailablePeerCount = this.countUnavailableAuthorGapCandidates(
         groupId,
-        normalized.a,
-        normalized.s,
-        normalized.from,
-        normalized.to,
-        this.now() - RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS
+        normalized,
+        eligiblePeers
       );
       const isQuarantined = unavailablePeerCount >= quarantineThreshold;
       const newlyObservedPeer =
@@ -22970,36 +22979,14 @@ export class ReticulumChatManager extends EventEmitter {
   ): string {
     const local = this.localPeerHash() ?? '';
     const excluded = excludedPeer.trim().toLowerCase();
-    const verified = (this.getVerifiedReticulumPeers?.() ?? []).sort(
-      (a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0)
-    );
-    const authorEndpoints = this.getAccountEndpointLeasesForRouting()
-      .filter((candidate) => candidate.address?.trim() === range.a)
-      .sort((a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0));
-    const candidates = [
-      ...authorEndpoints.map((candidate) => candidate.destinationHash),
-      preferredPeer,
-      ...verified
-        .filter((candidate) => {
-          const peer = candidate.destinationHash.trim().toLowerCase();
-          return (
-            this.directPeerSubscriptions.get(peer)?.has(groupId) ||
-            this.peerSubscriptions.get(peer)?.has(groupId)
-          );
-        })
-        .map((candidate) => candidate.destinationHash),
-      ...verified.map((candidate) => candidate.destinationHash),
-    ];
-    const seen = new Set<string>();
-    for (const candidate of candidates) {
-      const rawPeer =
-        typeof candidate === 'string' ? candidate.trim().toLowerCase() : '';
-      const peer = normalizeRoutePeerHash(rawPeer) ?? rawPeer;
+    for (const peer of this.getAuthorGapRepairCandidates(
+      groupId,
+      range,
+      preferredPeer
+    )) {
       if (
-        !peer ||
         peer === local ||
         peer === excluded ||
-        seen.has(peer) ||
         this.isAuthorGapRouteBackedOff(groupId, peer) ||
         this.db.hasMissingRangePeerUnavailable(
           groupId,
@@ -23014,10 +23001,75 @@ export class ReticulumChatManager extends EventEmitter {
       ) {
         continue;
       }
-      seen.add(peer);
       return peer;
     }
     return '';
+  }
+
+  private getAuthorGapRepairCandidates(
+    groupId: number,
+    range: ReticulumChatAuthorRange,
+    preferredPeer = ''
+  ): string[] {
+    const now = this.now();
+    const verified = (this.getVerifiedReticulumPeers?.() ?? []).sort(
+      (a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0)
+    );
+    const authorEndpoints = this.getAccountEndpointLeasesForRouting()
+      .filter((candidate) => candidate.address?.trim() === range.a)
+      .sort((a, b) => Number(b.lastSeen || 0) - Number(a.lastSeen || 0));
+    const authorPeers = new Set(
+      authorEndpoints
+        .map((candidate) =>
+          this.normalizeResourcePeerHash(candidate.destinationHash)
+        )
+        .filter((peer): peer is string => Boolean(peer))
+    );
+    const subscribedPeers = verified
+      .map((candidate) =>
+        this.normalizeResourcePeerHash(candidate.destinationHash)
+      )
+      .filter((peer): peer is string => {
+        if (!peer) return false;
+        return (
+          (this.directPeerSubscriptions.get(peer)?.get(groupId) ?? 0) > now ||
+          this.hasCurrentPeerSubscription(peer, groupId, now)
+        );
+      });
+    const normalizedPreferred = this.normalizeResourcePeerHash(preferredPeer);
+    const preferredIsAttributable = Boolean(
+      normalizedPreferred &&
+      (authorPeers.has(normalizedPreferred) ||
+        subscribedPeers.includes(normalizedPreferred))
+    );
+    const candidates = [
+      ...authorPeers,
+      ...(preferredIsAttributable && normalizedPreferred
+        ? [normalizedPreferred]
+        : []),
+      ...subscribedPeers,
+    ];
+    const local = this.localPeerHash() ?? '';
+    return [...new Set(candidates)].filter((peer) => peer !== local);
+  }
+
+  private countUnavailableAuthorGapCandidates(
+    groupId: number,
+    range: ReticulumChatAuthorRange,
+    candidates: string[]
+  ): number {
+    const cutoff = this.now() - RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS;
+    return candidates.filter((peer) =>
+      this.db.hasMissingRangePeerUnavailable(
+        groupId,
+        range.a,
+        range.s,
+        range.from,
+        range.to,
+        peer,
+        cutoff
+      )
+    ).length;
   }
 
   private processBackgroundAuthorGapRepair(): void {
@@ -37321,7 +37373,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.eventPageOffers.delete(transferId);
     this.removeDirectHistoryPageRequest(transferId);
     if (
-      reason === 'no_history_events' &&
+      (reason === 'no_history_events' || reason === 'channel_read_forbidden') &&
       offer.direction === 'range' &&
       offer.sourcePeerHash &&
       offer.repairRange
@@ -37330,11 +37382,13 @@ export class ReticulumChatManager extends EventEmitter {
         offer.groupId,
         offer.sourcePeerHash,
         offer.repairRange,
-        'linked_peer_confirmed_range_unavailable'
+        reason === 'channel_read_forbidden'
+          ? 'channel_read_forbidden'
+          : 'linked_peer_confirmed_range_unavailable'
       );
       this.scheduleBackgroundAuthorGapRepair(1);
       loggerLog(
-        `[ReticulumChat] author_gap_link_unavailable group=${offer.groupId} peer=${offer.sourcePeerHash.slice(0, 16)} transfer=${transferId}`
+        `[ReticulumChat] author_gap_link_unavailable group=${offer.groupId} peer=${offer.sourcePeerHash.slice(0, 16)} transfer=${transferId} reason=${reason}`
       );
       return;
     }

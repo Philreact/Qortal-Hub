@@ -3168,6 +3168,205 @@ describe('reticulum chat database', () => {
     manager.close();
   });
 
+  it('does not select unrelated verified peers for author-gap repair', () => {
+    const unrelatedPeer = 'b'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => 100_000,
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: unrelatedPeer,
+          address: 'QUnrelatedPeer',
+          lastSeen: 100_000,
+        },
+      ],
+      getAccountEndpointLeases: () => [],
+    });
+    const range = {
+      a: 'QMissingAuthor',
+      s: TEST_AUTHOR_STREAM_ID,
+      from: 4,
+      to: 8,
+    };
+
+    expect(
+      (manager as any).selectAuthorGapRepairPeer(716, range, '', unrelatedPeer)
+    ).toBe('');
+    manager.close();
+  });
+
+  it('selects only attributable providers for author-gap repair', () => {
+    const authorPeer = 'a'.repeat(32);
+    const subscriberPeer = 'b'.repeat(32);
+    const unrelatedPeer = 'c'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => 100_000,
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: unrelatedPeer,
+          address: 'QUnrelatedPeer',
+          lastSeen: 103_000,
+        },
+        {
+          destinationHash: subscriberPeer,
+          address: 'QSubscriber',
+          lastSeen: 102_000,
+        },
+        {
+          destinationHash: authorPeer,
+          address: 'QMissingAuthor',
+          lastSeen: 101_000,
+        },
+      ],
+      getAccountEndpointLeases: () => [
+        {
+          destinationHash: authorPeer,
+          address: 'QMissingAuthor',
+          sessionId: 'author-session',
+          lastSeen: 101_000,
+          expiresAt: 145_000,
+          verification: 'direct',
+        },
+      ],
+    });
+    (manager as any).notePeerSubscription(subscriberPeer, 716, true);
+    const range = {
+      a: 'QMissingAuthor',
+      s: TEST_AUTHOR_STREAM_ID,
+      from: 4,
+      to: 8,
+    };
+
+    expect((manager as any).selectAuthorGapRepairPeer(716, range)).toBe(
+      authorPeer
+    );
+    expect(
+      (manager as any).selectAuthorGapRepairPeer(716, range, authorPeer)
+    ).toBe(subscriberPeer);
+    expect(
+      (manager as any).selectAuthorGapRepairPeer(
+        716,
+        range,
+        authorPeer,
+        unrelatedPeer
+      )
+    ).toBe(subscriberPeer);
+    manager.close();
+  });
+
+  it('requires the attributable provider quorum before quarantining inaccessible ranges', () => {
+    const firstPeer = 'a'.repeat(32);
+    const secondPeer = 'b'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => 100_000,
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: firstPeer,
+          address: 'QFirstProvider',
+          lastSeen: 100_000,
+        },
+        {
+          destinationHash: secondPeer,
+          address: 'QSecondProvider',
+          lastSeen: 99_000,
+        },
+      ],
+      getAccountEndpointLeases: () => [],
+    });
+    (manager as any).notePeerSubscription(firstPeer, 716, true);
+    (manager as any).notePeerSubscription(secondPeer, 716, true);
+    const range = {
+      a: 'QProtectedAuthor',
+      s: TEST_AUTHOR_STREAM_ID,
+      from: 4,
+      to: 8,
+    };
+    const db = (manager as any).db as ReticulumChatDatabase;
+    db.ensureMissingRange(716, range.a, range.s, 4, 8, firstPeer);
+
+    (manager as any).handleAuthorRangeUnavailable(
+      716,
+      firstPeer,
+      range,
+      'channel_read_forbidden'
+    );
+
+    expect(db.getMissingRange(716, range.a, range.s, 4, 8)).toMatchObject({
+      preferredPeer: secondPeer,
+      nextAttemptAt: 100_000,
+    });
+
+    (manager as any).handleAuthorRangeUnavailable(
+      716,
+      secondPeer,
+      range,
+      'channel_read_forbidden'
+    );
+
+    expect(db.getMissingRange(716, range.a, range.s, 4, 8)).toMatchObject({
+      preferredPeer: secondPeer,
+      nextAttemptAt: 100_000 + 6 * 60 * 60_000,
+    });
+    manager.close();
+  });
+
+  it('does not let an unrelated peer failure satisfy author-gap quarantine', () => {
+    const providerPeer = 'a'.repeat(32);
+    const unrelatedPeer = 'b'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => 100_000,
+      getVerifiedReticulumPeers: () => [
+        {
+          destinationHash: providerPeer,
+          address: 'QProvider',
+          lastSeen: 100_000,
+        },
+        {
+          destinationHash: unrelatedPeer,
+          address: 'QUnrelated',
+          lastSeen: 99_000,
+        },
+      ],
+      getAccountEndpointLeases: () => [],
+    });
+    manager.setLocalGroupMemberships([716]);
+    manager.subscribeGroup(716);
+    (manager as any).notePeerSubscription(providerPeer, 716, true);
+    const range = {
+      a: 'QProtectedAuthor',
+      s: TEST_AUTHOR_STREAM_ID,
+      from: 4,
+      to: 8,
+    };
+    const db = (manager as any).db as ReticulumChatDatabase;
+    db.ensureMissingRange(716, range.a, range.s, 4, 8, providerPeer);
+    db.recordMissingRangePeerUnavailable(
+      716,
+      range.a,
+      range.s,
+      4,
+      8,
+      unrelatedPeer,
+      100_000,
+      6 * 60 * 60_000
+    );
+
+    (manager as any).recordAuthorGapRanges(
+      716,
+      providerPeer,
+      [range],
+      'test-unrelated-unavailable-peer'
+    );
+
+    expect(db.getMissingRange(716, range.a, range.s, 4, 8)).toMatchObject({
+      preferredPeer: providerPeer,
+    });
+    manager.close();
+  });
+
   it('shortens legacy author gap backoff once for peer-aware retry', () => {
     const legacyDb = new ReticulumChatDatabase(tempDbPath());
     dbs.push(legacyDb);
@@ -19013,6 +19212,7 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([72]);
     manager.subscribeGroup(72);
+    (manager as any).notePeerSubscription(replacementHash, 72, true);
     vi.spyOn(
       manager as any,
       'sendGroupTargetedRoutedControl'
@@ -19291,6 +19491,8 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([72]);
     manager.subscribeGroup(72);
+    (manager as any).notePeerSubscription(firstPeer, 72, true);
+    (manager as any).notePeerSubscription(secondPeer, 72, true);
     (manager as any).peerProtocolFeatures.set(
       firstPeer,
       new Set(['linked_author_range_v1'])
