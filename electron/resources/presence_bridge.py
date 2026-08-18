@@ -31,9 +31,9 @@ if _BRIDGE_RESOURCE_DIR not in sys.path:
     sys.path.insert(0, _BRIDGE_RESOURCE_DIR)
 from qortalland_games import QortalLandGameManager, _b58decode, _b58encode, derive_qortal_address
 
-APP_NAMESPACE = "qortal-hub-v3"
+APP_NAMESPACE = "qortal-hub-v4"
 PRESENCE_ASPECT = "presence"
-PRESENCE_VERSION = "v3"
+PRESENCE_VERSION = "v4"
 IDENTITY_FILENAME = "presence-bridge.identity"
 COMMUNITY_STUN_ASPECT = "community-stun"
 COMMUNITY_STUN_VERSION = "v1"
@@ -14396,6 +14396,20 @@ def on_qchat_file_link_closed(link) -> None:
             session_is_current = _resource_sessions_by_key.get(
                 str(existing_state.get("sessionKey") or "")
             ) == str(existing_state.get("linkId") or "")
+            active_count = len(existing_state.get("active_requests") or {})
+            queued_count = len(existing_state.get("pending_jobs") or [])
+        if str(existing_state.get("sessionLane") or "fast") == "fast":
+            log(
+                "[presence_bridge] resource_fast_link_closed "
+                f"peer={str(existing_state.get('peerPresenceHash') or '')[:16]} "
+                f"link={str(existing_state.get('linkId') or '')[:16]} "
+                f"rns_link={_resource_session_trace_rns_link_id(link)} "
+                f"generation={int(existing_state.get('generation') or 0)} "
+                f"incoming={'yes' if existing_state.get('incoming') is True else 'no'} "
+                f"established={'yes' if was_established else 'no'} "
+                f"current={'yes' if session_is_current else 'no'} "
+                f"active={active_count} queued={queued_count} reason={reason}"
+            )
         path_failed = (
             existing_state.get("incoming") is not True
             and not was_established
@@ -21767,6 +21781,26 @@ def _resource_session_key(peer_hash: str, lane: str, slot: int = 0) -> str:
     return f"{peer_key}:{session_lane}:{max(0, int(slot))}"
 
 
+def _resource_session_trace_rns_link_id(link: Any) -> str:
+    if link is None:
+        return "none"
+    value = getattr(link, "link_id", None)
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).hex()[:16] or "none"
+    rendered = str(value or "").strip()
+    return rendered[:16] or "none"
+
+
+def _resource_session_trace_logical_type(pending: Dict[str, Any]) -> str:
+    metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
+    return str(
+        metadata.get("logicalResourceType")
+        or metadata.get("resourceType")
+        or pending.get("resourceType")
+        or "unknown"
+    ).strip()[:64]
+
+
 def _resource_session_waiter_key(link_id: str, transfer_id: str) -> str:
     return f"{link_id}:{transfer_id}"
 
@@ -22309,6 +22343,20 @@ def _resource_session_response_progress(job: Dict[str, Any], receipt) -> None:
     if progress > 0:
         with _state_lock:
             job["response_started"] = True
+            should_trace_response = job.get("trace_response_logged") is not True
+            if should_trace_response:
+                job["trace_response_logged"] = True
+        session = job.get("session") if isinstance(job.get("session"), dict) else {}
+        if should_trace_response and session.get("sessionLane") == "fast":
+            log(
+                "[presence_bridge] resource_fast_response_progress "
+                f"peer={str(session.get('peerPresenceHash') or '')[:16]} "
+                f"transfer={str(pending.get('transferId') or '')[:16]} "
+                f"link={str(session.get('linkId') or '')[:16]} "
+                f"rns_link={_resource_session_trace_rns_link_id(session.get('link'))} "
+                f"generation={int(session.get('generation') or 0)} "
+                f"logical={_resource_session_trace_logical_type(pending)}"
+            )
         _resource_session_cancel_live_dm_watchdog(job)
     if not _should_emit_qchat_file_progress(pending, progress):
         return
@@ -22334,10 +22382,24 @@ def _resource_session_response_received(job: Dict[str, Any], receipt) -> None:
         except Exception:
             pass
         return
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    session = job.get("session") if isinstance(job.get("session"), dict) else {}
     with _state_lock:
         job["response_started"] = True
+        should_trace_response = job.get("trace_response_logged") is not True
+        if should_trace_response:
+            job["trace_response_logged"] = True
+    if should_trace_response and session.get("sessionLane") == "fast":
+        log(
+            "[presence_bridge] resource_fast_response_received "
+            f"peer={str(session.get('peerPresenceHash') or '')[:16]} "
+            f"transfer={str(pending.get('transferId') or '')[:16]} "
+            f"link={str(session.get('linkId') or '')[:16]} "
+            f"rns_link={_resource_session_trace_rns_link_id(session.get('link'))} "
+            f"generation={int(session.get('generation') or 0)} "
+            f"logical={_resource_session_trace_logical_type(pending)}"
+        )
     _resource_session_cancel_live_dm_watchdog(job)
-    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
     response = receipt.get_response()
     metadata = receipt.metadata if isinstance(getattr(receipt, "metadata", None), dict) else {}
     if not hasattr(response, "read"):
@@ -22409,6 +22471,18 @@ def _resource_session_response_received(job: Dict[str, Any], receipt) -> None:
 
 
 def _resource_session_request_failed(job: Dict[str, Any], _receipt=None) -> None:
+    pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
+    session = job.get("session") if isinstance(job.get("session"), dict) else {}
+    if session.get("sessionLane") == "fast":
+        log(
+            "[presence_bridge] resource_fast_request_failed "
+            f"peer={str(session.get('peerPresenceHash') or '')[:16]} "
+            f"transfer={str(pending.get('transferId') or '')[:16]} "
+            f"link={str(session.get('linkId') or '')[:16]} "
+            f"rns_link={_resource_session_trace_rns_link_id(session.get('link'))} "
+            f"generation={int(session.get('generation') or 0)} "
+            f"logical={_resource_session_trace_logical_type(pending)} reason=timeout"
+        )
     _resource_session_finish_job(job, False, reason="resource_request_timeout")
 
 
@@ -22466,6 +22540,17 @@ def _resource_session_dispatch_job(state: Dict[str, Any], job: Dict[str, Any]) -
             timeout=_RESOURCE_SESSION_REQUEST_TIMEOUT_SECONDS,
         )
     except Exception as exc:
+        if state.get("sessionLane") == "fast":
+            log(
+                "[presence_bridge] resource_fast_request_submit_failed "
+                f"peer={str(state.get('peerPresenceHash') or '')[:16]} "
+                f"transfer={transfer_id[:16]} "
+                f"link={str(state.get('linkId') or '')[:16]} "
+                f"rns_link={_resource_session_trace_rns_link_id(link)} "
+                f"generation={int(state.get('generation') or 0)} "
+                f"logical={_resource_session_trace_logical_type(pending)} "
+                f"reason=exception error={type(exc).__name__}"
+            )
         _resource_session_finish_job(
             job,
             False,
@@ -22474,8 +22559,28 @@ def _resource_session_dispatch_job(state: Dict[str, Any], job: Dict[str, Any]) -
         )
         return False
     if receipt is False:
+        if state.get("sessionLane") == "fast":
+            log(
+                "[presence_bridge] resource_fast_request_submit_failed "
+                f"peer={str(state.get('peerPresenceHash') or '')[:16]} "
+                f"transfer={transfer_id[:16]} "
+                f"link={str(state.get('linkId') or '')[:16]} "
+                f"rns_link={_resource_session_trace_rns_link_id(link)} "
+                f"generation={int(state.get('generation') or 0)} "
+                f"logical={_resource_session_trace_logical_type(pending)} reason=receipt_false"
+            )
         _resource_session_finish_job(job, False, reason="resource_request_send_failed")
         return False
+    if state.get("sessionLane") == "fast":
+        log(
+            "[presence_bridge] resource_fast_request_submitted "
+            f"peer={str(state.get('peerPresenceHash') or '')[:16]} "
+            f"transfer={transfer_id[:16]} "
+            f"link={str(state.get('linkId') or '')[:16]} "
+            f"rns_link={_resource_session_trace_rns_link_id(link)} "
+            f"generation={int(state.get('generation') or 0)} "
+            f"logical={_resource_session_trace_logical_type(pending)}"
+        )
     with _state_lock:
         cancelled_during_dispatch = job.get("cancelled") is True
         if not cancelled_during_dispatch:
@@ -23698,6 +23803,15 @@ def _resource_session_response_generator(
         claimed_peer_hash = str(state.get("peerPresenceHash") or "").strip().lower()
         if claimed_peer_hash and claimed_peer_hash != identified_peer_hash:
             return {"ok": False, "reason": "resource_peer_identity_mismatch"}
+        if expected_lane == "fast":
+            log(
+                "[presence_bridge] resource_fast_provider_request_entered "
+                f"peer={identified_peer_hash[:16]} transfer={transfer_id[:16]} "
+                f"link={str(state.get('linkId') or '')[:16]} "
+                f"rns_link={_resource_session_trace_rns_link_id(state.get('link'))} "
+                f"generation={int(state.get('generation') or 0)} "
+                f"logical={_resource_session_trace_logical_type({'resourceType': resource_type, 'metadata': metadata})}"
+            )
         link_slot_reason = _resource_session_provider_acquire_link_slot(
             state,
             transfer_id,
@@ -23764,6 +23878,13 @@ def _resource_session_response_generator(
                 peer_pending_auth + 1
             )
         _resource_session_cancel_timer(state, "idle_timer")
+        if expected_lane == "fast":
+            log(
+                "[presence_bridge] resource_fast_provider_auth_handoff "
+                f"peer={identified_peer_hash[:16]} transfer={transfer_id[:16]} "
+                f"link={str(state.get('linkId') or '')[:16]} "
+                f"logical={_resource_session_trace_logical_type({'resourceType': resource_type, 'metadata': metadata})}"
+            )
         _qchat_file_emit(
             "auth",
             {
@@ -23845,6 +23966,13 @@ def _resource_session_response_generator(
         provider_capacity_transferred = True
         provider_session_active_transferred = True
         waiter["response_started"] = True
+        if expected_lane == "fast":
+            log(
+                "[presence_bridge] resource_fast_provider_response_started "
+                f"peer={identified_peer_hash[:16]} transfer={transfer_id[:16]} "
+                f"link={str(state.get('linkId') or '')[:16]} "
+                f"logical={_resource_session_trace_logical_type({'resourceType': resource_type, 'metadata': metadata})}"
+            )
         return (file_handle, response_metadata)
     except Exception as exc:
         log(f"[presence_bridge] resource_session_provider_error err={exc}")
@@ -24223,6 +24351,15 @@ def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -
                 error="Unknown resource session request",
             )
             return
+        if state.get("sessionLane") == "fast":
+            log(
+                "[presence_bridge] resource_fast_provider_authorized "
+                f"peer={link_peer_hash[:16]} transfer={transfer_id[:16]} "
+                f"link={link_id[:16]} "
+                f"rns_link={_resource_session_trace_rns_link_id(state.get('link'))} "
+                f"generation={int(state.get('generation') or 0)} "
+                f"logical={_resource_session_trace_logical_type(pending)}"
+            )
         waiter["authorized"] = True
         waiter["reason"] = ""
         waiter["event"].set()
