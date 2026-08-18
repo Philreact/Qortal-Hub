@@ -18525,6 +18525,128 @@ describe('reticulum chat manager', () => {
     ]);
   });
 
+  it('keeps the signed author range fallback legacy-compatible and within the Reticulum wire limit', async () => {
+    const providerHash = 'a'.repeat(32);
+    const localHash = 'b'.repeat(32);
+    const sent: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => localHash,
+        fanoutReticulumChatDetailed: async (
+          wires: Record<string, unknown>[]
+        ) => {
+          sent.push(...wires);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 9_999_999_999_999,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const event = signedEvent({
+      groupId: 2_147_483_647,
+      authorSeq: 9_999,
+      timestamp: 9_999_999_999_999,
+    });
+    const range = {
+      a: event.authorAddress,
+      s: event.authorStreamId,
+      from: 9_998,
+      to: 9_999,
+    };
+
+    const result = await (manager as any).sendLegacyAuthorRangeRequest(
+      providerHash,
+      {
+        t: 'RCHAT',
+        k: 'range_req',
+        g: 2_147_483_647,
+        ranges: [range],
+        limit: 100,
+      },
+      range
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      t: 'RCHAT',
+      k: 'range_req',
+      g: 2_147_483_647,
+      ranges: [[event.authorAddress, event.authorStreamId, 9_998, 9_999]],
+      q: [
+        expect.any(String),
+        expect.any(String),
+        9_999_999_999_999,
+        expect.any(String),
+      ],
+    });
+    expect(sent[0]).not.toHaveProperty('d');
+    expect(sent[0]).not.toHaveProperty('limit');
+    expect(sent[0]).not.toHaveProperty('h');
+    expect(sent[0]).not.toHaveProperty('v');
+    expect(wireFitsReticulumChat(sent[0] as ReticulumChatWire)).toBe(true);
+    expect(byteLengthUtf8JsonWithBridgeSenderOnly(sent[0])).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    expect((manager as any).pendingAuthorRangeRequests.size).toBe(1);
+    manager.close();
+  });
+
+  it('does not track or send an author range fallback that cannot fit', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'b'.repeat(32),
+        fanoutReticulumChatDetailed: async (
+          wires: Record<string, unknown>[]
+        ) => {
+          sent.push(...wires);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 9_999_999_999_999,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const event = signedEvent({
+      groupId: 2_147_483_647,
+      authorSeq: Number.MAX_SAFE_INTEGER,
+      timestamp: 9_999_999_999_999,
+    });
+    const range = {
+      a: event.authorAddress,
+      s: event.authorStreamId,
+      from: Number.MAX_SAFE_INTEGER - 1,
+      to: Number.MAX_SAFE_INTEGER,
+    };
+
+    const result = await (manager as any).sendLegacyAuthorRangeRequest(
+      'a'.repeat(32),
+      {
+        t: 'RCHAT',
+        k: 'range_req',
+        g: 2_147_483_647,
+        ranges: [range],
+        limit: 100,
+      },
+      range
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'wire-too-large',
+      error: expect.stringContaining('Legacy author range wire'),
+    });
+    expect(sent).toEqual([]);
+    expect((manager as any).pendingAuthorRangeRequests.size).toBe(0);
+    manager.close();
+  });
+
   it('keeps persistent author backoff when a dedicated link cannot be prepared', async () => {
     const providerHash = 'a'.repeat(32);
     const localHash = 'b'.repeat(32);
@@ -22288,12 +22410,14 @@ describe('reticulum chat manager', () => {
     expect((manager as any).peerProtocolFeatures.get(olderPeer)).not.toContain(
       'linked_event_v1'
     );
-    expect(sent).toContainEqual(
+    const groupSubscription = sent.find((wire) => wire.k === 'group_sub');
+    expect(groupSubscription).toEqual(
       expect.objectContaining({
         t: 'RCHAT',
         k: 'group_sub',
         groups: [48],
         mode: 'summary',
+        q: expect.stringMatching(/^f3[0-9a-f]{16}$/),
       })
     );
     expect(sent).toContainEqual(
@@ -22306,6 +22430,266 @@ describe('reticulum chat manager', () => {
     );
     expect(sent.find((wire) => wire.k === 'sync_req')).toBeUndefined();
     expect(sent.find((wire) => wire.k === 'author_heads_req')).toBeUndefined();
+    manager.close();
+  });
+
+  it('recovers peer features from a relayed subscription without extra traffic', async () => {
+    const origin = 'a'.repeat(32);
+    const intermediate = 'b'.repeat(32);
+    const local = 'c'.repeat(32);
+    const sent: Record<string, unknown>[] = [];
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => local,
+        fanoutReticulumChatDetailed: async (
+          wires: Record<string, unknown>[]
+        ) => {
+          sent.push(...wires);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => now,
+    });
+    (manager as any).localGroupIds = new Set([48]);
+    (manager as any).subscribedGroups = new Set([48]);
+    const selfDmReconcile = vi.spyOn(
+      manager as any,
+      'reconcileSelfDmWarmLinks'
+    );
+    const advertisementId = (manager as any).nextSubscriptionAdvertisementId();
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [48],
+        mode: 'summary',
+        o: origin,
+        h: 1,
+        q: advertisementId,
+      },
+      intermediate
+    );
+    await flushQueuedWork();
+
+    expect(
+      (manager as any).peerGroupSubscriptionFeatures.get(origin)?.features
+    ).toContain('linked_event_v1');
+    expect(
+      (manager as any).peerGroupSubscriptionFeatures.get(origin)?.features
+    ).toContain('linked_author_range_v1');
+    expect(
+      (manager as any).peerGroupSubscriptionFeatures.get(origin)?.features
+    ).not.toContain('self_dm_v1');
+    expect(
+      (manager as any).peerGroupSubscriptionFeatures.get(origin)?.features
+    ).not.toContain('calendar_v1');
+    expect((manager as any).peerProtocolFeatures.has(origin)).toBe(false);
+    expect((manager as any).peerSupportsSelfDm(origin)).toBe(false);
+    expect((manager as any).peerSupportsCalendar(origin)).toBe(false);
+    expect(
+      (manager as any).peerSupportsLinkedFeature(origin, 'linked_event_v1')
+    ).toBe(true);
+    expect((manager as any).peerProtocolFeatures.has(intermediate)).toBe(false);
+    expect(sent.filter((wire) => wire.k === 'hello_v3')).toEqual([]);
+    expect(selfDmReconcile).not.toHaveBeenCalled();
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [48],
+        mode: 'summary',
+        o: origin,
+        h: 1,
+        q: 'a'.repeat(16),
+      },
+      intermediate
+    );
+    expect(
+      (manager as any).peerGroupSubscriptionFeatures.get(origin)?.features
+    ).toContain('linked_event_v1');
+    expect(
+      (manager as any).peerGroupSubscriptionFeatures.get(origin)?.features
+    ).toContain('linked_author_range_v1');
+
+    const helloOnlyPeer = 'd'.repeat(32);
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'hello_v3',
+        v: 3,
+        f: [
+          'hello_v3',
+          'state_digest_v3',
+          'event_notice_v3',
+          'metadata_snapshot_v3',
+          'state_heads_v3',
+          'delta_req_v3',
+          'author_streams',
+          'author_merkle_v1',
+          'dm',
+        ],
+      },
+      helloOnlyPeer
+    );
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [48],
+        mode: 'summary',
+        q: advertisementId,
+      },
+      helloOnlyPeer
+    );
+    expect(
+      (manager as any).peerProtocolFeatures.get(helloOnlyPeer)
+    ).not.toContain('linked_event_v1');
+
+    const invalidPeer = 'e'.repeat(32);
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [48],
+        mode: 'summary',
+        q: `f3${'0'.repeat(16)}`,
+      },
+      invalidPeer
+    );
+    expect((manager as any).peerProtocolFeatures.has(invalidPeer)).toBe(false);
+    expect(
+      (manager as any).peerGroupSubscriptionFeatures.has(invalidPeer)
+    ).toBe(false);
+
+    const incompletePeer = 'f'.repeat(32);
+    const advertisedMask = BigInt(`0x${advertisementId.slice(2, 10)}`);
+    const incompleteAdvertisement = `f3${(advertisedMask & ~(1n << 16n))
+      .toString(16)
+      .padStart(8, '0')}${advertisementId.slice(10)}`;
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [48],
+        mode: 'summary',
+        q: incompleteAdvertisement,
+      },
+      incompletePeer
+    );
+    expect((manager as any).peerProtocolFeatures.has(incompletePeer)).toBe(
+      false
+    );
+    expect(
+      (manager as any).peerGroupSubscriptionFeatures.has(incompletePeer)
+    ).toBe(false);
+
+    const unrelatedPeer = '1'.repeat(32);
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [49],
+        mode: 'summary',
+        q: advertisementId,
+      },
+      unrelatedPeer
+    );
+    expect((manager as any).peerProtocolFeatures.has(unrelatedPeer)).toBe(
+      false
+    );
+    expect(
+      (manager as any).peerGroupSubscriptionFeatures.has(unrelatedPeer)
+    ).toBe(false);
+
+    const unsubscribedPeer = '2'.repeat(32);
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [48],
+        mode: 'summary',
+        q: (manager as any).nextSubscriptionAdvertisementId(),
+      },
+      unsubscribedPeer
+    );
+    expect(
+      (manager as any).peerSupportsLinkedFeature(
+        unsubscribedPeer,
+        'linked_event_v1'
+      )
+    ).toBe(true);
+    (manager as any).notePeerSubscription(unsubscribedPeer, 48, false);
+    expect(
+      (manager as any).peerSupportsLinkedFeature(
+        unsubscribedPeer,
+        'linked_event_v1'
+      )
+    ).toBe(false);
+
+    now += 10 * 60_000;
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [48],
+        mode: 'summary',
+        o: origin,
+        h: 1,
+        q: (manager as any).nextSubscriptionAdvertisementId(),
+      },
+      intermediate
+    );
+    now += 10 * 60_000;
+    expect(
+      (manager as any).peerSupportsLinkedFeature(origin, 'linked_event_v1')
+    ).toBe(true);
+    now += 6 * 60_000;
+    expect(
+      (manager as any).peerSupportsLinkedFeature(origin, 'linked_event_v1')
+    ).toBe(false);
+    expect((manager as any).peerGroupSubscriptionFeatures.has(origin)).toBe(
+      false
+    );
+
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'hello_v3',
+        v: 3,
+        f: [
+          'hello_v3',
+          'state_digest_v3',
+          'event_notice_v3',
+          'metadata_snapshot_v3',
+          'state_heads_v3',
+          'delta_req_v3',
+          'range_auth_v1',
+          'author_streams',
+          'author_merkle_v1',
+          'dm',
+          'dm_author_streams_v1',
+          'self_dm_v1',
+          'read_sync_v2',
+          'call_history_v1',
+          'calendar_v1',
+          'linked_event_v1',
+          'linked_author_range_v1',
+        ],
+      },
+      origin
+    );
+    expect((manager as any).peerGroupSubscriptionFeatures.has(origin)).toBe(
+      false
+    );
+    expect((manager as any).peerProtocolFeatures.get(origin)).toContain(
+      'linked_author_range_v1'
+    );
     manager.close();
   });
 
@@ -22934,6 +23318,84 @@ describe('reticulum chat manager', () => {
     expect(
       sent.filter((wire) => wire.k === 'group_state_digest_v3')
     ).toHaveLength(3);
+    manager.close();
+  });
+
+  it('keeps large group subscription pages within the Reticulum wire limit', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[]
+        ) => {
+          sent.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+    });
+    const groups = Array.from(
+      { length: 50 },
+      (_, index) => 1_000_000_000 + index
+    );
+    (manager as any).subscribedGroups = new Set(groups);
+    (manager as any).localGroupIds = new Set(groups);
+
+    (manager as any).refreshSubscriptions(true);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const subscriptions = sent.filter((wire) => wire.k === 'group_sub');
+    expect(subscriptions.length).toBeGreaterThan(1);
+    expect(subscriptions.every((wire) => wireFitsReticulumChat(wire))).toBe(
+      true
+    );
+    expect(subscriptions.flatMap((wire) => wire.groups as number[])).toEqual(
+      groups
+    );
+    manager.close();
+  });
+
+  it('re-paginates relayed group subscriptions after adding route fields', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'c'.repeat(32),
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[]
+        ) => {
+          sent.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+    });
+    const groups = Array.from({ length: 50 }, (_, index) => ({
+      groupId: 1_100 + index,
+      leaseId: index + 1,
+    }));
+
+    await (manager as any).forwardGroupSub(
+      groups,
+      'summary',
+      'a'.repeat(32),
+      'b'.repeat(32),
+      0,
+      (manager as any).nextSubscriptionAdvertisementId(),
+      3
+    );
+
+    const subscriptions = sent.filter((wire) => wire.k === 'group_sub');
+    expect(subscriptions.length).toBeGreaterThan(1);
+    expect(subscriptions.every((wire) => wireFitsReticulumChat(wire))).toBe(
+      true
+    );
+    expect(subscriptions.flatMap((wire) => wire.groups as number[])).toEqual(
+      groups.map(({ groupId }) => groupId)
+    );
     manager.close();
   });
 

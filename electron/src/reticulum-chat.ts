@@ -2060,6 +2060,30 @@ const isDisabledTyping = false;
 export const isDisabledRelayCache = true;
 const RETICULUM_CHAT_PROTOCOL_VERSION = 3;
 const isDisableReticulumGroupKeys = true;
+// Feature-bit positions are wire protocol and must never be reordered. Keep
+// disabled features in this catalog so toggling one cannot reinterpret every
+// later bit on mixed configurations.
+const RETICULUM_CHAT_FEATURE_BIT_ORDER: ReticulumChatProtocolFeature[] = [
+  'hello_v3',
+  'state_digest_v3',
+  'event_notice_v3',
+  'metadata_snapshot_v3',
+  'state_heads_v3',
+  'delta_req_v3',
+  'range_auth_v1',
+  'author_streams',
+  'author_merkle_v1',
+  'dm',
+  'dm_author_streams_v1',
+  'self_dm_v1',
+  'read_sync_v2',
+  'call_history_v1',
+  'calendar_v1',
+  'linked_event_v1',
+  'linked_author_range_v1',
+  'relay_cache',
+  'group_keys',
+];
 const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   'hello_v3',
   'state_digest_v3',
@@ -2081,6 +2105,53 @@ const RETICULUM_CHAT_PROTOCOL_FEATURES: ReticulumChatProtocolFeature[] = [
   ...(!isDisabledRelayCache ? ['relay_cache' as const] : []),
   ...(!isDisableReticulumGroupKeys ? ['group_keys' as const] : []),
 ];
+// Subscription advertisements encode this set as a compact bitmask so a
+// periodic capability refresh costs no additional packet.
+const RETICULUM_CHAT_FEATURE_ADVERTISEMENT_PREFIX = 'f3';
+const RETICULUM_CHAT_FEATURE_MASK_HEX_LENGTH = 8;
+const RETICULUM_CHAT_FEATURE_ADVERTISEMENT_NONCE_LENGTH = 8;
+
+function encodeReticulumChatFeatureMask(
+  features: Iterable<ReticulumChatProtocolFeature>
+): string {
+  const enabled = new Set(features);
+  let mask = 0n;
+  RETICULUM_CHAT_FEATURE_BIT_ORDER.forEach((feature, index) => {
+    if (enabled.has(feature)) mask |= 1n << BigInt(index);
+  });
+  return mask
+    .toString(16)
+    .padStart(RETICULUM_CHAT_FEATURE_MASK_HEX_LENGTH, '0');
+}
+
+function protocolFeaturesFromSubscriptionAdvertisement(
+  advertisementId: string
+): Set<ReticulumChatProtocolFeature> | null {
+  const expectedLength =
+    RETICULUM_CHAT_FEATURE_ADVERTISEMENT_PREFIX.length +
+    RETICULUM_CHAT_FEATURE_MASK_HEX_LENGTH +
+    RETICULUM_CHAT_FEATURE_ADVERTISEMENT_NONCE_LENGTH;
+  if (
+    advertisementId.length !== expectedLength ||
+    !advertisementId.startsWith(RETICULUM_CHAT_FEATURE_ADVERTISEMENT_PREFIX)
+  ) {
+    return null;
+  }
+  const maskHex = advertisementId.slice(
+    RETICULUM_CHAT_FEATURE_ADVERTISEMENT_PREFIX.length,
+    RETICULUM_CHAT_FEATURE_ADVERTISEMENT_PREFIX.length +
+      RETICULUM_CHAT_FEATURE_MASK_HEX_LENGTH
+  );
+  if (!/^[0-9a-f]+$/.test(maskHex)) return null;
+  const mask = BigInt(`0x${maskHex}`);
+  return new Set(
+    RETICULUM_CHAT_FEATURE_BIT_ORDER.filter(
+      (feature, index) =>
+        RETICULUM_CHAT_PROTOCOL_FEATURES.includes(feature) &&
+        (mask & (1n << BigInt(index))) !== 0n
+    )
+  );
+}
 const RETICULUM_CHAT_OPTIONAL_PROTOCOL_FEATURES =
   new Set<ReticulumChatProtocolFeature>([
     'range_auth_v1',
@@ -2092,6 +2163,57 @@ const RETICULUM_CHAT_OPTIONAL_PROTOCOL_FEATURES =
     'linked_event_v1',
     'linked_author_range_v1',
   ]);
+const RETICULUM_CHAT_GROUP_SUBSCRIPTION_FEATURES =
+  new Set<ReticulumChatProtocolFeature>([
+    'linked_event_v1',
+    'linked_author_range_v1',
+  ]);
+
+type ReticulumChatPeerGroupSubscriptionFeatures = {
+  features: Set<ReticulumChatProtocolFeature>;
+  expiresAt: number;
+};
+
+function hasRequiredReticulumChatProtocolFeatures(
+  features: ReadonlySet<ReticulumChatProtocolFeature>
+): boolean {
+  return RETICULUM_CHAT_PROTOCOL_FEATURES.filter(
+    (feature) => !RETICULUM_CHAT_OPTIONAL_PROTOCOL_FEATURES.has(feature)
+  ).every((feature) => features.has(feature));
+}
+
+function hasCompleteReticulumChatProtocolFeatures(
+  features: ReadonlySet<ReticulumChatProtocolFeature>
+): boolean {
+  return (
+    features.size === RETICULUM_CHAT_PROTOCOL_FEATURES.length &&
+    RETICULUM_CHAT_PROTOCOL_FEATURES.every((feature) => features.has(feature))
+  );
+}
+
+function paginateReticulumChatWireItems<T>(
+  items: readonly T[],
+  maxItemsPerPage: number,
+  buildWire: (page: readonly T[]) => ReticulumChatWire
+): T[][] {
+  const pages: T[][] = [];
+  let page: T[] = [];
+  for (const item of items) {
+    const candidate = [...page, item];
+    if (
+      page.length > 0 &&
+      (candidate.length > maxItemsPerPage ||
+        !wireFitsReticulumChat(buildWire(candidate)))
+    ) {
+      pages.push(page);
+      page = [item];
+    } else {
+      page = candidate;
+    }
+  }
+  if (page.length > 0) pages.push(page);
+  return pages;
+}
 const RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS = 100;
 const RETICULUM_CHAT_SEARCH_NETWORK_WAIT_MS = 2_000;
 const RETICULUM_CHAT_SEARCH_NETWORK_POLL_MS = 200;
@@ -7036,6 +7158,10 @@ export class ReticulumChatManager extends EventEmitter {
     string,
     Set<ReticulumChatProtocolFeature>
   >();
+  private peerGroupSubscriptionFeatures = new Map<
+    string,
+    ReticulumChatPeerGroupSubscriptionFeatures
+  >();
   private historyPageNoProgressSuppressions = new Map<string, number>();
   private historyPageHashNoProgressSuppressions = new Map<string, number>();
   private digestRepairNoProgressSuppressions = new Map<string, number>();
@@ -8276,6 +8402,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.authorGapRouteBackoffs.clear();
     this.authorGapControlSendsInFlight.clear();
     this.peerProtocolFeatures.clear();
+    this.peerGroupSubscriptionFeatures.clear();
     this.outboundEventResources.clear();
     this.outboundRelayCachedEventResources.clear();
     this.outboundRelayStoreEventResources.clear();
@@ -10241,6 +10368,90 @@ export class ReticulumChatManager extends EventEmitter {
     return this.db.getOrCreateDirectAuthorStreamId(authorAddress);
   }
 
+  private rememberPeerProtocolFeatures(
+    peerHash: string,
+    features: Iterable<ReticulumChatProtocolFeature>
+  ): void {
+    const peer = this.routePeerHash(peerHash) ?? peerHash.trim().toLowerCase();
+    if (!peer) return;
+    // A direct hello is authoritative for this hop and replaces any earlier
+    // group-scoped inference learned from a routed subscription.
+    this.peerGroupSubscriptionFeatures.delete(peer);
+    const next = new Set(features);
+    const previous = this.peerProtocolFeatures.get(peer);
+    const changed =
+      !previous ||
+      previous.size !== next.size ||
+      [...next].some((feature) => !previous.has(feature));
+    if (changed) {
+      this.peerProtocolFeatures.delete(peer);
+      this.peerProtocolFeatures.set(peer, next);
+      while (this.peerProtocolFeatures.size > 4_096) {
+        const oldest = this.peerProtocolFeatures.keys().next().value as
+          | string
+          | undefined;
+        if (!oldest) break;
+        this.peerProtocolFeatures.delete(oldest);
+      }
+    }
+    if (next.has('self_dm_v1')) {
+      void this.reconcileSelfDmWarmLinks();
+      void this.announceSelfDmSummariesToPeer(peer);
+    }
+    if (next.has('call_history_v1')) {
+      void this.announceDirectCallHistoryToPeer(peer);
+    }
+    if (next.has('calendar_v1')) {
+      for (const groupId of this.localGroupIds) {
+        if (this.hasCurrentPeerSubscription(peer, groupId)) {
+          void this.announceCalendarDigestToPeer(peer, groupId);
+        }
+      }
+    }
+  }
+
+  private rememberPeerGroupSubscriptionFeatures(
+    peerHash: string,
+    features: ReadonlySet<ReticulumChatProtocolFeature>
+  ): void {
+    const peer = this.routePeerHash(peerHash) ?? peerHash.trim().toLowerCase();
+    if (!peer || this.peerProtocolFeatures.has(peer)) return;
+    const scoped = new Set(
+      [...features].filter((feature) =>
+        RETICULUM_CHAT_GROUP_SUBSCRIPTION_FEATURES.has(feature)
+      )
+    );
+    this.peerGroupSubscriptionFeatures.delete(peer);
+    this.peerGroupSubscriptionFeatures.set(peer, {
+      features: scoped,
+      expiresAt: this.now() + RETICULUM_CHAT_PEER_SUBSCRIPTION_TTL_MS,
+    });
+    while (this.peerGroupSubscriptionFeatures.size > 4_096) {
+      const oldest = this.peerGroupSubscriptionFeatures.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      this.peerGroupSubscriptionFeatures.delete(oldest);
+    }
+  }
+
+  private getPeerGroupSubscriptionFeatures(
+    peerHash: string
+  ): ReadonlySet<ReticulumChatProtocolFeature> | undefined {
+    const peer =
+      this.routePeerHash(peerHash) ??
+      this.normalizeResourcePeerHash(peerHash) ??
+      '';
+    if (!peer) return undefined;
+    const state = this.peerGroupSubscriptionFeatures.get(peer);
+    if (!state) return undefined;
+    if (state.expiresAt <= this.now()) {
+      this.peerGroupSubscriptionFeatures.delete(peer);
+      return undefined;
+    }
+    return state.features;
+  }
+
   private peerSupportsDmAuthorStreams(peerHash: string): boolean {
     const peer = this.routePeerHash(peerHash) ?? peerHash.trim().toLowerCase();
     return (
@@ -10286,7 +10497,10 @@ export class ReticulumChatManager extends EventEmitter {
   ): boolean {
     const peer = this.normalizeResourcePeerHash(peerHash);
     if (!peer) return false;
-    return this.peerProtocolFeatures.get(peer)?.has(feature) === true;
+    return (
+      this.peerProtocolFeatures.get(peer)?.has(feature) === true ||
+      this.getPeerGroupSubscriptionFeatures(peer)?.has(feature) === true
+    );
   }
 
   private calendarStateFingerprint(groupId: number): {
@@ -16681,38 +16895,15 @@ export class ReticulumChatManager extends EventEmitter {
           this.notePeerViolation(peerHash, 'bad_hello');
         } else if (peerHash) {
           const advertisedFeatures = Array.isArray(wire.f) ? wire.f : [];
-          this.peerProtocolFeatures.set(
+          this.rememberPeerProtocolFeatures(
             peerHash,
-            new Set(
-              advertisedFeatures.filter(
-                (feature): feature is ReticulumChatProtocolFeature =>
-                  RETICULUM_CHAT_PROTOCOL_FEATURES.includes(
-                    feature as ReticulumChatProtocolFeature
-                  )
-              )
+            advertisedFeatures.filter(
+              (feature): feature is ReticulumChatProtocolFeature =>
+                RETICULUM_CHAT_PROTOCOL_FEATURES.includes(
+                  feature as ReticulumChatProtocolFeature
+                )
             )
           );
-          while (this.peerProtocolFeatures.size > 4_096) {
-            const oldest = this.peerProtocolFeatures.keys().next().value as
-              | string
-              | undefined;
-            if (!oldest) break;
-            this.peerProtocolFeatures.delete(oldest);
-          }
-          if (this.peerSupportsSelfDm(peerHash)) {
-            void this.reconcileSelfDmWarmLinks();
-            void this.announceSelfDmSummariesToPeer(peerHash);
-          }
-          if (this.peerSupportsDirectCallHistory(peerHash)) {
-            void this.announceDirectCallHistoryToPeer(peerHash);
-          }
-          if (this.peerSupportsCalendar(peerHash)) {
-            for (const groupId of this.localGroupIds) {
-              if (this.hasCurrentPeerSubscription(peerHash, groupId)) {
-                void this.announceCalendarDigestToPeer(peerHash, groupId);
-              }
-            }
-          }
         }
         return;
       case 'calendar_offer_v1': {
@@ -17198,9 +17389,9 @@ export class ReticulumChatManager extends EventEmitter {
       return false;
     if (!Array.isArray(wire.f)) return false;
     const features = new Set(wire.f.map((item) => String(item)));
-    return RETICULUM_CHAT_PROTOCOL_FEATURES.filter(
-      (feature) => !RETICULUM_CHAT_OPTIONAL_PROTOCOL_FEATURES.has(feature)
-    ).every((feature) => features.has(feature));
+    return hasRequiredReticulumChatProtocolFeatures(
+      features as Set<ReticulumChatProtocolFeature>
+    );
   }
 
   private buildLandStateForwardingSnapshot(): {
@@ -17781,15 +17972,21 @@ export class ReticulumChatManager extends EventEmitter {
     if (!origin || !inbound || (local && origin === local)) return;
     if (hops >= RETICULUM_CHAT_GROUP_ROUTE_MAX_HOPS) return;
     if (!groups.length) return;
-    for (
-      let offset = 0;
-      offset < groups.length;
-      offset += RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
-    ) {
-      const page = groups.slice(
-        offset,
-        offset + RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
-      );
+    const pages = paginateReticulumChatWireItems(
+      groups,
+      RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE,
+      (page) => ({
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: page.map(({ groupId }) => groupId),
+        mode,
+        o: this.compactRoutePeerHash(origin),
+        h: hops + 1,
+        ...(advertisementId ? { q: advertisementId } : {}),
+        ...(fanoutWidth > 0 ? { fw: fanoutWidth } : {}),
+      })
+    );
+    for (const page of pages) {
       const wire: ReticulumChatWire = {
         t: 'RCHAT',
         k: 'group_sub',
@@ -17809,7 +18006,9 @@ export class ReticulumChatManager extends EventEmitter {
                 wire,
                 exclude,
                 fanoutWidth,
-                `group-sub:${advertisementId}:${hops + 1}`
+                `group-sub:${advertisementId}:${hops + 1}:${page
+                  .map(({ groupId }) => groupId)
+                  .join(',')}`
               )
             : await this.fanout(wire, exclude)
         ).ok;
@@ -20838,6 +21037,25 @@ export class ReticulumChatManager extends EventEmitter {
     if (!inboundPeerHash || !originPeerHash) return;
     const localPeerHash = this.localPeerHash();
     if (localPeerHash && originPeerHash === localPeerHash) return;
+    const advertisedFeatures =
+      protocolFeaturesFromSubscriptionAdvertisement(advertisementId);
+    // group_sub is routed and unsigned, so it may recover an unknown peer's
+    // complete capabilities for a shared group, but must never overwrite a
+    // hello-derived entry or activate unrelated feature workflows.
+    if (
+      advertisedFeatures &&
+      groups.some(
+        (groupId) =>
+          this.localGroupIds.has(groupId) && this.subscribedGroups.has(groupId)
+      ) &&
+      !this.peerProtocolFeatures.has(originPeerHash) &&
+      hasCompleteReticulumChatProtocolFeatures(advertisedFeatures)
+    ) {
+      this.rememberPeerGroupSubscriptionFeatures(
+        originPeerHash,
+        advertisedFeatures
+      );
+    }
     const forwardGroups: Array<{ groupId: number; leaseId: number }> = [];
     for (const groupId of groups) {
       const isNewSubscription = this.notePeerSubscription(
@@ -23341,11 +23559,7 @@ export class ReticulumChatManager extends EventEmitter {
           // route backoff instead of fanning out across every known peer.
           const replacement = routeWasAlreadyBackedOff
             ? ''
-            : this.selectAuthorGapRepairPeer(
-                groupId,
-                normalizedRange,
-                peer
-              );
+            : this.selectAuthorGapRepairPeer(groupId, normalizedRange, peer);
           const nextAttemptAt = replacement
             ? retryAt
             : Math.max(claimed.nextAttemptAt, retryAt);
@@ -23578,26 +23792,37 @@ export class ReticulumChatManager extends EventEmitter {
       .update(signed.signature, 'utf8')
       .digest('hex')
       .slice(0, 16);
+    const legacyRange = authorRangeToWireTuple(requestedRange);
+    if (!legacyRange) {
+      return {
+        ok: false,
+        reason: 'send-command-failed',
+        error: 'Unable to encode legacy author range request',
+      };
+    }
     const routedWire: Extract<ReticulumChatWire, { k: 'range_req' }> = {
       t: 'RCHAT',
       k: 'range_req',
       g: wire.g,
-      d: this.compactRoutePeerHash(providerPeerHash),
-      ranges: ranges
-        .map((range) => authorRangeToWireTuple(range))
-        .filter(
-          (range): range is [string, string, number, number] => range != null
-        ),
+      // Keep the legacy stream ID in its established hexadecimal form. Older
+      // nodes cannot decode the newer base64url form. The local routing table
+      // still selects the preferred first hop; omitting the optional on-wire
+      // target is what leaves enough room for the end-to-end signature.
+      ranges: [legacyRange],
       q: [
         this.compactRoutePeerHash(sourcePeerHash),
         signed.authorPublicKey,
         timestamp,
         signed.signature,
       ],
-      h: 0,
     };
     if (!wireFitsReticulumChat(routedWire)) {
-      return { ok: false, reason: 'wire-too-large' };
+      const bytes = byteLengthUtf8JsonWithBridgeSenderOnly(routedWire);
+      return {
+        ok: false,
+        reason: 'wire-too-large',
+        error: `Legacy author range wire ${bytes} bytes exceeds ${RT_RETICULUM_MAX_WIRE_JSON_BYTES}`,
+      };
     }
     this.pendingAuthorRangeRequests.set(requestId, {
       groupId: wire.g,
@@ -33242,9 +33467,7 @@ export class ReticulumChatManager extends EventEmitter {
         s: sizeBytes,
         rid: requestId,
         sp: this.compactResourcePeerHash(sourcePeerHash),
-        ...(relayedIdentityPublicKey
-          ? { rk: relayedIdentityPublicKey }
-          : {}),
+        ...(relayedIdentityPublicKey ? { rk: relayedIdentityPublicKey } : {}),
       };
       if (!wireFitsReticulumChat(response)) return;
       void this.sendToPeer(route.reversePeerHash, response);
@@ -39344,38 +39567,47 @@ export class ReticulumChatManager extends EventEmitter {
   private nextSubscriptionAdvertisementId(): string {
     this.subscriptionAdvertisementSequence =
       (this.subscriptionAdvertisementSequence + 1) >>> 0;
-    return nodeCrypto
+    const nonce = nodeCrypto
       .createHash('sha256')
       .update(
         `${this.runtimeTypingSessionId}:${this.subscriptionAdvertisementSequence}`,
         'utf8'
       )
       .digest('hex')
-      .slice(0, 16);
+      .slice(0, RETICULUM_CHAT_FEATURE_ADVERTISEMENT_NONCE_LENGTH);
+    return `${RETICULUM_CHAT_FEATURE_ADVERTISEMENT_PREFIX}${encodeReticulumChatFeatureMask(RETICULUM_CHAT_PROTOCOL_FEATURES)}${nonce}`;
   }
 
   private refreshSubscriptions(bounded = true): void {
     this.prunePeerSubscriptions();
     const groups = this.getSubscriptions();
     const wires: ReticulumChatWire[] = [];
-    for (
-      let offset = 0;
-      offset < groups.length;
-      offset += RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
-    ) {
-      const page = groups.slice(
-        offset,
-        offset + RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE
-      );
-      if (page.length)
-        wires.push({
-          t: 'RCHAT',
-          k: 'group_sub',
-          groups: page,
-          mode: 'summary',
-          q: this.nextSubscriptionAdvertisementId(),
-          ...(bounded ? { fw: RETICULUM_CHAT_DISCOVERY_GOSSIP_WIDTH } : {}),
-        });
+    const advertisementPlaceholder = '0'.repeat(
+      RETICULUM_CHAT_FEATURE_ADVERTISEMENT_PREFIX.length +
+        RETICULUM_CHAT_FEATURE_MASK_HEX_LENGTH +
+        RETICULUM_CHAT_FEATURE_ADVERTISEMENT_NONCE_LENGTH
+    );
+    const pages = paginateReticulumChatWireItems(
+      groups,
+      RETICULUM_CHAT_MAX_GROUPS_PER_SUB_PAGE,
+      (page) => ({
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: [...page],
+        mode: 'summary',
+        q: advertisementPlaceholder,
+        ...(bounded ? { fw: RETICULUM_CHAT_DISCOVERY_GOSSIP_WIDTH } : {}),
+      })
+    );
+    for (const page of pages) {
+      wires.push({
+        t: 'RCHAT',
+        k: 'group_sub',
+        groups: page,
+        mode: 'summary',
+        q: this.nextSubscriptionAdvertisementId(),
+        ...(bounded ? { fw: RETICULUM_CHAT_DISCOVERY_GOSSIP_WIDTH } : {}),
+      });
     }
     this.enqueueSubscriptionFanouts(wires);
     for (const groupId of this.getDigestRefreshGroups(groups)) {
@@ -39528,8 +39760,12 @@ export class ReticulumChatManager extends EventEmitter {
       groups.delete(groupId);
       this.clearMetadataSnapshotPushState(key, groupId);
     }
-    if (groups.size) this.peerSubscriptions.set(key, groups);
-    else this.peerSubscriptions.delete(key);
+    if (groups.size) {
+      this.peerSubscriptions.set(key, groups);
+    } else {
+      this.peerSubscriptions.delete(key);
+      this.peerGroupSubscriptionFeatures.delete(key);
+    }
     return active && !wasSubscribed;
   }
 
@@ -39585,7 +39821,15 @@ export class ReticulumChatManager extends EventEmitter {
           this.clearMetadataSnapshotPushState(peerHash, groupId);
         }
       }
-      if (groups.size === 0) this.peerSubscriptions.delete(peerHash);
+      if (groups.size === 0) {
+        this.peerSubscriptions.delete(peerHash);
+        this.peerGroupSubscriptionFeatures.delete(peerHash);
+      }
+    }
+    for (const [peerHash, state] of this.peerGroupSubscriptionFeatures) {
+      if (state.expiresAt <= now || !this.peerSubscriptions.has(peerHash)) {
+        this.peerGroupSubscriptionFeatures.delete(peerHash);
+      }
     }
   }
 
