@@ -2793,6 +2793,44 @@ describe('reticulum chat database', () => {
     });
   });
 
+  it('finds the next missing-range retry only for requested groups', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+
+    db.scheduleMissingRange(
+      11,
+      'QauthorEleven',
+      TEST_AUTHOR_STREAM_ID,
+      2,
+      2,
+      'peer-a',
+      31_000
+    );
+    db.scheduleMissingRange(
+      12,
+      'QauthorTwelve',
+      TEST_AUTHOR_STREAM_ID,
+      3,
+      3,
+      'peer-b',
+      12_000
+    );
+    db.scheduleMissingRange(
+      13,
+      'QauthorWithoutPeer',
+      TEST_AUTHOR_STREAM_ID,
+      4,
+      4,
+      '',
+      1_000
+    );
+
+    expect(db.getNextMissingRangeAttemptAt([11])).toBe(31_000);
+    expect(db.getNextMissingRangeAttemptAt([11, 12])).toBe(12_000);
+    expect(db.getNextMissingRangeAttemptAt([13])).toBeNull();
+    expect(db.getNextMissingRangeAttemptAt([])).toBeNull();
+  });
+
   it('never persists already-known author sequences as missing', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
@@ -25652,6 +25690,83 @@ describe('reticulum chat manager', () => {
       fs.readFileSync(String(resources[0].filePath), 'utf8')
     ) as { events: ReticulumChatEvent[] };
     expect(page.events.map((item) => item.eventId)).toEqual([event.eventId]);
+    manager.close();
+  });
+
+  it('persists peer backoff before skipping an author-gap repair', () => {
+    const now = 100_000;
+    const peer = 'b'.repeat(32);
+    const preferredPeer = 'c'.repeat(32);
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'a'.repeat(32),
+        sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      } as any,
+      now: () => now,
+    });
+    const range = {
+      a: 'QdeferredAuthor',
+      s: TEST_AUTHOR_STREAM_ID,
+      from: 7,
+      to: 9,
+    };
+    const peerAttemptKey = (manager as any).authorGapSuppressionKey(
+      peer,
+      60,
+      range
+    );
+    (manager as any).db.ensureMissingRange(
+      60,
+      range.a,
+      range.s,
+      range.from,
+      range.to,
+      preferredPeer
+    );
+    (manager as any).authorGapPeerAttempts.set(peerAttemptKey, {
+      attempts: 1,
+      nextAttemptAt: now + 30_000,
+    });
+
+    expect(
+      (manager as any).sendAuthorRangeRepairRequests(60, peer, [range], 'test')
+    ).toBe(0);
+    expect(
+      (manager as any).db.getMissingRange(
+        60,
+        range.a,
+        range.s,
+        range.from,
+        range.to
+      )
+    ).toMatchObject({
+      preferredPeer,
+      nextAttemptAt: now + 30_000,
+    });
+    manager.close();
+  });
+
+  it('floors overdue no-progress background author-gap retries', () => {
+    const now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+      } as any,
+      now: () => now,
+    });
+    vi.spyOn(
+      (manager as any).db,
+      'getNextMissingRangeAttemptAt'
+    ).mockReturnValue(now);
+
+    (manager as any).processBackgroundAuthorGapRepair();
+
+    expect((manager as any).backgroundAuthorGapRepairDueAt).toBe(now + 250);
     manager.close();
   });
 

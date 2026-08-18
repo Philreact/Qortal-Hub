@@ -174,4 +174,103 @@ describe('community STUN endpoint validation', () => {
     coordinator.stop();
     await coordinator.waitForStop();
   });
+
+  it('recreates the contribution with a fresh NAT client after repeated mapping failures', async () => {
+    const bridge = new FakeBridge();
+    const coordinator = makeCoordinator();
+    const oldClient = {
+      _map: vi.fn(async () => [false, new Error('stale gateway')]),
+      unmap: vi.fn(async () => true),
+      destroy: vi.fn(async () => {}),
+    };
+    const oldServer = { stop: vi.fn() };
+    const internal = coordinator as unknown as {
+      running: boolean;
+      contributionEnabled: boolean;
+      contributionGeneration: number;
+      contributionTask: Promise<void>;
+      contributionMappingHealthy: boolean;
+      mappingRefreshFailures: number;
+      bridge: ReticulumBridge | null;
+      natClient: typeof oldClient | null;
+      udpServer: typeof oldServer | null;
+      maintainContributionMapping: () => Promise<void>;
+      startContribution: (generation: number) => Promise<void>;
+    };
+    internal.running = true;
+    internal.contributionEnabled = true;
+    internal.contributionMappingHealthy = true;
+    internal.bridge = bridge as unknown as ReticulumBridge;
+    internal.natClient = oldClient;
+    internal.udpServer = oldServer;
+    const startContribution = vi
+      .spyOn(internal, 'startContribution')
+      .mockResolvedValue();
+
+    await internal.maintainContributionMapping();
+    expect(internal.mappingRefreshFailures).toBe(1);
+    expect(bridge.configureCommunityStun).not.toHaveBeenCalled();
+
+    await internal.maintainContributionMapping();
+    await internal.contributionTask;
+
+    expect(bridge.configureCommunityStun).toHaveBeenCalledTimes(1);
+    expect(bridge.configureCommunityStun).toHaveBeenCalledWith(null);
+    expect(oldServer.stop).toHaveBeenCalledTimes(1);
+    expect(oldClient.unmap).toHaveBeenCalledTimes(1);
+    expect(oldClient.destroy).toHaveBeenCalledTimes(1);
+    expect(startContribution).toHaveBeenCalledTimes(1);
+    expect(startContribution).toHaveBeenCalledWith(1);
+  });
+
+  it('does not restart contribution if it is stopped while withdrawing a failed mapping', async () => {
+    let finishWithdrawal: (() => void) | null = null;
+    const bridge = new FakeBridge();
+    bridge.configureCommunityStun.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishWithdrawal = () => resolve(true);
+        })
+    );
+    const coordinator = makeCoordinator();
+    const oldClient = {
+      _map: vi.fn(async () => [false, new Error('stale gateway')]),
+      unmap: vi.fn(async () => true),
+      destroy: vi.fn(async () => {}),
+    };
+    const oldServer = { stop: vi.fn() };
+    const internal = coordinator as unknown as {
+      running: boolean;
+      contributionEnabled: boolean;
+      contributionTask: Promise<void>;
+      contributionMappingHealthy: boolean;
+      mappingRefreshFailures: number;
+      bridge: ReticulumBridge | null;
+      natClient: typeof oldClient | null;
+      udpServer: typeof oldServer | null;
+      refreshContributionMapping: () => Promise<void>;
+      startContribution: (generation: number) => Promise<void>;
+    };
+    internal.running = true;
+    internal.contributionEnabled = true;
+    internal.contributionMappingHealthy = true;
+    internal.mappingRefreshFailures = 1;
+    internal.bridge = bridge as unknown as ReticulumBridge;
+    internal.natClient = oldClient;
+    internal.udpServer = oldServer;
+    const startContribution = vi
+      .spyOn(internal, 'startContribution')
+      .mockResolvedValue();
+
+    const refresh = internal.refreshContributionMapping();
+    await vi.waitFor(() => {
+      expect(bridge.configureCommunityStun).toHaveBeenCalledWith(null);
+    });
+    coordinator.stop();
+    finishWithdrawal?.();
+    await refresh;
+    await coordinator.waitForStop();
+
+    expect(startContribution).not.toHaveBeenCalled();
+  });
 });

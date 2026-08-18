@@ -2441,6 +2441,7 @@ const RETICULUM_CHAT_AUTHOR_GAP_BACKOFF_MS = [
 const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_DELAY_MS = 60_000;
 const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_INTERVAL_MS = 60_000;
 const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_LIMIT = 4;
+const RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_MIN_RETRY_MS = 250;
 const RETICULUM_CHAT_AUTHOR_GAP_RESPONSE_TIMEOUT_MS = 20_000;
 const RETICULUM_CHAT_AUTHOR_GAP_MAX_CONTROL_SENDS_PER_PEER = 4;
 const RETICULUM_CHAT_AUTHOR_GAP_ROUTE_BACKOFF_MS = [
@@ -23102,7 +23103,10 @@ export class ReticulumChatManager extends EventEmitter {
     );
     if (nextAttemptAt != null) {
       this.scheduleBackgroundAuthorGapRepair(
-        Math.max(1, nextAttemptAt - this.now())
+        Math.max(
+          RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_MIN_RETRY_MS,
+          nextAttemptAt - this.now()
+        )
       );
     }
   }
@@ -23195,9 +23199,6 @@ export class ReticulumChatManager extends EventEmitter {
         normalizedRange
       );
       const peerAttempt = this.authorGapPeerAttempts.get(peerAttemptKey);
-      if (peerAttempt && peerAttempt.nextAttemptAt > now) {
-        continue;
-      }
       const existing = this.db.getMissingRange(
         groupId,
         normalizedRange.a,
@@ -23205,6 +23206,23 @@ export class ReticulumChatManager extends EventEmitter {
         normalizedRange.from,
         normalizedRange.to
       );
+      if (peerAttempt && peerAttempt.nextAttemptAt > now) {
+        // Keep the persistent scheduler aligned with the per-peer backoff.
+        // Otherwise the due database row wakes this background pass again
+        // immediately even though this method cannot make progress yet. Keep
+        // the range's existing preferred route: a backoff for this caller is
+        // not evidence that another known provider should be replaced.
+        this.db.scheduleMissingRange(
+          groupId,
+          normalizedRange.a,
+          normalizedRange.s,
+          normalizedRange.from,
+          normalizedRange.to,
+          existing?.preferredPeer || peer,
+          peerAttempt.nextAttemptAt
+        );
+        continue;
+      }
       const nextAttemptAt = existing?.nextAttemptAt ?? 0;
       if (nextAttemptAt > now) {
         loggerLog(
@@ -23271,13 +23289,26 @@ export class ReticulumChatManager extends EventEmitter {
         now + backoffMs
       );
       if (!claimed) {
-        const afterClaim = this.db.getMissingRange(
+        let afterClaim = this.db.getMissingRange(
           groupId,
           normalizedRange.a,
           normalizedRange.s,
           normalizedRange.from,
           normalizedRange.to
         );
+        if (afterClaim && afterClaim.nextAttemptAt <= now) {
+          // A failed claim with an already-due row must not leave the
+          // background scheduler in a no-progress tight loop.
+          afterClaim = this.db.scheduleMissingRange(
+            groupId,
+            normalizedRange.a,
+            normalizedRange.s,
+            normalizedRange.from,
+            normalizedRange.to,
+            afterClaim.preferredPeer || peer,
+            now + RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_MIN_RETRY_MS
+          );
+        }
         loggerLog(
           `[ReticulumChat] author_gap_repair_skipped_backoff group=${groupId} peer=${peer.slice(0, 16)} author=${normalizedRange.a} from=${normalizedRange.from} to=${normalizedRange.to} attempts=${afterClaim?.attempts ?? 0} next_retry_ms=${Math.max(0, (afterClaim?.nextAttemptAt ?? now) - now)} reason=${reason}`
         );

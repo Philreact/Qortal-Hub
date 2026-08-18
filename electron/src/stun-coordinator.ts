@@ -701,7 +701,27 @@ export class StunCoordinator {
       ) {
         this.contributionMappingHealthy = false;
         await this.bridge?.configureCommunityStun(null).catch(() => false);
-        loggerLog('[STUN] Community advertisement paused mapping=unavailable');
+        if (
+          !this.running ||
+          !this.contributionEnabled ||
+          client !== this.natClient
+        ) {
+          return;
+        }
+        loggerLog(
+          '[STUN] Community advertisement paused mapping=unavailable; restarting contribution'
+        );
+        // A UPnP client can retain a gateway/socket state that no longer works
+        // after a router restart, network change, or sleep/wake cycle. Retrying
+        // that same client forever cannot recover. Re-enter the normal
+        // contribution lifecycle so the stale client and UDP listener are
+        // released, the gateway is rediscovered, and a fresh mapping is made.
+        // startContribution() already applies bounded exponential backoff when
+        // rediscovery or remapping is still unavailable.
+        this.contributionGeneration += 1;
+        this.contributionRetryAttempt = 0;
+        this.clearContributionRetry();
+        this.queueContributionRefresh();
       }
       return;
     }

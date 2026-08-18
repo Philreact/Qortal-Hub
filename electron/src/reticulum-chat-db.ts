@@ -1683,6 +1683,7 @@ export class ReticulumChatDatabase {
   private stmtGetMissingRangesForSeq: Statement;
   private stmtGetAllMissingRanges: Statement;
   private stmtGetReadyMissingRanges: Statement;
+  private stmtGetNextMissingRangeAttemptForGroup: Statement;
   private stmtGetPresentSeqsInRange: Statement;
   private stmtPruneMissingRangePeerUnavailable: Statement;
   private stmtUpsertMissingRangePeerUnavailable: Statement;
@@ -2578,6 +2579,12 @@ export class ReticulumChatDatabase {
       WHERE next_attempt_at <= ?
       ORDER BY next_attempt_at ASC, group_id ASC, author_address ASC, from_seq ASC
       LIMIT ?
+    `);
+    this.stmtGetNextMissingRangeAttemptForGroup = this.db.prepare(`
+      SELECT MIN(next_attempt_at) AS next_attempt_at
+      FROM rchat_missing_stream_ranges
+      WHERE group_id = ?
+        AND TRIM(COALESCE(preferred_peer, '')) <> ''
     `);
     this.stmtGetPresentSeqsInRange = this.db.prepare(`
       SELECT author_seq FROM (
@@ -8662,7 +8669,24 @@ export class ReticulumChatDatabase {
         current.fromSeq,
         current.toSeq
       ) as ReticulumChatMissingRangeRow | undefined;
-      if (persistedRow) return this.missingRangeRowToState(persistedRow);
+      if (persistedRow) {
+        // A conditional reschedule can lose a race to another route update.
+        // Keep the in-memory mirror aligned with the authoritative row; a
+        // stale due value here would otherwise keep the repair scheduler
+        // waking even though SQLite already contains a future retry.
+        const persisted = this.missingRangeRowToState(persistedRow);
+        this.memoryMissingRanges.set(
+          this.missingRangeKey(
+            persisted.groupId,
+            persisted.authorAddress,
+            persisted.authorStreamId,
+            persisted.fromSeq,
+            persisted.toSeq
+          ),
+          persisted
+        );
+        return persisted;
+      }
       if (
         expectedPeer != null &&
         current.preferredPeer.trim().toLowerCase() !== expectedPeer
@@ -9293,21 +9317,29 @@ export class ReticulumChatDatabase {
       groupIds.filter((groupId) => Number.isInteger(groupId) && groupId > 0)
     );
     if (groups.size === 0) return null;
-    const rows = this.dedupeMissingRangeRows([
-      ...(this.stmtGetAllMissingRanges.all() as ReticulumChatMissingRangeRow[]),
-      ...[...this.memoryMissingRanges.values()].map((range) =>
-        this.missingRangeStateToRow(range)
-      ),
-    ]);
     let nextAttemptAt = Number.POSITIVE_INFINITY;
-    for (const row of rows) {
-      if (
-        !groups.has(Number(row.group_id)) ||
-        !String(row.preferred_peer || '').trim()
-      ) {
-        continue;
+
+    // This scheduler query runs after every repair pass. Reading and
+    // materialising the full missing-range table here can dominate the main
+    // process when one overdue row repeatedly wakes the scheduler. Ask SQLite
+    // only for the minimum value needed by the timer.
+    for (const groupId of groups) {
+      const row = this.stmtGetNextMissingRangeAttemptForGroup.get(groupId) as
+        | { next_attempt_at?: number | null }
+        | undefined;
+      const candidate = Math.max(
+        0,
+        Math.floor(Number(row?.next_attempt_at ?? Number.NaN))
+      );
+      if (Number.isFinite(candidate)) {
+        nextAttemptAt = Math.min(nextAttemptAt, candidate);
       }
-      const candidate = Math.max(0, Math.floor(Number(row.next_attempt_at)));
+    }
+
+    // Keep the in-memory fallback represented without scanning persisted rows.
+    for (const range of this.memoryMissingRanges.values()) {
+      if (!groups.has(range.groupId) || !range.preferredPeer.trim()) continue;
+      const candidate = Math.max(0, Math.floor(range.nextAttemptAt));
       if (Number.isFinite(candidate)) {
         nextAttemptAt = Math.min(nextAttemptAt, candidate);
       }
@@ -12542,6 +12574,8 @@ export class ReticulumChatDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_rchat_missing_stream_ranges_ready
         ON rchat_missing_stream_ranges (next_attempt_at, group_id);
+      CREATE INDEX IF NOT EXISTS idx_rchat_missing_stream_ranges_group_retry
+        ON rchat_missing_stream_ranges (group_id, next_attempt_at);
       DROP INDEX IF EXISTS reticulum_chat_author_seq_idx;
       DROP INDEX IF EXISTS idx_rchat_event_headers_author_seq;
       DROP INDEX IF EXISTS idx_reticulum_chat_events_author_seq;
