@@ -128,6 +128,7 @@ import type { DmCallLinkControlInput, GcEnvelope } from './group-call';
 import type { GroupCallJoinIpcArguments } from './group-call-ipc-contract';
 import {
   getReticulumBridge,
+  setReticulumBridgeDeveloperLogsFiltered,
   startReticulumBridge,
   type ReticulumOverlayVerifiedPeer,
 } from './reticulum-bridge';
@@ -1669,7 +1670,9 @@ const miscPersistentStore = createPersistentJsonStore(
 void persistentStore
   .get(DEV_LOGS_DISABLED_STORAGE_KEY)
   .then((value) => {
-    setDisableDevLogs(value === false ? false : true);
+    const next = value === false ? false : true;
+    setDisableDevLogs(next);
+    setReticulumBridgeDeveloperLogsFiltered(next);
   })
   .catch((err) => {
     loggerError('Error loading dev log setting from persistent store', err);
@@ -1692,7 +1695,9 @@ ipcMain.handle(
   async (_event, key: string, value: unknown) => {
     await persistentStore.set(key, value);
     if (key === DEV_LOGS_DISABLED_STORAGE_KEY) {
-      setDisableDevLogs(value === false ? false : true);
+      const next = value === false ? false : true;
+      setDisableDevLogs(next);
+      setReticulumBridgeDeveloperLogsFiltered(next);
     }
   }
 );
@@ -1701,12 +1706,14 @@ ipcMain.handle('persistentStore:delete', async (_event, key: string) => {
   await persistentStore.deleteKey(key);
   if (key === DEV_LOGS_DISABLED_STORAGE_KEY) {
     setDisableDevLogs(true);
+    setReticulumBridgeDeveloperLogsFiltered(true);
   }
 });
 
 ipcMain.handle('logger:setDisableDevLogs', async (_event, value: boolean) => {
   const next = value === false ? false : true;
   setDisableDevLogs(next);
+  setReticulumBridgeDeveloperLogsFiltered(next);
   await persistentStore.set(DEV_LOGS_DISABLED_STORAGE_KEY, next);
   return next;
 });

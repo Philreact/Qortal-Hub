@@ -45,6 +45,10 @@ COMMUNITY_STUN_IDENTITY_FILENAME = (
 COMMUNITY_STUN_IDENTITY_MAX_AGE_SECONDS = 24 * 60 * 60
 COMMUNITY_STUN_PORT = 47321
 disable_bootstrap = False
+_developer_logs_filtered = (
+    str(os.environ.get("QORTAL_FILTER_DEVELOPER_LOGS", "1")).strip().lower()
+    not in {"0", "false", "no", "off"}
+)
 
 
 def _parse_test_blocked_overlay_peers(raw_value: str) -> Set[str]:
@@ -8758,6 +8762,15 @@ def handle_get_community_stun_endpoints(req_id: str) -> None:
     emit_resp(req_id, True, payload={"endpoints": endpoints})
 
 
+def handle_configure_developer_log_filter(
+    req_id: str,
+    payload: Dict[str, Any],
+) -> None:
+    global _developer_logs_filtered
+    _developer_logs_filtered = payload.get("filtered") is not False
+    emit_resp(req_id, True, payload={"filtered": _developer_logs_filtered})
+
+
 def build_outbound_destination(peer_identity):
     return RNS.Destination(
         peer_identity,
@@ -14399,7 +14412,7 @@ def on_qchat_file_link_closed(link) -> None:
             active_count = len(existing_state.get("active_requests") or {})
             queued_count = len(existing_state.get("pending_jobs") or [])
         if str(existing_state.get("sessionLane") or "fast") == "fast":
-            log(
+            _resource_session_trace_log(
                 "[presence_bridge] resource_fast_link_closed "
                 f"peer={str(existing_state.get('peerPresenceHash') or '')[:16]} "
                 f"link={str(existing_state.get('linkId') or '')[:16]} "
@@ -21801,6 +21814,12 @@ def _resource_session_trace_logical_type(pending: Dict[str, Any]) -> str:
     ).strip()[:64]
 
 
+def _resource_session_trace_log(message: str) -> None:
+    if _developer_logs_filtered:
+        return
+    log(message)
+
+
 def _resource_session_waiter_key(link_id: str, transfer_id: str) -> str:
     return f"{link_id}:{transfer_id}"
 
@@ -22348,7 +22367,7 @@ def _resource_session_response_progress(job: Dict[str, Any], receipt) -> None:
                 job["trace_response_logged"] = True
         session = job.get("session") if isinstance(job.get("session"), dict) else {}
         if should_trace_response and session.get("sessionLane") == "fast":
-            log(
+            _resource_session_trace_log(
                 "[presence_bridge] resource_fast_response_progress "
                 f"peer={str(session.get('peerPresenceHash') or '')[:16]} "
                 f"transfer={str(pending.get('transferId') or '')[:16]} "
@@ -22390,7 +22409,7 @@ def _resource_session_response_received(job: Dict[str, Any], receipt) -> None:
         if should_trace_response:
             job["trace_response_logged"] = True
     if should_trace_response and session.get("sessionLane") == "fast":
-        log(
+        _resource_session_trace_log(
             "[presence_bridge] resource_fast_response_received "
             f"peer={str(session.get('peerPresenceHash') or '')[:16]} "
             f"transfer={str(pending.get('transferId') or '')[:16]} "
@@ -22474,7 +22493,7 @@ def _resource_session_request_failed(job: Dict[str, Any], _receipt=None) -> None
     pending = job.get("pending") if isinstance(job.get("pending"), dict) else {}
     session = job.get("session") if isinstance(job.get("session"), dict) else {}
     if session.get("sessionLane") == "fast":
-        log(
+        _resource_session_trace_log(
             "[presence_bridge] resource_fast_request_failed "
             f"peer={str(session.get('peerPresenceHash') or '')[:16]} "
             f"transfer={str(pending.get('transferId') or '')[:16]} "
@@ -22541,7 +22560,7 @@ def _resource_session_dispatch_job(state: Dict[str, Any], job: Dict[str, Any]) -
         )
     except Exception as exc:
         if state.get("sessionLane") == "fast":
-            log(
+            _resource_session_trace_log(
                 "[presence_bridge] resource_fast_request_submit_failed "
                 f"peer={str(state.get('peerPresenceHash') or '')[:16]} "
                 f"transfer={transfer_id[:16]} "
@@ -22560,7 +22579,7 @@ def _resource_session_dispatch_job(state: Dict[str, Any], job: Dict[str, Any]) -
         return False
     if receipt is False:
         if state.get("sessionLane") == "fast":
-            log(
+            _resource_session_trace_log(
                 "[presence_bridge] resource_fast_request_submit_failed "
                 f"peer={str(state.get('peerPresenceHash') or '')[:16]} "
                 f"transfer={transfer_id[:16]} "
@@ -22572,7 +22591,7 @@ def _resource_session_dispatch_job(state: Dict[str, Any], job: Dict[str, Any]) -
         _resource_session_finish_job(job, False, reason="resource_request_send_failed")
         return False
     if state.get("sessionLane") == "fast":
-        log(
+        _resource_session_trace_log(
             "[presence_bridge] resource_fast_request_submitted "
             f"peer={str(state.get('peerPresenceHash') or '')[:16]} "
             f"transfer={transfer_id[:16]} "
@@ -23804,7 +23823,7 @@ def _resource_session_response_generator(
         if claimed_peer_hash and claimed_peer_hash != identified_peer_hash:
             return {"ok": False, "reason": "resource_peer_identity_mismatch"}
         if expected_lane == "fast":
-            log(
+            _resource_session_trace_log(
                 "[presence_bridge] resource_fast_provider_request_entered "
                 f"peer={identified_peer_hash[:16]} transfer={transfer_id[:16]} "
                 f"link={str(state.get('linkId') or '')[:16]} "
@@ -23879,7 +23898,7 @@ def _resource_session_response_generator(
             )
         _resource_session_cancel_timer(state, "idle_timer")
         if expected_lane == "fast":
-            log(
+            _resource_session_trace_log(
                 "[presence_bridge] resource_fast_provider_auth_handoff "
                 f"peer={identified_peer_hash[:16]} transfer={transfer_id[:16]} "
                 f"link={str(state.get('linkId') or '')[:16]} "
@@ -23967,7 +23986,7 @@ def _resource_session_response_generator(
         provider_session_active_transferred = True
         waiter["response_started"] = True
         if expected_lane == "fast":
-            log(
+            _resource_session_trace_log(
                 "[presence_bridge] resource_fast_provider_response_started "
                 f"peer={identified_peer_hash[:16]} transfer={transfer_id[:16]} "
                 f"link={str(state.get('linkId') or '')[:16]} "
@@ -24352,7 +24371,7 @@ def handle_authorize_qchat_file_resource(req_id: str, payload: Dict[str, Any]) -
             )
             return
         if state.get("sessionLane") == "fast":
-            log(
+            _resource_session_trace_log(
                 "[presence_bridge] resource_fast_provider_authorized "
                 f"peer={link_peer_hash[:16]} transfer={transfer_id[:16]} "
                 f"link={link_id[:16]} "
@@ -25904,6 +25923,8 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_configure_community_stun(req_id, payload)
     elif action == "get_community_stun_endpoints":
         handle_get_community_stun_endpoints(req_id)
+    elif action == "configure_developer_log_filter":
+        handle_configure_developer_log_filter(req_id, payload)
     elif action == "stop":
         handle_stop(req_id)
     elif action == "send_call":

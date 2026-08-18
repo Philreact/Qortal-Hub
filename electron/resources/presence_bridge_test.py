@@ -38,6 +38,38 @@ def load_bridge():
     return module
 
 
+class PresenceBridgeDeveloperLogFilterTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+
+    def tearDown(self):
+        self.bridge._shutdown.clear()
+
+    def test_fast_resource_trace_respects_developer_log_filter(self):
+        with mock.patch.object(self.bridge, "log") as log:
+            self.bridge._developer_logs_filtered = True
+            self.bridge._resource_session_trace_log("hidden")
+            log.assert_not_called()
+
+            self.bridge._developer_logs_filtered = False
+            self.bridge._resource_session_trace_log("visible")
+            log.assert_called_once_with("visible")
+
+    def test_developer_log_filter_can_be_updated_at_runtime(self):
+        with mock.patch.object(self.bridge, "emit_resp") as emit_resp:
+            self.bridge.handle_configure_developer_log_filter(
+                "request-1",
+                {"filtered": False},
+            )
+
+        self.assertFalse(self.bridge._developer_logs_filtered)
+        emit_resp.assert_called_once_with(
+            "request-1",
+            True,
+            payload={"filtered": False},
+        )
+
+
 class PresenceBridgeOverlayPeerBlockTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()

@@ -200,6 +200,7 @@ type BridgeCmdFrame = {
     | 'overlay_note_candidate_failure'
     | 'configure_community_stun'
     | 'get_community_stun_endpoints'
+    | 'configure_developer_log_filter'
     | 'stop'
     | 'send_call'
     | 'prepare_reticulum_resource_session'
@@ -1151,6 +1152,7 @@ function commandPriorityForAction(
     case 'overlay_note_candidate_failure':
     case 'configure_community_stun':
     case 'get_community_stun_endpoints':
+    case 'configure_developer_log_filter':
       return 'low';
     default:
       return 'high';
@@ -1202,6 +1204,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   readonly kind = 'reticulum' as const;
 
   private child: ChildProcess | null = null;
+  private developerLogsFiltered = reticulumDeveloperLogsFiltered;
   private gameTransportToken: string | null = null;
   private gameTransportInstanceId: string | null = null;
   private gameTransportUrl: string | null = null;
@@ -3319,6 +3322,21 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     );
   }
 
+  async setDeveloperLogsFiltered(filtered: boolean): Promise<boolean> {
+    const changed = this.developerLogsFiltered !== filtered;
+    this.developerLogsFiltered = filtered;
+    reticulumDeveloperLogsFiltered = filtered;
+    if (!changed || this.state !== 'ready') return true;
+    try {
+      const resp = await this.sendCommand('configure_developer_log_filter', {
+        filtered,
+      });
+      return resp.ok;
+    } catch {
+      return false;
+    }
+  }
+
   getState(): BridgeState {
     return this.state;
   }
@@ -3646,6 +3664,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       ...(launch.envExtra ?? {}),
       PYTHONUNBUFFERED: '1',
       QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
+      QORTAL_FILTER_DEVELOPER_LOGS: reticulumDeveloperLogsFiltered ? '1' : '0',
       QORTAL_RETICULUM_CONFIG_DIR: configDir,
       // rnsd owns configDir/logfile. Each simultaneously supported app
       // instance gets a separate bridge log so independent Python processes
@@ -5608,8 +5627,16 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   }
 }
 
+let reticulumDeveloperLogsFiltered = true;
 let bridgeInstance: ReticulumBridge | null = null;
 let bridgeStopPromise: Promise<void> | null = null;
+
+export function setReticulumBridgeDeveloperLogsFiltered(value: boolean): void {
+  reticulumDeveloperLogsFiltered = value;
+  if (bridgeInstance) {
+    void bridgeInstance.setDeveloperLogsFiltered(value);
+  }
+}
 
 export function getReticulumBridge(): ReticulumBridge | null {
   return bridgeInstance;
