@@ -6064,6 +6064,143 @@ describe('reticulum chat manager', () => {
     }
   }
 
+  it('reuses an unchanged prepared group digest beyond the old two-second window', async () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([7]);
+    expect(
+      (manager as any).storeValidatedEvent(
+        signedEvent({ eventId: 'digest-cache-initial', timestamp: 90_000 }),
+        true,
+        {},
+        0
+      )
+    ).toBe(true);
+
+    const first = await (manager as any).buildGroupStateDigestWire(7);
+    now += 10_000;
+    const second = await (manager as any).buildGroupStateDigestWire(7);
+
+    expect(first).not.toBeNull();
+    expect(second).toBe(first);
+    manager.close();
+  });
+
+  it('invalidates a prepared group digest immediately after a stored event', async () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([7]);
+    expect(
+      (manager as any).storeValidatedEvent(
+        signedEvent({ eventId: 'digest-before-change', timestamp: 90_000 }),
+        true,
+        {},
+        0
+      )
+    ).toBe(true);
+    const first = await (manager as any).buildGroupStateDigestWire(7);
+
+    now += 1;
+    expect(
+      (manager as any).storeValidatedEvent(
+        signedEvent({ eventId: 'digest-after-change', timestamp: 90_001 }),
+        true,
+        {},
+        0
+      )
+    ).toBe(true);
+    const second = await (manager as any).buildGroupStateDigestWire(7);
+
+    expect(second).not.toBe(first);
+    expect((second as any)?.d?.eventHash).not.toBe(
+      (first as any)?.d?.eventHash
+    );
+    manager.close();
+  });
+
+  it('bounds digest reuse by the next signed event expiry', () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([7]);
+    vi.spyOn((manager as any).db, 'getNextGroupEventExpiryAt').mockReturnValue(
+      105_000
+    );
+
+    (manager as any).buildGroupDigestSnapshot(7);
+    expect((manager as any).getCachedGroupDigestSnapshot(7)).not.toBeNull();
+    now = 105_000;
+    expect((manager as any).getCachedGroupDigestSnapshot(7)).toBeNull();
+    manager.close();
+  });
+
+  it('invalidates digest state when channel expiry reconciliation changes events', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => 100_000,
+    });
+    manager.setLocalGroupMemberships([7]);
+    (manager as any).buildGroupDigestSnapshot(7);
+    (manager as any).getStateHeadsCache(7);
+    (manager as any).digestWireCache.set(7, {
+      wire: { t: 'RCHAT', v: 3, k: 'group_state_digest_v3', g: 7, d: {} },
+      generation: (manager as any).digestStateGeneration.get(7) ?? 0,
+      expiresAt: 200_000,
+    });
+    vi.spyOn(
+      (manager as any).db,
+      'reconcileChannelMessageExpiries'
+    ).mockReturnValue({
+      resolutions: [{ eventId: 'expiry-adjusted-event', expiresAt: 150_000 }],
+      hasMore: false,
+      pruned: 0,
+    });
+    (manager as any).channelExpiryReconciliationItems.set('7:general', {
+      groupId: 7,
+      channelId: 'general',
+      changed: false,
+    });
+    (manager as any).channelExpiryReconciliationQueue.push('7:general');
+
+    (manager as any).processChannelExpiryReconciliationQueue();
+
+    expect((manager as any).digestSnapshotCache.has(7)).toBe(false);
+    expect((manager as any).stateHeadsCache.has(7)).toBe(false);
+    expect((manager as any).digestWireCache.has(7)).toBe(false);
+    manager.close();
+  });
+
+  it('invalidates only the changed group when its database digest revision changes', () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([7]);
+    (manager as any).buildGroupDigestSnapshot(7);
+    (manager as any).buildGroupDigestSnapshot(8);
+    expect((manager as any).getCachedGroupDigestSnapshot(7)).not.toBeNull();
+    expect((manager as any).getCachedGroupDigestSnapshot(8)).not.toBeNull();
+    (manager as any).digestDatabaseRevisions.set(7, 1);
+    (manager as any).digestDatabaseRevisions.set(8, 4);
+    vi.spyOn((manager as any).db, 'getGroupDigestRevision').mockImplementation(
+      (groupId: number) => (groupId === 7 ? 2 : 4)
+    );
+    (manager as any).refreshDigestCachesForExternalWrites(7, true);
+
+    expect((manager as any).digestSnapshotCache.has(7)).toBe(false);
+    expect((manager as any).digestSnapshotCache.has(8)).toBe(true);
+    manager.close();
+  });
+
   it('exchanges bounded public activity directly and excludes admin-only channels', async () => {
     const providerPeer = 'a'.repeat(32);
     const requesterPeer = 'b'.repeat(32);

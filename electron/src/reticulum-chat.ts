@@ -2493,7 +2493,8 @@ const RETICULUM_CHAT_DIGEST_REPAIR_QUEUE_MAX = 500;
 const RETICULUM_CHAT_DIGEST_REPAIR_QUEUE_BUDGET_MS = 8;
 const RETICULUM_CHAT_DIGEST_REPAIR_SLOW_MS = 50;
 const RETICULUM_CHAT_DIGEST_REPAIR_PRESSURE_WARN = 100;
-const RETICULUM_CHAT_DIGEST_SNAPSHOT_CACHE_MS = 2_000;
+const RETICULUM_CHAT_DIGEST_SNAPSHOT_CACHE_MS = 15 * 60_000;
+const RETICULUM_CHAT_DIGEST_REVISION_CHECK_MS = 1_000;
 const RETICULUM_CHAT_GROUP_SUB_SYNC_QUEUE_MAX = 500;
 const RETICULUM_CHAT_GROUP_SUB_SYNC_QUEUE_BUDGET_MS = 8;
 const RETICULUM_CHAT_GROUP_SUB_SYNC_SLOW_MS = 50;
@@ -6849,6 +6850,12 @@ export class ReticulumChatManager extends EventEmitter {
   >();
   private digestStateBuildInflight = new Map<number, Promise<boolean>>();
   private digestStateGeneration = new Map<number, number>();
+  private digestWireCache = new Map<
+    number,
+    { wire: ReticulumChatWire; generation: number; expiresAt: number }
+  >();
+  private digestDatabaseRevisions = new Map<number, number>();
+  private digestDatabaseRevisionCheckedAt = new Map<number, number>();
   private authorTreeCache = new Map<number, ReticulumChatAuthorTreeSnapshot>();
   private authorTreeBuildInflight = new Map<
     number,
@@ -8188,6 +8195,9 @@ export class ReticulumChatManager extends EventEmitter {
     this.landStateWorkerPool.stop();
     this.digestSnapshotCache.clear();
     this.stateHeadsCache.clear();
+    this.digestWireCache.clear();
+    this.digestDatabaseRevisions.clear();
+    this.digestDatabaseRevisionCheckedAt.clear();
     this.digestStateBuildInflight.clear();
     this.digestStateGeneration.clear();
     this.authorTreeCache.clear();
@@ -15383,6 +15393,11 @@ export class ReticulumChatManager extends EventEmitter {
         );
         item.changed = item.changed || batch.resolutions.length > 0;
         if (batch.resolutions.length > 0) {
+          // Reconciliation changes the visibility deadline used by both the
+          // group digest and per-channel heads. Rebuild once after the batch
+          // instead of retaining state calculated from the previous policy.
+          this.invalidateGroupDigestSnapshot(item.groupId);
+          this.invalidateStateHeadsCache(item.groupId);
           this.resourceStore?.setReferenceExpiries({
             scopeType: 'group',
             scopeId: item.groupId,
@@ -23341,11 +23356,7 @@ export class ReticulumChatManager extends EventEmitter {
           // route backoff instead of fanning out across every known peer.
           const replacement = routeWasAlreadyBackedOff
             ? ''
-            : this.selectAuthorGapRepairPeer(
-                groupId,
-                normalizedRange,
-                peer
-              );
+            : this.selectAuthorGapRepairPeer(groupId, normalizedRange, peer);
           const nextAttemptAt = replacement
             ? retryAt
             : Math.max(claimed.nextAttemptAt, retryAt);
@@ -26278,6 +26289,7 @@ export class ReticulumChatManager extends EventEmitter {
       } else {
         this.updateStateHeadsCacheForEvent(event);
       }
+      this.updateAuthorTreeCacheForEvent(event);
       this.emitSummaryChanged(event.groupId, event);
       this.emitGroupEventIfVisible(event);
       return true;
@@ -27009,8 +27021,9 @@ export class ReticulumChatManager extends EventEmitter {
   private getCachedGroupDigestSnapshot(
     groupId: number
   ): ReticulumChatDigestSnapshot | null {
+    this.refreshDigestCachesForExternalWrites(groupId);
     const cached = this.digestSnapshotCache.get(groupId);
-    return cached && cached.expiresAt > Date.now() ? cached.snapshot : null;
+    return cached && cached.expiresAt > this.now() ? cached.snapshot : null;
   }
 
   private getCachedStateHeads(groupId: number): {
@@ -27022,8 +27035,49 @@ export class ReticulumChatManager extends EventEmitter {
     }>;
     expiresAt: number;
   } | null {
+    this.refreshDigestCachesForExternalWrites(groupId);
     const cached = this.stateHeadsCache.get(groupId);
     return cached && cached.expiresAt > this.now() ? cached : null;
+  }
+
+  private refreshDigestCachesForExternalWrites(
+    groupId: number,
+    force = false
+  ): void {
+    if (this.isClosed) return;
+    const now = this.now();
+    const checkedAt = this.digestDatabaseRevisionCheckedAt.get(groupId) ?? 0;
+    if (!force && now - checkedAt < RETICULUM_CHAT_DIGEST_REVISION_CHECK_MS) {
+      return;
+    }
+    this.digestDatabaseRevisionCheckedAt.set(groupId, now);
+    const revision = this.db.getGroupDigestRevision(groupId);
+    const previous = this.digestDatabaseRevisions.get(groupId);
+    this.digestDatabaseRevisions.set(groupId, revision);
+    if (previous === undefined || revision === previous) return;
+    this.digestSnapshotCache.delete(groupId);
+    this.stateHeadsCache.delete(groupId);
+    this.digestWireCache.delete(groupId);
+    this.authorTreeCache.delete(groupId);
+    this.digestStateGeneration.set(
+      groupId,
+      (this.digestStateGeneration.get(groupId) ?? 0) + 1
+    );
+    this.authorTreeGeneration.set(
+      groupId,
+      (this.authorTreeGeneration.get(groupId) ?? 0) + 1
+    );
+  }
+
+  private digestCacheValidUntil(groupId: number, createdAt: number): number {
+    const safetyExpiry = createdAt + RETICULUM_CHAT_DIGEST_SNAPSHOT_CACHE_MS;
+    const nextEventExpiry = this.db.getNextGroupEventExpiryAt(
+      groupId,
+      createdAt
+    );
+    return nextEventExpiry === null
+      ? safetyExpiry
+      : Math.max(createdAt + 1, Math.min(safetyExpiry, nextEventExpiry));
   }
 
   private async ensureGroupDigestState(
@@ -27186,7 +27240,7 @@ export class ReticulumChatManager extends EventEmitter {
     };
     this.digestSnapshotCache.set(groupId, {
       snapshot,
-      expiresAt: Date.now() + RETICULUM_CHAT_DIGEST_SNAPSHOT_CACHE_MS,
+      expiresAt: this.digestCacheValidUntil(groupId, this.now()),
     });
     const durationMs = Date.now() - startedAt;
     if (durationMs >= RETICULUM_CHAT_DIGEST_REPAIR_SLOW_MS) {
@@ -27199,6 +27253,9 @@ export class ReticulumChatManager extends EventEmitter {
 
   private invalidateGroupDigestSnapshot(groupId: number): void {
     this.digestSnapshotCache.delete(groupId);
+    this.digestWireCache.delete(groupId);
+    this.digestDatabaseRevisions.delete(groupId);
+    this.digestDatabaseRevisionCheckedAt.delete(groupId);
     this.digestStateGeneration.set(
       groupId,
       (this.digestStateGeneration.get(groupId) ?? 0) + 1
@@ -27207,6 +27264,9 @@ export class ReticulumChatManager extends EventEmitter {
 
   private invalidateStateHeadsCache(groupId: number): void {
     this.stateHeadsCache.delete(groupId);
+    this.digestWireCache.delete(groupId);
+    this.digestDatabaseRevisions.delete(groupId);
+    this.digestDatabaseRevisionCheckedAt.delete(groupId);
     this.digestStateGeneration.set(
       groupId,
       (this.digestStateGeneration.get(groupId) ?? 0) + 1
@@ -27386,6 +27446,7 @@ export class ReticulumChatManager extends EventEmitter {
     };
     if (!verifyReticulumMetadataSnapshot(snapshot)) return null;
     this.db.upsertMetadataSnapshot(snapshot);
+    this.digestWireCache.delete(groupId);
     if (this.metadataSnapshotHasAdminPrivateChannels(snapshot)) {
       await this.buildPublicMetadataSnapshotFromFull(snapshot);
     } else {
@@ -27525,6 +27586,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (this.isClosed) return null;
     if (!publicSnapshot) return null;
     this.db.upsertMetadataSnapshot(publicSnapshot);
+    this.digestWireCache.delete(fullSnapshot.groupId);
     this.metadataPublicSnapshotCache.set(fullSnapshot.groupId, {
       sourceHash: fullSnapshot.snapshotHash,
       snapshot: publicSnapshot,
@@ -28588,7 +28650,7 @@ export class ReticulumChatManager extends EventEmitter {
     const value = {
       channelHash,
       channelHeads,
-      expiresAt: this.now() + 60_000,
+      expiresAt: this.digestCacheValidUntil(groupId, this.now()),
     };
     return value;
   }
@@ -28671,6 +28733,7 @@ export class ReticulumChatManager extends EventEmitter {
       (this.authorTreeGeneration.get(groupId) ?? 0) + 1
     );
     this.authorTreeCache.delete(groupId);
+    this.digestWireCache.delete(groupId);
     this.authorTreeSnapshots.delete(groupId);
     const marker = `:${groupId}:`;
     for (const key of this.authorTreeRequests.keys()) {
@@ -28725,6 +28788,7 @@ export class ReticulumChatManager extends EventEmitter {
       event.groupId,
       (this.authorTreeGeneration.get(event.groupId) ?? 0) + 1
     );
+    this.digestWireCache.delete(event.groupId);
     const current = this.authorTreeCache.get(event.groupId);
     if (!current) return;
     const authorStreamId = normalizeReticulumChatAuthorStreamId(
@@ -28793,8 +28857,19 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private async buildGroupStateDigestWire(
-    groupId: number
+    groupId: number,
+    attempt = 0
   ): Promise<ReticulumChatWire | null> {
+    this.refreshDigestCachesForExternalWrites(groupId);
+    const generation = this.digestStateGeneration.get(groupId) ?? 0;
+    const cachedWire = this.digestWireCache.get(groupId);
+    if (
+      cachedWire &&
+      cachedWire.generation === generation &&
+      cachedWire.expiresAt > this.now()
+    ) {
+      return cachedWire.wire;
+    }
     const selectedSnapshot =
       await this.getPublicMetadataSnapshotForSend(groupId);
     if (this.isClosed) return null;
@@ -28840,7 +28915,9 @@ export class ReticulumChatManager extends EventEmitter {
         channelHeadsHash: stateHeads.channelHash,
       },
     };
-    if (wireFitsReticulumChat(wire)) return wire;
+    let selectedWire: ReticulumChatWire | null = wireFitsReticulumChat(wire)
+      ? wire
+      : null;
     const compactDigest: ReticulumChatGroupStateDigestWire = {
       ...(digest.latest ? { latest: this.cursorToWire(digest.latest) } : {}),
       eventHash: digest.digestHash,
@@ -28864,34 +28941,62 @@ export class ReticulumChatManager extends EventEmitter {
       ...wire,
       d: compactDigest,
     };
-    if (wireFitsReticulumChat(compactWire)) return compactWire;
-    compactWire = {
-      ...wire,
-      d: {
-        ...(digest.latest ? { latest: this.cursorToWire(digest.latest) } : {}),
-        eventHash: digest.digestHash,
-        authorTreeRoot: compactSha256ForWire(authorTree.root),
-        authorTreeCount: authorTree.count,
-      },
-    };
-    if (wireFitsReticulumChat(compactWire)) return compactWire;
-    compactWire = {
-      ...wire,
-      d: {
-        ...(digest.latest ? { latest: this.cursorToWire(digest.latest) } : {}),
-        authorTreeRoot: compactSha256ForWire(authorTree.root),
-        authorTreeCount: authorTree.count,
-      },
-    };
-    if (wireFitsReticulumChat(compactWire)) return compactWire;
-    compactWire = {
-      ...wire,
-      d: {
-        authorTreeRoot: compactSha256ForWire(authorTree.root),
-        authorTreeCount: authorTree.count,
-      },
-    };
-    return wireFitsReticulumChat(compactWire) ? compactWire : null;
+    if (!selectedWire && wireFitsReticulumChat(compactWire)) {
+      selectedWire = compactWire;
+    }
+    if (!selectedWire) {
+      compactWire = {
+        ...wire,
+        d: {
+          ...(digest.latest
+            ? { latest: this.cursorToWire(digest.latest) }
+            : {}),
+          eventHash: digest.digestHash,
+          authorTreeRoot: compactSha256ForWire(authorTree.root),
+          authorTreeCount: authorTree.count,
+        },
+      };
+      if (wireFitsReticulumChat(compactWire)) selectedWire = compactWire;
+    }
+    if (!selectedWire) {
+      compactWire = {
+        ...wire,
+        d: {
+          ...(digest.latest
+            ? { latest: this.cursorToWire(digest.latest) }
+            : {}),
+          authorTreeRoot: compactSha256ForWire(authorTree.root),
+          authorTreeCount: authorTree.count,
+        },
+      };
+      if (wireFitsReticulumChat(compactWire)) selectedWire = compactWire;
+    }
+    if (!selectedWire) {
+      compactWire = {
+        ...wire,
+        d: {
+          authorTreeRoot: compactSha256ForWire(authorTree.root),
+          authorTreeCount: authorTree.count,
+        },
+      };
+      if (wireFitsReticulumChat(compactWire)) selectedWire = compactWire;
+    }
+    if (!selectedWire) return null;
+    // A different Hub instance may have committed while metadata, digest, or
+    // author state was being prepared. Recheck before publishing the result so
+    // a raced external write cannot be cached or announced.
+    this.refreshDigestCachesForExternalWrites(groupId, true);
+    if ((this.digestStateGeneration.get(groupId) ?? 0) !== generation) {
+      return attempt < 2
+        ? this.buildGroupStateDigestWire(groupId, attempt + 1)
+        : null;
+    }
+    this.digestWireCache.set(groupId, {
+      wire: selectedWire,
+      generation,
+      expiresAt: stateHeads.expiresAt,
+    });
+    return selectedWire;
   }
 
   private isValidGroupStateDigestForForwarding(digest: unknown): boolean {
@@ -33249,9 +33354,7 @@ export class ReticulumChatManager extends EventEmitter {
         s: sizeBytes,
         rid: requestId,
         sp: this.compactResourcePeerHash(sourcePeerHash),
-        ...(relayedIdentityPublicKey
-          ? { rk: relayedIdentityPublicKey }
-          : {}),
+        ...(relayedIdentityPublicKey ? { rk: relayedIdentityPublicKey } : {}),
       };
       if (!wireFitsReticulumChat(response)) return;
       void this.sendToPeer(route.reversePeerHash, response);

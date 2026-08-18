@@ -1719,6 +1719,7 @@ export class ReticulumChatDatabase {
   private stmtUpsertMetadataSnapshot: Statement;
   private stmtGetLatestMetadataSnapshot: Statement;
   private stmtGetMetadataSnapshotByHash: Statement;
+  private stmtGetGroupDigestRevision: Statement;
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -1759,6 +1760,11 @@ export class ReticulumChatDatabase {
          @encrypted_payload, @payload_hash, @mention_address_hashes, @mention_targets, @signature, @own_event,
          @last_served_at, @stored_at, @accepted_at, @wire_bytes, @channel_id, @expires_at,
          @message_expiry_duration_ms, @privileged_mention_status)
+    `);
+    this.stmtGetGroupDigestRevision = this.db.prepare(`
+      SELECT revision
+      FROM rchat_group_digest_revisions
+      WHERE group_id = ?
     `);
     this.stmtInsertEventHeaderV2 = this.db.prepare(`
       INSERT OR IGNORE INTO rchat_event_headers
@@ -2852,6 +2858,28 @@ export class ReticulumChatDatabase {
       );
       this.db.close();
     }
+  }
+
+  getGroupDigestRevision(groupId: number): number {
+    if (!Number.isInteger(groupId) || groupId <= 0) return 0;
+    const row = this.stmtGetGroupDigestRevision.get(groupId) as
+      | { revision?: number | bigint }
+      | undefined;
+    const revision = Number(row?.revision);
+    return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
+  }
+
+  getNextGroupEventExpiryAt(groupId: number, now = Date.now()): number | null {
+    if (!Number.isInteger(groupId) || groupId <= 0) return null;
+    const row = this.db
+      .prepare(
+        `SELECT MIN(expires_at) AS expires_at
+         FROM reticulum_chat_events
+         WHERE group_id = ? AND expires_at IS NOT NULL AND expires_at > ?`
+      )
+      .get(groupId, now) as { expires_at?: number | null } | undefined;
+    const expiresAt = Number(row?.expires_at);
+    return Number.isFinite(expiresAt) && expiresAt > now ? expiresAt : null;
   }
 
   private pruneStaleAuthorSequenceLeases(): void {
@@ -5436,21 +5464,11 @@ export class ReticulumChatDatabase {
     };
   }
 
-  hasRejectedDigestMarker(
-    groupId: number,
-    digestFingerprint: string
-  ): boolean {
-    if (
-      !Number.isInteger(groupId) ||
-      groupId <= 0 ||
-      !digestFingerprint
-    ) {
+  hasRejectedDigestMarker(groupId: number, digestFingerprint: string): boolean {
+    if (!Number.isInteger(groupId) || groupId <= 0 || !digestFingerprint) {
       return false;
     }
-    return !!this.stmtHasRejectedDigestMarker.get(
-      groupId,
-      digestFingerprint
-    );
+    return !!this.stmtHasRejectedDigestMarker.get(groupId, digestFingerprint);
   }
 
   getRejectedAuthorSeqs(
@@ -5463,11 +5481,7 @@ export class ReticulumChatDatabase {
     const author = authorAddress.trim();
     const from = Math.max(1, Math.floor(fromSeq));
     const to = Math.max(from, Math.floor(toSeq));
-    if (
-      !Number.isInteger(groupId) ||
-      groupId <= 0 ||
-      !author
-    ) {
+    if (!Number.isInteger(groupId) || groupId <= 0 || !author) {
       return [];
     }
     return (
@@ -5522,7 +5536,9 @@ export class ReticulumChatDatabase {
       marker.nextRevalidateAt
     );
     if (result.changes !== 1) {
-      throw new Error('Failed to persist rejected Reticulum chat digest marker');
+      throw new Error(
+        'Failed to persist rejected Reticulum chat digest marker'
+      );
     }
   }
 
@@ -12640,6 +12656,10 @@ export class ReticulumChatDatabase {
         name: 'metadata-snapshot-lineage',
         run: () => this.migrateMetadataSnapshotLineageSchema(),
       },
+      {
+        name: 'group-digest-revisions',
+        run: () => this.initGroupDigestRevisionSchema(),
+      },
       { name: 'local-user-silences', run: () => this.initSilenceSchema() },
       {
         name: 'discussion-reply-index',
@@ -12665,6 +12685,78 @@ export class ReticulumChatDatabase {
         );
       }
     }
+  }
+
+  private initGroupDigestRevisionSchema(): void {
+    const bumpNewGroup = `
+      INSERT INTO rchat_group_digest_revisions (group_id, revision)
+      VALUES (NEW.group_id, 1)
+      ON CONFLICT(group_id) DO UPDATE SET revision = revision + 1;
+    `;
+    const bumpOldGroup = `
+      INSERT INTO rchat_group_digest_revisions (group_id, revision)
+      VALUES (OLD.group_id, 1)
+      ON CONFLICT(group_id) DO UPDATE SET revision = revision + 1;
+    `;
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS rchat_group_digest_revisions (
+        group_id INTEGER PRIMARY KEY,
+        revision INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_event_insert
+      AFTER INSERT ON reticulum_chat_events BEGIN ${bumpNewGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_event_delete
+      AFTER DELETE ON reticulum_chat_events BEGIN ${bumpOldGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_event_update
+      AFTER UPDATE OF group_id, channel_id, timestamp, feed_timestamp,
+        event_type, expires_at ON reticulum_chat_events
+      BEGIN ${bumpNewGroup} END;
+
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_header_insert
+      AFTER INSERT ON rchat_event_headers BEGIN ${bumpNewGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_header_delete
+      AFTER DELETE ON rchat_event_headers BEGIN ${bumpOldGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_header_update
+      AFTER UPDATE OF group_id, author_address, author_stream_id, author_seq
+      ON rchat_event_headers BEGIN ${bumpNewGroup} END;
+
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_expired_marker_insert
+      AFTER INSERT ON rchat_expired_event_markers BEGIN ${bumpNewGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_expired_marker_delete
+      AFTER DELETE ON rchat_expired_event_markers BEGIN ${bumpOldGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_expired_marker_update
+      AFTER UPDATE OF group_id, author_address, author_stream_id, author_seq
+      ON rchat_expired_event_markers BEGIN ${bumpNewGroup} END;
+
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_channel_insert
+      AFTER INSERT ON reticulum_chat_channels BEGIN ${bumpNewGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_channel_delete
+      AFTER DELETE ON reticulum_chat_channels BEGIN ${bumpOldGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_channel_update
+      AFTER UPDATE ON reticulum_chat_channels BEGIN ${bumpNewGroup} END;
+
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_category_insert
+      AFTER INSERT ON reticulum_chat_categories BEGIN ${bumpNewGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_category_delete
+      AFTER DELETE ON reticulum_chat_categories BEGIN ${bumpOldGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_category_update
+      AFTER UPDATE ON reticulum_chat_categories BEGIN ${bumpNewGroup} END;
+
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_snapshot_insert
+      AFTER INSERT ON rchat_metadata_snapshots BEGIN ${bumpNewGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_snapshot_delete
+      AFTER DELETE ON rchat_metadata_snapshots BEGIN ${bumpOldGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_snapshot_update
+      AFTER UPDATE ON rchat_metadata_snapshots BEGIN ${bumpNewGroup} END;
+
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_metadata_revision_insert
+      AFTER INSERT ON rchat_metadata_entity_revisions BEGIN ${bumpNewGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_metadata_revision_delete
+      AFTER DELETE ON rchat_metadata_entity_revisions BEGIN ${bumpOldGroup} END;
+      CREATE TRIGGER IF NOT EXISTS rchat_digest_metadata_revision_update
+      AFTER UPDATE ON rchat_metadata_entity_revisions BEGIN ${bumpNewGroup} END;
+    `);
   }
 
   private migrateRejectedEventAuthorSequenceSchema(): void {
@@ -13618,6 +13710,10 @@ export class ReticulumChatDatabase {
           'state_hash',
           'source_kind',
         ],
+      },
+      {
+        table: 'rchat_group_digest_revisions',
+        columns: ['group_id', 'revision'],
       },
       {
         table: 'reticulum_chat_channels',
