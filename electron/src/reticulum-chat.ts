@@ -23578,26 +23578,33 @@ export class ReticulumChatManager extends EventEmitter {
       .update(signed.signature, 'utf8')
       .digest('hex')
       .slice(0, 16);
+    const legacyRange = authorRangeToWireTuple(requestedRange);
+    if (!legacyRange) {
+      return {
+        ok: false,
+        reason: 'send-command-failed',
+        error: 'Unable to encode legacy author range request',
+      };
+    }
     const routedWire: Extract<ReticulumChatWire, { k: 'range_req' }> = {
       t: 'RCHAT',
       k: 'range_req',
       g: wire.g,
-      d: this.compactRoutePeerHash(providerPeerHash),
-      ranges: ranges
-        .map((range) => authorRangeToWireTuple(range))
-        .filter(
-          (range): range is [string, string, number, number] => range != null
-        ),
+      ranges: [legacyRange],
       q: [
         this.compactRoutePeerHash(sourcePeerHash),
         signed.authorPublicKey,
         timestamp,
         signed.signature,
       ],
-      h: 0,
     };
     if (!wireFitsReticulumChat(routedWire)) {
-      return { ok: false, reason: 'wire-too-large' };
+      const bytes = byteLengthUtf8JsonWithBridgeSenderOnly(routedWire);
+      return {
+        ok: false,
+        reason: 'wire-too-large',
+        error: `Legacy author range wire ${bytes} bytes exceeds ${RT_RETICULUM_MAX_WIRE_JSON_BYTES}`,
+      };
     }
     this.pendingAuthorRangeRequests.set(requestId, {
       groupId: wire.g,

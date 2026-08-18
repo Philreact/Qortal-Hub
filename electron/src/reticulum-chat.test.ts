@@ -18525,6 +18525,128 @@ describe('reticulum chat manager', () => {
     ]);
   });
 
+  it('keeps the signed author range fallback legacy-compatible and within the Reticulum wire limit', async () => {
+    const providerHash = 'a'.repeat(32);
+    const localHash = 'b'.repeat(32);
+    const sent: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => localHash,
+        fanoutReticulumChatDetailed: async (
+          wires: Record<string, unknown>[]
+        ) => {
+          sent.push(...wires);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 9_999_999_999_999,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const event = signedEvent({
+      groupId: 2_147_483_647,
+      authorSeq: 9_999,
+      timestamp: 9_999_999_999_999,
+    });
+    const range = {
+      a: event.authorAddress,
+      s: event.authorStreamId,
+      from: 9_998,
+      to: 9_999,
+    };
+
+    const result = await (manager as any).sendLegacyAuthorRangeRequest(
+      providerHash,
+      {
+        t: 'RCHAT',
+        k: 'range_req',
+        g: 2_147_483_647,
+        ranges: [range],
+        limit: 100,
+      },
+      range
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      t: 'RCHAT',
+      k: 'range_req',
+      g: 2_147_483_647,
+      ranges: [[event.authorAddress, event.authorStreamId, 9_998, 9_999]],
+      q: [
+        expect.any(String),
+        expect.any(String),
+        9_999_999_999_999,
+        expect.any(String),
+      ],
+    });
+    expect(sent[0]).not.toHaveProperty('d');
+    expect(sent[0]).not.toHaveProperty('limit');
+    expect(sent[0]).not.toHaveProperty('h');
+    expect(sent[0]).not.toHaveProperty('v');
+    expect(wireFitsReticulumChat(sent[0] as ReticulumChatWire)).toBe(true);
+    expect(byteLengthUtf8JsonWithBridgeSenderOnly(sent[0])).toBeLessThanOrEqual(
+      RT_RETICULUM_MAX_WIRE_JSON_BYTES
+    );
+    expect((manager as any).pendingAuthorRangeRequests.size).toBe(1);
+    manager.close();
+  });
+
+  it('does not track or send an author range fallback that cannot fit', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        getLocalDestinationHash: () => 'b'.repeat(32),
+        fanoutReticulumChatDetailed: async (
+          wires: Record<string, unknown>[]
+        ) => {
+          sent.push(...wires);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 9_999_999_999_999,
+      signLocalFields: createReticulumChatTestSigner(),
+    });
+    const event = signedEvent({
+      groupId: 2_147_483_647,
+      authorSeq: Number.MAX_SAFE_INTEGER,
+      timestamp: 9_999_999_999_999,
+    });
+    const range = {
+      a: event.authorAddress,
+      s: event.authorStreamId,
+      from: Number.MAX_SAFE_INTEGER - 1,
+      to: Number.MAX_SAFE_INTEGER,
+    };
+
+    const result = await (manager as any).sendLegacyAuthorRangeRequest(
+      'a'.repeat(32),
+      {
+        t: 'RCHAT',
+        k: 'range_req',
+        g: 2_147_483_647,
+        ranges: [range],
+        limit: 100,
+      },
+      range
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'wire-too-large',
+      error: expect.stringContaining('Legacy author range wire'),
+    });
+    expect(sent).toEqual([]);
+    expect((manager as any).pendingAuthorRangeRequests.size).toBe(0);
+    manager.close();
+  });
+
   it('keeps persistent author backoff when a dedicated link cannot be prepared', async () => {
     const providerHash = 'a'.repeat(32);
     const localHash = 'b'.repeat(32);
