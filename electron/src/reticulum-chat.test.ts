@@ -12035,6 +12035,7 @@ describe('reticulum chat manager', () => {
   it('cooldowns latest-event page fallback across repeated digests', async () => {
     vi.useFakeTimers();
     const providerHash = 'c'.repeat(32);
+    const alternateProviderHash = 'd'.repeat(32);
     const eventId = 'latest-fallback-event';
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -12046,7 +12047,7 @@ describe('reticulum chat manager', () => {
     try {
       (manager as any).pendingEventPulls.set(`69:${eventId}`, {
         hint: { eventId, groupId: 69 },
-        peerHashes: new Set([providerHash]),
+        peerHashes: new Set([providerHash, alternateProviderHash]),
         attempts: 1,
         nextAttemptAt: 0,
         inFlight: false,
@@ -12064,7 +12065,11 @@ describe('reticulum chat manager', () => {
       };
 
       (manager as any).scheduleLatestEventPullFallback(input);
-      (manager as any).scheduleLatestEventPullFallback(input);
+      (manager as any).scheduleLatestEventPullFallback({
+        ...input,
+        peerHash: alternateProviderHash,
+        providerPeerHash: alternateProviderHash,
+      });
       await vi.advanceTimersByTimeAsync(2_001);
       expect(requestPage).toHaveBeenCalledTimes(2);
 
@@ -18834,10 +18839,12 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([72]);
     manager.subscribeGroup(72);
-    (manager as any).peerProtocolFeatures.set(
-      providerHash,
-      new Set(['linked_author_range_v1'])
-    );
+    expect(
+      (manager as any).peerFeatureSupport(
+        providerHash,
+        'linked_author_range_v1'
+      )
+    ).toBe('unknown');
     const event = signedEvent({
       eventId: 'linked-author-gap-source',
       groupId: 72,
@@ -19213,10 +19220,10 @@ describe('reticulum chat manager', () => {
     manager.setLocalGroupMemberships([72]);
     manager.subscribeGroup(72);
     (manager as any).notePeerSubscription(replacementHash, 72, true);
-    vi.spyOn(
-      manager as any,
-      'sendGroupTargetedRoutedControl'
-    ).mockResolvedValue({ ok: false, reason: 'packet-send-false' });
+    vi.spyOn(manager as any, 'sendAuthorRangeRequest').mockResolvedValue({
+      ok: false,
+      reason: 'packet-send-false',
+    });
     const first = signedEvent({
       eventId: 'legacy-author-gap-route-first',
       groupId: 72,
@@ -22769,6 +22776,10 @@ describe('reticulum chat manager', () => {
     expect(advertisedFeatures).toEqual(
       expect.arrayContaining(['linked_event_v1', 'linked_author_range_v1'])
     );
+    const unknownPeer = 'c'.repeat(32);
+    expect(
+      (manager as any).peerFeatureSupport(unknownPeer, 'calendar_v1')
+    ).toBe('unknown');
     const olderPeer = 'b'.repeat(32);
     manager.handleWire(
       {
@@ -22783,10 +22794,30 @@ describe('reticulum chat manager', () => {
       },
       olderPeer
     );
-    expect((manager as any).peerProtocolFeatures.has(olderPeer)).toBe(true);
-    expect((manager as any).peerProtocolFeatures.get(olderPeer)).not.toContain(
-      'linked_event_v1'
+    expect((manager as any).peerProtocolFeatures.has(olderPeer)).toBe(false);
+    manager.handleWire(
+      { t: 'RCHAT', k: 'hello_v3', v: 3, f: advertisedFeatures },
+      unknownPeer
     );
+    expect(
+      (manager as any).peerFeatureSupport(unknownPeer, 'linked_event_v1')
+    ).toBe('supported');
+    const peerWithoutOptionalCalendar = 'd'.repeat(32);
+    manager.handleWire(
+      {
+        t: 'RCHAT',
+        k: 'hello_v3',
+        v: 3,
+        f: advertisedFeatures.filter((feature) => feature !== 'calendar_v1'),
+      },
+      peerWithoutOptionalCalendar
+    );
+    expect(
+      (manager as any).peerFeatureSupport(
+        peerWithoutOptionalCalendar,
+        'calendar_v1'
+      )
+    ).toBe('unsupported');
     expect(sent).toContainEqual(
       expect.objectContaining({
         t: 'RCHAT',
@@ -33225,7 +33256,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('uses the compatible event request path when a peer has not advertised linked pulls', async () => {
+  it('uses a dedicated event link when peer feature state is unknown', async () => {
     const requesterPeer = 'a'.repeat(32);
     const providerPeer = 'b'.repeat(32);
     const accepted = vi.fn(async () => ({ ok: true as const }));
@@ -33236,6 +33267,9 @@ describe('reticulum chat manager', () => {
         on: () => undefined,
         off: () => undefined,
         getLocalDestinationHash: () => requesterPeer,
+        ensureReticulumResourceSessionDetailed: async () => ({
+          ok: true as const,
+        }),
         acceptReticulumChatResourceDetailed: accepted,
         sendReticulumChatDetailed: async (
           peer: string,
@@ -33272,21 +33306,23 @@ describe('reticulum chat manager', () => {
 
     await (manager as any).requestEventPull(providerPeer, item);
 
-    expect(accepted).not.toHaveBeenCalled();
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({
-      wire: {
-        t: 'RCHAT',
-        k: 'event_req',
-        g: 744,
-        o: expect.any(String),
-      },
-    });
-    expect(wireFitsReticulumChat(sent[0].wire)).toBe(true);
-    expect((manager as any).localLegacyEventRequestIds.size).toBe(1);
     expect(
-      verifyReticulumChatEventRequest(744, sent[0].wire.q, Date.now())
-    ).toBe(true);
+      (manager as any).peerFeatureSupport(providerPeer, 'linked_event_v1')
+    ).toBe('unknown');
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(accepted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        peerPresenceHash: providerPeer,
+        metadata: expect.objectContaining({
+          logicalResourceType: 'reticulum_chat_live_event',
+        }),
+        authMessage: expect.objectContaining({
+          type: 'RETICULUM_CHAT_LINKED_EVENT_REQUEST',
+        }),
+      })
+    );
+    expect(sent).toEqual([]);
+    expect((manager as any).localLegacyEventRequestIds.size).toBe(0);
     manager.close();
   });
 
@@ -33484,10 +33520,7 @@ describe('reticulum chat manager', () => {
     expect(item.inFlight).toBe(false);
     expect((manager as any).linkedEventTransferByPull.size).toBe(0);
     expect((manager as any).resourceOffers.size).toBe(0);
-    expect(overlayFanout).toHaveBeenCalledWith(
-      [expect.objectContaining({ k: 'event_req', g: 744 })],
-      []
-    );
+    expect(overlayFanout).not.toHaveBeenCalled();
     manager.close();
   });
 

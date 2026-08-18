@@ -872,7 +872,6 @@ type ReticulumChatPullQueueItem = {
   nextAttemptAt: number;
   inFlight: boolean;
   linkedAttemptStartedAt?: number;
-  legacyFallbackAttempted?: boolean;
 };
 
 type ReticulumPendingDmNotifyDelivery = {
@@ -968,6 +967,8 @@ export type ReticulumChatProtocolFeature =
   | 'calendar_v1'
   | 'linked_event_v1'
   | 'linked_author_range_v1';
+
+type ReticulumChatPeerFeatureSupport = 'supported' | 'unsupported' | 'unknown';
 
 export type ReticulumChatDigestWire = {
   c: string;
@@ -2089,8 +2090,6 @@ const RETICULUM_CHAT_OPTIONAL_PROTOCOL_FEATURES =
     'read_sync_v2',
     'call_history_v1',
     'calendar_v1',
-    'linked_event_v1',
-    'linked_author_range_v1',
   ]);
 const RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS = 100;
 const RETICULUM_CHAT_SEARCH_NETWORK_WAIT_MS = 2_000;
@@ -10253,51 +10252,35 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private peerSupportsDmAuthorStreams(peerHash: string): boolean {
-    const peer = this.routePeerHash(peerHash) ?? peerHash.trim().toLowerCase();
     return (
-      !!peer &&
-      this.peerProtocolFeatures.get(peer)?.has('dm_author_streams_v1') === true
+      this.peerFeatureSupport(peerHash, 'dm_author_streams_v1') === 'supported'
     );
   }
 
   private peerSupportsSelfDm(peerHash: string): boolean {
-    const peer =
-      this.routePeerHash(peerHash) ??
-      this.normalizeResourcePeerHash(peerHash) ??
-      '';
-    return (
-      !!peer && this.peerProtocolFeatures.get(peer)?.has('self_dm_v1') === true
-    );
+    return this.peerFeatureSupport(peerHash, 'self_dm_v1') === 'supported';
   }
 
   private peerSupportsDirectCallHistory(peerHash: string): boolean {
-    const peer =
-      this.routePeerHash(peerHash) ??
-      this.normalizeResourcePeerHash(peerHash) ??
-      '';
-    return (
-      !!peer &&
-      this.peerProtocolFeatures.get(peer)?.has('call_history_v1') === true
-    );
+    return this.peerFeatureSupport(peerHash, 'call_history_v1') === 'supported';
   }
 
   private peerSupportsCalendar(peerHash: string): boolean {
+    return this.peerFeatureSupport(peerHash, 'calendar_v1') === 'supported';
+  }
+
+  private peerFeatureSupport(
+    peerHash: string,
+    feature: ReticulumChatProtocolFeature
+  ): ReticulumChatPeerFeatureSupport {
     const peer =
       this.routePeerHash(peerHash) ??
       this.normalizeResourcePeerHash(peerHash) ??
       '';
-    return (
-      !!peer && this.peerProtocolFeatures.get(peer)?.has('calendar_v1') === true
-    );
-  }
-
-  private peerSupportsLinkedFeature(
-    peerHash: string,
-    feature: 'linked_event_v1' | 'linked_author_range_v1'
-  ): boolean {
-    const peer = this.normalizeResourcePeerHash(peerHash);
-    if (!peer) return false;
-    return this.peerProtocolFeatures.get(peer)?.has(feature) === true;
+    if (!peer) return 'unknown';
+    const features = this.peerProtocolFeatures.get(peer);
+    if (!features) return 'unknown';
+    return features.has(feature) ? 'supported' : 'unsupported';
   }
 
   private calendarStateFingerprint(groupId: number): {
@@ -23504,9 +23487,6 @@ export class ReticulumChatManager extends EventEmitter {
     const requestedRange = normalizeAuthorRangeWire(wire.ranges[0]);
     const normalizedPersistedRange =
       normalizeReticulumChatAuthorRange(persistedRange);
-    if (!this.peerSupportsLinkedFeature(peer, 'linked_author_range_v1')) {
-      return this.sendLegacyAuthorRangeRequest(peer, wire, persistedRange);
-    }
     if (
       !peer ||
       !requestedRange?.s ||
@@ -30376,17 +30356,6 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     this.cancelLinkedEventPull(groupId, eventId);
     this.pendingEventPulls.delete(this.eventPullKey(groupId, eventId));
-    const fallbackPrefix = `${groupId}:${eventId}:`;
-    for (const [key, timer] of this.latestEventPullFallbackTimers) {
-      if (!key.startsWith(fallbackPrefix)) continue;
-      clearTimeout(timer);
-      this.latestEventPullFallbackTimers.delete(key);
-    }
-    for (const key of this.latestEventPullFallbackCooldowns.keys()) {
-      if (key.startsWith(fallbackPrefix)) {
-        this.latestEventPullFallbackCooldowns.delete(key);
-      }
-    }
     for (const key of this.requestedEventPulls.keys()) {
       if (key.startsWith(`${groupId}:`) && key.endsWith(`:${eventId}`)) {
         this.requestedEventPulls.delete(key);
@@ -30579,12 +30548,19 @@ export class ReticulumChatManager extends EventEmitter {
     return true;
   }
 
-  private latestEventPullFallbackKey(
+  private latestEventPullFallbackKey(groupId: number, eventId: string): string {
+    return `${groupId}:${eventId}`;
+  }
+
+  private cancelLatestEventPullFallback(
     groupId: number,
-    eventId: string,
-    providerPeerHash: string
-  ): string {
-    return `${groupId}:${eventId}:${providerPeerHash.trim().toLowerCase()}`;
+    eventId: string
+  ): void {
+    const key = this.latestEventPullFallbackKey(groupId, eventId);
+    const timer = this.latestEventPullFallbackTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.latestEventPullFallbackTimers.delete(key);
+    this.latestEventPullFallbackCooldowns.delete(key);
   }
 
   private clearLatestEventPullFallbackTimers(): void {
@@ -30608,11 +30584,7 @@ export class ReticulumChatManager extends EventEmitter {
     const eventId = input.latest.eventId.trim();
     if (!providerPeerHash || !eventId) return;
     if (this.isRejectedEventPullSuppressed(input.groupId, eventId)) return;
-    const key = this.latestEventPullFallbackKey(
-      input.groupId,
-      eventId,
-      providerPeerHash
-    );
+    const key = this.latestEventPullFallbackKey(input.groupId, eventId);
     const cooldownUntil = this.latestEventPullFallbackCooldowns.get(key) ?? 0;
     if (cooldownUntil > this.now()) return;
     if (cooldownUntil > 0) this.latestEventPullFallbackCooldowns.delete(key);
@@ -30699,40 +30671,45 @@ export class ReticulumChatManager extends EventEmitter {
             key,
             this.now() + RETICULUM_CHAT_LATEST_PULL_FALLBACK_COOLDOWN_MS
           );
+          const activeProviderPeerHash =
+            pullItem?.peerHashes.values().next().value ?? providerPeerHash;
           loggerWarn(
-            `[ReticulumChat] latest_event_pull_fallback group=${input.groupId} peer=${providerPeerHash.slice(0, 16)} event=${eventId} attempts=${pullItem?.attempts ?? 0} reason=${input.reason}`
+            `[ReticulumChat] latest_event_pull_fallback group=${input.groupId} peer=${activeProviderPeerHash.slice(0, 16)} event=${eventId} attempts=${pullItem?.attempts ?? 0} reason=${input.reason}`
           );
           if (
-            this.shouldRequestMetadataRepair(providerPeerHash, input.groupId)
+            this.shouldRequestMetadataRepair(
+              activeProviderPeerHash,
+              input.groupId
+            )
           ) {
             void this.requestLinkedHistoryPage(
-              providerPeerHash,
+              activeProviderPeerHash,
               input.groupId,
               RETICULUM_CHAT_ALL_CHANNELS_ID,
               input.latest,
               'before',
               true,
               'latest-event-pull-fallback',
-              input.peerHash,
+              activeProviderPeerHash,
               'metadata'
             );
           }
           if (
             this.shouldRequestGroupRepair(
-              input.peerHash,
+              activeProviderPeerHash,
               input.groupId,
               RETICULUM_CHAT_ALL_CHANNELS_ID
             )
           ) {
             void this.requestLinkedHistoryPage(
-              providerPeerHash,
+              activeProviderPeerHash,
               input.groupId,
               RETICULUM_CHAT_ALL_CHANNELS_ID,
               input.latest,
               'before',
               true,
               'latest-event-pull-fallback',
-              input.peerHash
+              activeProviderPeerHash
             );
           }
         },
@@ -30756,11 +30733,7 @@ export class ReticulumChatManager extends EventEmitter {
       this.eventPullKey(offer.groupId, offer.eventId)
     );
     if (!pullItem) return;
-    const key = this.latestEventPullFallbackKey(
-      offer.groupId,
-      offer.eventId,
-      providerPeerHash
-    );
+    const key = this.latestEventPullFallbackKey(offer.groupId, offer.eventId);
     const existing = this.latestEventPullFallbackTimers.get(key);
     if (existing) clearTimeout(existing);
     this.latestEventPullFallbackTimers.delete(key);
@@ -30905,13 +30878,6 @@ export class ReticulumChatManager extends EventEmitter {
       this.pendingEventPulls.delete(
         this.eventPullKey(hint.groupId, hint.eventId)
       );
-      return;
-    }
-    if (
-      item.legacyFallbackAttempted === true ||
-      !this.peerSupportsLinkedFeature(peerKey, 'linked_event_v1')
-    ) {
-      await this.requestLegacyEventPull(peerKey, item);
       return;
     }
     const pullKey = this.eventPullKey(hint.groupId, hint.eventId);
@@ -31182,19 +31148,6 @@ export class ReticulumChatManager extends EventEmitter {
   ): void {
     item.inFlight = false;
     item.linkedAttemptStartedAt = undefined;
-    if (!this.isClosed && item.legacyFallbackAttempted !== true) {
-      item.legacyFallbackAttempted = true;
-      item.inFlight = true;
-      loggerLog(
-        `[ReticulumChat] linked_event_legacy_fallback group=${item.hint.groupId} event=${item.hint.eventId} peer=${failedPeer.slice(0, 16)} reason=${reason}`
-      );
-      void this.requestLegacyEventPull(failedPeer, item).catch(() => {
-        item.inFlight = false;
-        item.nextAttemptAt = this.now() + RETICULUM_CHAT_PULL_RETRY_MS;
-        this.scheduleEventPullQueue(RETICULUM_CHAT_PULL_RETRY_MS);
-      });
-      return;
-    }
     const terminal = this.isTerminalLinkedEventFailure(reason);
     if (terminal || item.peerHashes.size > 1) {
       item.peerHashes.delete(failedPeer);
@@ -37309,6 +37262,7 @@ export class ReticulumChatManager extends EventEmitter {
     reason = 'event_already_available'
   ): void {
     const pullKey = this.eventPullKey(groupId, eventId);
+    this.cancelLatestEventPullFallback(groupId, eventId);
     const transferId = this.linkedEventTransferByPull.get(pullKey);
     if (!transferId) return;
     this.linkedEventTransferByPull.delete(pullKey);
