@@ -345,7 +345,7 @@ _RESOURCE_SESSION_REQUEST_TIMEOUT_SECONDS = 60.0
 # ready, receiving no response progress for this long means the session itself
 # is stale. Retire only that session and let the existing DM pull retry on a
 # fresh Link; bulk history and attachment requests retain their longer timeout.
-_RESOURCE_SESSION_LIVE_DM_INITIAL_RESPONSE_TIMEOUT_SECONDS = 5.0
+_RESOURCE_SESSION_LIVE_DM_INITIAL_RESPONSE_TIMEOUT_SECONDS = 10.0
 # Authorization normally completes from the local cache, but an uncached group
 # membership decision can use Electron's full 10-second Core request budget.
 # Leave bounded scheduling margin so the bridge does not expire the waiter at
