@@ -311,6 +311,7 @@ interface ReticulumChatQueuedDigestRepair {
   key: string;
   peerHash: string;
   providerPeerHash: string;
+  candidatePeerHashes: string[];
   groupId: number;
   wire: Record<string, unknown>;
   remoteGroupLatest: ReticulumChatFeedCursor | null;
@@ -2095,6 +2096,8 @@ const RETICULUM_CHAT_MAX_FEED_PAGE_EVENTS = 100;
 const RETICULUM_CHAT_SEARCH_NETWORK_WAIT_MS = 2_000;
 const RETICULUM_CHAT_SEARCH_NETWORK_POLL_MS = 200;
 const RETICULUM_CHAT_EVENT_PAGE_IMPORT_YIELD_EVERY = 20;
+const RETICULUM_CHAT_EVENT_PAGE_MAX_PROTOCOL_REJECTIONS = 3;
+const RETICULUM_CHAT_DIGEST_REPAIR_MAX_CANDIDATE_PEERS = 32;
 const RETICULUM_CHAT_METADATA_SUPERSEDE_SCAN_LIMIT = 5000;
 const RETICULUM_CHAT_MAX_EVENT_PAGE_BYTES = 1024 * 1024;
 const RETICULUM_CHAT_MAX_DIGEST_GROUPS_PER_PAGE = 20;
@@ -2413,7 +2416,6 @@ const RETICULUM_CHAT_SUBSCRIPTION_FANOUT_DEDUPE_MS = 30_000;
 const RETICULUM_CHAT_ACTIVE_GROUP_DIGEST_TTL_MS = 10 * 60 * 1_000;
 const RETICULUM_CHAT_GROUP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_NEWEST_PAGE_PUSH_DEBOUNCE_MS = 30_000;
-const RETICULUM_CHAT_AUTHOR_GAP_REPAIR_DEBOUNCE_MS = 5_000;
 const RETICULUM_CHAT_METADATA_SNAPSHOT_REQ_DEBOUNCE_MS = 30_000;
 const RETICULUM_CHAT_METADATA_SNAPSHOT_DOWNLOAD_CONCURRENCY = 2;
 const RETICULUM_CHAT_METADATA_SNAPSHOT_DOWNLOAD_QUEUE_MAX = 500;
@@ -7014,7 +7016,10 @@ export class ReticulumChatManager extends EventEmitter {
   >();
   private recentMetadataPagePushes = new Map<string, number>();
   private recentNewestPagePushes = new Map<string, number>();
-  private recentAuthorGapRepairRequests = new Map<string, number>();
+  private recentAuthorGapDiscoveryByGroup = new Map<
+    number,
+    { revision: number; requestedAt: number }
+  >();
   private authorGapNoProgressSuppressions = new Map<string, number>();
   private authorGapPagedRangeOrigins = new Map<
     string,
@@ -8285,6 +8290,7 @@ export class ReticulumChatManager extends EventEmitter {
     this.authorGapPeerAttempts.clear();
     this.authorGapRouteBackoffs.clear();
     this.authorGapControlSendsInFlight.clear();
+    this.recentAuthorGapDiscoveryByGroup.clear();
     this.peerProtocolFeatures.clear();
     this.outboundEventResources.clear();
     this.outboundRelayCachedEventResources.clear();
@@ -15430,19 +15436,36 @@ export class ReticulumChatManager extends EventEmitter {
   private enqueueDigestRepair(
     item: Omit<
       ReticulumChatQueuedDigestRepair,
-      'key' | 'enqueuedAt' | 'coalescedCount'
+      'key' | 'enqueuedAt' | 'coalescedCount' | 'candidatePeerHashes'
     >
   ): void {
     if (this.isClosed) return;
     const peer = item.peerHash.trim().toLowerCase();
     if (!peer || !Number.isInteger(item.groupId) || item.groupId <= 0) return;
-    const key = `${peer}:${item.groupId}`;
+    const providerPeer = (item.providerPeerHash || peer).trim().toLowerCase();
+    const remoteDigest = item.remoteDigestHash.trim().toLowerCase() || 'none';
+    const remoteLatest = item.remoteGroupLatest
+      ? `${item.remoteGroupLatest.feedTimestamp}:${item.remoteGroupLatest.eventId}`
+      : 'none';
+    // Digest repair is group-state work. Peers advertising the same state are
+    // alternate providers, not independent reasons to repeat that work.
+    const key = `${item.groupId}:${remoteDigest}:${remoteLatest}`;
     const existing = this.digestRepairItems.get(key);
     if (existing) {
-      existing.wire = item.wire;
-      existing.providerPeerHash = item.providerPeerHash;
-      existing.remoteGroupLatest = item.remoteGroupLatest;
-      existing.remoteDigestHash = item.remoteDigestHash;
+      // Keep the first provider and its exact digest payload paired. A later
+      // peer can advertise the same group head while carrying a different
+      // bounded channel slice; mixing that payload with the first provider
+      // would make any follow-up request target the wrong source context.
+      for (const candidate of [providerPeer, peer]) {
+        if (
+          candidate &&
+          existing.candidatePeerHashes.length <
+            RETICULUM_CHAT_DIGEST_REPAIR_MAX_CANDIDATE_PEERS &&
+          !existing.candidatePeerHashes.includes(candidate)
+        ) {
+          existing.candidatePeerHashes.push(candidate);
+        }
+      }
       existing.enqueuedAt = this.now();
       existing.coalescedCount += 1;
       this.digestRepairQueueStats.coalesced += 1;
@@ -15462,6 +15485,8 @@ export class ReticulumChatManager extends EventEmitter {
       ...item,
       key,
       peerHash: peer,
+      providerPeerHash: providerPeer,
+      candidatePeerHashes: [...new Set([providerPeer, peer].filter(Boolean))],
       enqueuedAt: this.now(),
       coalescedCount: 0,
     });
@@ -15531,7 +15556,7 @@ export class ReticulumChatManager extends EventEmitter {
           )} queue_size=${this.digestRepairQueue.length} group=${item.groupId} peer=${item.peerHash.slice(
             0,
             16
-          )} coalesced=${item.coalescedCount} processed=${this.digestRepairQueueStats.processed} dropped=${this.digestRepairQueueStats.dropped} actions=${JSON.stringify(stats ?? {})}`
+          )} providers=${item.candidatePeerHashes?.length ?? 1} coalesced=${item.coalescedCount} processed=${this.digestRepairQueueStats.processed} dropped=${this.digestRepairQueueStats.dropped} actions=${JSON.stringify(stats ?? {})}`
         );
       }
     }
@@ -22152,15 +22177,25 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private shouldRequestAuthorGapRepair(
-    peerHash: string,
-    groupId: number
+    groupId: number,
+    force = false
   ): boolean {
-    const key = `${peerHash.trim().toLowerCase()}:${groupId}`;
     const now = this.now();
-    const lastRequestedAt = this.recentAuthorGapRepairRequests.get(key) ?? 0;
-    if (now - lastRequestedAt < RETICULUM_CHAT_AUTHOR_GAP_REPAIR_DEBOUNCE_MS)
+    const revision = this.db.getGroupDigestRevision(groupId);
+    const existing = this.recentAuthorGapDiscoveryByGroup.get(groupId);
+    if (
+      !force &&
+      existing &&
+      existing.revision === revision &&
+      now - existing.requestedAt <
+        RETICULUM_CHAT_BACKGROUND_AUTHOR_GAP_REPAIR_INTERVAL_MS
+    ) {
       return false;
-    this.recentAuthorGapRepairRequests.set(key, now);
+    }
+    this.recentAuthorGapDiscoveryByGroup.set(groupId, {
+      revision,
+      requestedAt: now,
+    });
     return true;
   }
 
@@ -22766,11 +22801,7 @@ export class ReticulumChatManager extends EventEmitter {
     ) {
       return false;
     }
-    if (!force && !this.shouldRequestAuthorGapRepair(peer, groupId))
-      return false;
-    if (force) {
-      this.recentAuthorGapRepairRequests.set(`${peer}:${groupId}`, this.now());
-    }
+    if (!this.shouldRequestAuthorGapRepair(groupId, force)) return false;
     const gaps = this.db.getAuthorSequenceGaps(
       groupId,
       RETICULUM_CHAT_MAX_RECENT_AUTHOR_SAMPLE
@@ -36573,6 +36604,10 @@ export class ReticulumChatManager extends EventEmitter {
       let deferredMembershipCount = 0;
       let skippedKnownCount = 0;
       let processedSinceYield = 0;
+      let invalidPageAborted = false;
+      const reachedProtocolRejectionLimit = (): boolean =>
+        rejectedInvalidCount + rejectedOutOfBoundsCount >=
+        RETICULUM_CHAT_EVENT_PAGE_MAX_PROTOCOL_REJECTIONS;
       for (const candidate of page.events) {
         if (
           !candidate ||
@@ -36581,6 +36616,10 @@ export class ReticulumChatManager extends EventEmitter {
         ) {
           rejectedInvalidCount += 1;
           this.notePeerViolation(sourcePeerHash, 'event_page_invalid_event');
+          if (reachedProtocolRejectionLimit()) {
+            invalidPageAborted = true;
+            break;
+          }
           continue;
         }
         const candidateEventId =
@@ -36611,6 +36650,10 @@ export class ReticulumChatManager extends EventEmitter {
         if (!acceptedEvent) {
           rejectedInvalidCount += 1;
           this.notePeerViolation(sourcePeerHash, 'event_page_invalid_event');
+          if (reachedProtocolRejectionLimit()) {
+            invalidPageAborted = true;
+            break;
+          }
           continue;
         }
         const event = acceptedEvent;
@@ -36632,6 +36675,10 @@ export class ReticulumChatManager extends EventEmitter {
         ) {
           rejectedOutOfBoundsCount += 1;
           this.notePeerViolation(sourcePeerHash, 'event_page_out_of_bounds');
+          if (reachedProtocolRejectionLimit()) {
+            invalidPageAborted = true;
+            break;
+          }
           continue;
         }
         const rejectedMarkerState = this.rejectedEventMarkerMatches(event);
@@ -36675,6 +36722,10 @@ export class ReticulumChatManager extends EventEmitter {
             sourcePeerHash,
             'event_page_channel_write_forbidden'
           );
+          if (reachedProtocolRejectionLimit()) {
+            invalidPageAborted = true;
+            break;
+          }
           continue;
         }
         if (
@@ -36686,6 +36737,10 @@ export class ReticulumChatManager extends EventEmitter {
             sourcePeerHash,
             'event_page_channel_read_forbidden'
           );
+          if (reachedProtocolRejectionLimit()) {
+            invalidPageAborted = true;
+            break;
+          }
           continue;
         }
         validWindowEvents.push(event);
@@ -36719,9 +36774,26 @@ export class ReticulumChatManager extends EventEmitter {
           await this.yieldEventPageImportTurn();
         }
       }
+      if (invalidPageAborted) {
+        loggerWarn(
+          `[ReticulumChat] event_page_rejected group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} transfer=${offer.transferId} reason=protocol_rejection_limit rejected_invalid=${rejectedInvalidCount} rejected_bounds=${rejectedOutOfBoundsCount}`
+        );
+        if (
+          insertedCount === 0 &&
+          sourcePeerHash &&
+          offer.direction !== 'range'
+        ) {
+          this.markHistoryPageNoProgress(
+            sourcePeerHash,
+            offer,
+            'protocol_rejection_limit'
+          );
+        }
+      }
       const start = this.cursorFromWire(page.start);
       const end = this.cursorFromWire(page.end);
       if (
+        !invalidPageAborted &&
         skippedKnownCount === 0 &&
         rejectedInvalidCount === 0 &&
         rejectedOutOfBoundsCount === 0 &&
@@ -36741,6 +36813,7 @@ export class ReticulumChatManager extends EventEmitter {
           this.now()
         );
       } else if (
+        !invalidPageAborted &&
         offer.channelId !== RETICULUM_CHAT_ALL_CHANNELS_ID &&
         skippedKnownCount === 0 &&
         rejectedInvalidCount === 0 &&
@@ -36776,6 +36849,7 @@ export class ReticulumChatManager extends EventEmitter {
         Math.floor(offer.digestRepairPageCount ?? 1)
       );
       const digestRepairCanContinue =
+        !invalidPageAborted &&
         !!offer.digestRepairFingerprint &&
         page.more === true &&
         offer.direction !== 'range' &&
@@ -36811,15 +36885,21 @@ export class ReticulumChatManager extends EventEmitter {
       loggerLog(
         `[ReticulumChat] event_page_imported group=${offer.groupId} channel=${offer.channelId} peer=${sourcePeerHash.slice(0, 16)} events=${page.events.length} inserted=${insertedCount} skipped_known=${skippedKnownCount} rejected_invalid=${rejectedInvalidCount} rejected_bounds=${rejectedOutOfBoundsCount} rejected_non_member=${rejectedNonMemberCount} membership_deferred=${deferredMembershipCount} more=${page.more === true}`
       );
-      this.cancelRelatedDirectHistoryPageRequests(
-        {
-          ...offer,
-          sourcePeerHash,
-        },
-        payload.transferId,
-        'history_page_satisfied'
-      );
-      if (page.more === true && deferredMembershipCount === 0) {
+      if (!invalidPageAborted) {
+        this.cancelRelatedDirectHistoryPageRequests(
+          {
+            ...offer,
+            sourcePeerHash,
+          },
+          payload.transferId,
+          'history_page_satisfied'
+        );
+      }
+      if (
+        !invalidPageAborted &&
+        page.more === true &&
+        deferredMembershipCount === 0
+      ) {
         if (offer.direction === 'range') {
           if (
             sourcePeerHash &&
