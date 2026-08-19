@@ -11751,7 +11751,6 @@ describe('reticulum chat manager', () => {
       timestamp: 80_000,
     });
     expect((manager as any).db.insertEvent(event, true)).toBe(true);
-
     manager.handleWire(
       { t: 'RCHAT', k: 'group_sub', groups: [69], mode: 'summary' },
       'peer-a'
@@ -14245,7 +14244,7 @@ describe('reticulum chat manager', () => {
   });
 
   it('forwards group state digests once per unique next hop without requiring local membership', async () => {
-    const now = 100_000;
+    let now = 100_000;
     const inboundPeer = 'a'.repeat(32);
     const nextHop = 'c'.repeat(32);
     const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
@@ -14288,6 +14287,32 @@ describe('reticulum chat manager', () => {
     await flushQueuedWork();
     expect(direct).toEqual([{ peer: nextHop, wire }]);
 
+    // The old 30-second edge dedupe allowed an unchanged digest to circulate
+    // indefinitely. Keep the established route but do not forward the same
+    // payload over it again after that old window.
+    now += 31_000;
+    intermediate.handleWire(wire, inboundPeer);
+    await flushQueuedWork();
+    expect(direct).toEqual([{ peer: nextHop, wire }]);
+
+    const lateOriginOnExistingHop = 'e'.repeat(32);
+    (intermediate as any).groupInterestRoutes.set(
+      `73:${lateOriginOnExistingHop}`,
+      {
+        groupId: 73,
+        originPeerHash: lateOriginOnExistingHop,
+        reversePeerHash: nextHop,
+        hops: 2,
+        expiresAt: now + 60_000,
+      }
+    );
+    intermediate.handleWire(wire, inboundPeer);
+    await flushQueuedWork();
+    expect(direct).toEqual([
+      { peer: nextHop, wire },
+      { peer: nextHop, wire },
+    ]);
+
     const lateNextHop = 'd'.repeat(32);
     (intermediate as any).groupInterestRoutes.set(`73:${lateNextHop}`, {
       groupId: 73,
@@ -14299,6 +14324,7 @@ describe('reticulum chat manager', () => {
     intermediate.handleWire(wire, inboundPeer);
     await flushQueuedWork();
     expect(direct).toEqual([
+      { peer: nextHop, wire },
       { peer: nextHop, wire },
       { peer: lateNextHop, wire },
     ]);
@@ -23982,6 +24008,342 @@ describe('reticulum chat manager', () => {
       [...(manager as any).digestRepairItems.values()][0].wire.channels
     ).toEqual([{ c: 'channel-0' }]);
     expect((manager as any).digestRepairQueueStats.coalesced).toBe(1);
+    manager.close();
+  });
+
+  it('does not reprocess an observed digest against an unchanged local revision', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    vi.spyOn((manager as any).db, 'getGroupDigestRevision').mockReturnValue(7);
+    const processRepair = vi
+      .spyOn(manager as any, 'processGroupDigestRepair')
+      .mockImplementation((item: any) => {
+        item.repairFingerprint = 'observed-digest-fingerprint';
+        return {};
+      });
+    const digest = {
+      peerHash: 'peer-observed-a',
+      providerPeerHash: 'peer-observed-a',
+      groupId: 59,
+      wire: { channels: [] },
+      remoteGroupLatest: {
+        eventId: 'observed-remote-head',
+        feedTimestamp: 90_000,
+      },
+      remoteDigestHash: 'a'.repeat(64),
+    };
+
+    (manager as any).enqueueDigestRepair(digest);
+    (manager as any).processDigestRepairQueue();
+    (manager as any).enqueueDigestRepair({
+      ...digest,
+      peerHash: 'peer-observed-b',
+      providerPeerHash: 'peer-observed-b',
+    });
+    (manager as any).processDigestRepairQueue();
+
+    expect(processRepair).toHaveBeenCalledTimes(1);
+    expect((manager as any).digestRepairQueue).toHaveLength(0);
+    expect(
+      [...(manager as any).digestRepairObservations.values()][0]
+        .candidatePeerHashes
+    ).toEqual(['peer-observed-a', 'peer-observed-b']);
+    manager.close();
+  });
+
+  it('reprocesses an observed digest immediately after the local database changes', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    let revision = 7;
+    vi.spyOn((manager as any).db, 'getGroupDigestRevision').mockImplementation(
+      () => revision
+    );
+    const processRepair = vi
+      .spyOn(manager as any, 'processGroupDigestRepair')
+      .mockImplementation(() => ({}));
+    const digest = {
+      peerHash: 'peer-revision',
+      providerPeerHash: 'peer-revision',
+      groupId: 59,
+      wire: { channels: [] },
+      remoteGroupLatest: {
+        eventId: 'revision-remote-head',
+        feedTimestamp: 90_000,
+      },
+      remoteDigestHash: 'b'.repeat(64),
+    };
+
+    (manager as any).enqueueDigestRepair(digest);
+    (manager as any).processDigestRepairQueue();
+    revision += 1;
+    (manager as any).enqueueDigestRepair(digest);
+    (manager as any).processDigestRepairQueue();
+
+    expect(processRepair).toHaveBeenCalledTimes(2);
+    manager.close();
+  });
+
+  it('rotates an observed digest repair to another provider after failure', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    vi.spyOn(manager as any, 'processGroupDigestRepair').mockImplementation(
+      (item: any) => {
+        item.repairFingerprint = 'provider-rotation-fingerprint';
+        return {};
+      }
+    );
+    const digest = {
+      peerHash: 'peer-provider-a',
+      providerPeerHash: 'peer-provider-a',
+      groupId: 59,
+      wire: { channels: [] },
+      remoteGroupLatest: {
+        eventId: 'provider-remote-head',
+        feedTimestamp: 90_000,
+      },
+      remoteDigestHash: 'c'.repeat(64),
+    };
+
+    (manager as any).enqueueDigestRepair(digest);
+    (manager as any).processDigestRepairQueue();
+    (manager as any).enqueueDigestRepair({
+      ...digest,
+      peerHash: 'peer-provider-b',
+      providerPeerHash: 'peer-provider-b',
+    });
+    (manager as any).retryDigestRepairObservationAfterFailure(
+      {
+        transferId: 'provider-failed-transfer',
+        groupId: 59,
+        channelId: '*',
+        direction: 'before',
+        pageHash: '',
+        sizeBytes: 1,
+        eventCount: 1,
+        sourcePeerHash: 'peer-provider-a',
+        digestRepairFingerprint: 'provider-rotation-fingerprint',
+      },
+      'resource_request_timeout'
+    );
+
+    expect((manager as any).digestRepairQueue).toHaveLength(1);
+    expect(
+      [...(manager as any).digestRepairItems.values()][0].providerPeerHash
+    ).toBe('peer-provider-b');
+    manager.close();
+  });
+
+  it('does not rotate digest providers for local bridge pressure', () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    vi.spyOn(manager as any, 'processGroupDigestRepair').mockImplementation(
+      (item: any) => {
+        item.repairFingerprint = 'local-pressure-fingerprint';
+        return {};
+      }
+    );
+    const digest = {
+      peerHash: 'peer-pressure-a',
+      providerPeerHash: 'peer-pressure-a',
+      groupId: 59,
+      wire: { channels: [] },
+      remoteGroupLatest: {
+        eventId: 'pressure-remote-head',
+        feedTimestamp: 90_000,
+      },
+      remoteDigestHash: 'e'.repeat(64),
+    };
+
+    (manager as any).enqueueDigestRepair(digest);
+    (manager as any).processDigestRepairQueue();
+    (manager as any).enqueueDigestRepair({
+      ...digest,
+      peerHash: 'peer-pressure-b',
+      providerPeerHash: 'peer-pressure-b',
+    });
+    (manager as any).retryDigestRepairObservationAfterFailure(
+      {
+        transferId: 'pressure-failed-transfer',
+        groupId: 59,
+        channelId: '*',
+        direction: 'before',
+        pageHash: '',
+        sizeBytes: 1,
+        eventCount: 1,
+        sourcePeerHash: 'peer-pressure-a',
+        digestRepairFingerprint: 'local-pressure-fingerprint',
+      },
+      'bridge-overloaded'
+    );
+
+    const observation = [
+      ...(manager as any).digestRepairObservations.values(),
+    ][0];
+    expect(observation.failedPeerHashes.size).toBe(0);
+    expect((manager as any).digestRepairQueue).toHaveLength(0);
+
+    now += 5_000;
+    (manager as any).enqueueDigestRepair(digest);
+    expect((manager as any).digestRepairQueue).toHaveLength(1);
+    expect(
+      [...(manager as any).digestRepairItems.values()][0].providerPeerHash
+    ).toBe('peer-pressure-a');
+    manager.close();
+  });
+
+  it('bounds distinct digest repair work per group without blocking other groups', () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([59, 60]);
+    manager.subscribeGroup(59);
+    manager.subscribeGroup(60);
+    vi.spyOn((manager as any).db, 'getGroupDigestRevision').mockReturnValue(7);
+    const processRepair = vi
+      .spyOn(manager as any, 'processGroupDigestRepair')
+      .mockImplementation(() => ({}));
+
+    for (let index = 0; index < 10; index += 1) {
+      (manager as any).enqueueDigestRepair({
+        peerHash: `peer-rate-${index}`,
+        providerPeerHash: `peer-rate-${index}`,
+        groupId: 59,
+        wire: { channels: [] },
+        remoteGroupLatest: {
+          eventId: `rate-head-${index}`,
+          feedTimestamp: 90_000 + index,
+        },
+        remoteDigestHash: index.toString(16).padStart(64, '0'),
+      });
+    }
+    (manager as any).enqueueDigestRepair({
+      peerHash: 'peer-other-group',
+      providerPeerHash: 'peer-other-group',
+      groupId: 60,
+      wire: { channels: [] },
+      remoteGroupLatest: {
+        eventId: 'other-group-head',
+        feedTimestamp: 90_000,
+      },
+      remoteDigestHash: 'f'.repeat(64),
+    });
+
+    (manager as any).processDigestRepairQueue();
+    expect(
+      processRepair.mock.calls.filter(([item]) => item.groupId === 59)
+    ).toHaveLength(8);
+    expect(
+      processRepair.mock.calls.filter(([item]) => item.groupId === 60)
+    ).toHaveLength(1);
+    expect((manager as any).digestRepairQueue).toHaveLength(2);
+
+    now += 1_000;
+    (manager as any).processDigestRepairQueue();
+    expect(
+      processRepair.mock.calls.filter(([item]) => item.groupId === 59)
+    ).toHaveLength(10);
+    expect((manager as any).digestRepairQueue).toHaveLength(0);
+    manager.close();
+  });
+
+  it('bounds queued distinct digest states per group', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    vi.spyOn((manager as any).db, 'getGroupDigestRevision').mockReturnValue(7);
+
+    for (let index = 0; index < 40; index += 1) {
+      (manager as any).enqueueDigestRepair({
+        peerHash: `peer-queue-${index}`,
+        providerPeerHash: `peer-queue-${index}`,
+        groupId: 59,
+        wire: { channels: [] },
+        remoteGroupLatest: {
+          eventId: `queued-head-${index}`,
+          feedTimestamp: 90_000 + index,
+        },
+        remoteDigestHash: index.toString(16).padStart(64, '0'),
+      });
+    }
+
+    expect((manager as any).digestRepairQueue).toHaveLength(32);
+    expect((manager as any).digestRepairItems.size).toBe(32);
+    expect((manager as any).digestRepairObservations.size).toBe(32);
+    expect((manager as any).digestRepairQueueStats.dropped).toBe(8);
+    manager.close();
+  });
+
+  it('does not retain queued digest observations across a bridge reset', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    vi.spyOn((manager as any).db, 'getGroupDigestRevision').mockReturnValue(7);
+    const digest = {
+      peerHash: 'peer-bridge-reset',
+      providerPeerHash: 'peer-bridge-reset',
+      groupId: 59,
+      wire: { channels: [] },
+      remoteGroupLatest: {
+        eventId: 'bridge-reset-head',
+        feedTimestamp: 90_000,
+      },
+      remoteDigestHash: '9'.repeat(64),
+    };
+
+    (manager as any).enqueueDigestRepair(digest);
+    expect((manager as any).digestRepairObservations.size).toBe(1);
+    (manager as any).clearDigestRepairQueue();
+    expect((manager as any).digestRepairObservations.size).toBe(0);
+
+    (manager as any).enqueueDigestRepair(digest);
+    expect((manager as any).digestRepairQueue).toHaveLength(1);
+    manager.close();
+  });
+
+  it('removes queued digest repair work when a group is unsubscribed', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([59, 60]);
+    manager.subscribeGroup(59);
+    manager.subscribeGroup(60);
+    vi.spyOn((manager as any).db, 'getGroupDigestRevision').mockReturnValue(7);
+
+    for (const groupId of [59, 60]) {
+      (manager as any).enqueueDigestRepair({
+        peerHash: `peer-unsubscribe-${groupId}`,
+        providerPeerHash: `peer-unsubscribe-${groupId}`,
+        groupId,
+        wire: { channels: [] },
+        remoteGroupLatest: {
+          eventId: `unsubscribe-head-${groupId}`,
+          feedTimestamp: 90_000,
+        },
+        remoteDigestHash: groupId.toString(16).padStart(64, '0'),
+      });
+    }
+
+    manager.unsubscribeGroup(59);
+
+    expect(
+      [...(manager as any).digestRepairItems.values()].map(
+        (item: any) => item.groupId
+      )
+    ).toEqual([60]);
+    expect(
+      [...(manager as any).digestRepairObservations.values()].map(
+        (item: any) => item.groupId
+      )
+    ).toEqual([60]);
+    expect((manager as any).digestRepairQueue).toHaveLength(1);
     manager.close();
   });
 
