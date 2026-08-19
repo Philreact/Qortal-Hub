@@ -8,10 +8,7 @@ import {
   type MouseEvent,
 } from 'react';
 import { useAtomValue } from 'jotai';
-import {
-  AnimatePresence,
-  motion,
-} from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import {
   balanceAtom,
@@ -29,18 +26,15 @@ import {
   getBlueTier3DotSx,
 } from '../groupActivityColorSystem';
 import { useHandleUserInfo } from '../../../hooks/useHandleUserInfo';
-import {
-  isLocalNodeUrl,
-} from '../../../constants/constants';
+import { isLocalNodeUrl } from '../../../constants/constants';
 import { nodeDisplay } from '../../../utils/helpers';
+import { formatQortAmount } from '../../../utils/numberFunctions';
 import { BlockHeightValue } from './BlockHeightValue';
 import type {
   InfoPreviewPanelRows,
   InfoPreviewStatusTone,
 } from './infoPreviewPanelTypes';
-import {
-  INFO_VALUE_COLUMN_MIN_WIDTH_PX,
-} from './homeDesktopConstants';
+import { INFO_VALUE_COLUMN_MIN_WIDTH_PX } from './homeDesktopConstants';
 import type { MinterInfoView, MinterProgressSnapshot } from './types';
 
 type UseDashboardInfoPreviewRowsParams = {
@@ -59,7 +53,7 @@ export function useDashboardInfoPreviewRows({
   const selectedNode = useAtomValue(selectedNodeInfoAtom);
   const userInfo = useAtomValue(userInfoAtom);
   const userAddress = userInfo?.address;
-  const { t } = useTranslation(['core', 'group', 'tutorial', 'auth']);
+  const { i18n, t } = useTranslation(['core', 'group', 'auth']);
   const td = useCallback(
     (
       key: string,
@@ -208,8 +202,9 @@ export function useDashboardInfoPreviewRows({
     };
   }, []);
 
+  const formattedBalance = formatQortAmount(balance, i18n.language);
   const balanceLabel =
-    balance != null ? `${Number(balance).toFixed(2)} QORT` : '—';
+    formattedBalance != null ? `${formattedBalance} QORT` : '—';
 
   const hasLiveNodeConnection = nodeInfos?.height != null;
   const liveSyncPercent =
@@ -242,8 +237,7 @@ export function useDashboardInfoPreviewRows({
     ? td('local_node', 'Local node')
     : nodeBase.includes('ext-node.qortal.link')
       ? td('public_node', 'Public node')
-      : customNodeDashboardLabel ||
-        td('custom_node', 'Custom node');
+      : customNodeDashboardLabel || td('custom_node', 'Custom node');
   const isSystemOperational =
     hasLiveNodeConnection &&
     !(nodeInfos?.isSynchronizing && nodeInfos?.syncPercent !== 100);

@@ -99,13 +99,7 @@ export const AppPublish = ({
   const [file, setFile] = useState(null);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const [tag1, setTag1] = useState('');
   const [tag2, setTag2] = useState('');
   const [tag3, setTag3] = useState('');
@@ -169,7 +163,10 @@ export const AppPublish = ({
         const tags: string[] = Array.isArray(rawTags)
           ? rawTags
           : typeof rawTags === 'string'
-            ? rawTags.split(',').map((s) => s.trim()).filter(Boolean)
+            ? rawTags
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean)
             : [];
         setTag1((tags[0] || '').slice(0, TAG_MAX_CHARS));
         setTag2((tags[1] || '').slice(0, TAG_MAX_CHARS));

@@ -13,6 +13,7 @@ import { AddressQRCode } from '../AddressQRCode';
 import { CopyIcon } from '../../assets/Icons/CopyIcon.tsx';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { executeEvent } from '../../utils/events';
+import { formatQortAmount } from '../../utils/numberFunctions';
 
 export type ProfileLeftProps = {
   userInfo: { name?: string; address?: string } | null;
@@ -40,7 +41,7 @@ export const ProfileLeft = memo(function ProfileLeft({
   onCloseDrawer,
 }: ProfileLeftProps) {
   const theme = useTheme();
-  const { t } = useTranslation(['core']);
+  const { i18n, t } = useTranslation(['core']);
 
   const handleOpenSendQort = () => {
     onOpenSendQort();
@@ -118,7 +119,7 @@ export const ProfileLeft = memo(function ProfileLeft({
                 textAlign: 'center',
               }}
             >
-              {balance?.toFixed(2)} QORT
+              {formatQortAmount(balance, i18n.language)} QORT
             </TextP>
 
             <RefreshIcon

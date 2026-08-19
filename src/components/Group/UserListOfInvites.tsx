@@ -62,13 +62,7 @@ export const UserListOfInvites = ({
   const [invites, setInvites] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const [popoverAnchor, setPopoverAnchor] = useState(null); // Track which list item the popover is anchored to
   const [openPopoverIndex, setOpenPopoverIndex] = useState(null); // Track which list item has the popover open
   const listRef = useRef(null);
@@ -216,20 +210,38 @@ export const UserListOfInvites = ({
                       px: 2.5,
                       pt: 2.5,
                       pb: 1.5,
-                      bgcolor: theme.palette.background?.default ?? 'rgba(0,0,0,0.2)',
+                      bgcolor:
+                        theme.palette.background?.default ?? 'rgba(0,0,0,0.2)',
                       borderBottom: `1px solid ${theme.palette.divider}`,
                     }}
                   >
-                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-                      {t('group:group.name', { postProcess: 'capitalizeFirstChar' })}
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ display: 'block', mb: 0.5 }}
+                    >
+                      {t('group:group.name', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
                     </Typography>
-                    <Typography variant="h6" fontWeight={700} sx={{ lineHeight: 1.3 }}>
+                    <Typography
+                      variant="h6"
+                      fontWeight={700}
+                      sx={{ lineHeight: 1.3 }}
+                    >
                       {invite?.groupName}
                     </Typography>
-                    {(invite?.participantCount != null || invite?.memberCount != null) && (
-                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
-                        {t('group:group.member_number', { postProcess: 'capitalizeFirstChar' })}:{' '}
-                        {invite?.participantCount ?? invite?.memberCount ?? 0}
+                    {(invite?.participantCount != null ||
+                      invite?.memberCount != null) && (
+                      <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        sx={{ mt: 0.75 }}
+                      >
+                        {t('group:group.member_number', {
+                          postProcess: 'capitalizeFirstChar',
+                        })}
+                        : {invite?.participantCount ?? invite?.memberCount ?? 0}
                       </Typography>
                     )}
                   </Box>
@@ -239,7 +251,10 @@ export const UserListOfInvites = ({
                       color="text.secondary"
                       sx={{ display: 'block', mb: 0.75, fontWeight: 600 }}
                     >
-                      {t('group:group.description', { postProcess: 'capitalizeFirstChar', defaultValue: 'Description' })}
+                      {t('group:group.description', {
+                        postProcess: 'capitalizeFirstChar',
+                        defaultValue: 'Description',
+                      })}
                     </Typography>
                     <Typography
                       variant="body2"
@@ -254,30 +269,62 @@ export const UserListOfInvites = ({
                       }}
                     >
                       {invite?.description ||
-                        t('group:message.generic.no_description', { postProcess: 'capitalizeFirstChar', defaultValue: 'No description' })}
+                        t('group:message.generic.no_description', {
+                          postProcess: 'capitalizeFirstChar',
+                          defaultValue: 'No description',
+                        })}
                     </Typography>
                     {invite?.isOpen === false && (
-                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-                        {t('group:message.generic.closed_group', { postProcess: 'capitalizeFirstChar' })}
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: 'block', mt: 1 }}
+                      >
+                        {t('group:message.generic.closed_group', {
+                          postProcess: 'capitalizeFirstChar',
+                        })}
                       </Typography>
                     )}
                   </Box>
-                  <Box sx={{ px: 2.5, pb: 2.5, pt: 0, display: 'flex', gap: 1.5, justifyContent: 'flex-end' }}>
+                  <Box
+                    sx={{
+                      px: 2.5,
+                      pb: 2.5,
+                      pt: 0,
+                      display: 'flex',
+                      gap: 1.5,
+                      justifyContent: 'flex-end',
+                    }}
+                  >
                     <Button
                       variant="outlined"
                       onClick={handlePopoverClose}
-                      sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}
+                      sx={{
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        borderRadius: '10px',
+                      }}
                     >
-                      {t('core:action.close', { postProcess: 'capitalizeFirstChar' })}
+                      {t('core:action.close', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
                     </Button>
                     <LoadingButton
                       loading={isLoading}
                       loadingPosition="start"
                       variant="contained"
-                      onClick={() => handleJoinGroup(invite?.groupId, invite?.groupName)}
-                      sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}
+                      onClick={() =>
+                        handleJoinGroup(invite?.groupId, invite?.groupName)
+                      }
+                      sx={{
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        borderRadius: '10px',
+                      }}
                     >
-                      {t('group:action.join_group', { postProcess: 'capitalizeFirstChar' })}
+                      {t('group:action.join_group', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
                     </LoadingButton>
                   </Box>
                 </Box>

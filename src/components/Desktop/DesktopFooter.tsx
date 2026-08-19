@@ -24,8 +24,9 @@ export const IconWrapper = ({
     <Box
       sx={{
         alignItems: 'center',
-        backgroundColor:
-          noBackground ? 'transparent' : selected
+        backgroundColor: noBackground
+          ? 'transparent'
+          : selected
             ? theme.palette.action.selected
             : 'transparent',
         borderRadius: noBackground ? 0 : '50%',
@@ -72,13 +73,7 @@ export const DesktopFooter = ({
   const [isEnabledDevMode, setIsEnabledDevMode] = useAtom(enabledDevModeAtom);
   const hasUnreadGroups = useAtomValue(hasUnreadGroupsAtom);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   if (hide) return;
   return (

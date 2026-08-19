@@ -1,0 +1,249 @@
+{
+  "about": {
+    "copied": "copied",
+    "created": "created",
+    "group_invite_link": "group invite link"
+  },
+  "call_history": {
+    "answered": "voice call",
+    "cancelled": "cancelled voice call",
+    "declined": "declined voice call",
+    "missed": "missed voice call",
+    "no_answer": "no answer"
+  },
+  "chat_group": {
+    "author_mismatch": "Signed Reticulum chat author mismatch",
+    "delete_failed": "Reticulum chat delete failed",
+    "disabled": "Reticulum chat is disabled",
+    "publish_failed": "Reticulum chat publish failed",
+    "release_seq_failed": "Unable to release Reticulum chat event sequence",
+    "reserve_seq_failed": "Unable to reserve Reticulum chat event sequence",
+    "sign_failed": "Unable to sign Reticulum chat event",
+    "welcome_failed": "Reticulum welcome publish failed"
+  },
+  "copy_invite_link": "copy invite link",
+  "discussion": {
+    "choose_emoji": "choose emoji",
+    "close": "close discussion",
+    "initial_post": "initial post",
+    "remove_attachment": "remove attachment",
+    "remove_file": "remove {{fileName}}",
+    "replies": "replies:",
+    "reply_placeholder": "reply to discussion...",
+    "wait_until_ready": "wait until the discussion is ready"
+  },
+  "dm": {
+    "required_for_attachments": "Reticulum direct chat is required for direct attachments"
+  },
+  "event_preview": {
+    "all_day": "all day",
+    "calendar_unavailable": "calendar is unavailable",
+    "join_failed": "unable to join this group. Please try again.",
+    "loading": "loading event preview",
+    "member_required": "you must be a member of the source group to view this event.",
+    "not_found": "event not found",
+    "request_join_question": "request to join this group?",
+    "unavailable": "event unavailable",
+    "unavailable_temporarily": "event preview is temporarily unavailable",
+    "view_group": "view group"
+  },
+  "expiry": {
+    "channel_default": "channel default",
+    "channel_default_no_expiry": "channel default (no expiry)",
+    "channel_default_with": "channel default ({{duration}})",
+    "do_not_auto_delete": "do not auto-delete",
+    "lock_preferred": "lock {{duration}} as preferred expiry",
+    "maximum": "maximum {{duration}}",
+    "no_expiry": "no expiry",
+    "preferred_locked": "preferred locked expiry",
+    "remove_preferred": "remove {{duration}} preferred expiry",
+    "set": "set message expiry",
+    "title": "message expiry",
+    "tooltip_value": "message expiry: {{value}}",
+    "unavailable": "message expiry is unavailable"
+  },
+  "group_fallback_name": "Group",
+  "group_type": {
+    "closed": "closed",
+    "open": "open"
+  },
+  "groups_widget": {
+    "mentions_one": "{{count}} mention",
+    "mentions_other": "{{count}} mentions",
+    "new_messages_one": "{{count}} new message",
+    "new_messages_other": "{{count}} new messages"
+  },
+  "hide_user": {
+    "error_hide": "unable to hide user",
+    "error_unhide": "unable to unhide user",
+    "for_1_hour": "hide for 1 hour",
+    "for_24_hours": "hide for 24 hours",
+    "hide": "hide",
+    "unhide": "unhide",
+    "until_unhidden": "hide until unhidden"
+  },
+  "image_viewer": {
+    "actions": "image actions",
+    "chat_image": "chat image",
+    "clipboard_unavailable": "image clipboard is unavailable",
+    "close": "close image viewer",
+    "copied": "image copied",
+    "copy": "copy image",
+    "copy_failed": "unable to copy image",
+    "download": "download image",
+    "download_failed": "unable to download image",
+    "prepare_failed": "unable to prepare image for clipboard",
+    "read_failed": "unable to read image",
+    "zoom_in": "zoom in",
+    "zoom_out": "zoom out"
+  },
+  "invite": {
+    "apply": "apply",
+    "apply_question": "apply to join this group?",
+    "closed_group": "closed group",
+    "joined": "joined",
+    "open_group": "open group",
+    "pending": "pending"
+  },
+  "join_group_question": "join this group?",
+  "mention": {
+    "channels": "channels",
+    "empty": "no matches found",
+    "people": "people",
+    "special": "special mentions",
+    "suggestions": "mention suggestions"
+  },
+  "mode_pill": {
+    "chat": "Chat",
+    "enter_qortal_land": "Enter Qortal Land",
+    "return_to_chat": "Return to Chat"
+  },
+  "onboarding": {
+    "find_communities": "Find Communities",
+    "invite_error_invalid": "This doesn't look like a valid Qortal group invite link.",
+    "invite_input_label": "Group invite link",
+    "invite_input_placeholder": "Paste a Group Invite Link...",
+    "or": "or",
+    "subtitle": "Looks like you're not part of any communities yet. Let's change that.",
+    "title": "Welcome to the new, improved Q-Chat",
+    "whats_new_button": "What's New?"
+  },
+  "qapp_preview": {
+    "check_again": "check again",
+    "no_resource": "no Q-App resource was found for this link.",
+    "open_in_quitter": "open this post in Quitter.",
+    "open_publication": "open this publication to read the full article.",
+    "preview_failed": "the resource exists, but its preview could not be loaded right now.",
+    "preview_unavailable": "preview unavailable",
+    "resource_not_found": "resource not found",
+    "shared_photo": "shared a photo",
+    "shared_video": "shared a video",
+    "shared_video_titled": "shared a video: {{title}}",
+    "view_on_quitter": "view this post on Quitter",
+    "watch_on_qtube": "watch this video on Q-Tube."
+  },
+  "rail": {
+    "find_groups": "Find Groups",
+    "group_settings": "Group Settings",
+    "whats_new": "Open What's New"
+  },
+  "search": {
+    "chip": {
+      "date": "date: {{value}}",
+      "from": "from: {{value}}",
+      "has": "has: {{value}}",
+      "in": "in: {{value}}",
+      "sort": "sort: {{value}}"
+    },
+    "date_any": "any",
+    "date_range": "{{after}} -> {{before}}",
+    "facet": {
+      "date": "date:",
+      "from": "from:",
+      "has": "has:",
+      "in": "in:",
+      "sort": "sort:"
+    },
+    "has": {
+      "any": "anything",
+      "attachment": "attachment",
+      "link": "link"
+    },
+    "placeholder_channel": "Search {{channel}}",
+    "placeholder_messages": "Search messages",
+    "sort": {
+      "newest": "newest",
+      "oldest": "oldest",
+      "relevance": "relevant"
+    }
+  },
+  "settings": {
+    "category": {
+      "accessibility": "Accessibility",
+      "legacy": "Legacy"
+    },
+    "legacy": {
+      "description": "Show the legacy Threads and Admin controls in the Q-Chat header.",
+      "title": "Threads",
+      "toggle": {
+        "aria": "Show legacy Threads",
+        "description": "Display the legacy Threads and Admin icons.",
+        "label": "Threads"
+      },
+      "warning": "Threads will be removed in the upcoming release. Move any important thread information to a safe place or to a new channel in Q-Chat before updating."
+    },
+    "messages": {
+      "description": "Adjust how your own messages appear in Reticulum Q-Chat.",
+      "highlight_own": {
+        "description": "Add a faint background to messages you send.",
+        "label": "Highlight my messages"
+      },
+      "title": "Messages"
+    },
+    "nav": {
+      "mentions": "Mentions",
+      "messages": "Messages",
+      "text_size": "Text size",
+      "threads": "Threads"
+    },
+    "notifications": {
+      "description": "Show Reticulum Q-Chat mentions in the Hub notification panel. Regular unread messages will not create Hub notifications.",
+      "mentions": {
+        "description": "Alert me when someone mentions me in a channel.",
+        "label": "Mention notifications"
+      },
+      "title": "Notifications"
+    },
+    "text_size": {
+      "default": {
+        "detail": "Current chat text size",
+        "label": "Default"
+      },
+      "description": "Choose a reading size for Reticulum messages, channel labels and the members list. Invitation previews keep their fixed layout.",
+      "high": {
+        "detail": "Largest readable chat text",
+        "label": "High"
+      },
+      "medium": {
+        "detail": "A comfortable increase",
+        "label": "Medium"
+      },
+      "title": "Text size"
+    }
+  },
+  "user_card": {
+    "address_copied": "address copied",
+    "copy_address": "copy address",
+    "copy_full_address": "copy full qortal address",
+    "hide_user": "hide user",
+    "message": "message",
+    "minter_level": "minter level",
+    "minter_level_value": "level {{level}}",
+    "qort_balance": "qort balance",
+    "qort_balance_value": "{{amount}} QORT",
+    "qortal_address": "qortal address",
+    "send_qort": "send QORT",
+    "view_profile": "view profile",
+    "view_profile_of": "view {{name}}'s profile"
+  }
+}

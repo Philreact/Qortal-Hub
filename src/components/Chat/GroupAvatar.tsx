@@ -42,13 +42,7 @@ export const GroupAvatar = ({
   const [avatarFile, setAvatarFile] = useState(null);
   const [tempAvatar, setTempAvatar] = useState(null);
   const { show } = useContext(QORTAL_APP_CONTEXT);
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const theme = useTheme();
   const [anchorEl, setAnchorEl] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -349,79 +343,23 @@ const PopoverComp = ({
   dialogOpen,
 }) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const content = (
-      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, p: 2 }}>
-        <Typography
-          sx={{
-            fontSize: '12px',
-          }}
-        >
-          {t('core:message.generic.avatar_size', {
-            size: MAX_SIZE_AVATAR,
-            postProcess: 'capitalizeFirstChar',
-          })}
-        </Typography>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, p: 2 }}>
+      <Typography
+        sx={{
+          fontSize: '12px',
+        }}
+      >
+        {t('core:message.generic.avatar_size', {
+          size: MAX_SIZE_AVATAR,
+          postProcess: 'capitalizeFirstChar',
+        })}
+      </Typography>
 
-        <ImageUploader onPick={(file) => setAvatarFile(file)}>
-          <Button
-            variant="contained"
-            sx={{
-              backgroundColor: theme.palette.other.positive,
-              color: theme.palette.text.primary,
-              fontWeight: 'bold',
-              opacity: 0.7,
-              '&:hover': {
-                backgroundColor: theme.palette.other.positive,
-                color: 'black',
-                opacity: 1,
-              },
-            }}
-          >
-            {t('core:action.choose_image', {
-              postProcess: 'capitalizeFirstChar',
-            })}
-          </Button>
-        </ImageUploader>
-
-        {avatarFile?.name}
-
-        <Spacer height="25px" />
-
-        {!myName && (
-          <Box
-            sx={{
-              alignItems: 'center',
-              display: 'flex',
-              gap: '5px',
-            }}
-          >
-            <ErrorIcon
-              sx={{
-                color: theme.palette.text.primary,
-              }}
-            />
-            <Typography>
-              {t('group:message.generic.avatar_registered_name', {
-                postProcess: 'capitalizeFirstChar',
-              })}
-            </Typography>
-          </Box>
-        )}
-
-        <Spacer height="25px" />
-
-        <LoadingButton
-          loading={isLoading}
-          disabled={!avatarFile || !myName}
-          onClick={publishAvatar}
+      <ImageUploader onPick={(file) => setAvatarFile(file)}>
+        <Button
           variant="contained"
           sx={{
             backgroundColor: theme.palette.other.positive,
@@ -435,11 +373,61 @@ const PopoverComp = ({
             },
           }}
         >
-          {t('group:action.publish_avatar', {
+          {t('core:action.choose_image', {
             postProcess: 'capitalizeFirstChar',
           })}
-        </LoadingButton>
-      </Box>
+        </Button>
+      </ImageUploader>
+
+      {avatarFile?.name}
+
+      <Spacer height="25px" />
+
+      {!myName && (
+        <Box
+          sx={{
+            alignItems: 'center',
+            display: 'flex',
+            gap: '5px',
+          }}
+        >
+          <ErrorIcon
+            sx={{
+              color: theme.palette.text.primary,
+            }}
+          />
+          <Typography>
+            {t('group:message.generic.avatar_registered_name', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+          </Typography>
+        </Box>
+      )}
+
+      <Spacer height="25px" />
+
+      <LoadingButton
+        loading={isLoading}
+        disabled={!avatarFile || !myName}
+        onClick={publishAvatar}
+        variant="contained"
+        sx={{
+          backgroundColor: theme.palette.other.positive,
+          color: theme.palette.text.primary,
+          fontWeight: 'bold',
+          opacity: 0.7,
+          '&:hover': {
+            backgroundColor: theme.palette.other.positive,
+            color: 'black',
+            opacity: 1,
+          },
+        }}
+      >
+        {t('group:action.publish_avatar', {
+          postProcess: 'capitalizeFirstChar',
+        })}
+      </LoadingButton>
+    </Box>
   );
 
   if (dialogOpen) {

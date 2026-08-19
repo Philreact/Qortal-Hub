@@ -7,14 +7,12 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
-  useReducer,
   useState,
 } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import {
   Avatar,
   Box,
-  Chip,
   IconButton,
   Tooltip,
   Typography,
@@ -35,6 +33,7 @@ import {
   userInfoAtom,
 } from '../../atoms/global';
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
+import { isResolvedGroupCallParticipantAddress } from '../../lib/group-call/groupCallTopology';
 import {
   addrHue,
   initialsFromDisplayLabel,
@@ -57,11 +56,9 @@ export function QortalGroupVoiceCallDock() {
   const [minimized, setMinimized] = useAtom(qortalGroupVoiceCallMinimizedAtom);
   const {
     roomState,
-    mediaViable,
     roomId,
     participants,
     activeSpeakers,
-    metrics,
     startupStatus,
     leaveGroupCall,
     setMuted,
@@ -102,30 +99,6 @@ export function QortalGroupVoiceCallDock() {
   const active =
     isQortal && (roomState === 'connected' || roomState === 'joining');
 
-  const [transportTick, bumpTransport] = useReducer((n: number) => n + 1, 0);
-  useEffect(() => {
-    if (!active || !minimized) return;
-    const id = window.setInterval(bumpTransport, 700);
-    return () => window.clearInterval(id);
-  }, [active, minimized]);
-  const transport = useMemo(() => {
-    if (roomState === 'connected' && !mediaViable) {
-      return {
-        mode: 'connecting' as const,
-        label: 'Reticulum',
-        tooltip:
-          'Reticulum audio is still establishing; you may not hear others yet.',
-      };
-    }
-    void metrics;
-    void transportTick;
-    return {
-      mode: 'reticulum' as const,
-      label: 'Reticulum',
-      tooltip: 'Encrypted voice over Reticulum',
-    };
-  }, [roomState, mediaViable, metrics, transportTick, t]);
-
   const title =
     memberGateGroupName?.trim() ||
     t('core:group_call_stage_title', {
@@ -142,7 +115,9 @@ export function QortalGroupVoiceCallDock() {
 
   const sortedTiles = useMemo(() => {
     const my = userInfo?.address ?? '';
-    const list = [...participants];
+    const list = participants.filter((participant) =>
+      isResolvedGroupCallParticipantAddress(participant.address)
+    );
     list.sort((a, b) => {
       if (a.address === my) return -1;
       if (b.address === my) return 1;
@@ -231,25 +206,6 @@ export function QortalGroupVoiceCallDock() {
       >
         {title}
       </Typography>
-
-      <Tooltip title={transport.tooltip} placement="left">
-        <Chip
-          label={transport.label}
-          size="small"
-          sx={{
-            height: 18,
-            maxWidth: '100%',
-            fontSize: 9,
-            fontWeight: 600,
-            bgcolor:
-              transport.mode === 'connecting'
-                ? alpha('#94a3b8', 0.35)
-                : alpha('#22c55e', 0.35),
-            color: '#dbdee1',
-            '& .MuiChip-label': { px: 0.5, overflow: 'hidden' },
-          }}
-        />
-      </Tooltip>
 
       {startupStatus.headline && startupStatus.stage !== 'connected' ? (
         <Box

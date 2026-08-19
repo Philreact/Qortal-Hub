@@ -29,43 +29,92 @@ describe('Reticulum wallet signing policy', () => {
       expiresAt: now + 4 * 60 * 60 * 1000,
     };
     expectAllowed(assertAllowedPresenceSigningPayload, capability);
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, audio: 'bytes' })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, protocolVersion: 2 })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, nonce: 'short' })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, destinationHash: 'short' })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, groupId: '2147483648' })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...capability, expiresAt: now + 5 * 60 * 60 * 1000 })).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...capability, audio: 'bytes' })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...capability, protocolVersion: 2 })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...capability, nonce: 'short' })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...capability,
+        destinationHash: 'short',
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...capability,
+        groupId: '2147483648',
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...capability,
+        expiresAt: now + 5 * 60 * 60 * 1000,
+      })
+    ).toThrow();
   });
 
   it('allows only the exact Qortal Land game handshake schemas', () => {
     const invite = {
-      type: 'QORTAL_LAND_GAME_INVITE', protocolVersion: 2,
-      game: 'connect-four', gameVersion: 1, rulesVersion: 1,
-      matchId: '00112233-4455-4677-8899-aabbccddeeff', groupId: '123',
+      type: 'QORTAL_LAND_GAME_INVITE',
+      protocolVersion: 2,
+      game: 'connect-four',
+      gameVersion: 1,
+      rulesVersion: 1,
+      matchId: '00112233-4455-4677-8899-aabbccddeeff',
+      groupId: '123',
       requesterAddress: 'QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q',
       recipientAddress: 'QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q',
-      sourceSessionId: 'source-session', targetSessionId: 'target-session',
-      sourceDestinationHash: '33'.repeat(16), targetDestinationHash: '44'.repeat(16),
+      sourceSessionId: 'source-session',
+      targetSessionId: 'target-session',
+      sourceDestinationHash: '33'.repeat(16),
+      targetDestinationHash: '44'.repeat(16),
       signerPublicKey: '1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE',
-      requesterNonce: '11'.repeat(16), linkId: '22'.repeat(16),
-      createdAt: 1, expiresAt: 2,
+      requesterNonce: '11'.repeat(16),
+      linkId: '22'.repeat(16),
+      createdAt: 1,
+      expiresAt: 2,
     };
     expectAllowed(assertAllowedPresenceSigningPayload, invite);
-    expectAllowed(assertAllowedPresenceSigningPayload, { ...invite, game: 'checkers' });
-    expectAllowed(assertAllowedPresenceSigningPayload, { ...invite, game: 'chess' });
-    expect(() => assertAllowedPresenceSigningPayload({ ...invite, game: 'backgammon' })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({ ...invite, move: 3 })).toThrow();
+    expectAllowed(assertAllowedPresenceSigningPayload, {
+      ...invite,
+      game: 'checkers',
+    });
+    expectAllowed(assertAllowedPresenceSigningPayload, {
+      ...invite,
+      game: 'chess',
+    });
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...invite, game: 'backgammon' })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...invite, move: 3 })
+    ).toThrow();
     const { linkId: _linkId, ...missing } = invite;
     expect(() => assertAllowedPresenceSigningPayload(missing)).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({
-      type: 'QORTAL_LAND_GAME_MOVE', matchId: 'm', column: 3,
-    })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({
-      ...invite, signerPublicKey: { value: invite.signerPublicKey },
-    })).toThrow();
-    expect(() => assertAllowedPresenceSigningPayload({
-      ...invite, groupId: 'x'.repeat(5_000),
-    })).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        type: 'QORTAL_LAND_GAME_MOVE',
+        matchId: 'm',
+        column: 3,
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...invite,
+        signerPublicKey: { value: invite.signerPublicKey },
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...invite,
+        groupId: 'x'.repeat(5_000),
+      })
+    ).toThrow();
     const resume = {
       type: 'QORTAL_LAND_GAME_RESUME_REQUEST',
       matchId: invite.matchId,
@@ -85,9 +134,34 @@ describe('Reticulum wallet signing policy', () => {
     };
     expectAllowed(assertAllowedPresenceSigningPayload, resume);
     const { roundId: _roundId, ...resumeWithoutRound } = resume;
-    expect(() => assertAllowedPresenceSigningPayload(resumeWithoutRound)).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload(resumeWithoutRound)
+    ).toThrow();
   });
   it('allows every current presence, call, and file-auth control type', () => {
+    const now = Date.now();
+    const address = 'QhxqB8rvXYDguai48oNNjfRCUigaXHmf8Q';
+    const peerAddress = 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91';
+    const publicKey = '1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE';
+    const rtcSignal = {
+      type: 'GC_RTC_SIGNAL',
+      roomId: 'gcall-qortal-1144',
+      callSessionId: '00112233-4455-4677-8899-aabbccddeeff',
+      mediaSessionGeneration: 1,
+      fromAddress: address,
+      toAddress: peerAddress,
+      connectionId: `00112233-4455-4677-8899-aabbccddeeff:1:${[
+        address,
+        peerAddress,
+      ]
+        .sort()
+        .join(':')}`,
+      signalId: '11112233-4455-4677-8899-aabbccddeeff',
+      signalType: 'offer',
+      payloadHash: 'ab'.repeat(32),
+      fromPublicKey: publicKey,
+      timestamp: now,
+    };
     const payloads: Record<string, unknown>[] = [
       {
         type: 'PRESENCE_ANNOUNCE',
@@ -227,16 +301,43 @@ describe('Reticulum wallet signing policy', () => {
         keyMessageVersion: 1,
         timestamp: 1,
       },
+      rtcSignal,
     ];
     for (const payload of payloads) {
       expectAllowed(assertAllowedPresenceSigningPayload, payload);
     }
+    expectAllowed(assertAllowedPresenceSigningPayload, {
+      ...rtcSignal,
+      signalType: 'candidates',
+    });
+    expectAllowed(assertAllowedPresenceSigningPayload, {
+      ...rtcSignal,
+      signalType: 'ack',
+    });
     expect(() =>
       assertAllowedPresenceSigningPayload({
         type: 'CALL_REJECT',
         callId: 'c',
         reason: 'x'.repeat(33),
         timestamp: 1,
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...rtcSignal,
+        signalType: 'audio',
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...rtcSignal,
+        payloadHash: 'not-a-digest',
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...rtcSignal,
+        connectionId: 'different-edge',
       })
     ).toThrow();
   });
@@ -400,6 +501,30 @@ describe('Reticulum wallet signing policy', () => {
       },
       { type: 'RCHAT_EVENT_REQ', eventId: 'e', groupId: 1, timestamp: 1 },
       {
+        type: 'RCHAT_LINKED_EVENT_REQUEST',
+        transferId: '0123456789abcdef',
+        eventId: 'event-linked-request',
+        groupId: 1,
+        requesterPeerHash: 'a'.repeat(32),
+        providerPeerHash: 'b'.repeat(32),
+        timestamp: 1,
+      },
+      {
+        type: 'RCHAT_LINKED_AUTHOR_RANGE_REQUEST',
+        transferId: '0123456789abcdef',
+        groupId: 1,
+        range: {
+          a: 'Qauthor',
+          s: 'a'.repeat(32),
+          from: 2,
+          to: 4,
+        },
+        limit: 100,
+        requesterPeerHash: 'a'.repeat(32),
+        providerPeerHash: 'b'.repeat(32),
+        timestamp: 1,
+      },
+      {
         type: 'RCHAT_RESOURCE_AUTH',
         groupId: 1,
         timestamp: 1,
@@ -466,6 +591,21 @@ describe('Reticulum wallet signing policy', () => {
         byteRanges: [[0, 10]],
         requestId: 'r',
         requesterPeerHash: 'h',
+        timestamp: 1,
+      },
+      {
+        type: 'RCHAT_RANGE_REQ',
+        groupId: 1,
+        ranges: [
+          {
+            a: 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91',
+            s: '0123456789abcdef0123456789abcdef',
+            from: 2,
+            to: 4,
+          },
+        ],
+        limit: 100,
+        sourcePeerHash: '0123456789abcdef0123456789abcdef',
         timestamp: 1,
       },
       {
@@ -556,6 +696,23 @@ describe('Reticulum wallet signing policy', () => {
       assertAllowedReticulumSigningPayload({ arbitrary: true })
     ).toThrow();
     expect(() =>
+      assertAllowedReticulumSigningPayload({
+        type: 'RCHAT_RANGE_REQ',
+        groupId: 1,
+        ranges: [
+          {
+            a: 'QaU2XUB6iMgM9YUJnYRkxwVKJd322hJh91',
+            s: 'not-an-author-stream',
+            from: 2,
+            to: 4,
+          },
+        ],
+        limit: 100,
+        sourcePeerHash: '0123456789abcdef0123456789abcdef',
+        timestamp: 1,
+      })
+    ).toThrow('author range request is invalid');
+    expect(() =>
       assertAllowedPresenceSigningPayload({
         authorAddress: 'a',
         authorPublicKey: 'p',
@@ -568,5 +725,34 @@ describe('Reticulum wallet signing policy', () => {
         attachmentMeta: new Date(),
       })
     ).toThrow('unsupported value');
+  });
+
+  it('allows only the bounded WebRTC signal digest envelope', () => {
+    const signal = {
+      type: 'CALL_RTC_SIGNAL',
+      callId: 'call-route-bound-id',
+      generation: 'generation_1234',
+      signalId: 'signal_1234',
+      signalType: 'offer',
+      payloadHash: 'a'.repeat(64),
+      timestamp: Date.now(),
+    };
+
+    expectAllowed(assertAllowedPresenceSigningPayload, signal);
+    expect(() =>
+      assertAllowedPresenceSigningPayload({ ...signal, payload: 'sdp' })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...signal,
+        type: 'CALL_RTC_SIGNAL_UNKNOWN',
+      })
+    ).toThrow();
+    expect(() =>
+      assertAllowedPresenceSigningPayload({
+        ...signal,
+        signalType: 'arbitrary',
+      })
+    ).toThrow('WebRTC signal signing envelope is invalid');
   });
 });

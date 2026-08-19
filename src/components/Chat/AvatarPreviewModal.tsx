@@ -20,10 +20,16 @@ export const AvatarPreviewModal = ({
   }
   const stopEvent = (event?: Event | SyntheticEvent | null) => {
     if (!event) return;
-    if ('preventDefault' in event && typeof event.preventDefault === 'function') {
+    if (
+      'preventDefault' in event &&
+      typeof event.preventDefault === 'function'
+    ) {
       event.preventDefault();
     }
-    if ('stopPropagation' in event && typeof event.stopPropagation === 'function') {
+    if (
+      'stopPropagation' in event &&
+      typeof event.stopPropagation === 'function'
+    ) {
       event.stopPropagation();
     }
     const nativeEvent =

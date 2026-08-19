@@ -77,13 +77,7 @@ export const AppsPrivate = ({ myName, myAddress }) => {
   const [memberGroups] = useAtom(memberGroupsAtom);
 
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const myGroupsPrivate = useMemo(() => {
     return memberGroups?.filter(

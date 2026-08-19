@@ -300,6 +300,7 @@ class QortalLandGameManager:
             resolve_link_peer_hash=resolve_link_peer_hash,
             identify_link=identify_link,
             path_available=self.path_available,
+            refresh_path=self.refresh_path,
         )
 
     def start_server(self) -> Optional[int]:
@@ -2414,7 +2415,26 @@ class QortalLandGameManager:
         if state.get("phase") == "session_idle":
             self._close_match(state["matchId"], "link_closed", teardown=False)
             return
+        if state.get("phase") == "recovering" and state.get("link") is link:
+            with self.lock:
+                self.links_by_object.pop(id(link), None)
+            state["link"] = None
+            if state.get("outbound") and time.time() - float(state.get("disconnectedAt") or 0) < RECOVERY_WINDOW:
+                if self.refresh_path is not None:
+                    try:
+                        self.refresh_path(state["peerHash"], "game_resume_link_closed")
+                    except Exception:
+                        pass
+                timer = threading.Timer(1.0, self._reopen_for_resume, args=(state["matchId"],))
+                timer.daemon = True
+                timer.start()
+            else:
+                self._close_match(state["matchId"], "link_closed", teardown=False)
+            return
         if state.get("phase") in {"active", "ending", "round_waiting", "round_incoming", "awaiting_resume_accept", "awaiting_resume_confirm", "awaiting_start_ack"}:
+            with self.lock:
+                self.links_by_object.pop(id(link), None)
+            state["link"] = None
             state["resumeReturnPhase"] = state.get("resumeReturnPhase") or state.get("phase")
             state["phase"] = "recovering"
             state.setdefault("disconnectedAt", time.time())
@@ -2427,6 +2447,11 @@ class QortalLandGameManager:
             # Resume authentication is intentionally surfaced, never silently trusted.
             self.send_event("GAME_ERROR", {"matchId": state["matchId"], "code": "resume_required", "message": "Private link interrupted"})
             if state.get("outbound"):
+                if self.refresh_path is not None:
+                    try:
+                        self.refresh_path(state["peerHash"], "game_resume_link_closed")
+                    except Exception:
+                        pass
                 timer = threading.Timer(1.0, self._reopen_for_resume, args=(state["matchId"],))
                 timer.daemon = True
                 timer.start()
@@ -2435,13 +2460,32 @@ class QortalLandGameManager:
 
     def _reopen_for_resume(self, match_id: str) -> None:
         state = self.matches.get(match_id)
-        if not state or state.get("phase") != "recovering" or time.time() - float(state.get("disconnectedAt") or 0) >= RECOVERY_WINDOW:
+        if (
+            not state
+            or state.get("phase") != "recovering"
+            or state.get("link") is not None
+            or time.time() - float(state.get("disconnectedAt") or 0) >= RECOVERY_WINDOW
+        ):
             return
         try:
             identity = self.resolve_identity(state["peerHash"])
             if identity is None:
                 raise ValueError("resume_identity_unavailable")
-            link = RNS.Link(self.build_destination(identity), established_callback=self._resume_outbound_established, closed_callback=self._link_closed)
+            destination = self.build_destination(identity)
+            destination_hash = bytes(destination.hash)
+            if destination_hash.hex() != str(state["peerHash"]).lower():
+                raise ValueError("resume_destination_mismatch")
+            if not self.path_available(destination_hash):
+                refreshed = False
+                if self.refresh_path is not None:
+                    refreshed = self.refresh_path(
+                        state["peerHash"],
+                        "game_resume_no_path",
+                    ) is True
+                if not refreshed:
+                    RNS.Transport.request_path(destination_hash)
+                raise ValueError("resume_path_unavailable")
+            link = RNS.Link(destination, established_callback=self._resume_outbound_established, closed_callback=self._link_closed)
             old_link = state.get("link")
             with self.lock:
                 if old_link is not None:

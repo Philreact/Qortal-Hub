@@ -1,12 +1,7 @@
 import { ReactNode } from 'react';
-import {
-  alpha,
-  Box,
-  IconButton,
-  Typography,
-  useTheme,
-} from '@mui/material';
+import { alpha, Box, IconButton, Typography, useTheme } from '@mui/material';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
+import { useTranslation } from 'react-i18next';
 
 export type MemberCategoryType =
   | 'admins'
@@ -141,6 +136,7 @@ export const MemberCategoryHeader = ({
   type,
 }: Props) => {
   const theme = useTheme();
+  const { t } = useTranslation(['group']);
   const accentByType: Record<MemberCategoryType, string> = {
     admins: theme.palette.mode === 'dark' ? '#67c7dc' : '#16718d',
     lounge: theme.palette.mode === 'dark' ? '#a68bd7' : '#7152a1',
@@ -177,8 +173,7 @@ export const MemberCategoryHeader = ({
         overflow: 'hidden',
         px: 0.75,
         position: 'relative',
-        transition:
-          'background-color 160ms ease, border-color 160ms ease',
+        transition: 'background-color 160ms ease, border-color 160ms ease',
         '&:hover': {
           backgroundColor: alpha(
             accentByType[type],
@@ -270,7 +265,12 @@ export const MemberCategoryHeader = ({
         {totalCount == null ? count : `${count}/${totalCount}`}
       </Typography>
       <IconButton
-        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
+        aria-label={t(
+          expanded
+            ? 'group:member_category.collapse'
+            : 'group:member_category.expand',
+          { category: label, postProcess: 'capitalizeFirstChar' }
+        )}
         size="small"
         sx={{
           color: 'text.secondary',

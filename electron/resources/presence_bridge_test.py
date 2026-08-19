@@ -38,6 +38,100 @@ def load_bridge():
     return module
 
 
+class PresenceBridgeDeveloperLogFilterTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+
+    def tearDown(self):
+        self.bridge._shutdown.clear()
+
+    def test_fast_resource_trace_respects_developer_log_filter(self):
+        with mock.patch.object(self.bridge, "log") as log:
+            self.bridge._developer_logs_filtered = True
+            self.bridge._resource_session_trace_log("hidden")
+            log.assert_not_called()
+
+            self.bridge._developer_logs_filtered = False
+            self.bridge._resource_session_trace_log("visible")
+            log.assert_called_once_with("visible")
+
+    def test_developer_log_filter_can_be_updated_at_runtime(self):
+        with mock.patch.object(self.bridge, "emit_resp") as emit_resp:
+            self.bridge.handle_configure_developer_log_filter(
+                "request-1",
+                {"filtered": False},
+            )
+
+        self.assertFalse(self.bridge._developer_logs_filtered)
+        emit_resp.assert_called_once_with(
+            "request-1",
+            True,
+            payload={"filtered": False},
+        )
+
+
+class PresenceBridgeOverlayPeerBlockTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.peer_hash = "32" * 16
+
+    def tearDown(self):
+        self.bridge._shutdown.clear()
+
+    def test_test_overlay_peer_block_parser_accepts_only_destination_hashes(self):
+        self.assertEqual(
+            self.bridge._parse_test_blocked_overlay_peers(
+                f" {self.peer_hash.upper()},invalid;{'ab' * 16} "
+            ),
+            {self.peer_hash, "ab" * 16},
+        )
+
+    def test_test_block_prevents_overlay_admission_and_outbound_open(self):
+        with mock.patch.object(
+            self.bridge,
+            "_TEST_BLOCKED_OVERLAY_PEERS",
+            {self.peer_hash},
+        ), mock.patch.object(self.bridge, "log"):
+            self.assertFalse(
+                self.bridge._overlay_peer_available_for_new_outbound(self.peer_hash)
+            )
+            self.assertFalse(
+                self.bridge._admit_overlay_peer_if_allowed(
+                    self.peer_hash,
+                    "test",
+                    incoming=True,
+                )
+            )
+            self.assertIsNone(
+                self.bridge._ensure_overlay_link(
+                    self.peer_hash,
+                    await_path=False,
+                    open_reason="test",
+                )
+            )
+
+    def test_test_block_closes_an_overlay_link_once_peer_is_known(self):
+        state = {"peerPresenceHash": "", "incoming": True}
+        with mock.patch.object(
+            self.bridge,
+            "_TEST_BLOCKED_OVERLAY_PEERS",
+            {self.peer_hash},
+        ), mock.patch.object(self.bridge, "log"), mock.patch.object(
+            self.bridge,
+            "_overlay_enqueue_close",
+        ) as close:
+            self.assertFalse(
+                self.bridge._admit_overlay_peer_from_transport(
+                    self.peer_hash,
+                    "blocked-link",
+                    state,
+                    "overlay_hello",
+                )
+            )
+
+        close.assert_called_once_with("blocked-link", "test_peer_blocked")
+
+
 class PresenceBridgeOwnerLifecycleTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()
@@ -242,6 +336,81 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
 
         daemon.get_path_snapshot.assert_called_once_with(self.destination_hash)
 
+    def test_daemon_path_is_not_treated_as_locally_link_ready(self):
+        daemon = mock.Mock()
+        daemon.is_connected_to_shared_instance = True
+        daemon.get_path_snapshot.return_value = {
+            "hops": 2,
+            "timestamp": time.time(),
+        }
+        self.bridge._reticulum = daemon
+
+        with mock.patch.object(RNS.Transport, "has_path", return_value=False):
+            self.assertTrue(self.bridge._reticulum_has_path(self.destination_hash))
+            self.assertFalse(
+                self.bridge._reticulum_local_has_path(self.destination_hash)
+            )
+
+    def test_resource_link_waits_for_local_path_when_daemon_has_route(self):
+        peer_hash = self.destination_hash.hex()
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_local_has_path",
+            return_value=False,
+        ), mock.patch.object(
+            self.bridge,
+            "_reticulum_has_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_nudge_cached_reticulum_path",
+            return_value=True,
+        ) as nudge:
+            self.assertFalse(
+                self.bridge._request_qchat_file_path(
+                    self.destination_hash,
+                    peer_hash,
+                )
+            )
+
+        nudge.assert_called_once_with(
+            self.destination_hash,
+            peer_hash,
+            target="qchat-file-reticulum",
+            reason="qchat_file_link_install_local_path",
+            cooldown_seconds=self.bridge._LOCAL_PATH_INSTALL_REQUEST_COOLDOWN_SECONDS,
+        )
+
+    def test_path_await_requires_local_path_after_daemon_route(self):
+        peer_hash = self.destination_hash.hex()
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_local_has_path",
+            side_effect=[False, False, True],
+        ), mock.patch.object(
+            self.bridge,
+            "_reticulum_has_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_nudge_cached_reticulum_path",
+            return_value=True,
+        ) as nudge, mock.patch.object(
+            self.bridge.time,
+            "sleep",
+        ):
+            resolved, requested = self.bridge._request_and_await_destination_path(
+                self.destination_hash,
+                1.0,
+                log_context="test_local_path_install",
+                peer_key=peer_hash,
+                target="test",
+            )
+
+        self.assertTrue(resolved)
+        self.assertTrue(requested)
+        nudge.assert_called_once()
+
     def test_embedded_instance_uses_local_path_without_rpc(self):
         reticulum = mock.Mock()
         reticulum.is_connected_to_shared_instance = False
@@ -316,6 +485,217 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
         )
         nudge.assert_not_called()
 
+    def test_relayed_liveness_does_not_prove_a_direct_path(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_seen_inbound": now,
+            "last_send_ok": now,
+            "last_request_path_at": None,
+            "ts_seed_until": None,
+        }
+
+        self.assertFalse(
+            self.bridge._peer_has_recent_direct_activity(peer_hash, now=now)
+        )
+
+    def test_authenticated_link_activity_proves_a_direct_path(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._note_peer_direct_activity(
+            peer_hash,
+            "rx",
+            "test_authenticated_link",
+            now=now,
+        )
+
+        self.assertTrue(
+            self.bridge._peer_has_recent_direct_activity(peer_hash, now=now)
+        )
+        self.assertEqual(
+            self.bridge._peer_lifecycle[peer_hash]["last_direct_rx_at"],
+            now,
+        )
+
+    def test_future_direct_activity_does_not_prove_a_path_after_clock_rollback(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_direct_rx_at": now + 3600,
+            "last_direct_link_send_at": now + 3600,
+        }
+
+        self.assertFalse(
+            self.bridge._peer_has_recent_direct_activity(peer_hash, now=now)
+        )
+        self.assertFalse(
+            self.bridge._overlay_peer_recently_rx_active(peer_hash, now=now)
+        )
+
+    def test_direct_activity_replaces_future_timestamp_after_clock_rollback(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_direct_rx_at": now + 3600,
+        }
+
+        self.bridge._note_peer_direct_activity(
+            peer_hash,
+            "rx",
+            "post_clock_rollback_packet",
+            now=now,
+        )
+
+        self.assertEqual(
+            self.bridge._peer_lifecycle[peer_hash]["last_direct_rx_at"],
+            now,
+        )
+        self.assertTrue(
+            self.bridge._peer_has_recent_direct_activity(peer_hash, now=now)
+        )
+
+    def test_future_cached_path_nudge_does_not_block_route_recovery(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_cached_path_nudge_at": now + 3600,
+        }
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path:
+            self.assertTrue(
+                self.bridge._nudge_cached_reticulum_path(
+                    self.destination_hash,
+                    peer_hash,
+                    target="presence-reticulum",
+                    reason="post_clock_rollback",
+                    cooldown_seconds=30.0,
+                )
+            )
+
+        request_path.assert_called_once_with(self.destination_hash)
+        self.assertEqual(
+            self.bridge._peer_lifecycle[peer_hash]["last_cached_path_nudge_at"],
+            mock.ANY,
+        )
+        self.assertLessEqual(
+            self.bridge._peer_lifecycle[peer_hash]["last_cached_path_nudge_at"],
+            time.time(),
+        )
+
+    def test_recent_direct_activity_still_clears_a_new_failure(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._note_peer_direct_activity(
+            peer_hash,
+            "rx",
+            "first_packet",
+            now=now,
+        )
+        self.bridge._overlay_peer_failures[peer_hash] = {
+            "count": 1,
+            "last_reason": "stale_path",
+        }
+
+        self.bridge._note_peer_direct_activity(
+            peer_hash,
+            "rx",
+            "second_packet",
+            now=now + 0.1,
+        )
+
+        self.assertNotIn(peer_hash, self.bridge._overlay_peer_failures)
+        self.assertEqual(
+            self.bridge._peer_lifecycle[peer_hash]["last_direct_rx_at"],
+            now + 0.1,
+        )
+
+    def test_unproven_cached_overlay_path_is_nudged_once(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_seen_inbound": now,
+            "last_send_ok": now,
+            "last_request_path_at": None,
+            "ts_seed_until": None,
+        }
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_local_has_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_nudge_cached_reticulum_path",
+            return_value=True,
+        ) as nudge:
+            self.assertTrue(
+                self.bridge._nudge_overlay_link_path(
+                    peer_hash,
+                    self.destination_hash,
+                )
+            )
+
+        nudge.assert_called_once_with(
+            self.destination_hash,
+            peer_hash,
+            target="presence-reticulum",
+            reason="overlay_link_cached_path_unproven",
+            cooldown_seconds=self.bridge._UNPROVEN_CACHED_PATH_NUDGE_COOLDOWN_SECONDS,
+        )
+
+    def test_proven_cached_overlay_path_avoids_redundant_nudge(self):
+        peer_hash = self.destination_hash.hex()
+        self.bridge._note_peer_direct_activity(
+            peer_hash,
+            "tx",
+            "test_authenticated_link",
+        )
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_local_has_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_nudge_cached_reticulum_path",
+        ) as nudge:
+            self.assertTrue(
+                self.bridge._nudge_overlay_link_path(
+                    peer_hash,
+                    self.destination_hash,
+                )
+            )
+
+        nudge.assert_not_called()
+
+    def test_unproven_cached_path_requests_are_cooled_down(self):
+        peer_hash = self.destination_hash.hex()
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "last_seen_inbound": time.time(),
+            "last_request_path_at": None,
+            "ts_seed_until": None,
+        }
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_local_has_path",
+            return_value=True,
+        ), mock.patch.object(RNS.Transport, "request_path") as request_path:
+            self.assertTrue(
+                self.bridge._nudge_overlay_link_path(
+                    peer_hash,
+                    self.destination_hash,
+                )
+            )
+            self.assertTrue(
+                self.bridge._nudge_overlay_link_path(
+                    peer_hash,
+                    self.destination_hash,
+                )
+            )
+
+        request_path.assert_called_once_with(self.destination_hash)
+
     def test_recent_media_success_avoids_route_rpc(self):
         peer_hash = self.destination_hash.hex()
         state = self.bridge._get_call_media_state(peer_hash)
@@ -381,6 +761,40 @@ class FakeLink:
 
     def teardown(self):
         self.teardown_called = True
+
+
+class FakeChannel:
+    def __init__(self):
+        self.mdu = 4096
+        self.message_types = []
+        self.handlers = []
+        self.sent = []
+
+    def register_message_type(self, message_type):
+        self.message_types.append(message_type)
+
+    def add_message_handler(self, handler):
+        self.handlers.append(handler)
+
+    def remove_message_handler(self, handler):
+        if handler in self.handlers:
+            self.handlers.remove(handler)
+
+    def is_ready_to_send(self):
+        return True
+
+    def send(self, message):
+        self.sent.append(message)
+        return object()
+
+
+class FakeChannelLink(FakeLink):
+    def __init__(self):
+        super().__init__()
+        self.channel = FakeChannel()
+
+    def get_channel(self):
+        return self.channel
 
 
 class FakeSessionReceipt:
@@ -586,6 +1000,11 @@ class PresenceBridgeWireEncodingTest(unittest.TestCase):
 
     def test_route_bound_presence_recovers_signed_origin_from_relay(self):
         origin_raw = bytes.fromhex("55" * 16)
+        self.bridge._known_peers[origin_raw.hex()] = object()
+        self.bridge._overlay_peer_failures[origin_raw.hex()] = {
+            "count": 2,
+            "last_reason": "test",
+        }
         route = base64.urlsafe_b64encode(origin_raw).decode("ascii").rstrip("=")
         emitted = []
         message = {
@@ -620,6 +1039,35 @@ class PresenceBridgeWireEncodingTest(unittest.TestCase):
                 "linkId": "relay-link",
             },
         )
+        origin = "55" * 16
+        relay = "44" * 16
+        self.assertIn(origin, self.bridge._peer_lifecycle)
+        self.assertNotIn(
+            "last_direct_rx_at",
+            self.bridge._peer_lifecycle[origin],
+        )
+        self.assertFalse(self.bridge._peer_has_recent_direct_activity(origin))
+        self.assertIn(origin, self.bridge._overlay_peer_failures)
+        self.assertNotEqual(origin, relay)
+
+    def test_relayed_call_sender_is_recalled_without_direct_route_claim(self):
+        origin = "55" * 16
+        relay = "44" * 16
+        with mock.patch.object(
+            self.bridge,
+            "ensure_known_peer_from_recall",
+            return_value=True,
+        ) as recall, mock.patch.object(self.bridge, "emit_event"):
+            self.assertTrue(
+                self.bridge._emit_call_bridge_message(
+                    {"t": "CR", "r": origin},
+                    relay,
+                    "relay-link",
+                )
+            )
+
+        recall.assert_called_once_with(origin, "recall")
+        self.assertFalse(self.bridge._peer_has_recent_direct_activity(origin))
 
 
 class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
@@ -643,6 +1091,120 @@ class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
         self.assertTrue(
             self.bridge._should_drop_duplicate_reticulum_chat_inbound(
                 {**request, "h": 3, "r": "aa" * 16}
+            )
+        )
+
+    def test_dm_discovery_dedup_uses_stable_request_id(self):
+        notify = {
+            "t": "RCHAT",
+            "k": "dm_notify",
+            "d": {
+                "q": "11" * 4,
+                "p": "author-public-key",
+                "h": 0,
+                "b": "Qrecipient",
+            },
+            "r": "aa" * 16,
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(notify)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {
+                    **notify,
+                    "r": "bb" * 16,
+                    "d": {**notify["d"], "h": 4},
+                }
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**notify, "d": {**notify["d"], "q": "22" * 4}}
+            )
+        )
+
+    def test_event_resource_offer_dedup_keeps_distinct_transfers(self):
+        offer = {
+            "t": "RCHAT",
+            "k": "event_offer",
+            "g": 73,
+            "o": {
+                "x": "transfer-one",
+                "id": "event-one",
+                "rr": "request-one",
+                "sp": "aa" * 16,
+            },
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(offer)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**offer, "r": "bb" * 16}
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {
+                    **offer,
+                    "o": {**offer["o"], "x": "transfer-two"},
+                }
+            )
+        )
+
+    def test_event_page_offer_dedup_keeps_distinct_requests(self):
+        offer = {
+            "t": "RCHAT",
+            "k": "event_page_offer",
+            "g": 73,
+            "p": {
+                "x": "page-transfer",
+                "ph": "ab" * 32,
+                "rr": "request-one",
+                "sp": "aa" * 16,
+            },
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(offer)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(offer)
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {
+                    **offer,
+                    "p": {**offer["p"], "rr": "request-two"},
+                }
+            )
+        )
+
+    def test_group_subscription_dedup_preserves_a_better_hop_count(self):
+        subscription = {
+            "t": "RCHAT",
+            "k": "group_sub",
+            "groups": [73, 74],
+            "mode": "summary",
+            "q": "11" * 8,
+            "o": "aa" * 16,
+            "h": 3,
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(subscription)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**subscription, "r": "bb" * 16}
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**subscription, "h": 1, "r": "cc" * 16}
             )
         )
 
@@ -672,6 +1234,79 @@ class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
             self.bridge._should_drop_duplicate_reticulum_chat_inbound(
                 {**typing, "ts": 123_457}
             )
+        )
+
+    def test_qortalland_control_dedup_ignores_mesh_route_fields(self):
+        self.bridge._reticulum_chat_inbound_dedup["identity-sentinel"] = (
+            time.monotonic() + 60.0
+        )
+        control = {
+            "t": "RCHAT",
+            "k": "lc",
+            "g": 73,
+            "y": "g",
+            "c": "game-match-id",
+            "a": "QplayerOne",
+            "b": "QplayerTwo",
+            "u": "park",
+            "s": 123_456,
+            "o": "aa" * 16,
+            "h": 0,
+            "r": "bb" * 16,
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(control)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**control, "o": "cc" * 16, "h": 5, "r": "dd" * 16}
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**control, "s": 123_457}
+            )
+        )
+        self.assertEqual(
+            list(self.bridge._reticulum_chat_inbound_dedup),
+            ["identity-sentinel"],
+        )
+        self.assertEqual(
+            len(self.bridge._reticulum_chat_routed_control_dedup),
+            2,
+        )
+
+    def test_qortalland_control_dedup_pressure_is_bounded_and_isolated(self):
+        self.bridge._RETICULUM_CHAT_ROUTED_CONTROL_DEDUP_MAX = 3
+        self.bridge._reticulum_chat_inbound_dedup["identity-sentinel"] = (
+            time.monotonic() + 60.0
+        )
+        base = {
+            "t": "RCHAT",
+            "k": "lc",
+            "g": 73,
+            "y": "g",
+            "c": "game-match-id",
+            "a": "QplayerOne",
+            "b": "QplayerTwo",
+            "s": 123_456,
+        }
+
+        for offset in range(4):
+            self.assertFalse(
+                self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                    {**base, "s": base["s"] + offset}
+                )
+            )
+
+        self.assertEqual(
+            len(self.bridge._reticulum_chat_routed_control_dedup),
+            3,
+        )
+        self.assertEqual(
+            list(self.bridge._reticulum_chat_inbound_dedup),
+            ["identity-sentinel"],
         )
 
 
@@ -1401,6 +2036,360 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
             "current-audio-link",
         )
 
+    def test_reliable_control_requires_peer_channel_handshake(self):
+        self.install_audio_state("current-audio-link", link=FakeChannelLink())
+
+        self.bridge.handle_send_group_audio_link_control(
+            "req-control",
+            {
+                "linkId": "current-audio-link",
+                "roomId": "gcall-qortal-1",
+                "payload": base64.b64encode(b"control").decode("ascii"),
+                "signalType": "offer",
+                "callSessionId": "call-session-1",
+                "signalId": "signal-1",
+            },
+        )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertFalse(responses[0].get("ok"))
+        self.assertEqual(
+            responses[0].get("payload", {}).get("code"),
+            "control_channel_not_ready",
+        )
+
+    def test_control_capability_enables_channel_and_queues_ack(self):
+        link = self.install_audio_state("current-audio-link")
+        capability = json.dumps(
+            {
+                "t": self.bridge._GROUP_AUDIO_CONTROL_CAPABILITY_WIRE_TYPE,
+                "c": self.bridge._GROUP_AUDIO_CONTROL_CAPABILITY_HELLO,
+                "r": self.sender_peer_hash,
+            }
+        ).encode("utf-8")
+        queued = []
+
+        def capture(lane, task_name, callback, *args, **kwargs):
+            queued.append((lane, task_name, callback, args, kwargs))
+            return True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", side_effect=capture
+        ):
+            self.bridge.on_audio_link_packet(capability, FakePacket(link))
+
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.assertTrue(state.get("control_channel_supported"))
+        self.assertEqual(len(queued), 1)
+        self.assertIs(queued[0][2], self.bridge._send_group_audio_control_capability)
+        self.assertEqual(
+            queued[0][3][1],
+            self.bridge._GROUP_AUDIO_CONTROL_CAPABILITY_ACK,
+        )
+
+    def test_reliable_control_uses_dedicated_scheduler_after_handshake(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+        queued = []
+
+        def capture(lane, task_name, callback, *args, **kwargs):
+            queued.append((lane, task_name, callback, args, kwargs))
+            return True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", side_effect=capture
+        ):
+            self.bridge.handle_send_group_audio_link_control(
+                "req-control",
+                {
+                    "linkId": "current-audio-link",
+                    "roomId": "gcall-qortal-1",
+                    "payload": base64.b64encode(b"control").decode("ascii"),
+                    "signalType": "offer",
+                    "callSessionId": "call-session-1",
+                    "signalId": "signal-1",
+                },
+            )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertTrue(responses[0].get("ok"))
+        self.assertEqual(len(queued), 1)
+        self.assertTrue(queued[0][0].startswith("gcall-control-"))
+        self.assertIs(
+            queued[0][2], self.bridge._send_group_audio_control_bundle_task
+        )
+        self.assertEqual(queued[0][3][2], b"control")
+        self.assertEqual(queued[0][3][3:], ("offer", "signal-1", ""))
+
+    def test_reliable_control_accepts_dm_call_terminal_control(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ) as enqueue:
+            self.bridge.handle_send_group_audio_link_control(
+                "req-call-control",
+                {
+                    "linkId": "current-audio-link",
+                    "roomId": "dmv:room-1",
+                    "payload": base64.b64encode(b"hangup").decode("ascii"),
+                    "signalType": "call-control",
+                    "callSessionId": "call-session-1",
+                    "signalId": "control-1",
+                },
+            )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertTrue(responses[0].get("ok"))
+        self.assertEqual(enqueue.call_count, 1)
+        self.assertEqual(
+            enqueue.call_args.args[6:8],
+            ("call-control", "control-1"),
+        )
+
+    def test_reliable_control_accepts_dm_webrtc_capability_ack(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ) as enqueue:
+            self.bridge.handle_send_group_audio_link_control(
+                "req-capability-ack",
+                {
+                    "linkId": "current-audio-link",
+                    "roomId": "dmv:room-1",
+                    "payload": base64.b64encode(b"capability-ack").decode("ascii"),
+                    "signalType": "ack",
+                    "callSessionId": "call-session-1",
+                    "signalId": "capability-ack-1",
+                },
+            )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertTrue(responses[0].get("ok"))
+        self.assertEqual(enqueue.call_count, 1)
+        self.assertEqual(
+            enqueue.call_args.args[6:8],
+            ("ack", "capability-ack-1"),
+        )
+
+    def test_reliable_control_coalesces_pending_capability(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ) as enqueue:
+            for signal_id in ("signal-1", "signal-2"):
+                self.bridge.handle_send_group_audio_link_control(
+                    signal_id,
+                    {
+                        "linkId": "current-audio-link",
+                        "roomId": "gcall-qortal-1",
+                        "payload": base64.b64encode(b"capability").decode("ascii"),
+                        "signalType": "capability",
+                        "callSessionId": "call-session-1",
+                        "signalId": signal_id,
+                    },
+                )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 2)
+        self.assertTrue(all(response.get("ok") for response in responses))
+        self.assertIsNone(responses[0].get("payload", {}).get("coalesced"))
+        self.assertTrue(responses[1].get("payload", {}).get("coalesced"))
+        self.assertEqual(enqueue.call_count, 1)
+
+    def test_reliable_control_accepts_full_payload_budget(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+        raw_payload = b"x" * self.bridge._GROUP_AUDIO_CONTROL_CHANNEL_MAX_BYTES
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ):
+            self.bridge.handle_send_group_audio_link_control(
+                "req-control",
+                {
+                    "linkId": "current-audio-link",
+                    "roomId": "gcall-qortal-1",
+                    "payload": base64.b64encode(raw_payload).decode("ascii"),
+                    "signalType": "answer",
+                    "callSessionId": "call-session-1",
+                    "signalId": "signal-max",
+                },
+            )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertTrue(responses[0].get("ok"))
+        self.assertEqual(
+            responses[0].get("payload", {}).get("payloadBytes"),
+            len(raw_payload),
+        )
+
+    def test_reliable_control_queue_full_returns_structured_failure(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=False
+        ):
+            self.bridge.handle_send_group_audio_link_control(
+                "req-control",
+                {
+                    "linkId": "current-audio-link",
+                    "roomId": "gcall-qortal-1",
+                    "payload": base64.b64encode(b"control").decode("ascii"),
+                    "signalType": "offer",
+                    "callSessionId": "call-session-1",
+                    "signalId": "signal-1",
+                },
+            )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertFalse(responses[0].get("ok"))
+        self.assertEqual(
+            responses[0].get("payload", {}).get("code"),
+            "scheduler_queue_full",
+        )
+
+    def test_reliable_control_replaces_stale_link_for_same_peer(self):
+        self.install_audio_state("stale-audio-link", established=False)
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+
+        with mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ) as enqueue:
+            self.bridge.handle_send_group_audio_link_control(
+                "req-control",
+                {
+                    "linkId": "stale-audio-link",
+                    "peerPresenceHash": self.sender_peer_hash,
+                    "roomId": "gcall-qortal-1",
+                    "payload": base64.b64encode(b"control").decode("ascii"),
+                    "signalType": "offer",
+                    "callSessionId": "call-session-1",
+                    "signalId": "signal-1",
+                },
+            )
+
+        responses = self.drain_json_responses()
+        self.assertEqual(len(responses), 1)
+        self.assertTrue(responses[0].get("ok"))
+        self.assertEqual(
+            responses[0].get("payload", {}).get("linkId"),
+            "current-audio-link",
+        )
+        self.assertEqual(enqueue.call_args.args[3], "current-audio-link")
+
+    def test_reliable_control_fragments_against_live_channel_mdu(self):
+        self.bridge._destination = FakeDestination()
+        link = FakeChannelLink()
+        link.channel.mdu = 441
+        self.install_audio_state("current-audio-link", link=link)
+        state = self.bridge.get_audio_link_state("current-audio-link")
+        self.bridge._ensure_audio_link_lifecycle_fields(state)
+        state["control_channel"] = link.channel
+        state["control_channel_configured"] = True
+        state["control_channel_supported"] = True
+        raw_payload = bytes(range(256)) * 4
+
+        self.bridge._send_group_audio_control_bundle(
+            "current-audio-link",
+            "gcall-qortal-1",
+            raw_payload,
+            "answer",
+            "signal-compact",
+        )
+
+        self.assertGreater(len(link.channel.sent), 1)
+        self.assertLessEqual(len(link.channel.sent), 7)
+        frames = []
+        for message in link.channel.sent:
+            self.assertLessEqual(len(message.pack()), link.channel.mdu)
+            decoded = self.bridge._decode_group_audio_wire(message.data)
+            self.assertIsNotNone(decoded)
+            frame_payload = decoded[2]
+            self.assertTrue(frame_payload.startswith(self.bridge._GC_LINK_CONTROL_MAGIC))
+            frames.append(
+                json.loads(
+                    frame_payload[len(self.bridge._GC_LINK_CONTROL_MAGIC) :].decode(
+                        "utf-8"
+                    )
+                )
+            )
+        start = frames[0]
+        self.assertEqual(start.get("t"), "GO0")
+        parts = sorted(
+            (frame for frame in frames[1:] if frame.get("t") == "GO1"),
+            key=lambda frame: frame["x"],
+        )
+        encoded = "".join(frame["p"] for frame in parts)
+        padding = "=" * ((4 - len(encoded) % 4) % 4)
+        self.assertEqual(base64.urlsafe_b64decode(encoded + padding), raw_payload)
+
+    def test_reliable_channel_data_reuses_authenticated_audio_receive_path(self):
+        link = FakeChannelLink()
+        self.install_audio_state("current-audio-link", link=link)
+        message = self.bridge.GroupAudioControlChannelMessage(
+            self.bridge._GROUP_AUDIO_CONTROL_CHANNEL_DATA,
+            b"reliable-wire",
+        )
+
+        with mock.patch.object(self.bridge, "_handle_audio_link_packet") as receive:
+            handled = self.bridge._handle_group_audio_control_channel_message(
+                link, message
+            )
+
+        self.assertTrue(handled)
+        receive.assert_called_once()
+        self.assertEqual(receive.call_args.args[0], b"reliable-wire")
+        self.assertIs(receive.call_args.args[1].link, link)
+
     def test_audio_rtt_probe_uses_established_audio_link(self):
         self.install_fake_rns_packet()
         current_link = self.install_audio_state("current-audio-link")
@@ -1729,6 +2718,222 @@ class PresenceBridgeOverlayAudioPromotionTest(unittest.TestCase):
         self.assertFalse(link.teardown_called)
 
 
+class PresenceBridgeInboundOverlayAdmissionTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.bridge._destination = FakeDestination()
+        self.peer_hash = "ab" * 16
+
+    def hello_wire(self):
+        return json.dumps(
+            {
+                "t": self.bridge._OVERLAY_HELLO_WIRE_TYPE,
+                "r": self.peer_hash,
+                "v": self.bridge.PRESENCE_VERSION,
+                "c": [],
+            }
+        ).encode("utf-8")
+
+    def test_incoming_overlay_hello_waits_for_matching_remote_identity(self):
+        link = FakeLink()
+        packet = FakePacket(link)
+        self.bridge._pending_inbound_classify_link_ids.add(id(link))
+
+        with mock.patch.object(
+            self.bridge,
+            "_send_overlay_transport_control",
+            return_value=True,
+        ) as send_control:
+            self.bridge._handle_inbound_link_first_packet(self.hello_wire(), packet)
+
+            link_id = self.bridge.get_overlay_link_id(link)
+            state = self.bridge.get_overlay_link_state(link_id)
+            self.assertIsNotNone(state)
+            self.assertFalse(state.get("overlay_transport_admitted") is True)
+            self.assertTrue(state.get("overlay_quarantined"))
+            self.assertEqual(state.get("pending_overlay_peer_hash"), self.peer_hash)
+            self.assertIsInstance(state.get("pending_overlay_hello"), dict)
+            self.assertNotIn(self.peer_hash, self.bridge._inbound_overlay_neighbors)
+            self.assertNotIn(
+                self.peer_hash,
+                self.bridge._active_overlay_link_id_by_peer_hash,
+            )
+            send_control.assert_not_called()
+
+            identity = object()
+            link.remote_identity = identity
+            with mock.patch.object(
+                self.bridge,
+                "derive_presence_destination_hash_for_identity",
+                return_value=self.peer_hash,
+            ), mock.patch.object(
+                self.bridge,
+                "find_peer_hash_for_identity",
+                return_value=self.peer_hash,
+            ):
+                self.bridge.on_overlay_link_remote_identified(link, identity)
+
+        self.assertTrue(state.get("overlay_transport_admitted"))
+        self.assertTrue(state.get("overlay_identity_verified"))
+        self.assertFalse(state.get("overlay_quarantined"))
+        self.assertNotIn("pending_overlay_hello", state)
+        self.assertEqual(
+            self.bridge._active_overlay_link_id_by_peer_hash.get(self.peer_hash),
+            link_id,
+        )
+        self.assertIn(self.peer_hash, self.bridge._inbound_overlay_neighbors)
+        send_control.assert_called_once()
+
+    def test_remote_identity_before_hello_admits_without_a_callback_race(self):
+        link = FakeLink()
+        identity = object()
+        link.remote_identity = identity
+        packet = FakePacket(link)
+        self.bridge._incoming_unified_peer_hash_by_object[id(link)] = self.peer_hash
+        self.bridge._pending_inbound_classify_link_ids.add(id(link))
+
+        with mock.patch.object(
+            self.bridge,
+            "derive_presence_destination_hash_for_identity",
+            return_value=self.peer_hash,
+        ), mock.patch.object(
+            self.bridge,
+            "_send_overlay_transport_control",
+            return_value=True,
+        ):
+            self.bridge._handle_inbound_link_first_packet(self.hello_wire(), packet)
+
+        state = self.bridge.get_overlay_link_state(
+            self.bridge.get_overlay_link_id(link)
+        )
+        self.assertIsNotNone(state)
+        self.assertTrue(state.get("overlay_transport_admitted"))
+        self.assertTrue(state.get("overlay_identity_verified"))
+
+    def test_mismatched_overlay_identity_never_enters_neighbor_sets(self):
+        link = FakeLink()
+        link.remote_identity = object()
+        packet = FakePacket(link)
+        self.bridge._pending_inbound_classify_link_ids.add(id(link))
+
+        with mock.patch.object(
+            self.bridge,
+            "derive_presence_destination_hash_for_identity",
+            return_value="cd" * 16,
+        ), mock.patch.object(
+            self.bridge,
+            "_overlay_enqueue_close",
+            return_value=True,
+        ) as close:
+            self.bridge._handle_inbound_link_first_packet(self.hello_wire(), packet)
+
+        state = self.bridge.get_overlay_link_state(
+            self.bridge.get_overlay_link_id(link)
+        )
+        self.assertIsNotNone(state)
+        self.assertFalse(state.get("overlay_transport_admitted") is True)
+        self.assertNotIn(self.peer_hash, self.bridge._inbound_overlay_neighbors)
+        self.assertNotIn(
+            self.peer_hash,
+            self.bridge._active_overlay_link_id_by_peer_hash,
+        )
+        close.assert_called_once_with(
+            mock.ANY,
+            "overlay_transport_identity_mismatch",
+        )
+
+    def test_capacity_race_keeps_rejected_incoming_link_quarantined(self):
+        link = FakeLink()
+        link.remote_identity = object()
+        packet = FakePacket(link)
+        self.bridge._pending_inbound_classify_link_ids.add(id(link))
+
+        with mock.patch.object(
+            self.bridge,
+            "derive_presence_destination_hash_for_identity",
+            return_value=self.peer_hash,
+        ), mock.patch.object(
+            self.bridge,
+            "_register_active_overlay_for_peer",
+            return_value=None,
+        ):
+            self.bridge._handle_inbound_link_first_packet(self.hello_wire(), packet)
+
+        state = self.bridge.get_overlay_link_state(
+            self.bridge.get_overlay_link_id(link)
+        )
+        self.assertIsNotNone(state)
+        self.assertFalse(state.get("overlay_transport_admitted") is True)
+        self.assertTrue(state.get("overlay_quarantined"))
+
+    def test_quarantined_link_cannot_deliver_overlay_payloads(self):
+        link = FakeLink()
+        link_id = self.bridge._register_incoming_overlay_link(
+            link,
+            reason="classify_timeout",
+        )
+        packet = FakePacket(link)
+        wire = json.dumps(
+            {"t": self.bridge._RETICULUM_CHAT_WIRE_TYPE, "k": "dm_notify"}
+        ).encode("utf-8")
+
+        with mock.patch.object(
+            self.bridge,
+            "_emit_call_bridge_message",
+        ) as emit:
+            self.bridge.on_overlay_link_packet(wire, packet)
+
+        state = self.bridge.get_overlay_link_state(link_id)
+        self.assertTrue(state.get("overlay_quarantined"))
+        self.assertFalse(self.bridge._overlay_link_is_fanout_usable(state))
+        emit.assert_not_called()
+
+    def test_classifier_capacity_rejects_without_allocating_state_or_timer(self):
+        self.bridge._pending_inbound_classify_link_ids.update(
+            range(self.bridge._INBOUND_LINK_CLASSIFY_MAX_PENDING)
+        )
+        link = FakeLink()
+
+        self.bridge.on_incoming_unified_link_established(link)
+
+        self.assertTrue(link.teardown_called)
+        self.assertNotIn(id(link), self.bridge._pending_inbound_classify_link_ids)
+        self.assertNotIn(id(link), self.bridge._inbound_classify_timers)
+        self.assertIsNone(self.bridge.get_overlay_link_id(link))
+        self.assertIsNone(self.bridge.get_audio_link_id(link))
+        self.assertIsNone(self.bridge.get_qchat_file_link_id(link))
+
+    def test_classifier_timer_is_not_installed_after_classification_wins(self):
+        link = FakeLink()
+
+        with mock.patch.object(self.bridge.threading, "Timer") as timer:
+            self.bridge._schedule_inbound_classify_fallback(link)
+
+        timer.assert_not_called()
+        self.assertNotIn(id(link), self.bridge._inbound_classify_timers)
+
+    def test_audio_capability_first_packet_bypasses_overlay_quarantine(self):
+        link = FakeLink()
+        packet = FakePacket(link)
+        self.bridge._pending_inbound_classify_link_ids.add(id(link))
+        wire = json.dumps(
+            {
+                "t": self.bridge._GROUP_AUDIO_CONTROL_CAPABILITY_WIRE_TYPE,
+                "c": self.bridge._GROUP_AUDIO_CONTROL_CAPABILITY_HELLO,
+            }
+        ).encode("utf-8")
+
+        with mock.patch.object(
+            self.bridge,
+            "on_audio_link_packet",
+        ) as audio_packet:
+            self.bridge._handle_inbound_link_first_packet(wire, packet)
+
+        self.assertIsNotNone(self.bridge.get_audio_link_id(link))
+        self.assertIsNone(self.bridge.get_overlay_link_id(link))
+        audio_packet.assert_called_once_with(wire, packet)
+
+
 class PresenceBridgeOverlayRouteMigrationTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()
@@ -1755,6 +2960,58 @@ class PresenceBridgeOverlayRouteMigrationTest(unittest.TestCase):
         self.bridge._overlay_links_by_id[self.active_link_id] = self.active_state
         self.bridge._overlay_link_ids_by_object[id(self.active_link)] = self.active_link_id
         self.bridge._active_overlay_link_id_by_peer_hash[self.peer_hash] = self.active_link_id
+
+    def test_periodic_overlay_ping_uses_fifteen_second_cadence(self):
+        self.active_state["last_ping_sent_at"] = 100.0
+
+        with mock.patch.object(
+            self.bridge.time,
+            "time",
+            return_value=114.999,
+        ), mock.patch.object(
+            self.bridge,
+            "_send_overlay_rtt_probe",
+            return_value={},
+        ) as probe:
+            self.assertEqual(
+                self.bridge._ping_established_overlay_links("periodic"),
+                0,
+            )
+        probe.assert_not_called()
+
+        with mock.patch.object(
+            self.bridge.time,
+            "time",
+            return_value=115.0,
+        ), mock.patch.object(
+            self.bridge,
+            "_send_overlay_rtt_probe",
+            return_value={},
+        ) as probe:
+            self.assertEqual(
+                self.bridge._ping_established_overlay_links("periodic"),
+                1,
+            )
+        probe.assert_called_once_with(self.active_link_id, "periodic")
+
+    def test_overlay_receive_idle_window_is_sixty_seconds(self):
+        now = 1_000.0
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["last_direct_rx_at"] = now - 59.999
+        self.assertTrue(
+            self.bridge._overlay_peer_recently_rx_active(
+                self.peer_hash,
+                now=now,
+            )
+        )
+
+        lifecycle["last_direct_rx_at"] = now - 60.001
+        self.assertFalse(
+            self.bridge._overlay_peer_recently_rx_active(
+                self.peer_hash,
+                now=now,
+            )
+        )
 
     def test_migration_uses_real_bounded_scheduler_lanes(self):
         for shard in range(self.bridge._SCHEDULER_OVERLAY_MIGRATION_SHARDS):
@@ -2982,6 +4239,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         transfer_id,
         *,
         resource_type=None,
+        logical_resource_type="",
         event_id="",
         sha256="",
         timestamp=None,
@@ -3004,14 +4262,19 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             "resourceType": resource_type,
             "metadata": {
                 "groupId": 716,
+                **(
+                    {"logicalResourceType": logical_resource_type}
+                    if logical_resource_type
+                    else {}
+                ),
                 **({"eventId": event_id} if event_id else {}),
             },
             "peerIdentity": object(),
             "authMessage": auth,
         }
 
-    def session(self, lane="fast", established=True, slot=0):
-        session_id = f"session-{lane}-{slot}"
+    def session(self, lane="fast", established=True, slot=0, session_id=None):
+        session_id = session_id or f"session-{lane}-{slot}"
         link = FakeSessionLink()
         state = {
             "linkId": session_id,
@@ -3025,6 +4288,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             "remote_ready": established,
             "provider_ready_sent": established,
             "created_at": time.time(),
+            "link_created_monotonic": time.monotonic(),
             "last_used_at": time.time(),
             "pending_jobs": [],
             "active_requests": {},
@@ -3037,6 +4301,151 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         self.bridge._qchat_file_link_ids_by_object[id(link)] = session_id
         self.bridge._resource_sessions_by_key[state["sessionKey"]] = session_id
         return state, link
+
+    def test_prepare_reuse_does_not_extend_an_idle_session(self):
+        state, _link = self.session(lane="fast")
+        idle_at = time.time() - 30
+        state["last_used_at"] = idle_at
+        state["activity_generation"] = 7
+
+        reused, reason = self.bridge._resource_session_get_or_create(
+            self.peer_hash,
+            object(),
+            "fast",
+        )
+
+        self.assertIs(reused, state)
+        self.assertEqual(reason, "")
+        self.assertEqual(state["last_used_at"], idle_at)
+        self.assertEqual(state["activity_generation"], 7)
+
+    def test_job_reservation_keeps_session_open_until_enqueue(self):
+        state, _link = self.session(lane="fast")
+        idle_at = time.time() - 30
+        state["last_used_at"] = idle_at
+        state["activity_generation"] = 7
+
+        reused, reason = self.bridge._resource_session_get_or_create(
+            self.peer_hash,
+            object(),
+            "fast",
+            reserve_for_job=True,
+        )
+
+        self.assertIs(reused, state)
+        self.assertEqual(reason, "")
+        self.assertGreater(state["last_used_at"], idle_at)
+        self.assertEqual(state["activity_generation"], 8)
+
+    def test_live_dm_without_response_retires_only_the_stale_session(self):
+        state, link = self.session(lane="fast")
+        pending = self.pending(
+            "stalled-live-dm",
+            logical_resource_type="reticulum_chat_dm_page",
+        )
+        job = {
+            "transferId": pending["transferId"],
+            "pending": pending,
+            "created_at": time.time(),
+            "followers": [],
+        }
+        self.bridge._qchat_file_store_pending_receive(self.peer_hash, pending)
+        state["pending_jobs"].append(job)
+        timers = []
+
+        class CapturedTimer:
+            def __init__(self, delay, callback, args=(), kwargs=None):
+                self.delay = delay
+                self.callback = callback
+                self.args = args
+                self.kwargs = kwargs or {}
+                self.cancelled = False
+
+            def start(self):
+                timers.append(self)
+
+            def cancel(self):
+                self.cancelled = True
+
+        with mock.patch.object(
+            self.bridge.threading,
+            "Timer",
+            CapturedTimer,
+        ), mock.patch.object(
+            self.bridge,
+            "_resource_session_note_failed_link_path",
+        ) as note_failed_path, mock.patch.object(
+            self.bridge,
+            "_teardown_reticulum_link_bounded",
+        ), mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
+            self.bridge._resource_session_dispatch_pending(state)
+
+            self.assertEqual(len(link.requests), 1)
+            self.assertEqual(len(timers), 1)
+            receipt = link.requests[0][3]
+            self.assertFalse(receipt.cancelled)
+
+            timers[0].callback(*timers[0].args, **timers[0].kwargs)
+
+        self.assertEqual(receipt.status, receipt.FAILED)
+        self.assertIsNotNone(receipt.concluded_at)
+        self.assertTrue(job["completed"])
+        self.assertTrue(state["closing"])
+        self.assertNotIn(state["sessionKey"], self.bridge._resource_sessions_by_key)
+        self.assertNotIn(state["linkId"], self.bridge._qchat_file_links_by_id)
+        self.assertNotIn(state["sessionKey"], self.bridge._resource_session_failures_by_key)
+        note_failed_path.assert_not_called()
+        failures = [
+            call
+            for call in emit.call_args_list
+            if call.args and call.args[0] == "failed"
+        ]
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(
+            failures[0].args[1]["reason"],
+            "resource_live_dm_no_response",
+        )
+
+    def test_live_dm_response_progress_cancels_the_stale_session_watchdog(self):
+        state, link = self.session(lane="fast")
+        pending = self.pending(
+            "progressing-live-dm",
+            logical_resource_type="reticulum_chat_dm_page",
+        )
+        job = {
+            "transferId": pending["transferId"],
+            "pending": pending,
+            "created_at": time.time(),
+            "followers": [],
+        }
+        self.bridge._qchat_file_store_pending_receive(self.peer_hash, pending)
+        state["pending_jobs"].append(job)
+        timers = []
+
+        class CapturedTimer:
+            def __init__(self, delay, callback, args=(), kwargs=None):
+                self.delay = delay
+                self.callback = callback
+                self.args = args
+                self.kwargs = kwargs or {}
+                self.cancelled = False
+
+            def start(self):
+                timers.append(self)
+
+            def cancel(self):
+                self.cancelled = True
+
+        with mock.patch.object(self.bridge.threading, "Timer", CapturedTimer):
+            self.bridge._resource_session_dispatch_pending(state)
+            receipt = link.requests[0][3]
+            receipt.progress = 0.25
+            link.requests[0][2]["progress_callback"](receipt)
+
+        self.assertTrue(job["response_started"])
+        self.assertTrue(timers[0].cancelled)
+        self.assertNotIn("live_dm_response_timer", job)
+        self.assertFalse(state.get("closing", False))
 
     def test_parallel_peer_lookup_requires_an_exact_transfer_id(self):
         first = self.pending("first-range", resource_type="reticulum_group_resource_range")
@@ -3334,13 +4743,45 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             ["history"],
         )
 
-    def test_dm_history_page_uses_fast_lane(self):
+    def test_dm_page_uses_fast_lane_for_live_delivery(self):
         self.assertEqual(
             self.bridge._resource_session_lane(
                 self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
                 "reticulum_chat_dm_page",
             ),
             "fast",
+        )
+
+    def test_author_range_uses_bulk_lane_without_displacing_live_messages(self):
+        self.assertEqual(
+            self.bridge._resource_session_lane(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_author_range",
+            ),
+            "bulk",
+        )
+        self.assertEqual(
+            self.bridge._resource_session_lane(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_live_event",
+            ),
+            "fast",
+        )
+
+    def test_author_range_uses_history_provider_capacity(self):
+        self.assertEqual(
+            self.bridge._resource_session_provider_class(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_author_range",
+            ),
+            "history",
+        )
+        self.assertEqual(
+            self.bridge._resource_session_provider_class(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_live_event",
+            ),
+            "live",
         )
 
     def test_prepare_command_reports_fast_lane_for_dm_history(self):
@@ -3832,7 +5273,7 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
 
         self.assertTrue(receipt.response.closed)
 
-    def test_establishment_timeout_fails_jobs_once_and_refreshes_path(self):
+    def test_establishment_timeout_fails_jobs_once_and_marks_path_for_refresh(self):
         state, link = self.session(established=False)
         state["link_created_at"] = time.time() - 31
         jobs = [
@@ -3847,14 +5288,17 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
         state["pending_jobs"] = jobs
         with mock.patch.object(
             self.bridge,
-            "_force_overlay_peer_path_refresh",
-        ) as refresh, mock.patch.object(
+            "_resource_session_note_failed_link_path",
+        ) as note_path_failure, mock.patch.object(
             self.bridge,
             "_teardown_reticulum_link_bounded",
         ) as teardown, mock.patch.object(self.bridge, "_qchat_file_emit") as emit:
             self.bridge._resource_session_open_timeout(state)
 
-        refresh.assert_called_once()
+        note_path_failure.assert_called_once_with(
+            state,
+            "resource_session_establish_timeout",
+        )
         teardown.assert_called_once_with(link, mock.ANY)
         self.assertTrue(all(job["completed"] for job in jobs))
         self.assertEqual(
@@ -3862,6 +5306,871 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             2,
         )
         self.assertNotIn(state["sessionKey"], self.bridge._resource_sessions_by_key)
+
+    def test_bulk_establishment_timeout_cannot_poison_fast_dm_session(self):
+        fast, _fast_link = self.session(lane="fast", established=True)
+        bulk, _bulk_link = self.session(lane="bulk", established=False, slot=0)
+        second_bulk, _second_bulk_link = self.session(
+            lane="bulk",
+            established=False,
+            slot=1,
+        )
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path:
+            self.bridge._resource_session_note_failed_link_path(
+                bulk,
+                "first_bulk_timeout",
+            )
+            self.bridge._resource_session_note_failed_link_path(
+                second_bulk,
+                "second_bulk_timeout",
+            )
+
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertEqual(
+            lifecycle["resource_session_bulk_path_suspect_reason"],
+            "second_bulk_timeout",
+        )
+        request_path.assert_called_once_with(bytes.fromhex(self.peer_hash))
+        self.assertIs(
+            self.bridge._qchat_file_links_by_id.get(fast["linkId"]),
+            fast,
+        )
+        self.assertIs(
+            self.bridge._resource_sessions_by_key.get(fast["sessionKey"]),
+            fast["linkId"],
+        )
+        self.assertNotIn(
+            fast["sessionKey"],
+            self.bridge._resource_session_failures_by_key,
+        )
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+
+    def test_bulk_establishment_timeout_cannot_poison_active_audio_link(self):
+        audio_link = FakeSessionLink()
+        self.bridge._audio_links_by_id["active-audio"] = {
+            "link": audio_link,
+            "peerPresenceHash": self.peer_hash,
+            "incoming": False,
+            "established": True,
+            "closing": False,
+        }
+        first, _first_link = self.session(
+            lane="bulk",
+            established=False,
+            slot=0,
+        )
+        second, _second_link = self.session(
+            lane="bulk",
+            established=False,
+            slot=1,
+        )
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path:
+            self.bridge._resource_session_note_failed_link_path(
+                first,
+                "first_bulk_timeout",
+            )
+            self.bridge._resource_session_note_failed_link_path(
+                second,
+                "second_bulk_timeout",
+            )
+
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        request_path.assert_called_once_with(bytes.fromhex(self.peer_hash))
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+
+    def test_fast_establishment_timeout_remains_authoritative_for_path_recovery(self):
+        state, _link = self.session(lane="fast", established=False)
+        state["link_created_at"] = time.time() - 31
+        job = {
+            "pending": self.pending("dm-page"),
+            "created_at": time.time(),
+            "followers": [],
+            "session": state,
+        }
+        state["pending_jobs"] = [job]
+
+        with mock.patch.object(
+            self.bridge,
+            "_teardown_reticulum_link_bounded",
+        ), mock.patch.object(self.bridge, "_qchat_file_emit"):
+            self.bridge._resource_session_open_timeout(state)
+
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertEqual(
+            lifecycle["resource_session_path_failure_generation"],
+            1,
+        )
+
+    def test_repeated_bulk_failures_never_escalate_shared_path_refresh(self):
+        first, _first_link = self.session(lane="bulk", established=False, slot=0)
+        second, _second_link = self.session(lane="bulk", established=False, slot=1)
+        third, _third_link = self.session(lane="bulk", established=False, slot=2)
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path, mock.patch.object(self.bridge, "log"):
+            self.bridge._resource_session_note_failed_link_path(
+                first,
+                "first_bulk_timeout",
+            )
+            self.bridge._resource_session_note_failed_link_path(
+                second,
+                "second_bulk_timeout",
+            )
+            self.bridge._resource_session_note_failed_link_path(
+                third,
+                "third_bulk_timeout",
+            )
+
+        request_path.assert_called_once_with(bytes.fromhex(self.peer_hash))
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertNotIn(
+            "resource_session_path_failure_route_generation",
+            lifecycle,
+        )
+        self.assertEqual(
+            lifecycle["resource_session_bulk_path_suspect_reason"],
+            "third_bulk_timeout",
+        )
+
+    def test_stale_bulk_failure_does_not_request_or_poison_newer_path(self):
+        state, _link = self.session(lane="bulk", established=False)
+        state["destinationPathGeneration"] = 3
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_generation"] = 4
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path, mock.patch.object(self.bridge, "log"):
+            self.bridge._resource_session_note_failed_link_path(
+                state,
+                "late_bulk_timeout",
+            )
+
+        request_path.assert_not_called()
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertNotIn("resource_session_bulk_path_suspect_at", lifecycle)
+
+    def test_bulk_failure_does_not_rediscover_recently_proven_path(self):
+        state, _link = self.session(lane="bulk", established=False)
+        state["destinationPathGeneration"] = 2
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_generation"] = 2
+        lifecycle["destination_path_proven_generation"] = 2
+        lifecycle["destination_path_proven_at"] = time.time()
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path, mock.patch.object(self.bridge, "log"):
+            self.bridge._resource_session_note_failed_link_path(
+                state,
+                "parallel_bulk_timeout",
+            )
+
+        request_path.assert_not_called()
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertNotIn("resource_session_bulk_path_suspect_at", lifecycle)
+
+    def test_established_session_clears_bulk_path_suspicion(self):
+        state, link = self.session(lane="fast", established=False)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["resource_session_bulk_path_suspect_at"] = time.time()
+        lifecycle["resource_session_bulk_path_suspect_reason"] = "bulk_timeout"
+        lifecycle["resource_session_bulk_path_suspect_generation"] = 3
+        lifecycle["resource_session_bulk_path_request_at"] = time.time()
+        lifecycle["resource_session_fast_retained_path_generation"] = 3
+        lifecycle["resource_session_fast_retained_path_at_monotonic"] = (
+            time.monotonic()
+        )
+
+        with mock.patch.object(
+            self.bridge,
+            "configure_qchat_file_link",
+        ), mock.patch.object(
+            link,
+            "set_remote_identified_callback",
+        ), mock.patch.object(
+            self.bridge,
+            "_send_packet_on_link",
+            return_value=True,
+        ):
+            self.bridge.on_outgoing_resource_session_established(link)
+
+        self.assertNotIn("resource_session_bulk_path_suspect_at", lifecycle)
+        self.assertNotIn("resource_session_bulk_path_suspect_reason", lifecycle)
+        self.assertNotIn("resource_session_bulk_path_suspect_generation", lifecycle)
+        self.assertNotIn("resource_session_bulk_path_request_at", lifecycle)
+        self.assertNotIn(
+            "resource_session_fast_retained_path_generation",
+            lifecycle,
+        )
+        self.assertNotIn(
+            "resource_session_fast_retained_path_at_monotonic",
+            lifecycle,
+        )
+
+    def test_established_idle_peer_close_does_not_poison_path_or_backoff(self):
+        state, link = self.session(established=True)
+        link.teardown_reason = RNS.Link.DESTINATION_CLOSED
+
+        with mock.patch.object(
+            self.bridge,
+            "_resource_session_note_failed_link_path",
+        ) as note_path_failure, mock.patch.object(
+            self.bridge,
+            "_resource_session_note_failure",
+        ) as note_session_failure, mock.patch.object(
+            self.bridge,
+            "_resource_session_emit_status",
+        ) as emit_status:
+            self.bridge.on_qchat_file_link_closed(link)
+
+        note_path_failure.assert_not_called()
+        note_session_failure.assert_not_called()
+        emit_status.assert_not_called()
+        self.assertNotIn(state["sessionKey"], self.bridge._resource_sessions_by_key)
+
+    def test_established_timeout_retains_proven_path_for_one_retry(self):
+        state, link = self.session(established=True)
+        link.teardown_reason = RNS.Link.TIMEOUT
+
+        with mock.patch.object(
+            self.bridge,
+            "_resource_session_note_failed_link_path",
+        ) as note_path_failure, mock.patch.object(
+            self.bridge,
+            "_resource_session_note_failure",
+        ) as note_session_failure:
+            self.bridge.on_qchat_file_link_closed(link)
+
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertEqual(
+            lifecycle["resource_session_fast_retained_path_generation"],
+            0,
+        )
+        self.assertIsInstance(
+            lifecycle["resource_session_fast_retained_path_at_monotonic"],
+            float,
+        )
+        note_path_failure.assert_not_called()
+        note_session_failure.assert_not_called()
+
+    def test_failed_replacement_after_established_timeout_refreshes_path(self):
+        established, established_link = self.session(established=True)
+        established_link.teardown_reason = RNS.Link.TIMEOUT
+        self.bridge.on_qchat_file_link_closed(established_link)
+
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_proven_generation"] = 0
+        lifecycle["destination_path_proven_at"] = time.time()
+
+        replacement, replacement_link = self.session(established=False)
+        replacement["destinationPathGeneration"] = 0
+        replacement["link_created_at"] = time.time()
+        replacement["link_created_monotonic"] = time.monotonic()
+        replacement_link.teardown_reason = RNS.Link.TIMEOUT
+        self.bridge.on_qchat_file_link_closed(replacement_link)
+
+        self.assertEqual(
+            lifecycle["resource_session_path_failure_generation"],
+            1,
+        )
+        self.assertEqual(
+            lifecycle["resource_session_path_failure_reason"],
+            "resource_session_link_closed:timeout",
+        )
+        self.assertNotIn(
+            "resource_session_fast_retained_path_generation",
+            lifecycle,
+        )
+        self.assertNotIn(
+            "resource_session_fast_retained_path_at_monotonic",
+            lifecycle,
+        )
+
+    def test_parallel_fast_failure_cannot_confirm_established_timeout(self):
+        parallel, parallel_link = self.session(
+            established=False,
+            session_id="parallel-fast-session",
+        )
+        parallel["destinationPathGeneration"] = 0
+        parallel["link_created_at"] = time.time() - 10
+        parallel["link_created_monotonic"] = time.monotonic() - 10
+
+        established, established_link = self.session(
+            established=True,
+            session_id="established-fast-session",
+        )
+        established_link.teardown_reason = RNS.Link.TIMEOUT
+        self.bridge.on_qchat_file_link_closed(established_link)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_proven_generation"] = 0
+        lifecycle["destination_path_proven_at"] = time.time()
+
+        parallel_link.teardown_reason = RNS.Link.TIMEOUT
+        self.bridge.on_qchat_file_link_closed(parallel_link)
+
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertEqual(
+            lifecycle["resource_session_fast_retained_path_generation"],
+            0,
+        )
+
+    def test_late_established_timeout_cannot_replace_newer_session_marker(self):
+        old, old_link = self.session(
+            established=True,
+            session_id="old-fast-session",
+        )
+        old["destinationPathGeneration"] = 0
+        old_job = {
+            "pending": self.pending("old-fast-request"),
+            "created_at": time.time(),
+            "followers": [],
+            "session": old,
+        }
+        old["active_requests"] = {"old-fast-request": old_job}
+
+        newer, _newer_link = self.session(
+            established=True,
+            session_id="newer-fast-session",
+        )
+        newer["destinationPathGeneration"] = 0
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+
+        old_link.teardown_reason = RNS.Link.TIMEOUT
+        self.bridge.on_qchat_file_link_closed(old_link)
+
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertNotIn(
+            "resource_session_fast_retained_path_generation",
+            lifecycle,
+        )
+        self.assertTrue(old_job["completed"])
+        self.assertNotIn(
+            old["sessionKey"],
+            self.bridge._resource_session_failures_by_key,
+        )
+        self.assertIs(
+            self.bridge._qchat_file_links_by_id.get(newer["linkId"]),
+            newer,
+        )
+
+    def test_expired_retained_path_marker_cannot_confirm_late_failure(self):
+        state, _link = self.session(established=False)
+        state["destinationPathGeneration"] = 0
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_proven_generation"] = 0
+        lifecycle["destination_path_proven_at"] = time.time()
+        lifecycle["resource_session_fast_retained_path_generation"] = 0
+        lifecycle["resource_session_fast_retained_path_at_monotonic"] = (
+            time.monotonic()
+            - self.bridge._RESOURCE_SESSION_ESTABLISHED_TIMEOUT_RETRY_WINDOW_SECONDS
+            - 1
+        )
+
+        with mock.patch.object(self.bridge, "log"):
+            self.bridge._resource_session_note_failed_link_path(
+                state,
+                "late_replacement_timeout",
+            )
+
+        self.assertNotIn("resource_session_path_failure_generation", lifecycle)
+        self.assertNotIn(
+            "resource_session_fast_retained_path_generation",
+            lifecycle,
+        )
+        self.assertNotIn(
+            "resource_session_fast_retained_path_at_monotonic",
+            lifecycle,
+        )
+
+    def test_unestablished_peer_close_requires_fresh_path_recovery(self):
+        state, link = self.session(established=False)
+        link.teardown_reason = RNS.Link.TIMEOUT
+
+        self.bridge.on_qchat_file_link_closed(link)
+
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertEqual(
+            lifecycle["resource_session_path_failure_generation"],
+            1,
+        )
+        self.assertEqual(
+            lifecycle["resource_session_path_failure_reason"],
+            "resource_session_link_closed:timeout",
+        )
+
+    def test_failed_resource_path_is_not_used_until_refresh_is_fresh(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["resource_session_path_failure_generation"] = 1
+        stale = {
+            "has_path": True,
+            "timestamp": 10.0,
+            "packet": "stale-packet",
+        }
+        fresh = {
+            "has_path": True,
+            "timestamp": time.time() + 1,
+            "packet": "fresh-packet",
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_path_snapshot",
+            side_effect=[stale, stale, fresh],
+        ), mock.patch.object(
+            self.bridge,
+            "_reticulum_local_has_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_drop_reticulum_path",
+            return_value=True,
+        ) as drop_path, mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path:
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            self.assertTrue(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            # Other pooled lanes can share the newly resolved path without
+            # dropping it again while the first Link is still establishing.
+            self.assertTrue(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+
+        drop_path.assert_called_once_with(
+            destination_hash,
+            reason="resource_session_failure:1",
+        )
+        request_path.assert_called_once_with(destination_hash)
+        self.assertEqual(
+            lifecycle["resource_session_path_recovered_generation"],
+            1,
+        )
+
+    def test_recovered_resource_path_waits_if_local_route_disappears(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["resource_session_path_failure_generation"] = 1
+        lifecycle["resource_session_path_recovered_generation"] = 1
+
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_local_has_path",
+            return_value=False,
+        ), mock.patch.object(
+            self.bridge,
+            "_nudge_cached_reticulum_path",
+            return_value=True,
+        ) as nudge, mock.patch.object(
+            self.bridge,
+            "_drop_reticulum_path",
+        ) as drop_path:
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+
+        nudge.assert_called_once_with(
+            destination_hash,
+            self.peer_hash,
+            target="qchat-file-reticulum",
+            reason="resource_session_reinstall_local_path",
+            cooldown_seconds=self.bridge._LOCAL_PATH_INSTALL_REQUEST_COOLDOWN_SECONDS,
+        )
+        drop_path.assert_not_called()
+
+    def test_unresolved_fresh_path_discovery_retries_once_per_interval(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["resource_session_path_failure_generation"] = 1
+        stale = {
+            "has_path": True,
+            "timestamp": 10.0,
+            "packet": "stale-packet",
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_path_snapshot",
+            return_value=stale,
+        ), mock.patch.object(
+            self.bridge,
+            "_drop_reticulum_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path:
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            self.assertEqual(request_path.call_count, 1)
+
+            lifecycle["resource_session_path_refresh_last_request_at"] = (
+                time.time()
+                - self.bridge._RESOURCE_SESSION_PATH_REFRESH_RETRY_SECONDS
+                - 0.1
+            )
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+
+        self.assertEqual(request_path.call_count, 2)
+
+    def test_failed_path_request_uses_short_bounded_retry_backoff(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["resource_session_path_failure_generation"] = 1
+        stale = {
+            "has_path": True,
+            "timestamp": 10.0,
+            "packet": "stale-packet",
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_path_snapshot",
+            return_value=stale,
+        ), mock.patch.object(
+            self.bridge,
+            "_drop_reticulum_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+            side_effect=RuntimeError("discovery unavailable"),
+        ) as request_path:
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+            self.assertGreater(
+                lifecycle["resource_session_path_refresh_retry_at"],
+                time.time(),
+            )
+            self.assertFalse(
+                self.bridge._resource_session_failed_path_ready(
+                    destination_hash,
+                    self.peer_hash,
+                )
+            )
+
+        self.assertEqual(request_path.call_count, 1)
+
+    def test_old_resource_link_failure_cannot_poison_newer_route_generation(self):
+        state, _link = self.session(established=False)
+        state["destinationPathGeneration"] = 3
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_generation"] = 4
+
+        with mock.patch.object(self.bridge, "log"):
+            self.bridge._resource_session_note_failed_link_path(
+                state,
+                "late_timeout",
+            )
+
+        self.assertNotIn(
+            "resource_session_path_failure_generation",
+            lifecycle,
+        )
+
+    def test_recently_proven_route_is_not_invalidated_by_parallel_link_failure(self):
+        state, _link = self.session(established=False)
+        state["destinationPathGeneration"] = 2
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_generation"] = 2
+        lifecycle["destination_path_proven_generation"] = 2
+        lifecycle["destination_path_proven_at"] = time.time()
+
+        with mock.patch.object(self.bridge, "log"):
+            self.bridge._resource_session_note_failed_link_path(
+                state,
+                "parallel_timeout",
+            )
+
+        self.assertNotIn(
+            "resource_session_path_failure_generation",
+            lifecycle,
+        )
+
+    def test_destructive_refresh_waits_for_another_connecting_link(self):
+        state, _link = self.session(established=False)
+        destination_hash = bytes.fromhex(self.peer_hash)
+
+        with mock.patch.object(
+            self.bridge,
+            "_invalidate_reticulum_path_availability",
+        ) as invalidate, mock.patch.object(self.bridge, "log"):
+            dropped = self.bridge._drop_reticulum_path(
+                destination_hash,
+                reason="test_refresh",
+            )
+
+        self.assertIsNone(dropped)
+        invalidate.assert_not_called()
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertNotIn("destination_path_generation", lifecycle)
+
+    def test_destructive_refresh_is_single_owner_and_advances_generation_once(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+
+        with mock.patch.object(
+            self.bridge,
+            "_invalidate_reticulum_path_availability",
+        ), mock.patch.object(
+            self.bridge.RNS.Transport,
+            "expire_path",
+            return_value=True,
+        ) as expire_path, mock.patch.object(
+            self.bridge.RNS.Transport,
+            "mark_path_unresponsive",
+        ), mock.patch.object(self.bridge, "log"):
+            self.assertTrue(
+                self.bridge._drop_reticulum_path(
+                    destination_hash,
+                    reason="first_owner",
+                )
+            )
+            self.assertIsNone(
+                self.bridge._drop_reticulum_path(
+                    destination_hash,
+                    reason="competing_owner",
+                )
+            )
+
+        expire_path.assert_called_once_with(destination_hash)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertEqual(lifecycle["destination_path_generation"], 1)
+        self.assertEqual(
+            lifecycle["destination_path_refresh_reason"],
+            "first_owner",
+        )
+
+    def test_refresh_lease_is_not_extended_by_wall_clock_rollback(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+
+        with mock.patch.object(
+            self.bridge,
+            "_invalidate_reticulum_path_availability",
+        ), mock.patch.object(
+            self.bridge.RNS.Transport,
+            "expire_path",
+            return_value=True,
+        ) as expire_path, mock.patch.object(
+            self.bridge.RNS.Transport,
+            "mark_path_unresponsive",
+        ), mock.patch.object(
+            self.bridge.time,
+            "time",
+            side_effect=(1_000.0, 1.0),
+        ), mock.patch.object(
+            self.bridge.time,
+            "monotonic",
+            side_effect=(100.0, 104.0),
+        ), mock.patch.object(self.bridge, "log"):
+            self.assertTrue(
+                self.bridge._drop_reticulum_path(
+                    destination_hash,
+                    reason="before_clock_rollback",
+                )
+            )
+            self.assertTrue(
+                self.bridge._drop_reticulum_path(
+                    destination_hash,
+                    reason="after_clock_rollback",
+                )
+            )
+
+        self.assertEqual(expire_path.call_count, 2)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        self.assertEqual(lifecycle["destination_path_generation"], 2)
+        self.assertEqual(
+            lifecycle["destination_path_refresh_reason"],
+            "after_clock_rollback",
+        )
+
+    def test_resource_failure_reuses_a_recently_proven_shared_route(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["resource_session_path_failure_generation"] = 2
+        lifecycle["resource_session_path_failure_route_generation"] = 4
+        lifecycle["destination_path_generation"] = 4
+        lifecycle["destination_path_proven_generation"] = 4
+        lifecycle["destination_path_proven_at"] = time.time()
+
+        with mock.patch.object(
+            self.bridge,
+            "_reticulum_local_has_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_drop_reticulum_path",
+        ) as drop_path:
+            ready = self.bridge._resource_session_failed_path_ready(
+                destination_hash,
+                self.peer_hash,
+            )
+
+        self.assertTrue(ready)
+        self.assertEqual(
+            lifecycle["resource_session_path_recovered_generation"],
+            2,
+        )
+        drop_path.assert_not_called()
+
+    def test_old_overlay_timeout_does_not_refresh_a_newer_route(self):
+        state = {
+            "peerPresenceHash": self.peer_hash,
+            "incoming": False,
+            "established": False,
+            "destinationPathGeneration": 1,
+        }
+        link = FakeSessionLink()
+        link.teardown_reason = RNS.Link.TIMEOUT
+        lifecycle = self.bridge._lifecycle_state_for_peer(self.peer_hash)
+        lifecycle["destination_path_generation"] = 2
+
+        with mock.patch.object(
+            self.bridge.RNS.Transport,
+            "request_path",
+        ) as request_path, mock.patch.object(self.bridge, "log"):
+            self.bridge._maybe_request_path_after_unestablished_link_close(
+                state,
+                link,
+                target="presence-reticulum",
+                reason="timeout",
+            )
+
+        request_path.assert_not_called()
+        self.assertNotIn("unestablished_link_failures", lifecycle)
+
+    def test_resource_poll_does_not_force_refresh_for_overlay_failure(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        outbound = type("Outbound", (), {"hash": destination_hash})()
+        state = {
+            "peerPresenceHash": self.peer_hash,
+            "peerIdentity": object(),
+            "closing": False,
+            "link": None,
+            "path_wait_started_at": time.time(),
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "build_outbound_destination",
+            return_value=outbound,
+        ), mock.patch.object(
+            self.bridge,
+            "_resource_session_failed_path_ready",
+            return_value=None,
+        ), mock.patch.object(
+            self.bridge,
+            "_request_qchat_file_path",
+            return_value=False,
+        ) as request_path, mock.patch.object(
+            self.bridge.threading,
+            "Timer",
+        ):
+            self.bridge._resource_session_poll_path(state)
+
+        request_path.assert_called_once_with(
+            destination_hash,
+            self.peer_hash,
+            allow_failed_path_refresh=False,
+        )
+
+    def test_resource_poll_waits_for_local_route_from_shared_daemon(self):
+        destination_hash = bytes.fromhex(self.peer_hash)
+        outbound = type("Outbound", (), {"hash": destination_hash})()
+        state = {
+            "peerPresenceHash": self.peer_hash,
+            "peerIdentity": object(),
+            "closing": False,
+            "link": None,
+            "path_wait_started_at": time.time(),
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "build_outbound_destination",
+            return_value=outbound,
+        ), mock.patch.object(
+            self.bridge,
+            "_resource_session_failed_path_ready",
+            return_value=None,
+        ), mock.patch.object(
+            self.bridge,
+            "_reticulum_local_has_path",
+            return_value=False,
+        ), mock.patch.object(
+            self.bridge,
+            "_reticulum_has_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_nudge_cached_reticulum_path",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_resource_session_create_link",
+        ) as create_link, mock.patch.object(
+            self.bridge.threading,
+            "Timer",
+        ):
+            self.bridge._resource_session_poll_path(state)
+
+        create_link.assert_not_called()
 
     def test_session_failure_requeues_jobs_that_were_never_dispatched(self):
         failed, failed_link = self.session(lane="bulk", slot=0)
@@ -4667,6 +6976,13 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
                 "reticulum_chat_history_page",
             ),
             "history",
+        )
+        self.assertEqual(
+            self.bridge._resource_session_provider_class(
+                self.bridge._RETICULUM_CHAT_RESOURCE_TYPE,
+                "reticulum_chat_dm_page",
+            ),
+            "live",
         )
         self.assertEqual(
             self.bridge._resource_session_provider_class(
@@ -5623,6 +7939,312 @@ class PresenceBridgePinnedChatPeersTest(unittest.TestCase):
         self.assertEqual(self.bridge._prune_pinned_chat_overlay_peers(), set())
         self.assertIn(peer_hash, self.bridge._active_overlay_neighbors)
         self.assertIn(peer_hash, self.bridge._candidate_peers)
+
+
+class PresenceBridgePinnedCallPeersTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+
+    def tearDown(self):
+        self.bridge._shutdown.clear()
+
+    def test_call_signal_lease_survives_immediate_redial_and_expires(self):
+        peer_hash = "dd" * 16
+        started_at = 1_000.0
+
+        self.assertTrue(self.bridge._lease_call_overlay_peer(peer_hash, started_at))
+        first_expiry = self.bridge._pinned_call_overlay_peers[peer_hash]
+        self.assertEqual(
+            first_expiry,
+            started_at + self.bridge._CALL_SIGNAL_OVERLAY_LEASE_SECONDS,
+        )
+
+        redial_at = started_at + 15.0
+        self.assertTrue(self.bridge._lease_call_overlay_peer(peer_hash, redial_at))
+        self.assertGreater(
+            self.bridge._pinned_call_overlay_peers[peer_hash],
+            first_expiry,
+        )
+        self.assertIn(
+            peer_hash,
+            self.bridge._prune_pinned_overlay_peers(redial_at + 1.0),
+        )
+        self.assertNotIn(
+            peer_hash,
+            self.bridge._prune_pinned_overlay_peers(
+                redial_at + self.bridge._CALL_SIGNAL_OVERLAY_LEASE_SECONDS + 1.0
+            ),
+        )
+
+    def test_send_call_leases_peer_before_a_missing_link_response(self):
+        peer_hash = "ee" * 16
+        responses = []
+        self.bridge._destination = object()
+
+        with mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda *args, **kwargs: responses.append((args, kwargs)),
+        ), mock.patch.object(
+            self.bridge,
+            "_encode_call_signal_wire",
+            return_value={
+                "ok": True,
+                "wire_bytes": b'{"t":"RS","c":"call-id"}',
+                "message_type": "RS",
+            },
+        ), mock.patch.object(
+            self.bridge, "_prepare_call_signal_peer", return_value=None
+        ), mock.patch.object(
+            self.bridge,
+            "_send_call_signal_wire_to_peer",
+            return_value={
+                "payload": {"code": "packet_send_false"},
+                "error": "Packet send returned False",
+            },
+        ):
+            self.bridge.handle_send_call(
+                "call-send",
+                {
+                    "peerPresenceHash": peer_hash,
+                    "message": {"t": "RS", "c": "call-id"},
+                },
+            )
+
+        self.assertIn(peer_hash, self.bridge._pinned_call_overlay_peers)
+        self.assertFalse(responses[-1][0][1])
+
+    def test_land_call_control_uses_dedicated_link_without_overlay_admission(self):
+        peer_hash = "ef" * 16
+        responses = []
+        self.bridge._destination = object()
+
+        with mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda *args, **kwargs: responses.append((args, kwargs)),
+        ), mock.patch.object(
+            self.bridge,
+            "_encode_group_signal_wire",
+            return_value={
+                "ok": True,
+                "wire_bytes": b'{"t":"RCHAT","k":"lc2"}',
+                "message_type": "RCHAT",
+            },
+        ), mock.patch.object(
+            self.bridge, "_send_land_call_wire_to_peer", return_value=False
+        ) as dedicated_send, mock.patch.object(
+            self.bridge, "_prepare_group_signal_peer"
+        ) as overlay_prepare, mock.patch.object(
+            self.bridge, "_send_group_signal_wire_to_peer"
+        ) as overlay_send:
+            self.bridge.handle_send_reticulum_chat(
+                "land-call-send",
+                {
+                    "peerPresenceHash": peer_hash,
+                    "message": {"t": "RCHAT", "k": "lc2"},
+                },
+            )
+
+        dedicated_send.assert_called_once_with(
+            peer_hash,
+            b'{"t":"RCHAT","k":"lc2"}',
+        )
+        overlay_prepare.assert_not_called()
+        overlay_send.assert_not_called()
+        self.assertNotIn(peer_hash, self.bridge._pinned_call_overlay_peers)
+        self.assertFalse(responses[-1][0][1])
+
+    def test_inbound_lc2_first_packet_bypasses_overlay_and_requires_link_identity(self):
+        peer_hash = "ac" * 16
+        link = FakeLink()
+        packet = FakePacket(link)
+        wire = {
+            "t": "RCHAT",
+            "k": "lc2",
+            "r": peer_hash,
+            "g": 1143,
+        }
+
+        with mock.patch.object(
+            self.bridge, "_overlay_link_remote_identity", return_value=object()
+        ), mock.patch.object(
+            self.bridge, "_overlay_identity_matches_peer", return_value=True
+        ), mock.patch.object(
+            self.bridge, "_emit_call_bridge_message", return_value=True
+        ) as emitted:
+            self.bridge._pending_inbound_classify_link_ids.add(id(link))
+            self.bridge._handle_inbound_link_first_packet(
+                json.dumps(wire).encode("utf-8"),
+                packet,
+            )
+
+        self.assertEqual(len(self.bridge._land_call_links_by_id), 1)
+        self.assertEqual(len(self.bridge._overlay_links_by_id), 0)
+        emitted.assert_called_once_with(wire, peer_hash, mock.ANY)
+        state = next(iter(self.bridge._land_call_links_by_id.values()))
+        self.assertTrue(state["incoming"])
+        self.assertTrue(state["remote_identity_verified"])
+
+    def test_inbound_lc2_rejects_a_claim_that_does_not_match_link_identity(self):
+        peer_hash = "ad" * 16
+        link = FakeLink()
+        packet = FakePacket(link)
+        wire = {"t": "RCHAT", "k": "lc2", "r": peer_hash, "g": 1143}
+
+        with mock.patch.object(
+            self.bridge, "_overlay_link_remote_identity", return_value=object()
+        ), mock.patch.object(
+            self.bridge, "_overlay_identity_matches_peer", return_value=False
+        ), mock.patch.object(
+            self.bridge, "_teardown_reticulum_link_bounded"
+        ) as teardown, mock.patch.object(
+            self.bridge, "_emit_call_bridge_message"
+        ) as emitted:
+            self.bridge._pending_inbound_classify_link_ids.add(id(link))
+            self.bridge._handle_inbound_link_first_packet(
+                json.dumps(wire).encode("utf-8"),
+                packet,
+            )
+
+        self.assertEqual(len(self.bridge._land_call_links_by_id), 0)
+        emitted.assert_not_called()
+        teardown.assert_called_once()
+
+    def test_established_land_call_link_sends_without_overlay(self):
+        peer_hash = "ae" * 16
+        link = FakeLink()
+        link_id = "land-call-link"
+        now = time.time()
+        state = {
+            "linkId": link_id,
+            "link": link,
+            "peerPresenceHash": peer_hash,
+            "incoming": False,
+            "established": True,
+            "created_at": now,
+            "established_at": now,
+            "last_activity_at": now,
+        }
+        self.bridge._land_call_links_by_id[link_id] = state
+        self.bridge._land_call_link_ids_by_object[id(link)] = link_id
+        self.bridge._active_land_call_link_id_by_peer_hash[peer_hash] = link_id
+
+        with mock.patch.object(
+            self.bridge, "_send_packet_on_link", return_value=True
+        ) as send_packet, mock.patch.object(
+            self.bridge, "_send_wire_to_overlay_peer"
+        ) as overlay_send:
+            self.assertTrue(
+                self.bridge._send_land_call_wire_to_peer(peer_hash, b"call-control")
+            )
+
+        send_packet.assert_called_once_with(
+            link,
+            b"call-control",
+            f"target=qortalland-call-control send peer={peer_hash}",
+        )
+        overlay_send.assert_not_called()
+
+    def test_closed_land_call_link_is_not_reused(self):
+        peer_hash = "be" * 16
+        link = FakeLink()
+        link.status = RNS.Link.CLOSED
+        link_id = "closed-land-call-link"
+        state = {
+            "linkId": link_id,
+            "link": link,
+            "peerPresenceHash": peer_hash,
+            "incoming": False,
+            "established": True,
+            "created_at": time.time(),
+            "established_at": time.time(),
+            "last_activity_at": time.time(),
+        }
+        self.bridge._land_call_links_by_id[link_id] = state
+        self.bridge._land_call_link_ids_by_object[id(link)] = link_id
+        self.bridge._active_land_call_link_id_by_peer_hash[peer_hash] = link_id
+
+        self.assertFalse(self.bridge._land_call_link_is_usable(state))
+        self.bridge._prune_land_call_links()
+
+        self.assertNotIn(link_id, self.bridge._land_call_links_by_id)
+        self.assertNotIn(peer_hash, self.bridge._active_land_call_link_id_by_peer_hash)
+        self.assertTrue(link.teardown_called)
+
+    def test_land_call_link_rejects_a_later_sender_mismatch(self):
+        peer_hash = "af" * 16
+        link = FakeLink()
+        link_id = "land-call-link"
+        state = {
+            "linkId": link_id,
+            "link": link,
+            "peerPresenceHash": peer_hash,
+            "incoming": True,
+            "established": True,
+        }
+        self.bridge._land_call_links_by_id[link_id] = state
+        self.bridge._land_call_link_ids_by_object[id(link)] = link_id
+
+        with mock.patch.object(
+            self.bridge, "_close_land_call_link"
+        ) as close_link, mock.patch.object(
+            self.bridge, "_emit_call_bridge_message"
+        ) as emitted:
+            self.bridge._handle_land_call_link_packet(
+                json.dumps(
+                    {"t": "RCHAT", "k": "lc2", "r": "ba" * 16}
+                ).encode("utf-8"),
+                FakePacket(link),
+            )
+
+        close_link.assert_called_once_with(link_id, "sender_mismatch")
+        emitted.assert_not_called()
+
+    def test_full_call_lease_table_does_not_evict_existing_calls(self):
+        now = 2_000.0
+        existing = {
+            f"{value:02x}" * 16: now + 60.0 + value
+            for value in range(self.bridge._OVERLAY_MAX_PINNED_CALL_PEERS)
+        }
+        self.bridge._pinned_call_overlay_peers.update(existing)
+
+        self.assertFalse(
+            self.bridge._lease_call_overlay_peer("ff" * 16, now)
+        )
+        self.assertEqual(self.bridge._pinned_call_overlay_peers, existing)
+
+    def test_call_lease_overrides_stale_remote_inbound_full_hint(self):
+        peer_hash = "ab" * 16
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "overlay_inbound_full_until": time.time() + 60.0,
+        }
+
+        self.assertFalse(
+            self.bridge._overlay_peer_available_for_new_outbound(peer_hash)
+        )
+        self.assertTrue(self.bridge._lease_call_overlay_peer(peer_hash))
+        self.assertTrue(
+            self.bridge._overlay_peer_available_for_new_outbound(peer_hash)
+        )
+
+    def test_call_pinned_inbound_peer_uses_reserved_capacity(self):
+        now = time.time()
+        for value in range(self.bridge._OVERLAY_MAX_INBOUND_NEIGHBORS):
+            self.bridge._inbound_overlay_neighbors[f"{value:02x}" * 16] = now
+        call_peer = "cd" * 16
+
+        self.assertFalse(
+            self.bridge._admit_overlay_peer_if_allowed(
+                "fe" * 16, "ordinary-over-capacity", incoming=True
+            )
+        )
+        self.assertTrue(self.bridge._lease_call_overlay_peer(call_peer, now))
+        self.assertTrue(
+            self.bridge._admit_overlay_peer_if_allowed(
+                call_peer, "call-reserved-capacity", incoming=True
+            )
+        )
 
 
 if __name__ == "__main__":

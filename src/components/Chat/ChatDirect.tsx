@@ -385,7 +385,7 @@ export const ChatDirect = ({
         10_000
       );
       if (!res?.signature || !userInfo?.publicKey) {
-        throw new Error('Unable to sign file transfer message');
+        throw new Error(t('group:dm.sign_transfer_failed'));
       }
       return {
         signature: res.signature,
@@ -432,7 +432,7 @@ export const ChatDirect = ({
     'core',
     'group',
     'question',
-    'tutorial',
+    'reticulum',
   ]);
   const p2pHealthBadTooltip = t('core:p2p_health_bad_call_tooltip');
   const { queueChats, addToQueue, processWithNewMessages } = useMessageQueue();
@@ -636,7 +636,6 @@ export const ChatDirect = ({
     let cancelled = false;
     const refresh = async () => {
       try {
-        await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
         if (cancelled) return;
         const silence = await window.reticulumChat?.getSilence?.(
           myAddress,
@@ -690,7 +689,12 @@ export const ChatDirect = ({
         'dm'
       );
       if (!result?.success) {
-        throw new Error(result?.error || 'Unable to unhide user');
+        throw new Error(
+          result?.error ||
+            t('reticulum:hide_user.error_unhide', {
+              postProcess: 'capitalizeFirstChar',
+            })
+        );
       }
       if (reticulumSilencePeerRef.current === peerAddress) {
         setReticulumPeerSilence(null);
@@ -700,7 +704,11 @@ export const ChatDirect = ({
       setInfoSnack({
         type: 'error',
         message:
-          error instanceof Error ? error.message : 'Unable to unhide user',
+          error instanceof Error
+            ? error.message
+            : t('reticulum:hide_user.error_unhide', {
+                postProcess: 'capitalizeFirstChar',
+              }),
       });
       setOpenSnack(true);
     } finally {
@@ -1544,7 +1552,7 @@ export const ChatDirect = ({
           expiryDurationMs: null,
         });
         if (result?.error || result?.success === false) {
-          throw new Error(result?.error || 'Could not publish friend event');
+          throw new Error(result?.error || t('group:dm.friend_event_failed'));
         }
         const eventId = String(result?.eventId || '').trim();
         if (eventId) {
@@ -1673,7 +1681,7 @@ export const ChatDirect = ({
       const directTo = isNewChatVar ? newChatTarget?.address : address;
 
       if (!directTo) {
-        throw new Error('Select a valid Qortal name or address');
+        throw new Error(t('group:dm.select_valid_name'));
       }
       if (reticulumDirectEnabled) {
         const result = await publishReticulumDirectEvent({
@@ -1684,7 +1692,7 @@ export const ChatDirect = ({
           expiryDurationMs,
         });
         if (!result?.success) {
-          throw new Error(result?.error || 'Reticulum direct message failed');
+          throw new Error(result?.error || t('group:dm.message_failed'));
         }
         if (isNewChatVar) {
           let getRecipientName = null;
@@ -1755,7 +1763,10 @@ export const ChatDirect = ({
                   .catch((error) => {
                     console.error(
                       'Failed to add timestamp:',
-                      error.message || 'An error occurred'
+                      error.message ||
+                        t('core:message.error.generic', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
                     );
                   });
 
@@ -1801,7 +1812,7 @@ export const ChatDirect = ({
     const destinationHash = hashResult?.destinationHash;
     const identityPublicKeyBase64 = keyResult?.publicKeyBase64;
     if (!destinationHash || !identityPublicKeyBase64) {
-      throw new Error('Reticulum identity is unavailable');
+      throw new Error(t('group:dm.identity_unavailable'));
     }
     return {
       destinationHash,
@@ -1829,7 +1840,7 @@ export const ChatDirect = ({
       }
       const api = (window as any).electronAPI;
       if (!api?.qchatFileSelect) {
-        throw new Error('Reticulum file transfer is unavailable');
+        throw new Error(t('group:dm.transfer_unavailable'));
       }
       const selected = await api.qchatFileSelect();
       if (!selected?.ok || !selected.file) return;
@@ -1872,7 +1883,7 @@ export const ChatDirect = ({
       }
       const api = (window as any).electronAPI;
       if (!api?.qchatFileSend) {
-        throw new Error('Reticulum file transfer is unavailable');
+        throw new Error(t('group:dm.transfer_unavailable'));
       }
       const selectedFile = pendingQchatFileOffer;
       const reticulumIdentity = await getLocalReticulumIdentityForQchatFile();
@@ -1934,7 +1945,7 @@ export const ChatDirect = ({
         });
         if (!registered?.ok) {
           throw new Error(
-            registered?.error || 'Unable to register file transfer'
+            registered?.error || t('group:dm.transfer_register_failed')
           );
         }
         const sent = await sendChatDirect(
@@ -2004,13 +2015,13 @@ export const ChatDirect = ({
           sender: message.sender,
         });
         if (qchatCompletedTransfers[data.transferId]) {
-          throw new Error('This file has already been downloaded');
+          throw new Error(t('group:dm.file_already_downloaded'));
         }
         if (
           Number(data.expiresAt || 0) > 0 &&
           Number(data.expiresAt) <= Date.now()
         ) {
-          throw new Error('This file transfer offer has expired');
+          throw new Error(t('group:dm.file_offer_expired'));
         }
         const senderAddress = data.senderAddress || message.sender;
         if (senderAddress !== message.sender) {
@@ -2019,7 +2030,7 @@ export const ChatDirect = ({
             senderAddress,
             messageSender: message.sender,
           });
-          throw new Error('File offer sender mismatch');
+          throw new Error(t('group:dm.file_sender_mismatch'));
         }
         if (data.recipientAddress && data.recipientAddress !== myAddress) {
           console.error(
@@ -2030,7 +2041,7 @@ export const ChatDirect = ({
               myAddress,
             }
           );
-          throw new Error('File offer is not addressed to this account');
+          throw new Error(t('group:dm.file_not_addressed'));
         }
         const api = (window as any).electronAPI;
         if (!api?.qchatFileChooseSavePath || !api?.qchatFileAccept) {
@@ -2042,7 +2053,7 @@ export const ChatDirect = ({
               hasAccept: Boolean(api?.qchatFileAccept),
             }
           );
-          throw new Error('Reticulum file transfer is unavailable');
+          throw new Error(t('group:dm.transfer_unavailable'));
         }
         console.log('[QchatFileTransfer] choosing save path', {
           transferId: data.transferId,
@@ -2085,7 +2096,7 @@ export const ChatDirect = ({
               transferId: data.transferId,
             }
           );
-          throw new Error('Missing local Qortal public key');
+          throw new Error(t('group:dm.missing_public_key'));
         }
         const authSignedFields = buildQchatFileLinkAuthSignedFields({
           transferId: data.transferId,
@@ -2150,7 +2161,9 @@ export const ChatDirect = ({
             }
           );
           qchatUserTransferIdsRef.current.delete(data.transferId);
-          throw new Error(accepted?.error || 'Unable to accept file transfer');
+          throw new Error(
+            accepted?.error || t('group:dm.transfer_accept_failed')
+          );
         }
         qchatAcceptedOfferMetaRef.current.set(data.transferId, {
           expiresAt: Number(data.expiresAt || 0),
@@ -2342,7 +2355,7 @@ export const ChatDirect = ({
       if (!targetPeerAddress || isNewChat) {
         setInfoSnack({
           type: 'error',
-          message: 'Select a direct chat before attaching files',
+          message: t('group:dm.attach_select_chat'),
         });
         setOpenSnack(true);
         return false;
@@ -2358,7 +2371,7 @@ export const ChatDirect = ({
       if (!sourceIsImage && !filePath) {
         setInfoSnack({
           type: 'error',
-          message: 'This file source cannot be streamed from disk',
+          message: t('group:dm.file_source_not_streamable'),
         });
         setOpenSnack(true);
         return false;
@@ -2406,7 +2419,7 @@ export const ChatDirect = ({
       if (!reticulumDirectEnabled) {
         setInfoSnack({
           type: 'error',
-          message: 'Reticulum direct chat is required for direct attachments',
+          message: t('reticulum:dm.required_for_attachments'),
         });
         setOpenSnack(true);
         return;
@@ -2541,13 +2554,13 @@ export const ChatDirect = ({
       return { images: [], attachments: [] };
     }
     if (!myAddress || !selectedDirect?.address) {
-      throw new Error('Missing direct chat participants');
+      throw new Error(t('group:dm.missing_participants'));
     }
     const conversationId = await reticulumDirectConversationId(
       myAddress,
       selectedDirect.address
     );
-    if (!conversationId) throw new Error('Invalid direct chat conversation');
+    if (!conversationId) throw new Error(t('group:dm.invalid_conversation'));
     const images: Record<string, unknown>[] = [];
     const attachments: Record<string, unknown>[] = [];
     for (const [index, file] of pendingReticulumFiles.entries()) {
@@ -2924,7 +2937,7 @@ export const ChatDirect = ({
             >
               {selectedDirect?.name ||
                 selectedDirect?.address ||
-                'Direct Message'}
+                t('group:dm.direct_message')}
             </Typography>
             {!isSelfDirect &&
               selectedDirect?.name &&
@@ -2956,10 +2969,16 @@ export const ChatDirect = ({
             }}
           >
             {reticulumDirectUiEnabled && reticulumPeerSilence?.active && (
-              <Tooltip title="Unhide user">
+              <Tooltip
+                title={t('reticulum:hide_user.unhide', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
+              >
                 <span>
                   <IconButton
-                    aria-label="Unhide user"
+                    aria-label={t('reticulum:hide_user.unhide', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
                     disabled={reticulumSilenceBusy}
                     onClick={() => void unsilenceReticulumDirectPeer()}
                     size="small"
@@ -3054,16 +3073,16 @@ export const ChatDirect = ({
               <Tooltip
                 title={
                   callMatchesThisDirect && callState === 'connected'
-                    ? 'In call'
+                    ? t('group:support.in_call')
                     : callMatchesThisDirect && callState === 'calling'
                       ? ''
                       : !peerOnline
                         ? t('core:presence.call_offline_tooltip')
                         : directVoiceBlockedByFriend
-                          ? 'Add this user as a friend before calling'
+                          ? t('group:dm.add_friend_before_calling')
                           : directVoiceBlockedByP2p
                             ? p2pHealthBadTooltip
-                            : 'Start voice call'
+                            : t('group:support.start_voice_call')
                 }
               >
                 <span>
@@ -3536,9 +3555,11 @@ export const ChatDirect = ({
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
                 }}
-                title={pendingQchatFileOffer?.name || 'Selected file'}
+                title={
+                  pendingQchatFileOffer?.name || t('group:dm.selected_file')
+                }
               >
-                {pendingQchatFileOffer?.name || 'Selected file'}
+                {pendingQchatFileOffer?.name || t('group:dm.selected_file')}
               </Typography>
               <Typography
                 sx={{ color: theme.palette.text.secondary, fontSize: 12 }}
@@ -3547,7 +3568,7 @@ export const ChatDirect = ({
               </Typography>
             </Box>
             <TextField
-              label="Expires in hours"
+              label={t('group:dm.expires_in_hours')}
               type="number"
               value={qchatFileExpiryHours}
               onChange={(event) =>
@@ -3640,13 +3661,12 @@ export const ChatDirect = ({
             }}
           >
             <Typography sx={{ color: 'inherit', flex: 1, fontSize: 12.5 }}>
-              <strong>DMs expire after 1 month by default</strong> to
-              reduce local storage use. You can change
-              this setting, but only for new messages. Existing messages will
-              keep their current expiry period.
+              <strong>{t('group:dm.expiry_notice')}</strong> to reduce local
+              storage use. You can change this setting, but only for new
+              messages. Existing messages will keep their current expiry period.
             </Typography>
             <IconButton
-              aria-label="Dismiss direct message expiry notice"
+              aria-label={t('group:dm.dismiss_expiry_notice')}
               onClick={dismissDmExpiryNotice}
               size="small"
               sx={{ color: 'inherit', flexShrink: 0 }}
@@ -3737,7 +3757,9 @@ export const ChatDirect = ({
             compactChat={reticulumDirectUiEnabled}
             collapseFormattingTraySignal={formattingTrayResetKey}
             placeholder={
-              reticulumDirectUiEnabled ? 'Send message...' : undefined
+              reticulumDirectUiEnabled
+                ? t('group:dm.send_placeholder')
+                : undefined
             }
           />
           {isCompressingReticulumGif && <ReticulumGifCompressionStatus />}
@@ -3828,7 +3850,7 @@ export const ChatDirect = ({
           }}
         >
           {!reticulumDirectUiEnabled && (
-            <Tooltip title="Transfer file with Reticulum">
+            <Tooltip title={t('group:dm.transfer_file_reticulum')}>
               <span>
                 <IconButton
                   onClick={handleSendQchatFileOffer}
@@ -3879,8 +3901,8 @@ export const ChatDirect = ({
                   }
                   disabledReason={
                     onEditMessage
-                      ? 'Expiry cannot be changed while editing'
-                      : 'Message expiry is unavailable while chat loads'
+                      ? t('group:dm.expiry_locked_editing')
+                      : t('group:dm.expiry_unavailable_loading')
                   }
                   onChange={changeReticulumDirectExpiry}
                   value={reticulumDirectExpiryDurationMs}

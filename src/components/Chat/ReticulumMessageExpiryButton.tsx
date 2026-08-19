@@ -10,6 +10,8 @@ import {
 } from '@mui/material';
 import AllInclusiveRoundedIcon from '@mui/icons-material/AllInclusiveRounded';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
+import LockRoundedIcon from '@mui/icons-material/LockRounded';
+import { useTranslation } from 'react-i18next';
 import { CustomStyledMenu } from '../ContextMenu';
 import {
   formatReticulumExpiryDuration,
@@ -23,6 +25,8 @@ type ReticulumMessageExpiryButtonProps = {
   disabled?: boolean;
   disabledReason?: string;
   onChange: (durationMs: number | undefined) => void;
+  onPreferredExpiryChange?: (durationMs: number | undefined) => void;
+  preferredExpiryDurationMs?: number;
   segmented?: boolean;
   value?: number | null;
 };
@@ -50,6 +54,14 @@ const expiryMenuItemSx = {
     lineHeight: '15px',
   },
   '& .MuiSvgIcon-root': { fontSize: 18 },
+  '& .reticulum-expiry-lock': {
+    opacity: 0,
+    transition: 'color 120ms ease, opacity 120ms ease',
+  },
+  '&:hover .reticulum-expiry-lock, &:focus-within .reticulum-expiry-lock, & .reticulum-expiry-lock--preferred':
+    {
+      opacity: 1,
+    },
 };
 
 const expiryIndicatorLabel = (durationMs?: number): string | null => {
@@ -66,33 +78,62 @@ export function ReticulumMessageExpiryButton({
   disabled = false,
   disabledReason,
   onChange,
+  onPreferredExpiryChange,
+  preferredExpiryDurationMs,
   segmented = false,
   value,
 }: ReticulumMessageExpiryButtonProps) {
+  const { t } = useTranslation(['reticulum']);
   const theme = useTheme();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const effectiveExpiryDurationMs =
     value === null ? undefined : (value ?? channelExpiryDurationMs);
   const indicatorLabel = expiryIndicatorLabel(effectiveExpiryDurationMs);
   const channelDefaultSummary = channelExpiryDurationMs
-    ? `Maximum ${formatReticulumExpiryDuration(channelExpiryDurationMs)}`
-    : 'No expiry';
+    ? t('reticulum:expiry.maximum', {
+        duration: formatReticulumExpiryDuration(channelExpiryDurationMs),
+        postProcess: 'capitalizeFirstChar',
+      })
+    : t('reticulum:expiry.no_expiry', {
+        postProcess: 'capitalizeFirstChar',
+      });
   const channelDefaultLabel = useMemo(
     () =>
       channelExpiryDurationMs
-        ? `Channel default (${formatReticulumExpiryDuration(channelExpiryDurationMs)})`
-        : 'Channel default (no expiry)',
-    [channelExpiryDurationMs]
+        ? t('reticulum:expiry.channel_default_with', {
+            duration: formatReticulumExpiryDuration(channelExpiryDurationMs),
+            postProcess: 'capitalizeFirstChar',
+          })
+        : t('reticulum:expiry.channel_default_no_expiry', {
+            postProcess: 'capitalizeFirstChar',
+          }),
+    [channelExpiryDurationMs, t]
   );
   const tooltip = disabled
-    ? disabledReason || 'Message expiry is unavailable'
+    ? disabledReason ||
+      t('reticulum:expiry.unavailable', {
+        postProcess: 'capitalizeFirstChar',
+      })
     : segmented
-      ? 'Message expiry'
+      ? t('reticulum:expiry.title', {
+          postProcess: 'capitalizeFirstChar',
+        })
       : value === null
-        ? 'Message expiry: No expiry'
+        ? t('reticulum:expiry.tooltip_value', {
+            postProcess: 'capitalizeFirstChar',
+            value: t('reticulum:expiry.no_expiry', {
+              postProcess: 'capitalizeFirstChar',
+            }),
+          })
         : value
-          ? `Message expiry: ${formatReticulumExpiryDuration(value)}`
-          : `Message expiry: ${channelDefaultLabel}`;
+          ? t('reticulum:expiry.tooltip_value', {
+              postProcess: 'capitalizeFirstChar',
+              value: formatReticulumExpiryDuration(value),
+            })
+          : t('reticulum:expiry.tooltip_value', {
+              postProcess: 'capitalizeFirstChar',
+              value: channelDefaultLabel,
+            });
 
   useEffect(() => {
     if (disabled) setAnchorEl(null);
@@ -118,7 +159,9 @@ export function ReticulumMessageExpiryButton({
           }
         >
           <IconButton
-            aria-label="Set message expiry"
+            aria-label={t('reticulum:expiry.set', {
+              postProcess: 'capitalizeFirstChar',
+            })}
             aria-haspopup="menu"
             aria-expanded={anchorEl ? 'true' : undefined}
             disabled={disabled}
@@ -182,7 +225,9 @@ export function ReticulumMessageExpiryButton({
             ) : (
               <AllInclusiveRoundedIcon
                 sx={{ color: 'inherit' }}
-                titleAccess="No expiry"
+                titleAccess={t('reticulum:expiry.no_expiry', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
               />
             )}
           </IconButton>
@@ -220,8 +265,22 @@ export function ReticulumMessageExpiryButton({
               ) : null}
             </ListItemIcon>
             <ListItemText
-              primary={direct ? 'No expiry' : 'Channel default'}
-              secondary={direct ? 'Do not auto-delete' : channelDefaultSummary}
+              primary={
+                direct
+                  ? t('reticulum:expiry.no_expiry', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+                  : t('reticulum:expiry.channel_default', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+              }
+              secondary={
+                direct
+                  ? t('reticulum:expiry.do_not_auto_delete', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+                  : channelDefaultSummary
+              }
             />
           </MenuItem>
           {RETICULUM_MESSAGE_EXPIRY_OPTIONS.map((option) => {
@@ -229,13 +288,26 @@ export function ReticulumMessageExpiryButton({
               option.durationMs,
               channelExpiryDurationMs
             );
+            const isPreferred = preferredExpiryDurationMs === option.durationMs;
+            const preferenceAvailable = Boolean(onPreferredExpiryChange);
             return (
               <MenuItem
-                disabled={!allowed}
+                disabled={!allowed && !preferenceAvailable}
                 key={option.durationMs}
                 selected={value === option.durationMs}
-                onClick={() => select(option.durationMs)}
-                sx={expiryMenuItemSx}
+                onClick={() => {
+                  if (allowed) select(option.durationMs);
+                }}
+                sx={{
+                  ...expiryMenuItemSx,
+                  ...(!allowed && preferenceAvailable
+                    ? {
+                        '& .MuiListItemIcon-root, & .MuiListItemText-root': {
+                          opacity: theme.palette.action.disabledOpacity,
+                        },
+                      }
+                    : {}),
+                }}
               >
                 <ListItemIcon>
                   {value === option.durationMs ? <CheckRoundedIcon /> : null}
@@ -245,11 +317,62 @@ export function ReticulumMessageExpiryButton({
                   secondary={
                     allowed || !channelExpiryDurationMs
                       ? undefined
-                      : `Channel maximum is ${formatReticulumExpiryDuration(
-                          channelExpiryDurationMs
-                        )}`
+                      : t('reticulum:expiry.maximum', {
+                          duration: formatReticulumExpiryDuration(
+                            channelExpiryDurationMs
+                          ),
+                          postProcess: 'capitalizeFirstChar',
+                        })
                   }
                 />
+                {onPreferredExpiryChange && (
+                  <Tooltip
+                    title={t('reticulum:expiry.preferred_locked', {
+                      postProcess: 'capitalizeFirstChar',
+                    })}
+                    placement="right"
+                  >
+                    <IconButton
+                      aria-label={
+                        isPreferred
+                          ? t('reticulum:expiry.remove_preferred', {
+                              duration: option.label,
+                              postProcess: 'capitalizeFirstChar',
+                            })
+                          : t('reticulum:expiry.lock_preferred', {
+                              duration: option.label,
+                              postProcess: 'capitalizeFirstChar',
+                            })
+                      }
+                      className={`reticulum-expiry-lock${
+                        isPreferred ? ' reticulum-expiry-lock--preferred' : ''
+                      }`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onPreferredExpiryChange(
+                          isPreferred ? undefined : option.durationMs
+                        );
+                      }}
+                      onKeyDown={(event) => event.stopPropagation()}
+                      onMouseDown={(event) => event.stopPropagation()}
+                      size="small"
+                      sx={{
+                        color: isPreferred ? 'primary.main' : 'text.disabled',
+                        flexShrink: 0,
+                        height: 28,
+                        ml: 0.5,
+                        width: 28,
+                        '&:hover': {
+                          backgroundColor: 'action.hover',
+                          color: isPreferred ? 'primary.light' : 'text.primary',
+                        },
+                      }}
+                    >
+                      <LockRoundedIcon sx={{ fontSize: '16px !important' }} />
+                    </IconButton>
+                  </Tooltip>
+                )}
               </MenuItem>
             );
           })}

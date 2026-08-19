@@ -7,6 +7,7 @@ import {
 } from '@mui/material';
 import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded';
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
+import { useTranslation } from 'react-i18next';
 
 export type ReticulumSilenceContext = {
   disabled?: boolean;
@@ -30,6 +31,7 @@ export const ReticulumHideUserAction = ({
   initiallyShowDurations = false,
   menuItemSx,
 }: ReticulumHideUserActionProps) => {
+  const { t } = useTranslation(['reticulum']);
   const [silence, setSilence] = useState<any>(null);
   const [showDurations, setShowDurations] = useState(initiallyShowDurations);
   const [isLoading, setIsLoading] = useState(false);
@@ -74,7 +76,11 @@ export const ReticulumHideUserAction = ({
         <ListItemIcon>
           <VisibilityOffRoundedIcon />
         </ListItemIcon>
-        <ListItemText primary="Hide" />
+        <ListItemText
+          primary={t('reticulum:hide_user.hide', {
+            postProcess: 'capitalizeFirstChar',
+          })}
+        />
       </MenuItem>
     );
   }
@@ -91,7 +97,12 @@ export const ReticulumHideUserAction = ({
         context.groupId
       );
       if (!result?.success) {
-        throw new Error(result?.error || 'Unable to hide user');
+        throw new Error(
+          result?.error ||
+            t('reticulum:hide_user.error_hide', {
+              postProcess: 'capitalizeFirstChar',
+            })
+        );
       }
       handleClose();
     } catch (error) {
@@ -112,7 +123,12 @@ export const ReticulumHideUserAction = ({
         context.groupId
       );
       if (!result?.success) {
-        throw new Error(result?.error || 'Unable to unhide user');
+        throw new Error(
+          result?.error ||
+            t('reticulum:hide_user.error_unhide', {
+              postProcess: 'capitalizeFirstChar',
+            })
+        );
       }
       handleClose();
     } catch (error) {
@@ -124,11 +140,7 @@ export const ReticulumHideUserAction = ({
 
   if (silence?.active) {
     return (
-      <MenuItem
-        disabled={isLoading}
-        onClick={clearSilence}
-        sx={menuItemSx}
-      >
+      <MenuItem disabled={isLoading} onClick={clearSilence} sx={menuItemSx}>
         <ListItemIcon>
           {isLoading ? (
             <CircularProgress size={17} />
@@ -136,7 +148,11 @@ export const ReticulumHideUserAction = ({
             <VisibilityRoundedIcon />
           )}
         </ListItemIcon>
-        <ListItemText primary="Unhide" />
+        <ListItemText
+          primary={t('reticulum:hide_user.unhide', {
+            postProcess: 'capitalizeFirstChar',
+          })}
+        />
       </MenuItem>
     );
   }
@@ -154,7 +170,11 @@ export const ReticulumHideUserAction = ({
         <ListItemIcon>
           <VisibilityOffRoundedIcon />
         </ListItemIcon>
-        <ListItemText primary="Hide" />
+        <ListItemText
+          primary={t('reticulum:hide_user.hide', {
+            postProcess: 'capitalizeFirstChar',
+          })}
+        />
       </MenuItem>
     );
   }
@@ -169,7 +189,11 @@ export const ReticulumHideUserAction = ({
         <ListItemIcon>
           <VisibilityOffRoundedIcon />
         </ListItemIcon>
-        <ListItemText primary="Hide for 1 hour" />
+        <ListItemText
+          primary={t('reticulum:hide_user.for_1_hour', {
+            postProcess: 'capitalizeFirstChar',
+          })}
+        />
       </MenuItem>
       <MenuItem
         disabled={isLoading}
@@ -179,7 +203,11 @@ export const ReticulumHideUserAction = ({
         <ListItemIcon>
           <VisibilityOffRoundedIcon />
         </ListItemIcon>
-        <ListItemText primary="Hide for 24 hours" />
+        <ListItemText
+          primary={t('reticulum:hide_user.for_24_hours', {
+            postProcess: 'capitalizeFirstChar',
+          })}
+        />
       </MenuItem>
       <MenuItem
         disabled={isLoading}
@@ -193,7 +221,11 @@ export const ReticulumHideUserAction = ({
             <VisibilityOffRoundedIcon />
           )}
         </ListItemIcon>
-        <ListItemText primary="Hide until unhidden" />
+        <ListItemText
+          primary={t('reticulum:hide_user.until_unhidden', {
+            postProcess: 'capitalizeFirstChar',
+          })}
+        />
       </MenuItem>
     </>
   );

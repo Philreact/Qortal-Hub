@@ -2,17 +2,19 @@ import { Box, Typography, alpha, useTheme } from '@mui/material';
 import CallRoundedIcon from '@mui/icons-material/CallRounded';
 import CallReceivedRoundedIcon from '@mui/icons-material/CallReceivedRounded';
 import CallMadeRoundedIcon from '@mui/icons-material/CallMadeRounded';
+import { useTranslation } from 'react-i18next';
 
-const LABELS: Record<string, string> = {
-  answered: 'Voice call',
-  declined: 'Declined voice call',
-  missed: 'Missed voice call',
-  cancelled: 'Cancelled voice call',
-  no_answer: 'No answer',
+const LABEL_KEYS: Record<string, string> = {
+  answered: 'reticulum:call_history.answered',
+  declined: 'reticulum:call_history.declined',
+  missed: 'reticulum:call_history.missed',
+  cancelled: 'reticulum:call_history.cancelled',
+  no_answer: 'reticulum:call_history.no_answer',
 };
 
 export const DirectCallHistoryRow = ({ record }: { record: any }) => {
   const theme = useTheme();
+  const { t } = useTranslation(['reticulum']);
   const missed = record?.outcome === 'missed';
   const answered = record?.outcome === 'answered';
   const color = missed
@@ -45,7 +47,9 @@ export const DirectCallHistoryRow = ({ record }: { record: any }) => {
     >
       <Icon sx={{ color, fontSize: 18 }} />
       <Typography sx={{ color, fontSize: 13, fontWeight: missed ? 600 : 500 }}>
-        {LABELS[record?.outcome] || 'Voice call'}
+        {t(LABEL_KEYS[record?.outcome] || 'reticulum:call_history.answered', {
+          postProcess: 'capitalizeFirstChar',
+        })}
       </Typography>
       {timestamp > 0 && (
         <Typography sx={{ color: 'text.secondary', fontSize: 11 }}>

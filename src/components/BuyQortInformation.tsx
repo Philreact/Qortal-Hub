@@ -28,13 +28,7 @@ import { SUGGESTED_QORTS } from '../constants/constants';
 export const BuyQortInformation = ({ balance }) => {
   const [isOpen, setIsOpen] = useState(false);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const openBuyQortInfoFunc = useCallback(
     (e) => {

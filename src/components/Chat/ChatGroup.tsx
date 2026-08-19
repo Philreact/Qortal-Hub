@@ -77,6 +77,7 @@ import {
   MenuItem,
   Popover,
   Portal,
+  SvgIcon,
   TextField,
   Tooltip,
   Typography,
@@ -181,8 +182,10 @@ import { mergeReticulumPayloadWithVerifiedEnvelope } from '../../utils/reticulum
 import {
   buildReticulumMessageExpiryPayload,
   formatReticulumExpiryDuration,
-  isReticulumMessageExpiryOptionAllowed,
+  loadReticulumMessageExpiryPreference,
   RETICULUM_MESSAGE_EXPIRY_OPTIONS,
+  resolveReticulumPreferredMessageExpiryDurationMs,
+  saveReticulumMessageExpiryPreference,
 } from './reticulumMessageExpiry';
 
 type PendingReticulumResourceFile = {
@@ -217,9 +220,7 @@ type ReticulumGroupChannel = {
 type ReticulumGroupChannelWriteMode = 'members' | 'admins';
 type ReticulumGroupChannelReadMode = 'members' | 'admins';
 type ReticulumGroupChannelAccessMode =
-  | 'regular'
-  | 'admin_write'
-  | 'admin_private';
+  'regular' | 'admin_write' | 'admin_private';
 
 type ReticulumSearchResult = {
   event: {
@@ -464,6 +465,11 @@ const escapeReticulumMessageHtml = (value: string) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
+/**
+ * Deliberately NOT translated: these are published as real chat messages over
+ * Reticulum, so the sender's locale would decide what every other member reads
+ * and the group history would end up mixed-language. Keep them English.
+ */
 const RETICULUM_GROUP_WELCOME_TEMPLATES = [
   (mention: string) =>
     `Welcome to the group, ${mention}! Glad to have you here.`,
@@ -552,6 +558,13 @@ function ReticulumChannelExpiryField({
   onChange: (durationMs: number | undefined) => void;
   value?: number;
 }) {
+  const { t } = useTranslation([
+    'auth',
+    'core',
+    'group',
+    'question',
+    'reticulum',
+  ]);
   const normalizedValue =
     Number.isFinite(value) && Number(value) > 0 ? Number(value) : '';
   const hasCustomValue =
@@ -572,7 +585,7 @@ function ReticulumChannelExpiryField({
           mb: 1,
         }}
       >
-        Channel expiry
+        {t('group:chat_group.channel_expiry_label')}
       </Typography>
       <TextField
         fullWidth
@@ -592,13 +605,19 @@ function ReticulumChannelExpiryField({
             const durationMs = Number(selected);
             return Number.isFinite(durationMs) && durationMs > 0
               ? formatReticulumExpiryDuration(durationMs)
-              : 'No Expiry';
+              : t('reticulum:expiry.no_expiry', {
+                  postProcess: 'capitalizeEachFirstChar',
+                });
           },
         }}
         sx={reticulumDialogTextFieldSx}
         value={normalizedValue}
       >
-        <MenuItem value="">No Expiry</MenuItem>
+        <MenuItem value="">
+          {t('reticulum:expiry.no_expiry', {
+            postProcess: 'capitalizeEachFirstChar',
+          })}
+        </MenuItem>
         {hasCustomValue && (
           <MenuItem value={normalizedValue}>
             {formatReticulumExpiryDuration(Number(normalizedValue))}
@@ -618,8 +637,7 @@ function ReticulumChannelExpiryField({
           mt: 0.75,
         }}
       >
-        Applies to existing and future messages. A message can choose a shorter
-        expiry.
+        {t('group:chat_group.channel_expiry_hint')}
       </Typography>
     </Box>
   );
@@ -630,23 +648,25 @@ const ReticulumMegaphoneIcon = (props) => (
     <path d="M20.5 4.75c0-.79-.87-1.27-1.54-.85L10.1 9.4H5.25A2.25 2.25 0 0 0 3 11.65v.7a2.25 2.25 0 0 0 2.25 2.25H6.4l1.52 4.18c.22.6.78.99 1.42.99h2.06c.72 0 1.2-.74.91-1.4l-1.63-3.75 8.28 5.48c.67.43 1.54-.05 1.54-.85V4.75Z" />
   </SvgIcon>
 );
+// Labels resolve through t() at render time; keys here keep the module free of
+// hook usage while staying translatable.
 const reticulumChannelTypeOptions = [
   {
-    description: 'Everyone can\nread and write.',
+    descriptionKey: 'group:chat_group.channel_type_open_desc',
     icon: PublicRoundedIcon,
-    label: 'Open',
+    labelKey: 'group:chat_group.channel_type_open',
     value: RETICULUM_CHANNEL_ACCESS_REGULAR,
   },
   {
-    description: 'Only admins can post. Everyone can read.',
+    descriptionKey: 'group:chat_group.admins_only_post',
     icon: LockRoundedIcon,
-    label: 'Read-only',
+    labelKey: 'group:chat_group.channel_type_readonly',
     value: RETICULUM_CHANNEL_ACCESS_ADMIN_WRITE,
   },
   {
-    description: 'Only admins and the group owner can access.',
+    descriptionKey: 'group:chat_group.admins_only_access',
     icon: VisibilityOffRoundedIcon,
-    label: 'Admin',
+    labelKey: 'group:chat_group.channel_type_admin',
     value: RETICULUM_CHANNEL_ACCESS_ADMIN_PRIVATE,
   },
 ] as const;
@@ -850,6 +870,7 @@ function ReticulumSortableChannelButton({
   unreadCount,
   replyCount,
 }: ReticulumSortableChannelButtonProps) {
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: reticulumChannelDragId(channel.channelId),
     disabled: !isAdmin,
@@ -982,7 +1003,7 @@ function ReticulumSortableChannelButton({
             title={
               mentionCount > 1
                 ? `${mentionCount} unread mentions`
-                : 'Unread mention'
+                : t('group:chat_group.unread_mention')
             }
           >
             <Box
@@ -1020,8 +1041,8 @@ function ReticulumSortableChannelButton({
               replyCount > 1
                 ? `${replyCount} unread replies`
                 : replyCount === 1
-                  ? 'Unread reply'
-                  : 'Unread messages'
+                  ? t('group:chat_group.unread_reply')
+                  : t('group:chat_group.unread_messages')
             }
           >
             <Box
@@ -1104,6 +1125,7 @@ function ReticulumSortableCategory({
   onToggleCollapsed: (categoryId: string) => void;
 }) {
   const theme = useTheme();
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const { attributes, listeners, setNodeRef, isDragging } = useSortable({
     id: reticulumCategoryDragId(category.categoryId),
     disabled: !isAdmin,
@@ -1216,7 +1238,7 @@ function ReticulumSortableCategory({
             )}
           </Box>
           {isAdmin && (
-            <Tooltip title="Create Channel">
+            <Tooltip title={t('group:chat_group.create_channel')}>
               <IconButton
                 className="reticulum-category-create-channel"
                 size="small"
@@ -1348,9 +1370,7 @@ export const ChatGroup = ({
   const userInfo = useAtomValue(userInfoAtom);
   const balance = useAtomValue(balanceAtom);
   const reticulumChatTextScale = useAtomValue(reticulumChatTextScaleAtom);
-  const legacyThreadsEnabled = useAtomValue(
-    reticulumLegacyThreadsEnabledAtom
-  );
+  const legacyThreadsEnabled = useAtomValue(reticulumLegacyThreadsEnabledAtom);
   const [qManagerPopupSize, setQManagerPopupSize] = useAtom(
     groupQManagerPopupSizeAtom
   );
@@ -1476,6 +1496,10 @@ export const ChatGroup = ({
     reticulumMessageExpiryDurationMs,
     setReticulumMessageExpiryDurationMs,
   ] = useState<number | undefined>(undefined);
+  const [
+    reticulumPreferredExpiryDurationMs,
+    setReticulumPreferredExpiryDurationMs,
+  ] = useState<number | undefined>(undefined);
   const [reticulumChannels, setReticulumChannels] = useState<
     ReticulumGroupChannel[]
   >([]);
@@ -1504,8 +1528,10 @@ export const ChatGroup = ({
   );
   const [reticulumSearchOpen, setReticulumSearchOpen] = useState(false);
   const [reticulumCalendarOpen, setReticulumCalendarOpen] = useState(false);
-  const [reticulumCalendarSystemOccurrences, setReticulumCalendarSystemOccurrences] =
-    useState<ReticulumCalendarOccurrence[]>([]);
+  const [
+    reticulumCalendarSystemOccurrences,
+    setReticulumCalendarSystemOccurrences,
+  ] = useState<ReticulumCalendarOccurrence[]>([]);
   const [reticulumCalendarSystemNow, setReticulumCalendarSystemNow] = useState(
     Date.now()
   );
@@ -1864,7 +1890,7 @@ export const ChatGroup = ({
     'core',
     'group',
     'question',
-    'tutorial',
+    'reticulum',
   ]);
 
   const maxQManagerWidth = Math.max(Q_MANAGER_MIN_WIDTH, windowSize.width);
@@ -1994,7 +2020,10 @@ export const ChatGroup = ({
                   .catch((error) => {
                     console.error(
                       'Failed to add timestamp:',
-                      error.message || 'An error occurred'
+                      error.message ||
+                        t('core:message.error.generic', {
+                          postProcess: 'capitalizeFirstChar',
+                        })
                     );
                   });
 
@@ -2129,10 +2158,7 @@ export const ChatGroup = ({
         setReticulumChannelMetadataVisibleGroupId(String(groupId));
       }
       if (!cancelled && lastError) {
-        console.warn(
-          'Unable to finish loading Reticulum chat channels',
-          lastError
-        );
+        console.warn(t('group:chat_group.load_channels_failed'), lastError);
       }
     })();
 
@@ -2346,24 +2372,49 @@ export const ChatGroup = ({
         : undefined);
 
   useEffect(() => {
-    setReticulumMessageExpiryDurationMs(undefined);
-  }, [selectedGroup, selectedReticulumChannelId]);
-
-  useEffect(() => {
-    setReticulumMessageExpiryDurationMs((current) =>
-      current === undefined ||
-      isReticulumMessageExpiryOptionAllowed(
-        current,
-        selectedReticulumChannelExpiryDurationMs
-      )
-        ? current
-        : undefined
+    setReticulumPreferredExpiryDurationMs(
+      loadReticulumMessageExpiryPreference(myAddress, selectedGroup)
     );
-  }, [selectedReticulumChannelExpiryDurationMs]);
+  }, [myAddress, selectedGroup]);
 
   useEffect(() => {
-    if (onEditMessage) setReticulumMessageExpiryDurationMs(undefined);
-  }, [onEditMessage]);
+    setReticulumMessageExpiryDurationMs(
+      onEditMessage
+        ? undefined
+        : resolveReticulumPreferredMessageExpiryDurationMs(
+            reticulumPreferredExpiryDurationMs,
+            selectedReticulumChannelExpiryDurationMs
+          )
+    );
+  }, [
+    onEditMessage,
+    reticulumPreferredExpiryDurationMs,
+    selectedGroup,
+    selectedReticulumChannelExpiryDurationMs,
+    selectedReticulumChannelId,
+  ]);
+
+  const changeReticulumPreferredExpiry = useCallback(
+    (durationMs: number | undefined) => {
+      if (
+        !saveReticulumMessageExpiryPreference(
+          myAddress,
+          selectedGroup,
+          durationMs
+        )
+      ) {
+        return;
+      }
+      setReticulumPreferredExpiryDurationMs(durationMs);
+      setReticulumMessageExpiryDurationMs(
+        resolveReticulumPreferredMessageExpiryDurationMs(
+          durationMs,
+          selectedReticulumChannelExpiryDurationMs
+        )
+      );
+    },
+    [myAddress, selectedGroup, selectedReticulumChannelExpiryDurationMs]
+  );
   const reticulumVisibleChannelIds = useMemo(
     () =>
       new Set(
@@ -2469,8 +2520,7 @@ export const ChatGroup = ({
     const nextBoundary = reticulumCalendarSystemOccurrences.reduce(
       (closest, occurrence) => {
         const boundaries = [
-          occurrence.occurrenceStart -
-            RETICULUM_CALENDAR_TEN_MINUTES_MS,
+          occurrence.occurrenceStart - RETICULUM_CALENDAR_TEN_MINUTES_MS,
           occurrence.occurrenceStart,
         ];
         for (const boundary of boundaries) {
@@ -2556,7 +2606,7 @@ export const ChatGroup = ({
       const creator = escapeReticulumMessageHtml(creatorName);
       const title = escapeReticulumMessageHtml(occurrence.title);
       const description = escapeReticulumMessageHtml(
-        occurrence.description || 'Not specified'
+        occurrence.description || t('group:chat_group.not_specified')
       );
 
       if (
@@ -2568,7 +2618,12 @@ export const ChatGroup = ({
             occurrence,
             'ten-minutes',
             occurrence.occurrenceStart - RETICULUM_CALENDAR_TEN_MINUTES_MS,
-            `<p><strong>${creator}'s Event will start in 10 minutes.</strong><br><strong>Details</strong><br>Title: ${title}<br>Description: ${description}</p>`
+            t('group:chat_group.event_soon_html', {
+              creator,
+              description,
+              interpolation: { escapeValue: false },
+              title,
+            })
           )
         );
       }
@@ -2579,7 +2634,12 @@ export const ChatGroup = ({
             occurrence,
             'started',
             occurrence.occurrenceStart,
-            `<p><strong>${creator}'s Event has begun!</strong><br><strong>Details</strong><br>Title: ${title}<br>Description: ${description}</p>`
+            t('group:chat_group.event_begun_html', {
+              creator,
+              description,
+              interpolation: { escapeValue: false },
+              title,
+            })
           )
         );
       }
@@ -2849,7 +2909,12 @@ export const ChatGroup = ({
           groupId
         );
         if (!result?.success) {
-          throw new Error(result?.error || 'Unable to unhide user');
+          throw new Error(
+            result?.error ||
+              t('reticulum:hide_user.error_unhide', {
+                postProcess: 'capitalizeFirstChar',
+              })
+          );
         }
         setReticulumHiddenAuthorAddresses((current) => {
           if (!current.has(address)) return current;
@@ -2859,7 +2924,11 @@ export const ChatGroup = ({
         });
       } catch (error) {
         setReticulumHiddenUsersError(
-          error instanceof Error ? error.message : 'Unable to unhide user'
+          error instanceof Error
+            ? error.message
+            : t('reticulum:hide_user.error_unhide', {
+                postProcess: 'capitalizeFirstChar',
+              })
         );
       } finally {
         setReticulumUnhidingAddress('');
@@ -2921,7 +2990,7 @@ export const ChatGroup = ({
       return `#${selectedChannelName}`;
     }
     if (reticulumSearchChannelFilter === RETICULUM_SEARCH_CHANNEL_ALL) {
-      return 'All channels';
+      return t('group:chat_group.all_channels');
     }
     return `#${
       reticulumVisibleChannelNameById.get(reticulumSearchChannelFilter) ||
@@ -2933,29 +3002,37 @@ export const ChatGroup = ({
     selectedReticulumChannelId,
   ]);
   const reticulumSearchAuthorFilterLabel = useMemo(() => {
-    if (!reticulumSearchAuthorFilter) return 'Anyone';
+    if (!reticulumSearchAuthorFilter)
+      return t('group:chat_group.filter_anyone');
     return (
       reticulumSearchAuthorOptions.find(
         (author) => author.address === reticulumSearchAuthorFilter
       )?.name || reticulumSearchAuthorFilter
     );
-  }, [reticulumSearchAuthorFilter, reticulumSearchAuthorOptions]);
-  const reticulumSearchHasFilterLabel =
+  }, [reticulumSearchAuthorFilter, reticulumSearchAuthorOptions, t]);
+  const reticulumSearchHasFilterLabel = t(
     reticulumSearchHasFilter === RETICULUM_SEARCH_HAS_ATTACHMENT
-      ? 'Attachment'
+      ? 'reticulum:search.has.attachment'
       : reticulumSearchHasFilter === RETICULUM_SEARCH_HAS_LINK
-        ? 'Link'
-        : 'Anything';
-  const reticulumSearchSortLabel =
+        ? 'reticulum:search.has.link'
+        : 'reticulum:search.has.any',
+    { postProcess: 'capitalizeFirstChar' }
+  );
+  const reticulumSearchSortLabel = t(
     reticulumSearchSort === 'newest'
-      ? 'Newest'
+      ? 'reticulum:search.sort.newest'
       : reticulumSearchSort === 'oldest'
-        ? 'Oldest'
-        : 'Relevant';
+        ? 'reticulum:search.sort.oldest'
+        : 'reticulum:search.sort.relevance',
+    { postProcess: 'capitalizeFirstChar' }
+  );
   const reticulumSearchDateFilterLabel =
     reticulumSearchAfterDate || reticulumSearchBeforeDate
-      ? `${reticulumSearchAfterDate || 'any'} -> ${reticulumSearchBeforeDate || 'any'}`
-      : 'Any time';
+      ? t('reticulum:search.date_range', {
+          after: reticulumSearchAfterDate || t('reticulum:search.date_any'),
+          before: reticulumSearchBeforeDate || t('reticulum:search.date_any'),
+        })
+      : t('group:chat_group.any_time');
   const reticulumSearchVisiblePageNumbers = useMemo(() => {
     const pages = new Set<number>([0, reticulumSearchPage]);
     if (reticulumSearchPage > 0) pages.add(reticulumSearchPage - 1);
@@ -3293,14 +3370,14 @@ export const ChatGroup = ({
             label: 'here',
             section: 'special',
             kind: 'here',
-            description: 'Notify members currently online',
+            description: t('group:chat_group.notify_online'),
           },
           {
             id: 'everyone',
             label: 'everyone',
             section: 'special',
             kind: 'everyone',
-            description: 'Notify all members in this space',
+            description: t('group:chat_group.notify_all'),
           },
         ]
       : [];
@@ -3312,7 +3389,7 @@ export const ChatGroup = ({
             label: selectedGroupName,
             section: 'channels',
             kind: 'group',
-            description: 'Open group chat',
+            description: t('group:chat_group.open_group_chat'),
             iconText: '@',
           },
         ]
@@ -4256,7 +4333,10 @@ export const ChatGroup = ({
     }) => {
       const groupId = Number(selectedGroup);
       if (!reticulumChatEnabled || !Number.isInteger(groupId) || groupId <= 0) {
-        return { success: false, error: 'Reticulum chat is disabled' };
+        return {
+          success: false,
+          error: t('reticulum:chat_group.disabled'),
+        };
       }
       const timestamp = Date.now();
       const eventId = crypto.randomUUID?.() || `${timestamp}-${uid.rnd()}`;
@@ -4280,7 +4360,7 @@ export const ChatGroup = ({
         !Number.isInteger(authorSequence.authorSeq) ||
         authorSequence.authorSeq <= 0
       ) {
-        throw new Error('Unable to reserve Reticulum chat event sequence');
+        throw new Error(t('reticulum:chat_group.reserve_seq_failed'));
       }
       let sequenceCommitted = false;
       try {
@@ -4307,11 +4387,11 @@ export const ChatGroup = ({
         );
         if (!signed || signed.error) {
           throw new Error(
-            signed?.error || 'Unable to sign Reticulum chat event'
+            signed?.error || t('reticulum:chat_group.sign_failed')
           );
         }
         if (signed.authorAddress !== myAddress) {
-          throw new Error('Signed Reticulum chat author mismatch');
+          throw new Error(t('reticulum:chat_group.author_mismatch'));
         }
         const event = {
           ...baseFields,
@@ -4321,7 +4401,9 @@ export const ChatGroup = ({
         };
         const result = await publishReticulumChatEvent(event);
         if (!result?.success) {
-          throw new Error(result?.error || 'Reticulum chat publish failed');
+          throw new Error(
+            result?.error || t('reticulum:chat_group.publish_failed')
+          );
         }
         sequenceCommitted = true;
         return { ...result, event };
@@ -4336,7 +4418,7 @@ export const ChatGroup = ({
             );
           } catch (releaseError) {
             console.warn(
-              'Unable to release Reticulum chat event sequence',
+              t('reticulum:chat_group.release_seq_failed'),
               releaseError
             );
           }
@@ -4468,7 +4550,9 @@ export const ChatGroup = ({
           mentionTargets: objectMessage.mentionTargets,
         });
         if (!result?.success) {
-          throw new Error(result?.error || 'Reticulum welcome publish failed');
+          throw new Error(
+            result?.error || t('reticulum:chat_group.welcome_failed')
+          );
         }
         try {
           window.localStorage.setItem(storageKey, 'published');
@@ -5056,7 +5140,9 @@ export const ChatGroup = ({
             .filter((file) => !file.isImage)
             .map(async (file) => {
               if (!file.filePath) {
-                throw new Error('File attachments require a local file path');
+                throw new Error(
+                  t('group:chat_group.attachments_need_local_path')
+                );
               }
               const imported =
                 await window.reticulumResources?.importFilePath?.({
@@ -5115,7 +5201,9 @@ export const ChatGroup = ({
           replyToEventId: reticulumDiscussionRootId,
         });
         if (!result?.success) {
-          throw new Error(result?.error || 'Unable to send discussion reply');
+          throw new Error(
+            result?.error || t('group:chat_group.discussion_reply_failed')
+          );
         }
         setReticulumDiscussionFiles((current) => {
           current.forEach((file) => {
@@ -5136,7 +5224,7 @@ export const ChatGroup = ({
           message:
             error instanceof Error
               ? error.message
-              : 'Unable to send discussion reply',
+              : t('group:chat_group.discussion_reply_failed'),
         });
         setOpenSnack(true);
         return false;
@@ -5284,7 +5372,7 @@ export const ChatGroup = ({
           console.error('[ReticulumChat] search failed', error);
           setReticulumSearchResults([]);
           setReticulumSearchHasNextPage(false);
-          setReticulumSearchError('Search failed');
+          setReticulumSearchError(t('group:chat_group.search_failed'));
         } finally {
           if (reticulumSearchRequestSeqRef.current === requestSeq) {
             setIsReticulumSearchLoading(false);
@@ -5438,7 +5526,7 @@ export const ChatGroup = ({
         );
         setInfoSnack({
           type: 'error',
-          message: 'Unable to load search result',
+          message: t('group:chat_group.search_result_failed'),
         });
         setOpenSnack(true);
       } finally {
@@ -5498,7 +5586,7 @@ export const ChatGroup = ({
       );
       setInfoSnack({
         type: 'error',
-        message: 'Unable to load search result',
+        message: t('group:chat_group.search_result_failed'),
       });
       setOpenSnack(true);
     }
@@ -5778,6 +5866,7 @@ export const ChatGroup = ({
       selectedReticulumChannelId
     );
     const latestSummaryTimestamp = Math.max(
+      Number(channelSummary?.readThroughTimestamp) || 0,
       Number(channelSummary?.lastEvent?.timestamp) || 0,
       Number(channelSummary?.updatedAt) || 0
     );
@@ -5864,6 +5953,7 @@ export const ChatGroup = ({
     );
     const latestTimestamp = Math.max(
       latestVisibleTimestamp,
+      Number(channelSummary?.readThroughTimestamp) || 0,
       Number(channelSummary?.lastEvent?.timestamp) || 0,
       Number(channelSummary?.updatedAt) || 0
     );
@@ -5990,7 +6080,7 @@ export const ChatGroup = ({
       )
         return;
       if (!canWriteSelectedReticulumChannel) {
-        throw new Error('Only group admins can write in this channel');
+        throw new Error(t('group:chat_group.admins_only_write'));
       }
       if (isPrivate === null)
         throw new Error(
@@ -6243,7 +6333,7 @@ export const ChatGroup = ({
                     };
                   }
                   if (!base64) {
-                    throw new Error('Reticulum image file is not available');
+                    throw new Error(t('group:chat_group.image_unavailable'));
                   }
                   const imported =
                     await window.reticulumResources?.importBase64?.({
@@ -6298,7 +6388,7 @@ export const ChatGroup = ({
                   .map(async (file) => {
                     if (!file.filePath) {
                       throw new Error(
-                        'File attachments require a local file path'
+                        t('group:chat_group.attachments_need_local_path')
                       );
                     }
                     const imported =
@@ -6419,7 +6509,12 @@ export const ChatGroup = ({
         setIsDeleteImage(false);
         setChatImagesToSave([]);
         clearPendingReticulumFiles();
-        setReticulumMessageExpiryDurationMs(undefined);
+        setReticulumMessageExpiryDurationMs(
+          resolveReticulumPreferredMessageExpiryDurationMs(
+            reticulumPreferredExpiryDurationMs,
+            selectedReticulumChannelExpiryDurationMs
+          )
+        );
       }
       // send chat message
     } catch (error) {
@@ -6669,7 +6764,9 @@ export const ChatGroup = ({
           targetEventId,
         });
         if (!result?.success) {
-          throw new Error(result?.error || 'Reticulum chat delete failed');
+          throw new Error(
+            result?.error || t('reticulum:chat_group.delete_failed')
+          );
         }
         const eventId =
           typeof result?.event?.eventId === 'string'
@@ -7038,7 +7135,7 @@ export const ChatGroup = ({
       if (options.asAttachment && !filePath) {
         setInfoSnack({
           type: 'error',
-          message: 'This file source cannot be streamed from disk',
+          message: t('group:dm.file_source_not_streamable'),
         });
         setOpenSnack(true);
         return false;
@@ -7094,7 +7191,7 @@ export const ChatGroup = ({
         if (!isImage) {
           setInfoSnack({
             type: 'error',
-            message: 'File attachments require Reticulum chat',
+            message: t('group:chat_group.attachments_need_reticulum'),
           });
           setOpenSnack(true);
           return;
@@ -7159,7 +7256,7 @@ export const ChatGroup = ({
       if (!isImage && !filePath) {
         setInfoSnack({
           type: 'error',
-          message: 'This file source cannot be streamed from disk',
+          message: t('group:dm.file_source_not_streamable'),
         });
         setOpenSnack(true);
         return;
@@ -7281,7 +7378,7 @@ export const ChatGroup = ({
         file.type?.startsWith('image/') === true &&
         options.asAttachment !== true;
       if (!isImage && !filePath) {
-        throw new Error('This file source cannot be streamed from disk');
+        throw new Error(t('group:dm.file_source_not_streamable'));
       }
       const dimensions = isImage ? await getImageFileDimensions(file) : null;
       const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
@@ -7390,7 +7487,7 @@ export const ChatGroup = ({
           message:
             error instanceof Error
               ? error.message
-              : 'Unable to prepare attachment',
+              : t('group:chat_group.attachment_prepare_failed'),
         });
         setOpenSnack(true);
       } finally {
@@ -7550,9 +7647,15 @@ export const ChatGroup = ({
     target: 'channel-create' | 'channel-settings' | 'category'
   ) => (
     <InputAdornment position="end">
-      <Tooltip title="Choose emoji">
+      <Tooltip
+        title={t('reticulum:discussion.choose_emoji', {
+          postProcess: 'capitalizeFirstChar',
+        })}
+      >
         <IconButton
-          aria-label="Choose emoji"
+          aria-label={t('reticulum:discussion.choose_emoji', {
+            postProcess: 'capitalizeFirstChar',
+          })}
           edge="end"
           onClick={(event) => openReticulumNameEmojiPicker(event, target)}
           onMouseDown={(event) => event.preventDefault()}
@@ -7597,7 +7700,7 @@ export const ChatGroup = ({
     if (isCreatingReticulumChannel) return;
     const name = normalizeReticulumDisplayName(newReticulumChannelName);
     if (!name) {
-      setNewReticulumChannelError('Enter a channel name');
+      setNewReticulumChannelError(t('group:chat_group.channel_placeholder'));
       return;
     }
     if (
@@ -7607,7 +7710,7 @@ export const ChatGroup = ({
           reticulumDisplayNameKey(name)
       )
     ) {
-      setNewReticulumChannelError('Channel already exists');
+      setNewReticulumChannelError(t('group:chat_group.channel_exists'));
       return;
     }
     const channelId =
@@ -7691,7 +7794,7 @@ export const ChatGroup = ({
     if (!editingReticulumChannel) return;
     const name = normalizeReticulumDisplayName(reticulumChannelName);
     if (!name) {
-      setReticulumChannelError('Enter a channel name');
+      setReticulumChannelError(t('group:chat_group.channel_placeholder'));
       return;
     }
     const duplicate = reticulumChannelsForSelectedGroup.some(
@@ -7700,7 +7803,7 @@ export const ChatGroup = ({
         reticulumDisplayNameKey(channel.name) === reticulumDisplayNameKey(name)
     );
     if (duplicate) {
-      setReticulumChannelError('Channel already exists');
+      setReticulumChannelError(t('group:chat_group.channel_exists'));
       return;
     }
     const channelModes = isReticulumSystemChannelId(
@@ -7775,7 +7878,7 @@ export const ChatGroup = ({
   const saveReticulumCategory = useCallback(async () => {
     const name = normalizeReticulumDisplayName(reticulumCategoryName);
     if (!name) {
-      setReticulumCategoryError('Enter a category name');
+      setReticulumCategoryError(t('group:chat_group.category_placeholder'));
       return;
     }
     const duplicate = [
@@ -7788,7 +7891,7 @@ export const ChatGroup = ({
         category.categoryId !== editingReticulumCategory?.categoryId
     );
     if (duplicate) {
-      setReticulumCategoryError('Category already exists');
+      setReticulumCategoryError(t('group:chat_group.category_exists'));
       return;
     }
     if (reticulumCategoryDialogMode === 'rename' && editingReticulumCategory) {
@@ -7914,7 +8017,7 @@ export const ChatGroup = ({
       setReticulumCategoryDeleteConfirmationError(
         error instanceof Error && error.message
           ? error.message
-          : 'Unable to delete category'
+          : t('group:chat_group.delete_category_failed')
       );
     } finally {
       setIsDeletingReticulumCategory(false);
@@ -8370,7 +8473,7 @@ export const ChatGroup = ({
       setReticulumDeleteConfirmationError(
         error instanceof Error && error.message
           ? error.message
-          : 'Unable to delete channel'
+          : t('group:chat_group.delete_channel_failed')
       );
     } finally {
       setIsDeletingReticulumChannel(false);
@@ -8701,7 +8804,7 @@ export const ChatGroup = ({
             }}
           >
             <Box
-              aria-label="Resize channel list"
+              aria-label={t('group:chat_group.resize_channel_list')}
               onPointerDown={handleReticulumChannelSidebarResizeStart}
               role="separator"
               sx={{
@@ -8790,7 +8893,9 @@ export const ChatGroup = ({
                     }}
                   >
                     {isPrivate && (
-                      <Tooltip title="Private Encrypted Group">
+                      <Tooltip
+                        title={t('group:chat_group.private_encrypted_group')}
+                      >
                         <LockRoundedIcon
                           sx={{
                             color: 'text.secondary',
@@ -8803,7 +8908,7 @@ export const ChatGroup = ({
                       </Tooltip>
                     )}
                     {reticulumChatEnabled && isPrivate === false && (
-                      <Tooltip title="Open Group">
+                      <Tooltip title={t('group:chat_group.open_group')}>
                         <PublicRoundedIcon
                           sx={{
                             color: 'text.secondary',
@@ -8944,7 +9049,7 @@ export const ChatGroup = ({
                           )}
                         </Box>
                         {isReticulumChannelAdmin && (
-                          <Tooltip title="Create Channel">
+                          <Tooltip title={t('group:chat_group.create_channel')}>
                             <IconButton
                               className="reticulum-category-create-channel"
                               size="small"
@@ -9082,7 +9187,7 @@ export const ChatGroup = ({
                   <ForumRoundedIcon fontSize="small" />
                 </ListItemIcon>
                 <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-                  Create Channel
+                  {t('group:chat_group.create_channel')}
                 </Typography>
               </MenuItem>
               <MenuItem
@@ -9095,7 +9200,7 @@ export const ChatGroup = ({
                   <FolderRoundedIcon fontSize="small" />
                 </ListItemIcon>
                 <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-                  Create Category
+                  {t('group:chat_group.create_category_menu')}
                 </Typography>
               </MenuItem>
             </CustomStyledMenu>
@@ -9138,7 +9243,7 @@ export const ChatGroup = ({
                   <SettingsOutlinedIcon fontSize="small" />
                 </ListItemIcon>
                 <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-                  Category Settings
+                  {t('group:chat_group.category_settings_menu')}
                 </Typography>
               </MenuItem>
               <Divider sx={{ borderColor: 'divider', my: 0.5 }} />
@@ -9149,7 +9254,7 @@ export const ChatGroup = ({
                   reticulumCategoryMenuCategory?.categoryId ===
                     DEFAULT_RETICULUM_CATEGORY_METADATA_ID &&
                   reticulumDefaultCategoryHasProtectedChannels
-                    ? 'Default Channels inside Category'
+                    ? t('group:chat_group.default_channels_in_category')
                     : ''
                 }
               >
@@ -9174,7 +9279,7 @@ export const ChatGroup = ({
                       <DeleteOutlineRoundedIcon fontSize="small" />
                     </ListItemIcon>
                     <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-                      Remove Category
+                      {t('group:chat_group.remove_category_menu')}
                     </Typography>
                   </MenuItem>
                 </Box>
@@ -9217,7 +9322,7 @@ export const ChatGroup = ({
                   <SettingsOutlinedIcon fontSize="small" />
                 </ListItemIcon>
                 <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-                  Channel Settings
+                  {t('group:chat_group.channel_settings_menu')}
                 </Typography>
               </MenuItem>
               {reticulumChannelMenuChannel &&
@@ -9241,7 +9346,7 @@ export const ChatGroup = ({
                         <DeleteOutlineRoundedIcon fontSize="small" />
                       </ListItemIcon>
                       <Typography variant="inherit" sx={{ fontSize: '14px' }}>
-                        Remove Channel
+                        {t('group:chat_group.remove_channel_menu')}
                       </Typography>
                     </MenuItem>
                   </>
@@ -9289,7 +9394,7 @@ export const ChatGroup = ({
                 px: 1.5,
               }}
             >
-              <Tooltip title="Channels">
+              <Tooltip title={t('group:chat_group.channels')}>
                 <IconButton
                   onClick={() =>
                     setReticulumChannelSidebarOpen((open) => !open)
@@ -9358,7 +9463,7 @@ export const ChatGroup = ({
               >
                 {typeof onQortalLandClick === 'function' && (
                   <ReticulumModePill
-                    label="Qortal Land"
+                    target="qortal_land"
                     onClick={onQortalLandClick}
                   />
                 )}
@@ -9376,8 +9481,8 @@ export const ChatGroup = ({
                   label: groupCallJoining
                     ? 'Joining'
                     : groupCallInCall
-                      ? 'Leave Call'
-                      : 'Group Call',
+                      ? t('group:chat_group.leave_call')
+                      : t('group:chat_group.group_call'),
                   icon: groupCallJoining ? (
                     <CircularProgress size={17} sx={{ color: 'inherit' }} />
                   ) : groupCallInCall ? (
@@ -9387,11 +9492,11 @@ export const ChatGroup = ({
                   ),
                   onClick: onGroupCallClick,
                   disabled: groupCallDisabled || groupCallJoining,
-                  tooltip: groupCallTooltip || 'Group Call',
+                  tooltip: groupCallTooltip || t('group:chat_group.group_call'),
                 })}
                 {renderReticulumHeaderAction({
                   active: reticulumCalendarOpen,
-                  label: t('calendar.title', 'Group Calendar'),
+                  label: t('core:calendar.title', t('core:calendar.title')),
                   icon: <CalendarMonthRoundedIcon sx={{ fontSize: 19 }} />,
                   onClick: () => {
                     setActiveReticulumCalendarTarget(null);
@@ -9419,7 +9524,13 @@ export const ChatGroup = ({
                   icon: <FolderRoundedIcon sx={{ fontSize: 19 }} />,
                   onClick: toggleQManager,
                 })}
-                <Tooltip title={membersPanelOpen ? 'Hide Members' : 'Members'}>
+                <Tooltip
+                  title={
+                    membersPanelOpen
+                      ? t('group:chat_group.hide_members')
+                      : 'Members'
+                  }
+                >
                   <Box
                     component="span"
                     sx={{
@@ -9482,7 +9593,7 @@ export const ChatGroup = ({
                 </Tooltip>
                 {renderReticulumHeaderAction({
                   active: reticulumSearchOpen,
-                  label: 'Search Chat',
+                  label: t('group:chat_group.search_chat'),
                   icon: <SearchRoundedIcon sx={{ fontSize: 18 }} />,
                   onClick: () => setReticulumSearchOpen((open) => !open),
                 })}
@@ -9722,7 +9833,7 @@ export const ChatGroup = ({
                               }}
                             />
 
-                            <Tooltip title="Delete image">
+                            <Tooltip title={t('group:chat_group.delete_image')}>
                               <IconButton
                                 onClick={() => setIsDeleteImage(true)}
                                 size="small"
@@ -9771,7 +9882,7 @@ export const ChatGroup = ({
                             }}
                           />
 
-                          <Tooltip title="Remove image">
+                          <Tooltip title={t('group:chat_group.remove_image')}>
                             <IconButton
                               onClick={() =>
                                 setChatImagesToSave((prev) =>
@@ -9866,7 +9977,7 @@ export const ChatGroup = ({
                               {file.mimeType || 'application/octet-stream'}
                             </Typography>
                           </Box>
-                          <Tooltip title="Remove file">
+                          <Tooltip title={t('group:chat_group.remove_file')}>
                             <IconButton
                               onClick={() => {
                                 setPendingReticulumFiles((prev) => {
@@ -9899,7 +10010,10 @@ export const ChatGroup = ({
                       <Box
                         sx={{
                           alignItems: 'center',
-                          backgroundColor: alpha(theme.palette.text.primary, 0.07),
+                          backgroundColor: alpha(
+                            theme.palette.text.primary,
+                            0.07
+                          ),
                           border: `1px solid ${theme.palette.divider}`,
                           borderBottom: 0,
                           borderRadius: '8px 8px 0 0',
@@ -9935,7 +10049,7 @@ export const ChatGroup = ({
                         </Typography>
 
                         <IconButton
-                          aria-label="Cancel reply"
+                          aria-label={t('group:chat_group.cancel_reply')}
                           onClick={() => setReplyMessage(null)}
                           size="small"
                           sx={{ color: 'text.secondary', ml: 'auto' }}
@@ -10003,8 +10117,8 @@ export const ChatGroup = ({
                       placeholder={
                         reticulumChatEnabled
                           ? canWriteSelectedReticulumChannel
-                            ? 'Message channel...'
-                            : 'Only group admins can write in this channel'
+                            ? t('group:chat_group.message_placeholder')
+                            : t('group:chat_group.admins_only_write')
                           : undefined
                       }
                     />
@@ -10048,7 +10162,11 @@ export const ChatGroup = ({
                   >
                     {reticulumChatEnabled && (
                       <>
-                        <Tooltip title="Choose Emoji">
+                        <Tooltip
+                          title={t('reticulum:discussion.choose_emoji', {
+                            postProcess: 'capitalizeEachFirstChar',
+                          })}
+                        >
                           <Box
                             sx={{
                               alignItems: 'center',
@@ -10097,10 +10215,16 @@ export const ChatGroup = ({
                           }
                           disabledReason={
                             onEditMessage
-                              ? 'Expiry cannot be changed while editing'
-                              : 'You cannot write in this channel'
+                              ? t('group:chat_group.expiry_locked_editing')
+                              : t('group:chat_group.write_not_allowed')
                           }
                           onChange={setReticulumMessageExpiryDurationMs}
+                          onPreferredExpiryChange={
+                            changeReticulumPreferredExpiry
+                          }
+                          preferredExpiryDurationMs={
+                            reticulumPreferredExpiryDurationMs
+                          }
                           segmented
                           value={reticulumMessageExpiryDurationMs}
                         />
@@ -10191,7 +10315,9 @@ export const ChatGroup = ({
                         ) : (
                           <>
                             <SendIcon sx={{ fontSize: '18px' }} />
-                            Send
+                            {t('core:action.send', {
+                              postProcess: 'capitalizeFirstChar',
+                            })}
                           </>
                         )}
                       </CustomButton>
@@ -10234,7 +10360,7 @@ export const ChatGroup = ({
                     py: 1,
                   }}
                 >
-                  Drop to Attach
+                  {t('group:chat_group.drop_to_attach')}
                 </Typography>
               </Box>
             )}
@@ -10290,7 +10416,7 @@ export const ChatGroup = ({
             <SearchRoundedIcon sx={{ color: theme.palette.text.secondary }} />
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Typography sx={{ fontSize: 16, fontWeight: 800 }}>
-                Search Results
+                {t('group:chat_group.search_results')}
               </Typography>
             </Box>
           </Box>
@@ -10306,12 +10432,14 @@ export const ChatGroup = ({
               autoFocus
               fullWidth
               onChange={(event) => setReticulumSearchQuery(event.target.value)}
-              placeholder={`Search ${
+              placeholder={
                 reticulumSearchChannelFilter ===
                 RETICULUM_SEARCH_CHANNEL_CURRENT
-                  ? reticulumSearchChannelFilterLabel
-                  : 'messages'
-              }`}
+                  ? t('reticulum:search.placeholder_channel', {
+                      channel: reticulumSearchChannelFilterLabel,
+                    })
+                  : t('reticulum:search.placeholder_messages')
+              }
               size="small"
               sx={{
                 '& .MuiOutlinedInput-root': {
@@ -10337,7 +10465,9 @@ export const ChatGroup = ({
                 {reticulumSearchChannelFilter !==
                   RETICULUM_SEARCH_CHANNEL_CURRENT && (
                   <Chip
-                    label={`in: ${reticulumSearchChannelFilterLabel}`}
+                    label={t('reticulum:search.chip.in', {
+                      value: reticulumSearchChannelFilterLabel,
+                    })}
                     onDelete={() =>
                       setReticulumSearchChannelFilter(
                         RETICULUM_SEARCH_CHANNEL_CURRENT
@@ -10354,7 +10484,9 @@ export const ChatGroup = ({
                 )}
                 {reticulumSearchAuthorFilter && (
                   <Chip
-                    label={`from: ${reticulumSearchAuthorFilterLabel}`}
+                    label={t('reticulum:search.chip.from', {
+                      value: reticulumSearchAuthorFilterLabel,
+                    })}
                     onDelete={() => setReticulumSearchAuthorFilter('')}
                     size="small"
                     sx={{
@@ -10367,7 +10499,9 @@ export const ChatGroup = ({
                 )}
                 {reticulumSearchHasFilter !== RETICULUM_SEARCH_HAS_ANY && (
                   <Chip
-                    label={`has: ${reticulumSearchHasFilterLabel}`}
+                    label={t('reticulum:search.chip.has', {
+                      value: reticulumSearchHasFilterLabel,
+                    })}
                     onDelete={() =>
                       setReticulumSearchHasFilter(RETICULUM_SEARCH_HAS_ANY)
                     }
@@ -10382,7 +10516,9 @@ export const ChatGroup = ({
                 )}
                 {(reticulumSearchAfterDate || reticulumSearchBeforeDate) && (
                   <Chip
-                    label={`date: ${reticulumSearchDateFilterLabel}`}
+                    label={t('reticulum:search.chip.date', {
+                      value: reticulumSearchDateFilterLabel,
+                    })}
                     onDelete={() => {
                       setReticulumSearchAfterDate('');
                       setReticulumSearchBeforeDate('');
@@ -10398,7 +10534,9 @@ export const ChatGroup = ({
                 )}
                 {reticulumSearchSort !== 'relevance' && (
                   <Chip
-                    label={`sort: ${reticulumSearchSortLabel}`}
+                    label={t('reticulum:search.chip.sort', {
+                      value: reticulumSearchSortLabel,
+                    })}
                     onDelete={() => setReticulumSearchSort('relevance')}
                     size="small"
                     sx={{
@@ -10429,7 +10567,7 @@ export const ChatGroup = ({
                     textTransform: 'uppercase',
                   }}
                 >
-                  Filter By
+                  {t('group:chat_group.filter_by')}
                 </Typography>
                 {reticulumSearchActiveFilterCount > 0 && (
                   <Button
@@ -10438,7 +10576,7 @@ export const ChatGroup = ({
                     sx={{ fontSize: 11, minWidth: 0, p: 0 }}
                     variant="text"
                   >
-                    Clear
+                    {t('group:chat_group.clear')}
                   </Button>
                 )}
               </Box>
@@ -10446,14 +10584,14 @@ export const ChatGroup = ({
                 {[
                   {
                     key: 'from' as const,
-                    label: 'from:',
+                    labelKey: 'reticulum:search.facet.from',
                     value: reticulumSearchAuthorFilter
                       ? reticulumSearchAuthorFilterLabel
                       : '',
                   },
                   {
                     key: 'in' as const,
-                    label: 'in:',
+                    labelKey: 'reticulum:search.facet.in',
                     value:
                       reticulumSearchChannelFilter !==
                       RETICULUM_SEARCH_CHANNEL_CURRENT
@@ -10462,7 +10600,7 @@ export const ChatGroup = ({
                   },
                   {
                     key: 'has' as const,
-                    label: 'has:',
+                    labelKey: 'reticulum:search.facet.has',
                     value:
                       reticulumSearchHasFilter !== RETICULUM_SEARCH_HAS_ANY
                         ? reticulumSearchHasFilterLabel
@@ -10470,7 +10608,7 @@ export const ChatGroup = ({
                   },
                   {
                     key: 'date' as const,
-                    label: 'date:',
+                    labelKey: 'reticulum:search.facet.date',
                     value:
                       reticulumSearchAfterDate || reticulumSearchBeforeDate
                         ? reticulumSearchDateFilterLabel
@@ -10478,7 +10616,7 @@ export const ChatGroup = ({
                   },
                   {
                     key: 'sort' as const,
-                    label: 'sort:',
+                    labelKey: 'reticulum:search.facet.sort',
                     value:
                       reticulumSearchSort !== 'relevance'
                         ? reticulumSearchSortLabel
@@ -10519,7 +10657,7 @@ export const ChatGroup = ({
                         fontWeight: 800,
                       }}
                     >
-                      {option.label}
+                      {t(option.labelKey)}
                     </Typography>
                     <Typography
                       sx={{
@@ -10565,7 +10703,7 @@ export const ChatGroup = ({
                     closeReticulumSearchFilterMenu();
                   }}
                 >
-                  Anyone
+                  {t('group:chat_group.filter_anyone')}
                 </MenuItem>
                 <Divider />
                 {reticulumSearchAuthorOptions.map((author) => (
@@ -10591,7 +10729,7 @@ export const ChatGroup = ({
                     closeReticulumSearchFilterMenu();
                   }}
                 >
-                  Current channel
+                  {t('group:chat_group.filter_current_channel')}
                 </MenuItem>
                 <MenuItem
                   onClick={() => {
@@ -10601,7 +10739,7 @@ export const ChatGroup = ({
                     closeReticulumSearchFilterMenu();
                   }}
                 >
-                  All channels
+                  {t('group:chat_group.all_channels')}
                 </MenuItem>
                 <Divider />
                 {reticulumChannelsForSelectedGroup.map((channel) => {
@@ -10637,10 +10775,13 @@ export const ChatGroup = ({
             {reticulumSearchFilterMenu === 'has' && (
               <>
                 {[
-                  [RETICULUM_SEARCH_HAS_ANY, 'Anything'],
-                  [RETICULUM_SEARCH_HAS_ATTACHMENT, 'Attachment'],
-                  [RETICULUM_SEARCH_HAS_LINK, 'Link'],
-                ].map(([value, label]) => (
+                  [RETICULUM_SEARCH_HAS_ANY, 'reticulum:search.has.any'],
+                  [
+                    RETICULUM_SEARCH_HAS_ATTACHMENT,
+                    'reticulum:search.has.attachment',
+                  ],
+                  [RETICULUM_SEARCH_HAS_LINK, 'reticulum:search.has.link'],
+                ].map(([value, labelKey]) => (
                   <MenuItem
                     key={value}
                     onClick={() => {
@@ -10648,7 +10789,7 @@ export const ChatGroup = ({
                       closeReticulumSearchFilterMenu();
                     }}
                   >
-                    {label}
+                    {t(labelKey, { postProcess: 'capitalizeFirstChar' })}
                   </MenuItem>
                 ))}
               </>
@@ -10656,10 +10797,10 @@ export const ChatGroup = ({
             {reticulumSearchFilterMenu === 'sort' && (
               <>
                 {[
-                  ['relevance', 'Relevant'],
-                  ['newest', 'Newest'],
-                  ['oldest', 'Oldest'],
-                ].map(([value, label]) => (
+                  ['relevance', 'reticulum:search.sort.relevance'],
+                  ['newest', 'reticulum:search.sort.newest'],
+                  ['oldest', 'reticulum:search.sort.oldest'],
+                ].map(([value, labelKey]) => (
                   <MenuItem
                     key={value}
                     onClick={() => {
@@ -10669,7 +10810,7 @@ export const ChatGroup = ({
                       closeReticulumSearchFilterMenu();
                     }}
                   >
-                    {label}
+                    {t(labelKey, { postProcess: 'capitalizeFirstChar' })}
                   </MenuItem>
                 ))}
               </>
@@ -10679,7 +10820,7 @@ export const ChatGroup = ({
                 <TextField
                   fullWidth
                   InputLabelProps={{ shrink: true }}
-                  label="After"
+                  label={t('group:chat_group.after')}
                   onChange={(event) =>
                     setReticulumSearchAfterDate(event.target.value)
                   }
@@ -10690,7 +10831,7 @@ export const ChatGroup = ({
                 <TextField
                   fullWidth
                   InputLabelProps={{ shrink: true }}
-                  label="Before"
+                  label={t('group:chat_group.before')}
                   onChange={(event) =>
                     setReticulumSearchBeforeDate(event.target.value)
                   }
@@ -10706,14 +10847,14 @@ export const ChatGroup = ({
                     }}
                     size="small"
                   >
-                    Clear dates
+                    {t('group:chat_group.clear_dates')}
                   </Button>
                   <Button
                     onClick={closeReticulumSearchFilterMenu}
                     size="small"
                     variant="contained"
                   >
-                    Done
+                    {t('group:chat_group.done')}
                   </Button>
                 </Box>
               </Box>
@@ -10758,7 +10899,7 @@ export const ChatGroup = ({
                     py: 2,
                   }}
                 >
-                  No results
+                  {t('group:chat_group.no_results')}
                 </Typography>
               )}
             {!isReticulumSearchLoading &&
@@ -10773,7 +10914,7 @@ export const ChatGroup = ({
                     py: 2,
                   }}
                 >
-                  Type at least 2 characters or choose a filter.
+                  {t('group:chat_group.search_hint')}
                 </Typography>
               )}
             {reticulumSearchResults.map((result) => {
@@ -10993,7 +11134,9 @@ export const ChatGroup = ({
                 <ChevronRightRoundedIcon
                   sx={{ fontSize: 17, transform: 'rotate(180deg)' }}
                 />
-                Back
+                {t('core:action.back', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
               </ButtonBase>
               {reticulumSearchVisiblePageNumbers.map((pageNumber, index) => (
                 <Box
@@ -11101,7 +11244,9 @@ export const ChatGroup = ({
                   },
                 }}
               >
-                Next
+                {t('core:action.next', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
                 <ChevronRightRoundedIcon sx={{ fontSize: 17 }} />
               </ButtonBase>
             </Box>
@@ -11155,7 +11300,7 @@ export const ChatGroup = ({
                 p: 0,
               }}
             >
-              Create text channel
+              {t('group:chat_group.create_text_channel')}
             </DialogTitle>
             <Typography
               sx={{
@@ -11165,7 +11310,7 @@ export const ChatGroup = ({
                 mt: 0.75,
               }}
             >
-              Choose a name and decide who can view or post in this channel.
+              {t('group:chat_group.create_channel_hint')}
             </Typography>
           </Box>
 
@@ -11181,13 +11326,13 @@ export const ChatGroup = ({
                 mb: 1,
               }}
             >
-              Channel name
+              {t('group:chat_group.channel_name_label')}
             </Typography>
             <TextField
               autoFocus
               fullWidth
               id="reticulum-channel-name-input"
-              placeholder="e.g. support-chat"
+              placeholder={t('group:chat_group.channel_name_placeholder')}
               sx={{
                 ...reticulumDialogTextFieldSx,
                 '& .MuiOutlinedInput-root': {
@@ -11240,7 +11385,7 @@ export const ChatGroup = ({
                 mb: 1,
               }}
             >
-              Channel type
+              {t('group:chat_group.channel_type_label')}
             </Typography>
             <Box
               aria-labelledby="reticulum-channel-type-label"
@@ -11268,7 +11413,7 @@ export const ChatGroup = ({
                   <ButtonBase
                     aria-checked={selected}
                     aria-describedby={`reticulum-channel-type-description-${index}`}
-                    aria-label={`${option.label}. ${option.description}`}
+                    aria-label={`${t(option.labelKey)}. ${t(option.descriptionKey)}`}
                     id={`reticulum-channel-type-${index}`}
                     key={option.value}
                     onClick={() =>
@@ -11368,7 +11513,7 @@ export const ChatGroup = ({
                         lineHeight: '18px',
                       }}
                     >
-                      {option.label}
+                      {t(option.labelKey)}
                     </Typography>
                     <Typography
                       id={`reticulum-channel-type-description-${index}`}
@@ -11380,7 +11525,7 @@ export const ChatGroup = ({
                         whiteSpace: 'pre-line',
                       }}
                     >
-                      {option.description}
+                      {t(option.descriptionKey)}
                     </Typography>
                   </ButtonBase>
                 );
@@ -11407,7 +11552,7 @@ export const ChatGroup = ({
             onClick={closeCreateReticulumChannelDialog}
             sx={{ ...reticulumSecondaryButtonSx, minHeight: 40 }}
           >
-            Cancel
+            {t('core:action.cancel', { postProcess: 'capitalizeFirstChar' })}
           </Button>
           <Button
             disabled={
@@ -11428,7 +11573,7 @@ export const ChatGroup = ({
             {isCreatingReticulumChannel ? (
               <CircularProgress size={18} sx={{ color: 'common.white' }} />
             ) : (
-              'Create channel'
+              t('group:chat_group.create_channel_action')
             )}
           </Button>
         </DialogActions>
@@ -11465,10 +11610,12 @@ export const ChatGroup = ({
               }}
             >
               <Box sx={{ alignItems: 'center', display: 'flex', gap: 1 }}>
-                <Tooltip title="Back to channel settings">
+                <Tooltip title={t('group:chat_group.back_to_channel_settings')}>
                   <span>
                     <IconButton
-                      aria-label="Back to channel settings"
+                      aria-label={t(
+                        'group:chat_group.back_to_channel_settings'
+                      )}
                       disabled={isDeletingReticulumChannel}
                       onClick={returnToReticulumChannelSettings}
                       size="small"
@@ -11489,7 +11636,7 @@ export const ChatGroup = ({
                     p: 0,
                   }}
                 >
-                  Delete channel
+                  {t('group:chat_group.delete_channel')}
                 </DialogTitle>
               </Box>
 
@@ -11500,8 +11647,7 @@ export const ChatGroup = ({
                   lineHeight: '21px',
                 }}
               >
-                This action cannot be undone. Type delete below to permanently
-                remove this channel.
+                {t('group:chat_group.delete_channel_warning')}
               </Typography>
 
               <Box>
@@ -11516,7 +11662,7 @@ export const ChatGroup = ({
                     mb: 1,
                   }}
                 >
-                  Type delete to confirm
+                  {t('group:chat_group.type_delete_to_confirm')}
                 </Typography>
                 <TextField
                   aria-describedby={
@@ -11524,7 +11670,7 @@ export const ChatGroup = ({
                       ? 'reticulum-channel-delete-confirmation-error'
                       : undefined
                   }
-                  aria-label="Type delete to confirm channel deletion"
+                  aria-label={t('group:chat_group.confirm_delete_channel')}
                   autoComplete="off"
                   disabled={isDeletingReticulumChannel}
                   fullWidth
@@ -11545,7 +11691,7 @@ export const ChatGroup = ({
                       void confirmReticulumChannelDeletion();
                     }
                   }}
-                  placeholder="delete"
+                  placeholder={t('group:chat_group.delete_confirm_word')}
                   sx={{
                     ...reticulumDialogTextFieldSx,
                     '& .MuiOutlinedInput-root': {
@@ -11559,7 +11705,9 @@ export const ChatGroup = ({
                     endAdornment: isReticulumDeleteConfirmationMatched ? (
                       <InputAdornment position="end">
                         <CheckCircleRoundedIcon
-                          aria-label="Channel name confirmed"
+                          aria-label={t(
+                            'group:chat_group.channel_name_confirmed'
+                          )}
                           color="primary"
                           fontSize="small"
                         />
@@ -11598,7 +11746,9 @@ export const ChatGroup = ({
                 onClick={returnToReticulumChannelSettings}
                 sx={{ ...reticulumSecondaryButtonSx, minHeight: 40 }}
               >
-                Cancel
+                {t('core:action.cancel', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
               </Button>
               <Button
                 aria-disabled={!isReticulumDeleteConfirmationMatched}
@@ -11623,7 +11773,7 @@ export const ChatGroup = ({
                 {isDeletingReticulumChannel ? (
                   <CircularProgress size={18} sx={{ color: 'common.white' }} />
                 ) : (
-                  'Delete channel'
+                  t('group:chat_group.delete_channel')
                 )}
               </Button>
             </DialogActions>
@@ -11650,7 +11800,7 @@ export const ChatGroup = ({
                     p: 0,
                   }}
                 >
-                  Channel settings
+                  {t('group:chat_group.channel_settings_title')}
                 </DialogTitle>
                 <Typography
                   sx={{
@@ -11660,7 +11810,7 @@ export const ChatGroup = ({
                     mt: 0.75,
                   }}
                 >
-                  Update this channel&apos;s name and permissions.
+                  {t('group:chat_group.channel_settings_hint')}
                 </Typography>
               </Box>
 
@@ -11676,7 +11826,7 @@ export const ChatGroup = ({
                     mb: 1,
                   }}
                 >
-                  Channel name
+                  {t('group:chat_group.channel_name_label')}
                 </Typography>
                 <TextField
                   autoFocus
@@ -11734,7 +11884,7 @@ export const ChatGroup = ({
                     mb: 1,
                   }}
                 >
-                  Channel type
+                  {t('group:chat_group.channel_type_label')}
                 </Typography>
                 <Box
                   aria-labelledby="reticulum-channel-settings-type-label"
@@ -11766,7 +11916,7 @@ export const ChatGroup = ({
                       <ButtonBase
                         aria-checked={selected}
                         aria-describedby={`reticulum-channel-settings-type-description-${index}`}
-                        aria-label={`${option.label}. ${option.description}`}
+                        aria-label={`${t(option.labelKey)}. ${t(option.descriptionKey)}`}
                         disabled={disabled}
                         id={`reticulum-channel-settings-type-${index}`}
                         key={option.value}
@@ -11894,7 +12044,7 @@ export const ChatGroup = ({
                             lineHeight: '18px',
                           }}
                         >
-                          {option.label}
+                          {t(option.labelKey)}
                         </Typography>
                         <Typography
                           id={`reticulum-channel-settings-type-description-${index}`}
@@ -11908,7 +12058,7 @@ export const ChatGroup = ({
                             whiteSpace: 'pre-line',
                           }}
                         >
-                          {option.description}
+                          {t(option.descriptionKey)}
                         </Typography>
                       </ButtonBase>
                     );
@@ -11954,7 +12104,7 @@ export const ChatGroup = ({
                         textTransform: 'none',
                       }}
                     >
-                      Remove channel
+                      {t('group:chat_group.remove_channel_button')}
                     </Button>
                   )}
               </Box>
@@ -11970,7 +12120,9 @@ export const ChatGroup = ({
                   onClick={closeReticulumChannelSettings}
                   sx={{ ...reticulumSecondaryButtonSx, minHeight: 40 }}
                 >
-                  Cancel
+                  {t('core:action.cancel', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
                 </Button>
                 <Button
                   variant="contained"
@@ -11981,7 +12133,7 @@ export const ChatGroup = ({
                     minWidth: 140,
                   }}
                 >
-                  Save changes
+                  {t('group:chat_group.save_changes')}
                 </Button>
               </Box>
             </DialogActions>
@@ -12026,7 +12178,7 @@ export const ChatGroup = ({
                 p: 0,
               }}
             >
-              Create category
+              {t('group:chat_group.create_category_title')}
             </DialogTitle>
             <Typography
               sx={{
@@ -12036,7 +12188,7 @@ export const ChatGroup = ({
                 mt: 0.75,
               }}
             >
-              Choose a name for your category.
+              {t('group:chat_group.create_category_hint')}
             </Typography>
           </Box>
           <Box>
@@ -12051,7 +12203,7 @@ export const ChatGroup = ({
                 mb: 1,
               }}
             >
-              Category name
+              {t('group:chat_group.category_name_label')}
             </Typography>
             <TextField
               autoFocus
@@ -12084,7 +12236,7 @@ export const ChatGroup = ({
                   void saveReticulumCategory();
                 }
               }}
-              placeholder="e.g. SUPPORT"
+              placeholder={t('group:chat_group.category_name_placeholder')}
               sx={{
                 ...reticulumDialogTextFieldSx,
                 '& .MuiOutlinedInput-root': {
@@ -12111,14 +12263,14 @@ export const ChatGroup = ({
             onClick={closeReticulumCategoryDialog}
             sx={{ ...reticulumSecondaryButtonSx, minHeight: 40 }}
           >
-            Cancel
+            {t('core:action.cancel', { postProcess: 'capitalizeFirstChar' })}
           </Button>
           <Button
             variant="contained"
             onClick={() => void saveReticulumCategory()}
             sx={{ ...reticulumPrimaryButtonSx, minHeight: 40, minWidth: 140 }}
           >
-            Create category
+            {t('group:chat_group.create_category_title')}
           </Button>
         </DialogActions>
       </Dialog>
@@ -12156,10 +12308,14 @@ export const ChatGroup = ({
               }}
             >
               <Box sx={{ alignItems: 'center', display: 'flex', gap: 1 }}>
-                <Tooltip title="Back to category settings">
+                <Tooltip
+                  title={t('group:chat_group.back_to_category_settings')}
+                >
                   <span>
                     <IconButton
-                      aria-label="Back to category settings"
+                      aria-label={t(
+                        'group:chat_group.back_to_category_settings'
+                      )}
                       disabled={isDeletingReticulumCategory}
                       onClick={returnToReticulumCategorySettings}
                       size="small"
@@ -12180,7 +12336,7 @@ export const ChatGroup = ({
                     p: 0,
                   }}
                 >
-                  Delete category
+                  {t('group:chat_group.delete_category')}
                 </DialogTitle>
               </Box>
               <Typography
@@ -12190,8 +12346,7 @@ export const ChatGroup = ({
                   lineHeight: '21px',
                 }}
               >
-                This action cannot be undone. Type delete below to permanently
-                remove this category.
+                {t('group:chat_group.delete_category_warning')}
               </Typography>
               <Box>
                 <Typography
@@ -12205,7 +12360,7 @@ export const ChatGroup = ({
                     mb: 1,
                   }}
                 >
-                  Type delete to confirm
+                  {t('group:chat_group.type_delete_to_confirm')}
                 </Typography>
                 <TextField
                   aria-describedby={
@@ -12213,7 +12368,7 @@ export const ChatGroup = ({
                       ? 'reticulum-category-delete-confirmation-error'
                       : undefined
                   }
-                  aria-label="Type delete to confirm category deletion"
+                  aria-label={t('group:chat_group.confirm_delete_category')}
                   autoComplete="off"
                   disabled={isDeletingReticulumCategory}
                   fullWidth
@@ -12236,7 +12391,7 @@ export const ChatGroup = ({
                       void confirmReticulumCategoryDeletion();
                     }
                   }}
-                  placeholder="delete"
+                  placeholder={t('group:chat_group.delete_confirm_word')}
                   sx={{
                     ...reticulumDialogTextFieldSx,
                     '& .MuiOutlinedInput-root': {
@@ -12251,7 +12406,9 @@ export const ChatGroup = ({
                       isReticulumCategoryDeleteConfirmationMatched ? (
                         <InputAdornment position="end">
                           <CheckCircleRoundedIcon
-                            aria-label="Category name confirmed"
+                            aria-label={t(
+                              'group:chat_group.category_name_confirmed'
+                            )}
                             color="primary"
                             fontSize="small"
                           />
@@ -12290,7 +12447,9 @@ export const ChatGroup = ({
                 onClick={returnToReticulumCategorySettings}
                 sx={{ ...reticulumSecondaryButtonSx, minHeight: 40 }}
               >
-                Cancel
+                {t('core:action.cancel', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
               </Button>
               <Button
                 aria-disabled={!isReticulumCategoryDeleteConfirmationMatched}
@@ -12315,7 +12474,7 @@ export const ChatGroup = ({
                 {isDeletingReticulumCategory ? (
                   <CircularProgress size={18} sx={{ color: 'common.white' }} />
                 ) : (
-                  'Delete category'
+                  t('group:chat_group.delete_category')
                 )}
               </Button>
             </DialogActions>
@@ -12340,7 +12499,7 @@ export const ChatGroup = ({
                     p: 0,
                   }}
                 >
-                  Category settings
+                  {t('group:chat_group.category_settings_title')}
                 </DialogTitle>
                 <Typography
                   sx={{
@@ -12350,7 +12509,7 @@ export const ChatGroup = ({
                     mt: 0.75,
                   }}
                 >
-                  Update this category&apos;s name.
+                  {t('group:chat_group.category_settings_hint')}
                 </Typography>
               </Box>
               <Box>
@@ -12365,7 +12524,7 @@ export const ChatGroup = ({
                     mb: 1,
                   }}
                 >
-                  Category name
+                  {t('group:chat_group.category_name_label')}
                 </Typography>
                 <TextField
                   autoFocus
@@ -12429,7 +12588,7 @@ export const ChatGroup = ({
                     editingReticulumCategory?.categoryId ===
                       DEFAULT_RETICULUM_CATEGORY_METADATA_ID &&
                     reticulumDefaultCategoryHasProtectedChannels
-                      ? 'Default Channels inside Category'
+                      ? t('group:chat_group.default_channels_in_category')
                       : ''
                   }
                 >
@@ -12446,7 +12605,7 @@ export const ChatGroup = ({
                       onClick={() => openReticulumCategoryDeleteConfirmation()}
                       sx={{ minHeight: 40, px: 1, textTransform: 'none' }}
                     >
-                      Remove category
+                      {t('group:chat_group.remove_category_button')}
                     </Button>
                   </Box>
                 </Tooltip>
@@ -12463,7 +12622,9 @@ export const ChatGroup = ({
                   onClick={closeReticulumCategoryDialog}
                   sx={{ ...reticulumSecondaryButtonSx, minHeight: 40 }}
                 >
-                  Cancel
+                  {t('core:action.cancel', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
                 </Button>
                 <Button
                   variant="contained"
@@ -12474,7 +12635,7 @@ export const ChatGroup = ({
                     minWidth: 140,
                   }}
                 >
-                  Save changes
+                  {t('group:chat_group.save_changes')}
                 </Button>
               </Box>
             </DialogActions>
@@ -12591,7 +12752,7 @@ export const ChatGroup = ({
                 width: '390px',
               }}
             >
-              This area is available to group admins.
+              {t('group:chat_group.admins_area_only')}
             </Typography>
           )}
         </Box>
@@ -12825,10 +12986,10 @@ export const ChatGroup = ({
         >
           <Box sx={{ alignItems: 'center', display: 'flex', gap: 1.25 }}>
             <VisibilityOffRoundedIcon sx={{ color: 'text.secondary' }} />
-            Hidden Members
+            {t('group:chat_group.hidden_members')}
           </Box>
           <IconButton
-            aria-label="Close hidden members"
+            aria-label={t('group:chat_group.close_hidden_members')}
             disabled={Boolean(reticulumUnhidingAddress)}
             onClick={() => {
               setIsReticulumHiddenUsersDialogOpen(false);
@@ -12858,8 +13019,9 @@ export const ChatGroup = ({
               mb: 2,
             }}
           >
-            People hidden in {selectedGroupName || 'this group'} stay out of
-            this group&apos;s Reticulum chat until you unhide them.
+            {t('group:chat_group.hidden_users_hint', {
+              group: selectedGroupName || t('group:chat_group.this_group'),
+            })}
           </Typography>
           {reticulumHiddenUsersForSelectedGroup.length === 0 ? (
             <Box
@@ -12875,7 +13037,7 @@ export const ChatGroup = ({
                 minHeight: 88,
               }}
             >
-              No users hidden
+              {t('group:chat_group.no_users_hidden')}
             </Box>
           ) : (
             <Box
@@ -12928,7 +13090,11 @@ export const ChatGroup = ({
                         </Typography>
                       )}
                     </Box>
-                    <Tooltip title="Unhide">
+                    <Tooltip
+                      title={t('reticulum:hide_user.unhide', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                    >
                       <span>
                         <IconButton
                           aria-label={`Unhide ${name}`}
@@ -12973,12 +13139,14 @@ export const ChatGroup = ({
         messages={reticulumDiscussionMessages}
         myAddress={myAddress}
         onClose={closeReticulumDiscussion}
+        onPreferredExpiryChange={changeReticulumPreferredExpiry}
         onRemoveFile={removeReticulumDiscussionFile}
         onSelectFiles={insertReticulumDiscussionFiles}
         onSend={sendReticulumDiscussionReply}
         onTypingChange={noteReticulumComposerActivity}
         open={Boolean(reticulumDiscussionRootId)}
         preparingFile={isPreparingReticulumDiscussionFile}
+        preferredExpiryDurationMs={reticulumPreferredExpiryDurationMs}
         replyCount={activeReticulumDiscussionReplyCount}
         reticulumGroupAvatarOwnerName={reticulumGroupOwnerName}
         reticulumGroupDisplayName={selectedGroupName}

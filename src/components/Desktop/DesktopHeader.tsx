@@ -123,13 +123,7 @@ export const DesktopHeader = ({
     isUnreadChatAtomFamily(selectedGroup?.groupId ?? '')
   );
   const hasUnreadChat = isUnreadChat;
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const p2pHealthBadTooltip = t('core:p2p_health_bad_call_tooltip');
   const p2pBlocked =
     typeof onGroupCallClick === 'function' &&

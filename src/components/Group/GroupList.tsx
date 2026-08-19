@@ -102,12 +102,15 @@ import {
 
 const RETICULUM_ACTIVE_BLUE = '#2563eb';
 const RETICULUM_CALL_GREEN = '#22c55e';
+const GROUP_RAIL_TOOLTIP_MODIFIERS = [
+  {
+    name: 'flip',
+    enabled: false,
+  },
+];
 
-const reticulumTextScaleOptions = [
-  { value: 'default', label: 'Default', detail: 'Current chat text size' },
-  { value: 'medium', label: 'Medium', detail: 'A comfortable increase' },
-  { value: 'high', label: 'High', detail: 'Largest readable chat text' },
-] as const;
+/** Atom values, doubling as key suffixes under reticulum:settings.text_size */
+const reticulumTextScaleOptions = ['default', 'medium', 'high'] as const;
 
 const ReticulumChatSettingsDialog = ({
   open,
@@ -116,6 +119,7 @@ const ReticulumChatSettingsDialog = ({
   open: boolean;
   onClose: () => void;
 }) => {
+  const { t } = useTranslation(['core', 'reticulum']);
   const theme = useTheme();
   const [activeSection, setActiveSection] = useState<
     'text-size' | 'messages' | 'notifications' | 'legacy-threads'
@@ -234,7 +238,7 @@ const ReticulumChatSettingsDialog = ({
           px: { xs: 2.5, sm: 4 },
         }}
       >
-        Settings
+        {t('core:settings', { postProcess: 'capitalizeFirstChar' })}
       </DialogTitle>
       <Box
         sx={{
@@ -260,7 +264,7 @@ const ReticulumChatSettingsDialog = ({
             onClick={() => setAccessibilityExpanded((expanded) => !expanded)}
             sx={categoryButtonSx}
           >
-            <span>Accessibility</span>
+            <span>{t('reticulum:settings.category.accessibility')}</span>
             {accessibilityExpanded ? (
               <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
             ) : (
@@ -273,13 +277,15 @@ const ReticulumChatSettingsDialog = ({
                 onClick={() => setActiveSection('text-size')}
                 sx={navButtonSx(activeSection === 'text-size')}
               >
-                <AccessibilityNewOutlinedIcon sx={{ fontSize: 19 }} /> Text size
+                <AccessibilityNewOutlinedIcon sx={{ fontSize: 19 }} />{' '}
+                {t('reticulum:settings.nav.text_size')}
               </ButtonBase>
               <ButtonBase
                 onClick={() => setActiveSection('messages')}
                 sx={navButtonSx(activeSection === 'messages')}
               >
-                <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 19 }} /> Messages
+                <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 19 }} />{' '}
+                {t('reticulum:settings.nav.messages')}
               </ButtonBase>
             </>
           )}
@@ -288,7 +294,7 @@ const ReticulumChatSettingsDialog = ({
             onClick={() => setNotificationsExpanded((expanded) => !expanded)}
             sx={{ ...categoryButtonSx, mt: 2.25 }}
           >
-            <span>Notifications</span>
+            <span>{t('core:message.generic.notifications')}</span>
             {notificationsExpanded ? (
               <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
             ) : (
@@ -300,7 +306,8 @@ const ReticulumChatSettingsDialog = ({
               onClick={() => setActiveSection('notifications')}
               sx={navButtonSx(activeSection === 'notifications')}
             >
-              <NotificationsNoneRoundedIcon sx={{ fontSize: 19 }} /> Mentions
+              <NotificationsNoneRoundedIcon sx={{ fontSize: 19 }} />{' '}
+              {t('reticulum:settings.nav.mentions')}
             </ButtonBase>
           )}
           <ButtonBase
@@ -308,7 +315,7 @@ const ReticulumChatSettingsDialog = ({
             onClick={() => setLegacyExpanded((expanded) => !expanded)}
             sx={{ ...categoryButtonSx, mt: 2.25 }}
           >
-            <span>Legacy</span>
+            <span>{t('reticulum:settings.category.legacy')}</span>
             {legacyExpanded ? (
               <ExpandMoreRoundedIcon sx={{ fontSize: 18 }} />
             ) : (
@@ -320,7 +327,8 @@ const ReticulumChatSettingsDialog = ({
               onClick={() => setActiveSection('legacy-threads')}
               sx={navButtonSx(activeSection === 'legacy-threads')}
             >
-              <ForumRoundedIcon sx={{ fontSize: 19 }} /> Threads
+              <ForumRoundedIcon sx={{ fontSize: 19 }} />{' '}
+              {t('reticulum:settings.nav.threads')}
             </ButtonBase>
           )}
         </Box>
@@ -338,7 +346,7 @@ const ReticulumChatSettingsDialog = ({
                   lineHeight: '26px',
                 }}
               >
-                Text size
+                {t('reticulum:settings.text_size.title')}
               </Typography>
               <Typography
                 sx={{
@@ -350,16 +358,15 @@ const ReticulumChatSettingsDialog = ({
                   mt: 0.75,
                 }}
               >
-                Choose a reading size for Reticulum messages, channel labels and
-                the members list. Invitation previews keep their fixed layout.
+                {t('reticulum:settings.text_size.description')}
               </Typography>
               <Box sx={{ display: 'grid', gap: 1, mt: 2.5 }}>
                 {reticulumTextScaleOptions.map((option) => {
-                  const selected = textScale === option.value;
+                  const selected = textScale === option;
                   return (
                     <ButtonBase
-                      key={option.value}
-                      onClick={() => setTextScale(option.value)}
+                      key={option}
+                      onClick={() => setTextScale(option)}
                       sx={{
                         alignItems: 'center',
                         backgroundColor: selected
@@ -383,7 +390,7 @@ const ReticulumChatSettingsDialog = ({
                             lineHeight: '20px',
                           }}
                         >
-                          {option.label}
+                          {t(`reticulum:settings.text_size.${option}.label`)}
                         </Typography>
                         <Typography
                           sx={{
@@ -392,7 +399,7 @@ const ReticulumChatSettingsDialog = ({
                             mt: 0.25,
                           }}
                         >
-                          {option.detail}
+                          {t(`reticulum:settings.text_size.${option}.detail`)}
                         </Typography>
                       </Box>
                       <Box
@@ -422,7 +429,7 @@ const ReticulumChatSettingsDialog = ({
                   lineHeight: '26px',
                 }}
               >
-                Messages
+                {t('reticulum:settings.messages.title')}
               </Typography>
               <Typography
                 sx={{
@@ -434,7 +441,7 @@ const ReticulumChatSettingsDialog = ({
                   mt: 0.75,
                 }}
               >
-                Adjust how your own messages appear in Reticulum Q-Chat.
+                {t('reticulum:settings.messages.description')}
               </Typography>
               <Box
                 sx={{
@@ -459,7 +466,7 @@ const ReticulumChatSettingsDialog = ({
                       lineHeight: '20px',
                     }}
                   >
-                    Highlight my messages
+                    {t('reticulum:settings.messages.highlight_own.label')}
                   </Typography>
                   <Typography
                     sx={{
@@ -469,12 +476,16 @@ const ReticulumChatSettingsDialog = ({
                       mt: 0.25,
                     }}
                   >
-                    Add a faint background to messages you send.
+                    {t('reticulum:settings.messages.highlight_own.description')}
                   </Typography>
                 </Box>
                 <Switch
                   checked={highlightOwnMessages === true}
-                  inputProps={{ 'aria-label': 'Highlight my messages' }}
+                  inputProps={{
+                    'aria-label': t(
+                      'reticulum:settings.messages.highlight_own.label'
+                    ),
+                  }}
                   onChange={(_, checked) => setHighlightOwnMessages(checked)}
                 />
               </Box>
@@ -490,7 +501,7 @@ const ReticulumChatSettingsDialog = ({
                   lineHeight: '26px',
                 }}
               >
-                Notifications
+                {t('reticulum:settings.notifications.title')}
               </Typography>
               <Typography
                 sx={{
@@ -502,8 +513,7 @@ const ReticulumChatSettingsDialog = ({
                   mt: 0.75,
                 }}
               >
-                Show Reticulum Q-Chat mentions in the Hub notification panel.
-                Regular unread messages will not create Hub notifications.
+                {t('reticulum:settings.notifications.description')}
               </Typography>
               <Box
                 sx={{
@@ -528,7 +538,7 @@ const ReticulumChatSettingsDialog = ({
                       lineHeight: '20px',
                     }}
                   >
-                    Mention notifications
+                    {t('reticulum:settings.notifications.mentions.label')}
                   </Typography>
                   <Typography
                     sx={{
@@ -538,12 +548,16 @@ const ReticulumChatSettingsDialog = ({
                       mt: 0.25,
                     }}
                   >
-                    Alert me when someone mentions me in a channel.
+                    {t('reticulum:settings.notifications.mentions.description')}
                   </Typography>
                 </Box>
                 <Switch
                   checked={mentionNotificationsEnabled === true}
-                  inputProps={{ 'aria-label': 'Mention notifications' }}
+                  inputProps={{
+                    'aria-label': t(
+                      'reticulum:settings.notifications.mentions.label'
+                    ),
+                  }}
                   onChange={(_, checked) => {
                     setMentionNotificationsEnabled(checked);
                     void setQChatMentionNotificationsEnabled(checked).catch(
@@ -564,7 +578,7 @@ const ReticulumChatSettingsDialog = ({
                   lineHeight: '26px',
                 }}
               >
-                Threads
+                {t('reticulum:settings.legacy.title')}
               </Typography>
               <Typography
                 sx={{
@@ -576,7 +590,7 @@ const ReticulumChatSettingsDialog = ({
                   mt: 0.75,
                 }}
               >
-                Show the legacy Threads and Admin controls in the Q-Chat header.
+                {t('reticulum:settings.legacy.description')}
               </Typography>
               <Box
                 sx={{
@@ -601,7 +615,7 @@ const ReticulumChatSettingsDialog = ({
                       lineHeight: '20px',
                     }}
                   >
-                    Threads
+                    {t('reticulum:settings.legacy.toggle.label')}
                   </Typography>
                   <Typography
                     sx={{
@@ -611,12 +625,14 @@ const ReticulumChatSettingsDialog = ({
                       mt: 0.25,
                     }}
                   >
-                    Display the legacy Threads and Admin icons.
+                    {t('reticulum:settings.legacy.toggle.description')}
                   </Typography>
                 </Box>
                 <Switch
                   checked={legacyThreadsEnabled === true}
-                  inputProps={{ 'aria-label': 'Show legacy Threads' }}
+                  inputProps={{
+                    'aria-label': t('reticulum:settings.legacy.toggle.aria'),
+                  }}
                   onChange={(_, checked) => setLegacyThreadsEnabled(checked)}
                 />
               </Box>
@@ -628,9 +644,7 @@ const ReticulumChatSettingsDialog = ({
                   mt: 1.5,
                 }}
               >
-                Threads will be removed in the upcoming release. Move any
-                important thread information to a safe place or to a new
-                channel in Q-Chat before updating.
+                {t('reticulum:settings.legacy.warning')}
               </Typography>
             </>
           ) : null}
@@ -825,7 +839,7 @@ const GroupListInner = ({
     'core',
     'group',
     'question',
-    'tutorial',
+    'reticulum',
   ]);
   const [isRunningPublicNode] = useAtom(isRunningPublicNodeAtom);
   const [reticulumSettingsOpen, setReticulumSettingsOpen] = useState(false);
@@ -949,7 +963,13 @@ const GroupListInner = ({
         />
         <Tooltip
           placement="right"
-          title={desktopSideView === 'directs' ? 'Groups' : 'Direct Messages'}
+          title={
+            desktopSideView === 'directs'
+              ? t('group:group.group_other', {
+                  postProcess: 'capitalizeFirstChar',
+                })
+              : t('group:dm.direct_messages')
+          }
         >
           <ButtonBase
             onClick={() => {
@@ -1094,9 +1114,9 @@ const GroupListInner = ({
             width: '100%',
           }}
         >
-          <Tooltip placement="right" title="Find Groups">
+          <Tooltip placement="right" title={t('reticulum:rail.find_groups')}>
             <ButtonBase
-              aria-label="Find Groups"
+              aria-label={t('reticulum:rail.find_groups')}
               onClick={() => {
                 setOpenFindGroup(true);
               }}
@@ -1118,9 +1138,16 @@ const GroupListInner = ({
             </ButtonBase>
           </Tooltip>
 
-          <Tooltip placement="right" title="Create Group">
+          <Tooltip
+            placement="right"
+            title={t('group:action.create_group', {
+              postProcess: 'capitalizeEachFirstChar',
+            })}
+          >
             <ButtonBase
-              aria-label="Create Group"
+              aria-label={t('group:action.create_group', {
+                postProcess: 'capitalizeEachFirstChar',
+              })}
               onClick={() => {
                 setOpenAddGroup(true);
               }}
@@ -1142,9 +1169,9 @@ const GroupListInner = ({
             </ButtonBase>
           </Tooltip>
 
-          <Tooltip placement="right" title="Group Settings">
+          <Tooltip placement="right" title={t('reticulum:rail.group_settings')}>
             <ButtonBase
-              aria-label="Group Settings"
+              aria-label={t('reticulum:rail.group_settings')}
               onClick={() => {
                 setReticulumSettingsOpen(true);
               }}
@@ -1167,7 +1194,7 @@ const GroupListInner = ({
           </Tooltip>
 
           <ButtonBase
-            aria-label="Open What's New"
+            aria-label={t('reticulum:rail.whats_new')}
             onClick={() => setReticulumWhatsNewOpen(true)}
             sx={{
               borderRadius: '5px',
@@ -1185,7 +1212,7 @@ const GroupListInner = ({
               },
             }}
           >
-            v3.0.0
+            v3.0.1
           </ButtonBase>
         </Box>
         <ReticulumChatSettingsDialog
@@ -1537,8 +1564,7 @@ const GroupItem = memo(
       if (!ownerName) return null;
       return `${getBaseApiReact()}/arbitrary/THUMBNAIL/${ownerName}/qortal_group_avatar_${group?.groupId}?async=true`;
     }, [ownerName, group?.groupId]);
-    const isAvatarLoaded =
-      Boolean(avatarUrl) && loadedAvatarUrl === avatarUrl;
+    const isAvatarLoaded = Boolean(avatarUrl) && loadedAvatarUrl === avatarUrl;
 
     useEffect(() => {
       if (railMode) prefetchReticulumGroupAboutMetadata(group);
@@ -1712,6 +1738,9 @@ const GroupItem = memo(
             </Box>
           }
           slotProps={{
+            popper: {
+              modifiers: GROUP_RAIL_TOOLTIP_MODIFIERS,
+            },
             tooltip: {
               sx: {
                 backgroundColor:

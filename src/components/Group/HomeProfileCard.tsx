@@ -58,8 +58,11 @@ import {
   openSnackGlobalAtom,
   infoSnackGlobalAtom,
 } from '../../atoms/global';
-import { isIdleAtom, type SelectableStatus } from '../../atoms/presence';
-import { statusDotColor, useMyStatus } from '../../hooks/usePresence';
+import { type SelectableStatus } from '../../atoms/presence';
+import {
+  useAccountStatusDisplay,
+  useAccountStatusOptions,
+} from '../common/accountStatus';
 import { QORTAL_APP_CONTEXT } from '../../App';
 import { getFee, walletVersion } from '../../background/background.ts';
 import Base58 from '../../encryption/Base58';
@@ -107,7 +110,6 @@ type HomeProfileCardProps = {
   onOpenReceive?: (anchorEl: HTMLElement) => void;
 };
 
-type PresenceDisplayStatus = SelectableStatus | 'idle';
 type NameAvailability = 'available' | 'loading' | 'not-available' | 'null';
 type CloseAction = 'ask' | 'minimizeToTray' | 'quit';
 type AccountSettingsTab =
@@ -155,20 +157,6 @@ const ACCOUNT_SETTINGS_PRIVACY_STORAGE_KEY =
 const ACCOUNT_SETTINGS_UI_ANIMATIONS_STORAGE_KEY = 'hub_ui_animations_enabled';
 const ACCOUNT_SETTINGS_STARTUP_AUDIO_DISABLED_STORAGE_KEY =
   'hub_startup_audio_disabled';
-const ACCOUNT_STATUS_DEFS: Array<{
-  key: SelectableStatus;
-}> = [
-  {
-    key: 'online',
-  },
-  {
-    key: 'busy',
-  },
-  {
-    key: 'offline',
-  },
-];
-
 const readStoredBoolean = (key: string, fallback: boolean) => {
   if (typeof window === 'undefined') return fallback;
 
@@ -216,7 +204,7 @@ const formatReticulumConnectedDuration = (
 };
 
 export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
-  const { t } = useTranslation(['tutorial', 'core', 'group']);
+  const { t } = useTranslation(['core', 'group']);
   const theme = useTheme();
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const userInfo = useAtomValue(userInfoAtom);
@@ -302,6 +290,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     useState(false);
   const [reticulumTransitionBusy, setReticulumTransitionBusy] = useState(false);
   const [reticulumChatEnabled, setReticulumChatEnabled] = useState(false);
+  const [
+    communityStunContributionEnabled,
+    setCommunityStunContributionEnabled,
+  ] = useState(true);
   const [reticulumResourceLimitBytes, setReticulumResourceLimitBytes] =
     useState(10 * RETICULUM_RESOURCE_GIB);
   const [reticulumResourceStorage, setReticulumResourceStorage] =
@@ -334,8 +326,14 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const [isRevealingPrivateKey, setIsRevealingPrivateKey] = useState(false);
   const [accountStatusAnchorEl, setAccountStatusAnchorEl] =
     useState<HTMLElement | null>(null);
-  const [myStatus, setMyStatus] = useMyStatus();
-  const isIdle = useAtomValue(isIdleAtom);
+  const {
+    color: accountStatusColor,
+    displayStatus: accountDisplayStatus,
+    label: accountStatusLabel,
+    myStatus,
+    setMyStatus,
+  } = useAccountStatusDisplay();
+  const accountStatusOptions = useAccountStatusOptions();
   const { refreshBlockedUsers, removeBlockFromList } =
     useBlockedAddresses(true);
   const panelRef = useDashboardPanelMouseLight<HTMLDivElement>();
@@ -412,25 +410,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     (key: string, defaultValue: string, options = {}) =>
       t(`group:dashboard.${key}`, { defaultValue, ...options }),
     [t]
-  );
-  const accountStatusOptions = useMemo(
-    () =>
-      ACCOUNT_STATUS_DEFS.map((def) => ({
-        ...def,
-        color:
-          def.key === 'offline'
-            ? isDarkMode
-              ? alpha(theme.palette.common.white, 0.36)
-              : alpha(theme.palette.text.primary, 0.32)
-            : statusDotColor(def.key),
-        label:
-          def.key === 'online'
-            ? td('account_status_online', 'Online')
-            : def.key === 'busy'
-              ? td('account_status_busy', 'Busy')
-              : td('account_status_offline', 'Offline'),
-      })),
-    [isDarkMode, td, theme.palette.common.white, theme.palette.text.primary]
   );
   const accountSettingsTabs = useMemo(
     () => [
@@ -606,44 +585,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const addressFieldActionHoverBackground = isDarkMode
     ? alpha(theme.palette.common.white, 0.055)
     : alpha(theme.palette.text.primary, 0.06);
-  const accountStatus: PresenceDisplayStatus =
-    isIdle && myStatus !== 'offline' ? 'idle' : myStatus;
   const isAccountStatusMenuOpen = Boolean(accountStatusAnchorEl);
-  const accountStatusMeta = useMemo(() => {
-    if (accountStatus === 'busy') {
-      return {
-        color: statusDotColor('busy'),
-        label: td('account_status_busy', 'Busy'),
-      };
-    }
-
-    if (accountStatus === 'offline') {
-      return {
-        color: isDarkMode
-          ? alpha(theme.palette.common.white, 0.36)
-          : alpha(theme.palette.text.primary, 0.32),
-        label: td('account_status_offline', 'Offline'),
-      };
-    }
-
-    if (accountStatus === 'idle') {
-      return {
-        color: statusDotColor('idle'),
-        label: td('account_status_idle', 'Idle'),
-      };
-    }
-
-    return {
-      color: statusDotColor('online'),
-      label: td('account_status_online', 'Online'),
-    };
-  }, [
-    accountStatus,
-    isDarkMode,
-    td,
-    theme.palette.common.white,
-    theme.palette.text.primary,
-  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -795,6 +737,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       setReticulumChatEnabled(
         settings?.reticulumChatEnabled === false ? false : true
       );
+      setCommunityStunContributionEnabled(
+        settings?.communityStunContributionEnabled === false ? false : true
+      );
       setReticulumResourceLimitBytes(
         Number(settings?.reticulumResourceLimitBytes) ||
           10 * RETICULUM_RESOURCE_GIB
@@ -834,6 +779,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         settings?.reticulumManagedConfigEnabled !== false
       );
       setReticulumChatEnabled(settings?.reticulumChatEnabled !== false);
+      setCommunityStunContributionEnabled(
+        settings?.communityStunContributionEnabled !== false
+      );
     });
   }, []);
 
@@ -1245,6 +1193,29 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     [reticulumChatEnabled, setInfoSnack, setOpenSnack, td]
   );
 
+  const handleToggleCommunityStunContribution = useCallback(
+    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      const previous = communityStunContributionEnabled;
+      setCommunityStunContributionEnabled(checked);
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          communityStunContributionEnabled: checked,
+        });
+      } catch {
+        setCommunityStunContributionEnabled(previous);
+        setInfoSnack({
+          type: 'error',
+          message: td(
+            'community_stun_update_error',
+            'We could not update community call support right now.'
+          ),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [communityStunContributionEnabled, setInfoSnack, setOpenSnack, td]
+  );
+
   const handleReticulumResourceLimitChange = useCallback(
     async (limitBytes: number) => {
       const previous = reticulumResourceLimitBytes;
@@ -1481,7 +1452,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       compact: true,
       duration: 3000,
       type: 'info',
-      message: t('tutorial:home.address_copied', {
+      message: t('group:home.address_copied', {
         postProcess: 'capitalizeFirstChar',
       }),
     });
@@ -2316,10 +2287,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
             aria-hidden="true"
             sx={{
               animation:
-                accountStatus === 'online'
+                accountDisplayStatus === 'online'
                   ? 'homeProfileStatusPulse 3.4s ease-in-out infinite'
                   : undefined,
-              bgcolor: accountStatusMeta.color,
+              bgcolor: accountStatusColor,
               borderRadius: '50%',
               flexShrink: 0,
               height: 7,
@@ -2346,7 +2317,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
               textAlign: 'center',
             }}
           >
-            {accountStatusMeta.label}
+            {accountStatusLabel}
           </Typography>
           <KeyboardArrowDownRoundedIcon
             sx={{
@@ -3884,6 +3855,58 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                               ))}
                             </Select>
                           </Box>
+                        </Box>
+
+                        <Box
+                          sx={{
+                            borderTop: `1px solid ${avatarSectionDivider}`,
+                            mx: 1.35,
+                          }}
+                        />
+
+                        <Box
+                          sx={{
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'community_stun_contribution',
+                                'Community call support'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {td(
+                                'community_stun_contribution_desc',
+                                'Help direct calls connect by offering a small network service. Your public IP is shared anonymously with other Hub users.'
+                              )}
+                            </Typography>
+                          </Box>
+                          <Switch
+                            checked={communityStunContributionEnabled}
+                            onChange={handleToggleCommunityStunContribution}
+                            sx={settingsSwitchSx}
+                          />
                         </Box>
 
                         <Box

@@ -33,6 +33,7 @@ import {
 } from '../Group/reticulumGroupScore';
 import qortalOfficialLogo from '../../assets/sidebar/qortal-logo-official.webp';
 import { parseQortalUseGroupLink } from '../../utils/qortalGroupLinks';
+import { useTranslation } from 'react-i18next';
 
 const inviteActionStorageKey = (groupId: string) =>
   `reticulum-group-invite-action:${groupId}`;
@@ -138,6 +139,7 @@ function InvalidInvitePreview() {
 
 function InviteCard({ groupId }: { groupId: string }) {
   const theme = useTheme();
+  const { t } = useTranslation(['core', 'group', 'reticulum']);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const memberGroups = useAtomValue(memberGroupsAtom);
   const [state, setState] = useState<'loading' | 'ready' | 'invalid' | 'error'>(
@@ -237,7 +239,13 @@ function InviteCard({ groupId }: { groupId: string }) {
       setIsJoining(true);
       const fee = await getFee('JOIN_GROUP');
       await show({
-        message: isOpen ? 'Join this group?' : 'Apply to join this group?',
+        message: isOpen
+          ? t('reticulum:join_group_question', {
+              postProcess: 'capitalizeFirstChar',
+            })
+          : t('reticulum:invite.apply_question', {
+              postProcess: 'capitalizeFirstChar',
+            }),
         publishFee: `${fee.fee} QORT`,
       });
       const response = await window.sendMessage('joinGroup', {
@@ -302,12 +310,20 @@ function InviteCard({ groupId }: { groupId: string }) {
 
   const actionLabel =
     isMember || actionState === 'joined'
-      ? 'Joined'
+      ? t('reticulum:invite.joined', {
+          postProcess: 'capitalizeFirstChar',
+        })
       : actionState === 'pending'
-        ? 'Pending'
+        ? t('reticulum:invite.pending', {
+            postProcess: 'capitalizeFirstChar',
+          })
         : isOpen
-          ? 'Join group'
-          : 'Apply';
+          ? t('group:action.join_group', {
+              postProcess: 'capitalizeFirstChar',
+            })
+          : t('reticulum:invite.apply', {
+              postProcess: 'capitalizeFirstChar',
+            });
   const actionDisabled = isMember || actionState !== 'idle' || isJoining;
   return (
     <Box
@@ -429,12 +445,16 @@ function InviteCard({ groupId }: { groupId: string }) {
               </Typography>
               {isOpen ? (
                 <PublicRoundedIcon
-                  aria-label="Open group"
+                  aria-label={t('reticulum:invite.open_group', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
                   sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 16 }}
                 />
               ) : (
                 <LockRoundedIcon
-                  aria-label="Closed group"
+                  aria-label={t('reticulum:invite.closed_group', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
                   sx={{ color: 'text.secondary', flexShrink: 0, fontSize: 16 }}
                 />
               )}

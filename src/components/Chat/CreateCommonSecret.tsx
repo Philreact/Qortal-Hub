@@ -48,13 +48,7 @@ export const CreateCommonSecret = ({
   const [addNewKey, setAddNewKey] = useState(false);
 
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const getPublishesFromAdmins = async (admins: string[]) => {
     const queryString = admins.map((name) => `name=${name}`).join('&');
@@ -211,7 +205,10 @@ export const CreateCommonSecret = ({
         .catch((error) => {
           console.error(
             'Failed to encrypt and publish symmetric key for group chat:',
-            error.message || 'An error occurred'
+            error.message ||
+              t('core:message.error.generic', {
+                postProcess: 'capitalizeFirstChar',
+              })
           );
           setIsLoading(false);
         });

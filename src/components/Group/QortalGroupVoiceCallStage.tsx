@@ -7,7 +7,6 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
-  useReducer,
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -50,6 +49,7 @@ import {
 } from './qortalGroupCallParticipantUi';
 import { CallAudioSettingsButton } from '../Chat/CallAudioDeviceSelectors';
 import { GroupCallStartupBanner } from '../Chat/GroupCallStartupBanner';
+import { isResolvedGroupCallParticipantAddress } from '../../lib/group-call/groupCallTopology';
 
 const BG_MAIN = '#0d1016';
 const BG_HEADER = '#1b2028';
@@ -64,7 +64,7 @@ const SPEAKING = '#23a559';
 const DANGER = '#f23f42';
 const QCALL_STAGE_Z_INDEX = 1590;
 const QCALL_TOOLTIP_Z_INDEX = QCALL_STAGE_Z_INDEX + 20;
-const MAX_QORTAL_GROUP_CALL_PARTICIPANTS = 7;
+const MAX_QORTAL_GROUP_CALL_PARTICIPANTS = 15;
 
 type SidebarMode = 'none' | 'participants';
 
@@ -80,11 +80,9 @@ export function QortalGroupVoiceCallStage() {
   const setQcallPrimaryNames = useSetAtom(qortalGroupCallPrimaryNamesAtom);
   const {
     roomState,
-    mediaViable,
     roomId,
     participants,
     activeSpeakers,
-    metrics,
     localConnectionHint,
     startupStatus,
     leaveGroupCall,
@@ -133,30 +131,6 @@ export function QortalGroupVoiceCallStage() {
     }
   }, [visible, setQcallPrimaryNames]);
 
-  const [transportTick, bumpTransport] = useReducer((n: number) => n + 1, 0);
-  useEffect(() => {
-    if (!visible) return;
-    const id = window.setInterval(bumpTransport, 700);
-    return () => window.clearInterval(id);
-  }, [visible]);
-  const transport = useMemo(() => {
-    if (roomState === 'connected' && !mediaViable) {
-      return {
-        mode: 'connecting' as const,
-        label: 'Reticulum',
-        tooltip:
-          'Reticulum audio is still establishing; you may not hear others yet.',
-      };
-    }
-    void metrics;
-    void transportTick;
-    return {
-      mode: 'reticulum' as const,
-      label: 'Reticulum',
-      tooltip: 'Encrypted voice over Reticulum',
-    };
-  }, [roomState, mediaViable, metrics, transportTick, t]);
-
   useEffect(() => {
     if (
       !visible ||
@@ -174,7 +148,9 @@ export function QortalGroupVoiceCallStage() {
         if (response?.success && response.stats) {
           const localAddress = userInfo?.address ?? '';
           const remoteParticipantCount = participants.filter(
-            (participant) => participant.address !== localAddress
+            (participant) =>
+              participant.address !== localAddress &&
+              isResolvedGroupCallParticipantAddress(participant.address)
           ).length;
           setLinkStats({
             establishedLinks: Math.max(0, response.stats.establishedLinks),
@@ -203,7 +179,9 @@ export function QortalGroupVoiceCallStage() {
 
   const sortedTiles = useMemo(() => {
     const my = userInfo?.address ?? '';
-    const list = [...participants];
+    const list = participants.filter((participant) =>
+      isResolvedGroupCallParticipantAddress(participant.address)
+    );
     list.sort((a, b) => {
       if (a.address === my) return -1;
       if (b.address === my) return 1;
@@ -390,32 +368,6 @@ export function QortalGroupVoiceCallStage() {
               flexShrink: 0,
             }}
           />
-          <Tooltip title={transport.tooltip} placement="bottom">
-            <Chip
-              label={transport.label}
-              size="small"
-              sx={{
-                height: 20,
-                fontSize: 10,
-                fontWeight: 600,
-                flexShrink: 0,
-                maxWidth: 128,
-                ml: 0.5,
-                bgcolor:
-                  transport.mode === 'connecting'
-                    ? alpha('#94a3b8', 0.16)
-                    : alpha('#22c55e', 0.18),
-                color:
-                  transport.mode === 'connecting' ? '#cbd5e1' : '#9ee6b4',
-                border: `1px solid ${
-                  transport.mode === 'connecting'
-                    ? alpha('#94a3b8', 0.2)
-                    : alpha('#22c55e', 0.28)
-                }`,
-                '& .MuiChip-label': { px: 0.75 },
-              }}
-            />
-          </Tooltip>
           <Tooltip
             title={t('core:group_call_participants', {
               postProcess: 'capitalizeFirstChar',

@@ -56,13 +56,7 @@ export const CoreSyncStatus = ({
 
   const nodeBase = selectedNode?.url || HTTPS_EXT_NODE_QORTAL_LINK;
   const isUsingGateway = nodeBase?.includes('ext-node.qortal.link') ?? false;
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const theme = useTheme();
 
   const applyReticulumStatus = useCallback(

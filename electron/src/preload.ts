@@ -87,6 +87,12 @@ let callOnEventRefCount = 0;
 let audioSurfaceOnEventRefCount = 0;
 /** Group and DM chat can both observe local hide-state changes in the same renderer. */
 let reticulumChatSilenceChangedRefCount = 0;
+/**
+ * The global DM badge, missed-call notifications, and an open DM all observe
+ * summary changes. Keep main-process delivery alive until the final observer
+ * leaves; otherwise closing one view unsubscribes the entire renderer.
+ */
+let reticulumChatDirectSummaryChangedRefCount = 0;
 
 function subscribeReticulumChatSilenceChanged(): void {
   reticulumChatSilenceChangedRefCount += 1;
@@ -100,6 +106,21 @@ function unsubscribeReticulumChatSilenceChanged(): void {
   if (reticulumChatSilenceChangedRefCount <= 0) {
     reticulumChatSilenceChangedRefCount = 0;
     ipcRenderer.send('reticulumChat:silenceChanged:unsubscribe');
+  }
+}
+
+function subscribeReticulumChatDirectSummaryChanged(): void {
+  reticulumChatDirectSummaryChangedRefCount += 1;
+  if (reticulumChatDirectSummaryChangedRefCount === 1) {
+    ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');
+  }
+}
+
+function unsubscribeReticulumChatDirectSummaryChanged(): void {
+  reticulumChatDirectSummaryChangedRefCount -= 1;
+  if (reticulumChatDirectSummaryChangedRefCount <= 0) {
+    reticulumChatDirectSummaryChangedRefCount = 0;
+    ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
   }
 }
 
@@ -428,6 +449,17 @@ try {
       return () => ipcRenderer.removeListener('system:lock-requested', handler);
     },
     getPlatform: () => ipcRenderer.invoke('window:getPlatform'),
+    listScreenShareSources: () =>
+      ipcRenderer.invoke('screenShare:listSources') as Promise<{
+        success: boolean;
+        error?: string;
+        sources: Array<{
+          id: string;
+          name: string;
+          thumbnail: string;
+          appIcon: string;
+        }>;
+      }>,
     getSystemCallReadiness: () =>
       ipcRenderer.invoke('systemCallReadiness:getSnapshot') as Promise<{
         status: 'good' | 'warning' | 'blocked' | 'unknown';
@@ -458,6 +490,7 @@ try {
       disableAutoLockOnIdle?: boolean;
       p2pEnabled?: boolean;
       legacyPublicStunFallback?: boolean;
+      communityStunContributionEnabled?: boolean;
       reticulumMeshUpnpEnabled?: boolean;
       reticulumManagedConfigEnabled?: boolean;
       reticulumEnabled?: boolean;
@@ -471,6 +504,7 @@ try {
         reticulumEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
         reticulumChatEnabled?: boolean;
+        communityStunContributionEnabled?: boolean;
       }) => void
     ) => {
       const listener = (_event: Electron.IpcRendererEvent, settings: any) =>
@@ -1613,9 +1647,10 @@ try {
           addresses
         ) as Promise<{ success: boolean; error?: string }>,
       clearLocalAccountState: async () =>
-        ipcRenderer.invoke(
-          'reticulumChat:clearLocalAccountState'
-        ) as Promise<{ success: boolean; error?: string }>,
+        ipcRenderer.invoke('reticulumChat:clearLocalAccountState') as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
       getSilence: async (
         ownerAddress: string,
         targetAddress: string,
@@ -2322,13 +2357,16 @@ try {
           );
         };
         ipcRenderer.on('reticulumChat:directSummaryChanged', handler);
-        ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');
+        subscribeReticulumChatDirectSummaryChanged();
+        let active = true;
         return () => {
+          if (!active) return;
+          active = false;
           ipcRenderer.removeListener(
             'reticulumChat:directSummaryChanged',
             handler
           );
-          ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
+          unsubscribeReticulumChatDirectSummaryChanged();
         };
       },
       onSilenceChanged: (
@@ -2585,17 +2623,20 @@ try {
         };
       },
     });
-
-    contextBridge.exposeInMainWorld('hub', {
-      getBootstrapIceServers: () => hubP2pBootstrapIceServers,
-      getIceServers: () =>
-        ipcRenderer.invoke('hub:getIceServers') as Promise<{ urls: string }[]>,
-      reportStunCallOutcome: (stunUrls: string[], success: boolean) =>
-        ipcRenderer.invoke('hub:reportStunCallOutcome', stunUrls, success),
-      reportObservedStunSources: (stunUrls: string[]) =>
-        ipcRenderer.invoke('hub:reportObservedStunSources', stunUrls),
-    });
   }
+
+  // WebRTC DM calls use this even when the legacy P2P transport is disabled.
+  // Keeping it outside the legacy block ensures direct calls receive their
+  // STUN configuration without re-enabling any legacy data channel behavior.
+  contextBridge.exposeInMainWorld('hub', {
+    getBootstrapIceServers: () => hubP2pBootstrapIceServers,
+    getIceServers: () =>
+      ipcRenderer.invoke('hub:getIceServers') as Promise<{ urls: string }[]>,
+    reportStunCallOutcome: (stunUrls: string[], success: boolean) =>
+      ipcRenderer.invoke('hub:reportStunCallOutcome', stunUrls, success),
+    reportObservedStunSources: (stunUrls: string[]) =>
+      ipcRenderer.invoke('hub:reportObservedStunSources', stunUrls),
+  });
 
   if (isDisabledLegacy) {
     contextBridge.exposeInMainWorld('reticulumChat', {
@@ -2698,9 +2739,10 @@ try {
           addresses
         ) as Promise<{ success: boolean; error?: string }>,
       clearLocalAccountState: async () =>
-        ipcRenderer.invoke(
-          'reticulumChat:clearLocalAccountState'
-        ) as Promise<{ success: boolean; error?: string }>,
+        ipcRenderer.invoke('reticulumChat:clearLocalAccountState') as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
       getSilence: async (
         ownerAddress: string,
         targetAddress: string,
@@ -3378,13 +3420,16 @@ try {
           );
         };
         ipcRenderer.on('reticulumChat:directSummaryChanged', handler);
-        ipcRenderer.send('reticulumChat:directSummaryChanged:subscribe');
+        subscribeReticulumChatDirectSummaryChanged();
+        let active = true;
         return () => {
+          if (!active) return;
+          active = false;
           ipcRenderer.removeListener(
             'reticulumChat:directSummaryChanged',
             handler
           );
-          ipcRenderer.send('reticulumChat:directSummaryChanged:unsubscribe');
+          unsubscribeReticulumChatDirectSummaryChanged();
         };
       },
       onSilenceChanged: (
@@ -3735,6 +3780,19 @@ try {
         timestamp
       ),
 
+    /** Send wallet-authenticated WebRTC negotiation over the selected direct link. */
+    sendRtcSignal: async (input: {
+      callId: string;
+      generation: string;
+      signalId: string;
+      signalType: 'capability' | 'offer' | 'answer' | 'candidate';
+      payload: string;
+      payloadHash: string;
+      timestamp: number;
+      signature: string;
+      publicKey: string;
+    }) => ipcRenderer.invoke('call:rtc-signal', input),
+
     /** Register the local user's address with the call manager. */
     setLocalAddresses: async (addresses: string[]) =>
       ipcRenderer.invoke('call:setLocalAddresses', addresses),
@@ -3750,6 +3808,7 @@ try {
         'call:accepted',
         'call:rejected',
         'call:hangup',
+        'call:rtc-signal',
       ] as const;
 
       const handlers: Map<string, (...args: unknown[]) => void> = new Map();
@@ -3847,7 +3906,8 @@ try {
       topology: unknown,
       signature: string,
       publicKey: string,
-      timestamp: number
+      timestamp: number,
+      localAuthorityProvisional = false
     ) =>
       ipcRenderer.invoke(
         'gcall:broadcastTopology',
@@ -3855,7 +3915,8 @@ try {
         topology,
         signature,
         publicKey,
-        timestamp
+        timestamp,
+        localAuthorityProvisional
       ),
 
     sendClusterHeartbeat: async (
@@ -3900,6 +3961,29 @@ try {
         data,
         timing
       ),
+
+    sendRtcSignal: async (input: {
+      roomId: string;
+      callSessionId: string;
+      mediaSessionGeneration: number;
+      fromAddress: string;
+      toAddress: string;
+      connectionId: string;
+      signalId: string;
+      signalType:
+        | 'capability'
+        | 'offer'
+        | 'answer'
+        | 'candidate'
+        | 'candidates'
+        | 'ack'
+        | 'reconnect';
+      payload: string;
+      payloadHash: string;
+      timestamp: number;
+      signature: string;
+      publicKey: string;
+    }) => ipcRenderer.invoke('gcall:sendRtcSignal', input),
 
     requestPeerMediaRecovery: async (
       roomId: string,
@@ -4098,6 +4182,7 @@ try {
         'gcall:key',
         'gcall:key-request',
         'gcall:session-updated',
+        'gcall:rtc-signal',
       ] as const;
 
       const handlers: Map<string, (...args: unknown[]) => void> = new Map();

@@ -21,6 +21,10 @@ const MAX_INGRESS_PER_IP_PER_SEC = 120;
 const MAX_RESPONSES_GLOBAL_PER_SEC = 200;
 /** Max Binding responses per source IP per second. */
 const MAX_RESPONSES_PER_IP_PER_SEC = 40;
+const MAX_TRACKED_SOURCE_IPS = 4096;
+const SOURCE_IP_PRUNE_TARGET = 3072;
+const SOURCE_IP_RETENTION_MS = 60_000;
+const SOURCE_IP_PRUNE_INTERVAL_MS = 10_000;
 
 function slidingAllow(
   map: Map<string, { count: number; windowStart: number }>,
@@ -41,13 +45,10 @@ function slidingAllow(
 }
 
 function isBindingRequest(msgType: number): boolean {
-  return (msgType & 0x3fff) === BINDING_REQUEST;
+  return msgType === BINDING_REQUEST;
 }
 
-function parseXorMappedAddress(
-  rinfo: dgram.RemoteInfo,
-  txId: Buffer
-): Buffer {
+function parseXorMappedAddress(rinfo: dgram.RemoteInfo, txId: Buffer): Buffer {
   const family = 0x01;
   const port = rinfo.port;
   const xport = port ^ ((STUN_MAGIC >> 16) & 0xffff);
@@ -82,9 +83,16 @@ export class StunUdpServer {
   private socket: dgram.Socket | null = null;
   private readonly port: number;
   private ingressGlobal = { count: 0, windowStart: 0 };
-  private ingressByIp = new Map<string, { count: number; windowStart: number }>();
+  private ingressByIp = new Map<
+    string,
+    { count: number; windowStart: number }
+  >();
   private responseGlobal = { count: 0, windowStart: 0 };
-  private responseByIp = new Map<string, { count: number; windowStart: number }>();
+  private responseByIp = new Map<
+    string,
+    { count: number; windowStart: number }
+  >();
+  private lastSourceIpPruneAt = 0;
 
   constructor(port: number) {
     this.port = port;
@@ -166,8 +174,17 @@ export class StunUdpServer {
   private onMessage(msg: Buffer, rinfo: dgram.RemoteInfo): void {
     const now = Date.now();
     if (!this.allowIngressGlobal(now)) return;
+    this.pruneSourceIpWindows(now);
     const ipKey = rinfo.address;
-    if (!slidingAllow(this.ingressByIp, ipKey, MAX_INGRESS_PER_IP_PER_SEC, 1000, now)) {
+    if (
+      !slidingAllow(
+        this.ingressByIp,
+        ipKey,
+        MAX_INGRESS_PER_IP_PER_SEC,
+        1000,
+        now
+      )
+    ) {
       return;
     }
 
@@ -187,9 +204,18 @@ export class StunUdpServer {
       const padded = ((alen + 3) >> 2) << 2;
       off += 4 + padded;
     }
+    if (off !== end) return;
 
     if (!this.allowResponseGlobal(now)) return;
-    if (!slidingAllow(this.responseByIp, ipKey, MAX_RESPONSES_PER_IP_PER_SEC, 1000, now)) {
+    if (
+      !slidingAllow(
+        this.responseByIp,
+        ipKey,
+        MAX_RESPONSES_PER_IP_PER_SEC,
+        1000,
+        now
+      )
+    ) {
       return;
     }
 
@@ -208,5 +234,32 @@ export class StunUdpServer {
     if (this.responseGlobal.count >= MAX_RESPONSES_GLOBAL_PER_SEC) return false;
     this.responseGlobal.count++;
     return true;
+  }
+
+  private pruneSourceIpWindows(now: number): void {
+    const aboveLimit =
+      this.ingressByIp.size > MAX_TRACKED_SOURCE_IPS ||
+      this.responseByIp.size > MAX_TRACKED_SOURCE_IPS;
+    if (
+      !aboveLimit &&
+      now - this.lastSourceIpPruneAt < SOURCE_IP_PRUNE_INTERVAL_MS
+    ) {
+      return;
+    }
+    this.lastSourceIpPruneAt = now;
+    for (const sourceMap of [this.ingressByIp, this.responseByIp]) {
+      for (const [key, value] of sourceMap) {
+        if (now - value.windowStart >= SOURCE_IP_RETENTION_MS) {
+          sourceMap.delete(key);
+        }
+      }
+      if (sourceMap.size <= MAX_TRACKED_SOURCE_IPS) continue;
+      const removeCount = sourceMap.size - SOURCE_IP_PRUNE_TARGET;
+      const oldestKeys = [...sourceMap.entries()]
+        .sort((left, right) => left[1].windowStart - right[1].windowStart)
+        .slice(0, removeCount)
+        .map(([key]) => key);
+      for (const key of oldestKeys) sourceMap.delete(key);
+    }
   }
 }

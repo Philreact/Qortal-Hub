@@ -17,6 +17,12 @@ export const W_FAIL = 3;
 
 /** Target rows to retain in DB (soft cap via prune). */
 export const STUN_CACHE_MAX_ROWS = 32;
+/** Never give WebRTC an endpoint that has not passed a recent local probe. */
+// Shorter than the 10-minute anonymous advertisement lease so a vanished or
+// opted-out contributor cannot remain eligible beyond its advertised life.
+export const STUN_PROBE_FRESHNESS_MS = 8 * 60 * 1000;
+/** A single lost UDP response must not evict an otherwise fresh endpoint. */
+export const STUN_PROBE_FAILURE_THRESHOLD = 2;
 
 export interface StunEndpointRow {
   stun_key: string;
@@ -37,6 +43,64 @@ export interface IceServerOut {
   urls: string;
 }
 
+export interface StunReprobeCandidate {
+  host: string;
+  stunPort: number;
+  lastProbeSuccessAt: number;
+  lastProbeAttemptAt: number;
+}
+
+export function selectStunReprobeCandidates(
+  rows: StunEndpointRow[],
+  maxOut: number,
+  options: {
+    now?: number;
+    maxSuccessAgeMs: number;
+    minAttemptAgeMs: number;
+  },
+  computeScore: (row: StunEndpointRow) => number
+): StunReprobeCandidate[] {
+  const now = options.now ?? Date.now();
+  const maxSuccessAgeMs = Math.max(0, options.maxSuccessAgeMs);
+  const minAttemptAgeMs = Math.max(0, options.minAttemptAgeMs);
+  const ranked = rows
+    .filter((row) => {
+      const successAt = Number(row.probe_success_at ?? 0);
+      const lastAttemptAt = Math.max(successAt, Number(row.probe_fail_at ?? 0));
+      return (
+        row.stun_server_capable === 1 &&
+        successAt > 0 &&
+        successAt >= now - maxSuccessAgeMs &&
+        lastAttemptAt <= now - minAttemptAgeMs
+      );
+    })
+    .map((row) => ({ row, score: computeScore(row) }));
+  ranked.sort(
+    (a, b) =>
+      b.score - a.score ||
+      Number(b.row.probe_success_at ?? 0) - Number(a.row.probe_success_at ?? 0)
+  );
+
+  const usedHosts = new Set<string>();
+  const out: StunReprobeCandidate[] = [];
+  for (const { row } of ranked) {
+    if (out.length >= Math.max(0, maxOut)) break;
+    const hostKey = row.host.trim().toLowerCase();
+    if (!hostKey || usedHosts.has(hostKey)) continue;
+    usedHosts.add(hostKey);
+    out.push({
+      host: row.host,
+      stunPort: row.stun_port,
+      lastProbeSuccessAt: Number(row.probe_success_at),
+      lastProbeAttemptAt: Math.max(
+        Number(row.probe_success_at),
+        Number(row.probe_fail_at ?? 0)
+      ),
+    });
+  }
+  return out;
+}
+
 export interface StunSelectionDebugRow {
   stunKey: string;
   host: string;
@@ -49,18 +113,34 @@ export interface StunSelectionDebugRow {
   recentProbeOk: boolean;
 }
 
+export function isEligibleStunEndpointRow(
+  row: StunEndpointRow,
+  now = Date.now()
+): boolean {
+  return (
+    row.stun_server_capable === 1 &&
+    row.probe_success_at != null &&
+    row.probe_success_at >= now - STUN_PROBE_FRESHNESS_MS &&
+    (row.probe_success_at > (row.probe_fail_at ?? 0) ||
+      row.probe_fail_streak < STUN_PROBE_FAILURE_THRESHOLD)
+  );
+}
+
 function ipv4Prefix24(host: string): string | null {
   const m = host.match(/^(\d+)\.(\d+)\.(\d+)\.\d+$/);
   if (!m) return null;
   return `${m[1]}.${m[2]}.${m[3]}`;
 }
 
-function parseStunEndpointKey(stunKey: string): { host: string; stunPort: number } | null {
+function parseStunEndpointKey(
+  stunKey: string
+): { host: string; stunPort: number } | null {
   const idx = stunKey.lastIndexOf(':');
   if (idx <= 0) return null;
   const host = stunKey.slice(0, idx).trim();
   const stunPort = Number.parseInt(stunKey.slice(idx + 1), 10);
-  if (!host || Number.isNaN(stunPort) || stunPort < 1 || stunPort > 65535) return null;
+  if (!host || Number.isNaN(stunPort) || stunPort < 1 || stunPort > 65535)
+    return null;
   return { host, stunPort };
 }
 
@@ -136,7 +216,11 @@ export class StunCache {
     );
   }
 
-  private ensureEndpointRow(stunKey: string, host: string, stunPort: number): void {
+  private ensureEndpointRow(
+    stunKey: string,
+    host: string,
+    stunPort: number
+  ): void {
     const db = this.requireDb();
     const now = Date.now();
     db.prepare(
@@ -184,17 +268,7 @@ export class StunCache {
           probe_fail_streak = 0,
           stun_server_capable = 1,
           updated_at = excluded.updated_at`
-      ).run(
-        key,
-        host,
-        stunPort,
-        now,
-        ewma,
-        cs,
-        cf,
-        ob,
-        now
-      );
+      ).run(key, host, stunPort, now, ewma, cs, cf, ob, now);
     } else {
       const streak = (row?.probe_fail_streak ?? 0) + 1;
       const cs = row?.call_success_events ?? 0;
@@ -212,19 +286,7 @@ export class StunCache {
           probe_fail_at = excluded.probe_fail_at,
           probe_fail_streak = excluded.probe_fail_streak,
           updated_at = excluded.updated_at`
-      ).run(
-        key,
-        host,
-        stunPort,
-        ps,
-        now,
-        ew,
-        streak,
-        cs,
-        cf,
-        ob,
-        now
-      );
+      ).run(key, host, stunPort, ps, now, ew, streak, cs, cf, ob, now);
     }
     this.pruneSoft();
   }
@@ -288,11 +350,35 @@ export class StunCache {
     try {
       const db = this.requireDb();
       return db
-        .prepare(`SELECT * FROM stun_endpoints ORDER BY updated_at DESC LIMIT ?`)
+        .prepare(
+          `SELECT * FROM stun_endpoints ORDER BY updated_at DESC LIMIT ?`
+        )
         .all(STUN_CACHE_MAX_ROWS * 2) as StunEndpointRow[];
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Return endpoints which this installation previously verified and which are
+   * due for another real UDP probe. These rows are candidates only: callers
+   * must not expose them to WebRTC until a new successful probe makes them
+   * eligible through `selectTopIceServers()`.
+   */
+  getReprobeCandidates(
+    maxOut: number,
+    options: {
+      now?: number;
+      maxSuccessAgeMs: number;
+      minAttemptAgeMs: number;
+    }
+  ): StunReprobeCandidate[] {
+    return selectStunReprobeCandidates(
+      this.getAllRows(),
+      maxOut,
+      options,
+      (row) => this.computeScore(row)
+    );
   }
 
   /**
@@ -301,7 +387,9 @@ export class StunCache {
    * still produce wire-v2 URLs; at most one URL per host (highest score first).
    */
   selectTopIceServers(maxOut: number): IceServerOut[] {
-    const rows = this.getAllRows();
+    const rows = this.getAllRows().filter((row) =>
+      isEligibleStunEndpointRow(row)
+    );
     const scored = rows.map((r) => ({ r, score: this.computeScore(r) }));
     scored.sort((a, b) => b.score - a.score);
     const out: IceServerOut[] = [];
@@ -333,7 +421,9 @@ export class StunCache {
   }
 
   describeSelection(maxOut: number): StunSelectionDebugRow[] {
-    const rows = this.getAllRows();
+    const rows = this.getAllRows().filter((row) =>
+      isEligibleStunEndpointRow(row)
+    );
     const scored = rows.map((r) => ({
       stunKey: r.stun_key,
       host: r.host,
@@ -344,7 +434,7 @@ export class StunCache {
       observerConfirmations: r.observer_confirmations ?? 0,
       probeFailStreak: r.probe_fail_streak ?? 0,
       recentProbeOk:
-        !!r.probe_success_at && (!r.probe_fail_at || r.probe_success_at > r.probe_fail_at),
+        !!r.probe_success_at && r.probe_success_at > (r.probe_fail_at ?? 0),
     }));
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, maxOut);

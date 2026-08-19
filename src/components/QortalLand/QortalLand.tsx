@@ -3263,6 +3263,14 @@ export function QortalLand({
     [groupId]
   );
 
+  const clearLandCallPresence = useCallback((addresses: string[]) => {
+    let changed = false;
+    for (const address of addresses) {
+      if (address && landCallPresenceRef.current.delete(address)) changed = true;
+    }
+    if (changed) setLandCallPresenceVersion((value) => value + 1);
+  }, []);
+
   const landCallApi = useMemo<VoiceCallApi>(() => ({
     initiate: async (
       targetAddress,
@@ -3361,12 +3369,21 @@ export function QortalLand({
     },
     hangup: async (callId, signature, publicKey, timestamp) => {
       const announced = lastAnnouncedLandCallRef.current;
-      const peer = landCallPeersRef.current.get(callId) || (
-        announced?.callId === callId
-          ? null
-          : null
-      );
-      if (!peer) return { success: true };
+      const peer = landCallPeersRef.current.get(callId);
+      if (!peer) {
+        // The endpoint route may already have been cleared by another call
+        // event. We can still remove our stale group-visible markers and let
+        // the idle effect publish `ended` from the retained announcement.
+        if (announced?.callId === callId) {
+          clearLandCallPresence([myAddress, announced.peerAddress]);
+        }
+        return { success: true };
+      }
+      // The shared voice hook intentionally holds `ended` for 1.5 seconds
+      // before moving to `idle`. Remove the local group-visible markers now,
+      // while retaining lastAnnouncedLandCallRef for the idle effect to send
+      // the matching group-wide `ended` event.
+      clearLandCallPresence([myAddress, peer.peerAddress]);
       const result = await sendLandCallSignal({
         callType: 'hangup',
         callId,
@@ -3382,9 +3399,9 @@ export function QortalLand({
         timestamp,
       });
       landCallPeersRef.current.delete(callId);
-      if (lastAnnouncedLandCallRef.current?.callId === callId) {
-        lastAnnouncedLandCallRef.current = null;
-      }
+      // Keep the last group-visible status until callState reaches idle. The
+      // idle effect below owns the matching `ended` broadcast and local icon
+      // cleanup; clearing this record here leaves the status alive until TTL.
       if (activeLandCallIdRef.current === callId) {
         activeLandCallIdRef.current = null;
         setActiveLandCallPeerAddress(null);
@@ -3398,11 +3415,12 @@ export function QortalLand({
         landCallListenersRef.current.delete(cb);
       };
     },
-  }), [myAddress, sendLandCallSignal, sessionId]);
+  }), [clearLandCallPresence, myAddress, sendLandCallSignal, sessionId]);
 
   const landVoiceCall = useVoiceCall({
     callApi: landCallApi,
     callApiSignsSignals: true,
+    enableDirectVoiceWebRtc: true,
     skipSystemReadiness: true,
     skipDirectFriendValidation: true,
     getPeerPublicKey: (address) => landCallPeerPublicKeysRef.current.get(address),
@@ -3437,14 +3455,6 @@ export function QortalLand({
       expiresAt: Date.now() + ttlMs,
     });
     setLandCallPresenceVersion((value) => value + 1);
-  }, []);
-
-  const clearLandCallPresence = useCallback((addresses: string[]) => {
-    let changed = false;
-    for (const address of addresses) {
-      if (address && landCallPresenceRef.current.delete(address)) changed = true;
-    }
-    if (changed) setLandCallPresenceVersion((value) => value + 1);
   }, []);
 
   const isAddressInLandCall = useCallback((address: string): boolean => {

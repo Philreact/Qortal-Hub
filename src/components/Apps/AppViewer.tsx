@@ -31,13 +31,7 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
 
     const [url, setUrl] = useState('');
     const { themeMode } = useThemeContext();
-    const { i18n, t } = useTranslation([
-      'auth',
-      'core',
-      'group',
-      'question',
-      'tutorial',
-    ]);
+    const { i18n, t } = useTranslation(['auth', 'core', 'group', 'question']);
     const currentLang = i18n.language;
 
     useEffect(() => {

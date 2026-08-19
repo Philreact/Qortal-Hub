@@ -496,9 +496,7 @@ export function ReticulumGroupCalendarDialog({
       setShareCopied(true);
       window.setTimeout(() => setShareCopied(false), 1600);
     } catch {
-      setError(
-        t('calendar.shareFailed', 'The event link could not be copied.')
-      );
+      setError(t('core:calendar.shareFailed'));
     }
   };
 
@@ -555,12 +553,7 @@ export function ReticulumGroupCalendarDialog({
       form.recurrenceUntil &&
       form.recurrenceUntil < input.startLocal.slice(0, 10)
     ) {
-      setError(
-        t(
-          'calendar.invalidRepeatUntil',
-          'Repeat until must be on or after the start date.'
-        )
-      );
+      setError(t('core:calendar.invalidRepeatUntil'));
       setEditingStep(1);
       return;
     }
@@ -570,12 +563,7 @@ export function ReticulumGroupCalendarDialog({
         if (!['https:', 'http:', 'qortal:'].includes(protocol))
           throw new Error();
       } catch {
-        setError(
-          t(
-            'calendar.invalidLink',
-            'Enter a valid HTTP, HTTPS, or Qortal link.'
-          )
-        );
+        setError(t('core:calendar.invalidLink'));
         setEditingStep(1);
         return;
       }
@@ -601,7 +589,7 @@ export function ReticulumGroupCalendarDialog({
         });
         if (!imported?.success || !imported.manifest) {
           throw new Error(
-            imported?.error || 'The compressed cover image could not be saved.'
+            imported?.error || t('core:calendar.coverSaveFailed')
           );
         }
         const manifest = imported.manifest as Record<string, unknown>;
@@ -612,7 +600,7 @@ export function ReticulumGroupCalendarDialog({
           Number(manifest.sizeBytes) > 600 * 1024 ||
           !Number.isFinite(Number(manifest.createdAt))
         ) {
-          throw new Error('The saved cover image is invalid.');
+          throw new Error(t('core:calendar.coverInvalid'));
         }
         input.coverImage = {
           namespace: 'reticulum-group-resource',
@@ -700,10 +688,10 @@ export function ReticulumGroupCalendarDialog({
         <EventRoundedIcon color="primary" />
         <Box sx={{ flex: 1 }}>
           <Typography component="div" fontSize={18} fontWeight={700}>
-            {t('calendar.title', 'Group Calendar')}
+            {t('core:calendar.title')}
           </Typography>
           <Typography color="text.secondary" fontSize={12}>
-            {t('calendar.subtitle', 'Events shared with this group')}
+            {t('core:calendar.subtitle')}
           </Typography>
         </Box>
         {canManage && (
@@ -740,10 +728,13 @@ export function ReticulumGroupCalendarDialog({
               },
             }}
           >
-            {t('calendar.add', 'Add event')}
+            {t('core:calendar.add')}
           </Button>
         )}
-        <IconButton aria-label={t('common.close', 'Close')} onClick={onClose}>
+        <IconButton
+          aria-label={t('core:action.close', 'Close')}
+          onClick={onClose}
+        >
           <CloseRoundedIcon />
         </IconButton>
       </DialogTitle>
@@ -788,7 +779,7 @@ export function ReticulumGroupCalendarDialog({
           >
             <Box sx={{ alignItems: 'center', display: 'flex', mb: 1 }}>
               <IconButton
-                aria-label="Previous month"
+                aria-label={t('core:calendar.previousMonth')}
                 onClick={() => moveMonth(-1)}
                 sx={{
                   bgcolor: alpha(theme.palette.text.primary, 0.045),
@@ -823,10 +814,10 @@ export function ReticulumGroupCalendarDialog({
                   setSelectedDate(moment().format('YYYY-MM-DD'));
                 }}
               >
-                {t('calendar.today', 'Today')}
+                {t('core:calendar.today')}
               </Button>
               <IconButton
-                aria-label="Next month"
+                aria-label={t('core:calendar.nextMonth')}
                 onClick={() => moveMonth(1)}
                 sx={{
                   bgcolor: alpha(theme.palette.text.primary, 0.045),
@@ -991,7 +982,7 @@ export function ReticulumGroupCalendarDialog({
                         py: 1.25,
                       }}
                     >
-                      {t('calendar.upcomingEvents', 'Upcoming Events')}
+                      {t('core:calendar.upcomingEvents')}
                     </Typography>
                   )}
                   <Typography fontSize={16} fontWeight={700}>
@@ -1010,7 +1001,7 @@ export function ReticulumGroupCalendarDialog({
                       ? t('calendar.eventCount', '{{count}} events', {
                           count: day.events.length,
                         })
-                      : t('calendar.noEvents', 'No events')}
+                      : t('core:calendar.noEvents')}
                   </Typography>
                   {day.events.map((event) => (
                     <Button
@@ -1055,14 +1046,14 @@ export function ReticulumGroupCalendarDialog({
                       </Typography>
                       <Typography color="text.secondary" fontSize={12}>
                         {event.allDay
-                          ? t('calendar.allDay', 'All day')
+                          ? t('core:calendar.allDay')
                           : moment(event.occurrenceStart).format('HH:mm')}{' '}
-                        · {t('calendar.yourTime', '(your time)')}
+                        · {t('core:calendar.yourTime')}
                         {event.location ? ` · ${event.location}` : ''}
                       </Typography>
                       {event.creatorAddress && (
                         <Typography color="text.secondary" fontSize={12}>
-                          {t('calendar.createdBy', 'Created by')}{' '}
+                          {t('core:calendar.createdBy')}{' '}
                           <Box
                             component="span"
                             sx={{
@@ -1097,17 +1088,14 @@ export function ReticulumGroupCalendarDialog({
                         }}
                       />
                       <Typography fontSize={16} fontWeight={650}>
-                        {t('calendar.noEventsScheduled', 'No events scheduled')}
+                        {t('core:calendar.noEventsScheduled')}
                       </Typography>
                       <Typography
                         color="text.secondary"
                         fontSize={13}
                         sx={{ mt: 0.75 }}
                       >
-                        {t(
-                          'calendar.nothingElseScheduledThisWeek',
-                          'Nothing else scheduled for this week.'
-                        )}
+                        {t('core:calendar.nothingElseScheduledThisWeek')}
                       </Typography>
                       {canManage && (
                         <Button
@@ -1139,7 +1127,7 @@ export function ReticulumGroupCalendarDialog({
                             },
                           }}
                         >
-                          {t('calendar.add', 'Add event')}
+                          {t('core:calendar.add')}
                         </Button>
                       )}
                     </Box>
@@ -1156,17 +1144,14 @@ export function ReticulumGroupCalendarDialog({
                         }}
                       >
                         <Typography fontSize={16} fontWeight={700}>
-                          {t('calendar.upcomingEvents', 'Upcoming Events')}
+                          {t('core:calendar.upcomingEvents')}
                         </Typography>
                         <Typography
                           color="text.secondary"
                           fontSize={12}
                           sx={{ mt: 0.5 }}
                         >
-                          {t(
-                            'calendar.noUpcomingEventsThisWeek',
-                            'There are no upcoming events for this week.'
-                          )}
+                          {t('core:calendar.noUpcomingEventsThisWeek')}
                         </Typography>
                       </Box>
                     )}
@@ -1261,12 +1246,10 @@ export function ReticulumGroupCalendarDialog({
           }}
         >
           <Box sx={{ color: theme.palette.primary.main, flex: 1 }}>
-            {selected
-              ? t('calendar.edit', 'Edit event')
-              : t('calendar.add', 'Add event')}
+            {selected ? t('core:calendar.edit') : t('core:calendar.add')}
           </Box>
           <IconButton
-            aria-label={t('common.close', 'Close')}
+            aria-label={t('core:action.close', 'Close')}
             disabled={saving}
             onClick={() => setEditing(false)}
             size="small"
@@ -1289,13 +1272,10 @@ export function ReticulumGroupCalendarDialog({
                   fontSize={22}
                   fontWeight={800}
                 >
-                  {t('calendar.eventDetails', 'Event details')}
+                  {t('core:calendar.eventDetails')}
                 </Typography>
                 <Typography color={wizardColors.subtitle} fontSize={13}>
-                  {t(
-                    'calendar.eventDetailsHelp',
-                    'Add a title and description for the event.'
-                  )}
+                  {t('core:calendar.eventDetailsHelp')}
                 </Typography>
               </Box>
               <Box>
@@ -1305,16 +1285,13 @@ export function ReticulumGroupCalendarDialog({
                   fontWeight={600}
                   sx={{ mb: 0.75 }}
                 >
-                  {t('calendar.eventTitle', 'Title')}
+                  {t('core:calendar.eventTitle')}
                 </Typography>
                 <TextField
                   autoFocus
                   fullWidth
                   inputProps={{ maxLength: 120 }}
-                  placeholder={t(
-                    'calendar.eventTitlePlaceholder',
-                    'Event title'
-                  )}
+                  placeholder={t('core:calendar.eventTitlePlaceholder')}
                   value={form.title}
                   onChange={(e) =>
                     setForm((value) => ({ ...value, title: e.target.value }))
@@ -1328,17 +1305,14 @@ export function ReticulumGroupCalendarDialog({
                   fontWeight={600}
                   sx={{ mb: 0.75 }}
                 >
-                  {t('calendar.description', 'Description')}
+                  {t('core:calendar.description')}
                 </Typography>
                 <TextField
                   fullWidth
                   multiline
                   minRows={8}
                   inputProps={{ maxLength: 500 }}
-                  placeholder={t(
-                    'calendar.descriptionPlaceholder',
-                    'Add a description for the event…'
-                  )}
+                  placeholder={t('core:calendar.descriptionPlaceholder')}
                   value={form.description}
                   onChange={(e) =>
                     setForm((value) => ({
@@ -1362,13 +1336,10 @@ export function ReticulumGroupCalendarDialog({
                     fontSize={13}
                     fontWeight={600}
                   >
-                    {t('calendar.coverImage', 'Cover Image')}
+                    {t('core:calendar.coverImage')}
                   </Typography>
                   <Typography color={wizardColors.subtitle} fontSize={12}>
-                    {t(
-                      'calendar.coverImageHelp',
-                      '16:9 ratio · recommended size 1200 × 675'
-                    )}
+                    {t('core:calendar.coverImageHelp')}
                   </Typography>
                 </Box>
                 <input
@@ -1385,21 +1356,11 @@ export function ReticulumGroupCalendarDialog({
                         file.type
                       )
                     ) {
-                      setError(
-                        t(
-                          'calendar.coverImageTypeError',
-                          'Choose a JPEG, PNG, or WebP image.'
-                        )
-                      );
+                      setError(t('core:calendar.coverImageTypeError'));
                       return;
                     }
                     if (file.size <= 0 || file.size > 25 * 1024 * 1024) {
-                      setError(
-                        t(
-                          'calendar.coverImageSizeError',
-                          'The cover image must be smaller than 25 MB.'
-                        )
-                      );
+                      setError(t('core:calendar.coverImageSizeError'));
                       return;
                     }
                     setError('');
@@ -1409,8 +1370,8 @@ export function ReticulumGroupCalendarDialog({
                 <Button
                   aria-label={
                     coverDraft || form.coverImage
-                      ? t('calendar.coverImageReady', 'Cover image ready')
-                      : t('calendar.uploadCover', 'Upload Banner')
+                      ? t('core:calendar.coverImageReady')
+                      : t('core:calendar.uploadCover')
                   }
                   onClick={() => coverInputRef.current?.click()}
                   startIcon={
@@ -1434,8 +1395,7 @@ export function ReticulumGroupCalendarDialog({
                     height: 38,
                     minWidth: 148,
                     textTransform: 'none',
-                    transition:
-                      'background-color 0.18s ease, color 0.18s ease',
+                    transition: 'background-color 0.18s ease, color 0.18s ease',
                     '&:hover': {
                       backgroundColor: RETICULUM_ACTIVE_BLUE,
                       borderColor: RETICULUM_ACTIVE_BLUE,
@@ -1446,7 +1406,7 @@ export function ReticulumGroupCalendarDialog({
                   {coverDraft || form.coverImage ? (
                     <CheckRoundedIcon />
                   ) : (
-                    t('calendar.uploadCover', 'Upload Banner')
+                    t('core:calendar.uploadCover')
                   )}
                 </Button>
               </Box>
@@ -1461,13 +1421,10 @@ export function ReticulumGroupCalendarDialog({
                   fontSize={22}
                   fontWeight={800}
                 >
-                  {t('calendar.timeAndLocation', 'Time & Location')}
+                  {t('core:calendar.timeAndLocation')}
                 </Typography>
                 <Typography color={wizardColors.subtitle} fontSize={13}>
-                  {t(
-                    'calendar.timeAndLocationHelp',
-                    'Choose when and where the event takes place.'
-                  )}
+                  {t('core:calendar.timeAndLocationHelp')}
                 </Typography>
               </Box>
               <Box
@@ -1481,8 +1438,8 @@ export function ReticulumGroupCalendarDialog({
                 }}
               >
                 {[
-                  { allDay: false, label: t('calendar.timed', 'Timed') },
-                  { allDay: true, label: t('calendar.allDay', 'All Day') },
+                  { allDay: false, label: t('core:calendar.timed') },
+                  { allDay: true, label: t('core:calendar.allDay') },
                 ].map((option) => (
                   <Button
                     key={String(option.allDay)}
@@ -1529,7 +1486,7 @@ export function ReticulumGroupCalendarDialog({
               >
                 <TextField
                   disabled={form.allDay}
-                  label={t('calendar.startDate', 'Start Date')}
+                  label={t('core:calendar.startDate')}
                   type="date"
                   InputLabelProps={{ shrink: true }}
                   inputProps={{ min: moment().format('YYYY-MM-DD') }}
@@ -1544,7 +1501,7 @@ export function ReticulumGroupCalendarDialog({
                 />
                 <TextField
                   disabled={form.allDay}
-                  label={t('calendar.startTime', 'Start Time')}
+                  label={t('core:calendar.startTime')}
                   type="time"
                   InputLabelProps={{ shrink: true }}
                   inputProps={{
@@ -1571,7 +1528,7 @@ export function ReticulumGroupCalendarDialog({
                 />
                 <TextField
                   disabled={form.allDay}
-                  label={t('calendar.endDate', 'End Date')}
+                  label={t('core:calendar.endDate')}
                   type="date"
                   InputLabelProps={{ shrink: true }}
                   inputProps={{ min: form.startLocal.slice(0, 10) }}
@@ -1587,7 +1544,7 @@ export function ReticulumGroupCalendarDialog({
                 />
                 <TextField
                   disabled={form.allDay}
-                  label={t('calendar.endTime', 'End Time')}
+                  label={t('core:calendar.endTime')}
                   type="time"
                   InputLabelProps={{ shrink: true }}
                   inputProps={{ step: 900 }}
@@ -1603,7 +1560,7 @@ export function ReticulumGroupCalendarDialog({
               </Box>
               <TextField
                 select
-                label={t('calendar.repeats', 'Repeats')}
+                label={t('core:calendar.repeats')}
                 value={form.recurrenceFrequency}
                 onChange={(e) =>
                   setForm((value) => ({
@@ -1613,26 +1570,18 @@ export function ReticulumGroupCalendarDialog({
                   }))
                 }
               >
-                <MenuItem value="">
-                  {t('calendar.doesNotRepeat', 'Does not repeat')}
-                </MenuItem>
-                <MenuItem value="daily">
-                  {t('calendar.daily', 'Daily')}
-                </MenuItem>
-                <MenuItem value="weekly">
-                  {t('calendar.weekly', 'Weekly')}
-                </MenuItem>
+                <MenuItem value="">{t('core:calendar.doesNotRepeat')}</MenuItem>
+                <MenuItem value="daily">{t('core:calendar.daily')}</MenuItem>
+                <MenuItem value="weekly">{t('core:calendar.weekly')}</MenuItem>
                 <MenuItem value="monthly">
-                  {t('calendar.monthly', 'Monthly')}
+                  {t('core:calendar.monthly')}
                 </MenuItem>
-                <MenuItem value="yearly">
-                  {t('calendar.yearly', 'Yearly')}
-                </MenuItem>
+                <MenuItem value="yearly">{t('core:calendar.yearly')}</MenuItem>
               </TextField>
               {form.recurrenceFrequency && (
                 <TextField
                   type="date"
-                  label={t('calendar.repeatUntil', 'Repeat until (optional)')}
+                  label={t('core:calendar.repeatUntil')}
                   InputLabelProps={{ shrink: true }}
                   inputProps={{ min: form.startLocal.slice(0, 10) }}
                   value={form.recurrenceUntil}
@@ -1650,24 +1599,18 @@ export function ReticulumGroupCalendarDialog({
                 />
               )}
               <TextField
-                label={t('calendar.location', 'Location')}
+                label={t('core:calendar.location')}
                 inputProps={{ maxLength: 240 }}
-                placeholder={t(
-                  'calendar.locationPlaceholder',
-                  'Add a location'
-                )}
+                placeholder={t('core:calendar.locationPlaceholder')}
                 value={form.location}
                 onChange={(e) =>
                   setForm((value) => ({ ...value, location: e.target.value }))
                 }
               />
               <TextField
-                label={t('calendar.link', 'Link')}
+                label={t('core:calendar.link')}
                 inputProps={{ maxLength: 2048 }}
-                placeholder={t(
-                  'calendar.linkPlaceholder',
-                  'Add a link (optional)'
-                )}
+                placeholder={t('core:calendar.linkPlaceholder')}
                 value={form.link}
                 onChange={(e) =>
                   setForm((value) => ({ ...value, link: e.target.value }))
@@ -1684,7 +1627,7 @@ export function ReticulumGroupCalendarDialog({
                 fontWeight={800}
                 sx={{ mb: 2 }}
               >
-                {t('calendar.overview', 'Overview')}
+                {t('core:calendar.overview')}
               </Typography>
               <Box
                 sx={{
@@ -1694,7 +1637,7 @@ export function ReticulumGroupCalendarDialog({
                 <Stack spacing={2}>
                   <Box>
                     <Typography fontSize={14} fontWeight={750}>
-                      {t('calendar.eventTitle', 'Title')}
+                      {t('core:calendar.eventTitle')}
                     </Typography>
                     <Typography
                       color={wizardColors.subtitle}
@@ -1707,7 +1650,7 @@ export function ReticulumGroupCalendarDialog({
                   {form.description && (
                     <Box>
                       <Typography fontSize={14} fontWeight={750}>
-                        {t('calendar.description', 'Description')}
+                        {t('core:calendar.description')}
                       </Typography>
                       <Typography
                         color={wizardColors.subtitle}
@@ -1723,18 +1666,18 @@ export function ReticulumGroupCalendarDialog({
                   )}
                   <Box>
                     <Typography fontSize={14} fontWeight={750}>
-                      {t('calendar.time', 'Time')}
+                      {t('core:calendar.time')}
                     </Typography>
                     <Typography color={wizardColors.subtitle} fontSize={13}>
                       {form.allDay
-                        ? t('calendar.allDay', 'All Day')
+                        ? t('core:calendar.allDay')
                         : `${formatWizardDateTime(form.startLocal)} – ${formatWizardDateTime(form.endLocal)}`}
                     </Typography>
                   </Box>
                   {form.location && (
                     <Box>
                       <Typography fontSize={14} fontWeight={750}>
-                        {t('calendar.location', 'Location')}
+                        {t('core:calendar.location')}
                       </Typography>
                       <Typography
                         color={wizardColors.subtitle}
@@ -1751,7 +1694,7 @@ export function ReticulumGroupCalendarDialog({
                   {form.link && (
                     <Box>
                       <Typography fontSize={14} fontWeight={750}>
-                        {t('calendar.link', 'Link')}
+                        {t('core:calendar.link')}
                       </Typography>
                       <Typography
                         color={wizardColors.subtitle}
@@ -1796,7 +1739,7 @@ export function ReticulumGroupCalendarDialog({
               },
             }}
           >
-            {t('common.back', 'Back')}
+            {t('core:action.back', 'Back')}
           </Button>
           <Stack direction="row" spacing={1}>
             <Button
@@ -1814,7 +1757,7 @@ export function ReticulumGroupCalendarDialog({
                 '&:hover': { bgcolor: wizardColors.secondaryButtonHover },
               }}
             >
-              {t('common.cancel', 'Cancel')}
+              {t('core:action.cancel', 'Cancel')}
             </Button>
             <Button
               onClick={() =>
@@ -1855,9 +1798,9 @@ export function ReticulumGroupCalendarDialog({
               {saving ? (
                 <CircularProgress color="inherit" size={20} />
               ) : editingStep < 2 ? (
-                t('common.next', 'Next')
+                t('core:action.next', 'Next')
               ) : (
-                t('calendar.post', 'Post')
+                t('core:calendar.post')
               )}
             </Button>
           </Stack>
@@ -1928,10 +1871,10 @@ export function ReticulumGroupCalendarDialog({
             fontWeight={800}
             sx={{ flex: 1 }}
           >
-            {t('calendar.eventCreated', 'Event successfully created!')}
+            {t('core:calendar.eventCreated')}
           </Typography>
           <IconButton
-            aria-label={t('common.close', 'Close')}
+            aria-label={t('core:action.close', 'Close')}
             onClick={() => {
               setPostSuccessLink('');
               setShareCopied(false);
@@ -1947,7 +1890,7 @@ export function ReticulumGroupCalendarDialog({
             fontWeight={650}
             sx={{ mb: 0.75 }}
           >
-            {t('calendar.eventLink', 'Event link')}
+            {t('core:calendar.eventLink')}
           </Typography>
           <Box
             sx={{
@@ -1988,8 +1931,8 @@ export function ReticulumGroupCalendarDialog({
               }}
             >
               {shareCopied
-                ? t('calendar.copied', 'Copied')
-                : t('calendar.copy', 'Copy')}
+                ? t('core:calendar.copied')
+                : t('core:calendar.copy')}
             </Button>
           </Box>
         </DialogContent>
@@ -2024,18 +1967,18 @@ export function ReticulumGroupCalendarDialog({
                 fontWeight={800}
                 sx={{ flex: 1 }}
               >
-                {t('calendar.overview', 'Overview')}
+                {t('core:calendar.overview')}
               </Typography>
               <IconButton
                 aria-label={
                   shareCopied
-                    ? t('calendar.copied', 'Copied')
-                    : t('calendar.share', 'Share')
+                    ? t('core:calendar.copied')
+                    : t('core:calendar.share')
                 }
                 title={
                   shareCopied
-                    ? t('calendar.copied', 'Copied')
-                    : t('calendar.share', 'Share')
+                    ? t('core:calendar.copied')
+                    : t('core:calendar.share')
                 }
                 onClick={() => void copyEventLink(selected.eventId)}
               >
@@ -2043,7 +1986,7 @@ export function ReticulumGroupCalendarDialog({
               </IconButton>
               {canManage && selected.occurrenceEnd > Date.now() && (
                 <IconButton
-                  aria-label={t('calendar.edit', 'Edit event')}
+                  aria-label={t('core:calendar.edit')}
                   onClick={beginEdit}
                 >
                   <EditRoundedIcon />
@@ -2052,14 +1995,14 @@ export function ReticulumGroupCalendarDialog({
               {canManage && (
                 <IconButton
                   color="error"
-                  aria-label={t('calendar.delete', 'Delete event')}
+                  aria-label={t('core:calendar.delete')}
                   onClick={() => setDeleteConfirmationOpen(true)}
                 >
                   <DeleteOutlineRoundedIcon />
                 </IconButton>
               )}
               <IconButton
-                aria-label={t('common.close', 'Close')}
+                aria-label={t('core:action.close', 'Close')}
                 onClick={() => setSelected(null)}
               >
                 <CloseRoundedIcon />
@@ -2069,7 +2012,7 @@ export function ReticulumGroupCalendarDialog({
               <Stack spacing={2}>
                 <Box>
                   <Typography fontSize={14} fontWeight={750}>
-                    {t('calendar.eventTitle', 'Title')}
+                    {t('core:calendar.eventTitle')}
                   </Typography>
                   <Typography
                     color={wizardColors.subtitle}
@@ -2082,7 +2025,7 @@ export function ReticulumGroupCalendarDialog({
                 {selected.description && (
                   <Box>
                     <Typography fontSize={14} fontWeight={750}>
-                      {t('calendar.description', 'Description')}
+                      {t('core:calendar.description')}
                     </Typography>
                     <Typography
                       color={wizardColors.subtitle}
@@ -2095,7 +2038,7 @@ export function ReticulumGroupCalendarDialog({
                 )}
                 <Box>
                   <Typography fontSize={14} fontWeight={750}>
-                    {t('calendar.time', 'Time')}
+                    {t('core:calendar.time')}
                   </Typography>
                   <Typography color={wizardColors.subtitle} fontSize={13}>
                     {selected.allDay
@@ -2126,7 +2069,7 @@ export function ReticulumGroupCalendarDialog({
                 {selected.recurrence && (
                   <Box>
                     <Typography fontSize={14} fontWeight={750}>
-                      {t('calendar.repeats', 'Repeats')}
+                      {t('core:calendar.repeats')}
                     </Typography>
                     <Typography color={wizardColors.subtitle} fontSize={13}>
                       {t(
@@ -2139,7 +2082,7 @@ export function ReticulumGroupCalendarDialog({
                 {selected.location && (
                   <Box>
                     <Typography fontSize={14} fontWeight={750}>
-                      {t('calendar.location', 'Location')}
+                      {t('core:calendar.location')}
                     </Typography>
                     <Typography
                       color={wizardColors.subtitle}
@@ -2153,7 +2096,7 @@ export function ReticulumGroupCalendarDialog({
                 {selected.link && (
                   <Box>
                     <Typography fontSize={14} fontWeight={750}>
-                      {t('calendar.link', 'Link')}
+                      {t('core:calendar.link')}
                     </Typography>
                     <Button
                       component="a"
@@ -2210,10 +2153,7 @@ export function ReticulumGroupCalendarDialog({
                       <CircularProgress size={24} />
                     ) : (
                       <Typography color={wizardColors.subtitle} fontSize={12}>
-                        {t(
-                          'calendar.coverUnavailable',
-                          'Cover image unavailable'
-                        )}
+                        {t('core:calendar.coverUnavailable')}
                       </Typography>
                     )}
                   </Box>
@@ -2261,10 +2201,10 @@ export function ReticulumGroupCalendarDialog({
             fontWeight={800}
             sx={{ flex: 1 }}
           >
-            {t('calendar.delete', 'Delete event')}
+            {t('core:calendar.delete')}
           </Typography>
           <IconButton
-            aria-label={t('common.close', 'Close')}
+            aria-label={t('core:action.close', 'Close')}
             disabled={saving}
             onClick={() => setDeleteConfirmationOpen(false)}
           >
@@ -2273,13 +2213,10 @@ export function ReticulumGroupCalendarDialog({
         </DialogTitle>
         <DialogContent sx={{ px: 3, pb: 4, pt: 3 }}>
           <Typography color={wizardColors.label} fontSize={18} sx={{ mb: 1.5 }}>
-            {t('calendar.confirmDelete', 'Delete this event series?')}
+            {t('core:calendar.confirmDelete')}
           </Typography>
           <Typography color={wizardColors.subtitle} fontSize={14}>
-            {t(
-              'calendar.deleteWarning',
-              'This will permanently delete all occurrences of this event.'
-            )}
+            {t('core:calendar.deleteWarning')}
           </Typography>
         </DialogContent>
         <DialogActions
@@ -2305,7 +2242,7 @@ export function ReticulumGroupCalendarDialog({
               },
             }}
           >
-            {t('common.cancel', 'Cancel')}
+            {t('core:action.cancel', 'Cancel')}
           </Button>
           <Button
             disabled={saving}
@@ -2329,7 +2266,7 @@ export function ReticulumGroupCalendarDialog({
             {saving ? (
               <CircularProgress color="inherit" size={20} />
             ) : (
-              t('calendar.delete', 'Delete event')
+              t('core:calendar.delete')
             )}
           </Button>
         </DialogActions>

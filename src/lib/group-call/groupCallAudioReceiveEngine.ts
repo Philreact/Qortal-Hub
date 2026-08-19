@@ -625,7 +625,7 @@ function disconnectNodeSafe(node: AudioNode | null): void {
 export interface GroupCallAudioReceivePayload {
   roomId: string;
   data: ArrayBuffer;
-  transport?: 'link' | 'packet' | 'unknown';
+  transport?: 'link' | 'packet' | 'webrtc' | 'unknown';
   bridgeReceivedAtWallMs?: number | null;
   audioStageTimestamps?: {
     bridgeReceivedAtWallMs?: number | null;
@@ -664,7 +664,11 @@ export class GroupCallAudioReceiveEngine {
   >();
   private readonly outputNodeBySource = new Map<string, GainNode>();
   private readonly pannerNodeBySource = new Map<string, StereoPannerNode>();
-  private readonly spatialControlsBySource = new Map<string, { gain: number; pan: number }>();
+  private readonly spatialControlsBySource = new Map<
+    string,
+    { gain: number; pan: number }
+  >();
+  private readonly intentionallySilencedSources = new Set<string>();
   private readonly onMetricsChanged: (
     snapshot: GroupCallMetricsSnapshot
   ) => void;
@@ -1375,6 +1379,7 @@ export class GroupCallAudioReceiveEngine {
     this.outputNodeBySource.clear();
     this.pannerNodeBySource.clear();
     this.spatialControlsBySource.clear();
+    this.intentionallySilencedSources.clear();
     this.loggedFirstDecodedPacket = false;
     this.loggedFirstPlayoutStartBySource.clear();
     this.peerRecoveryState = createDmPeerRecoveryState();
@@ -1408,6 +1413,7 @@ export class GroupCallAudioReceiveEngine {
     this.outputNodeBySource.delete(normalized);
     this.pannerNodeBySource.delete(normalized);
     this.spatialControlsBySource.delete(normalized);
+    this.intentionallySilencedSources.delete(normalized);
     this.loggedFirstPlayoutStartBySource.delete(normalized);
     this.liveMultiSourceStateBySource.delete(normalized);
     if (playout) {
@@ -1426,6 +1432,27 @@ export class GroupCallAudioReceiveEngine {
     return normalized ? this.playouts.has(normalized) : false;
   }
 
+  /**
+   * Conservative estimate of audio that still has to pass through this
+   * source's jitter/decode/playout pipeline. Intentional-idle cleanup must use
+   * playout progress rather than packet-arrival time: Reticulum can deliver a
+   * burst containing several hundred milliseconds of valid speech, and
+   * muting the source while that burst is buffered clips the entire burst.
+   */
+  getSourcePlayoutBacklogMs(sourceAddr: string): number {
+    const normalized = sourceAddr.trim();
+    if (!normalized) return 0;
+    const state = this.liveMultiSourceStateBySource.get(normalized);
+    if (!state) return 0;
+    const latestPcmBufferedMs = state.recentOpusBufferedMs.at(-1) ?? 0;
+    return Math.max(
+      0,
+      latestPcmBufferedMs,
+      state.preProcessBufferedFrames * OPUS_FRAME_DURATION_MS,
+      state.lastJitterBufferedFrames * OPUS_FRAME_DURATION_MS
+    );
+  }
+
   setSourceSpatial(sourceAddr: string, gain: number, pan: number): void {
     const normalized = sourceAddr.trim();
     if (!normalized) return;
@@ -1438,9 +1465,35 @@ export class GroupCallAudioReceiveEngine {
     const output = this.outputNodeBySource.get(normalized);
     const panner = this.pannerNodeBySource.get(normalized);
     output?.gain.cancelScheduledValues(now);
-    output?.gain.setTargetAtTime(controls.gain, now, 0.05);
+    output?.gain.setTargetAtTime(
+      this.intentionallySilencedSources.has(normalized) ? 0 : controls.gain,
+      now,
+      0.05
+    );
     panner?.pan.cancelScheduledValues(now);
     panner?.pan.setTargetAtTime(controls.pan, now, 0.05);
+  }
+
+  /**
+   * Silence an intentionally idle source without stopping its transport or
+   * abruptly disconnecting its AudioNode. The short gain ramp prevents the
+   * decoder's end-of-stream concealment tail from becoming an audible click
+   * or burst. Any subsequent authenticated packet clears this state in the
+   * runtime before it is delivered for playout.
+   */
+  setSourceIntentionalSilence(sourceAddr: string, silenced: boolean): void {
+    const normalized = sourceAddr.trim();
+    if (!normalized) return;
+    if (silenced) this.intentionallySilencedSources.add(normalized);
+    else this.intentionallySilencedSources.delete(normalized);
+    const output = this.outputNodeBySource.get(normalized);
+    if (!output || !this.audioContext) return;
+    const now = this.audioContext.currentTime;
+    const target = silenced
+      ? 0
+      : (this.spatialControlsBySource.get(normalized)?.gain ?? 1);
+    output.gain.cancelScheduledValues(now);
+    output.gain.setTargetAtTime(target, now, silenced ? 0.015 : 0.01);
   }
 
   setMasterVolume(volume: number): void {
@@ -3260,8 +3313,13 @@ export class GroupCallAudioReceiveEngine {
     const existingAfterContext = this.playouts.get(sourceAddr);
     if (existingAfterContext) return existingAfterContext;
     const output = ctx.createGain();
-    const controls = this.spatialControlsBySource.get(sourceAddr) ?? { gain: 1, pan: 0 };
-    output.gain.value = controls.gain;
+    const controls = this.spatialControlsBySource.get(sourceAddr) ?? {
+      gain: 1,
+      pan: 0,
+    };
+    output.gain.value = this.intentionallySilencedSources.has(sourceAddr)
+      ? 0
+      : controls.gain;
     // StereoPannerNode is available in Chromium, but keeping this optional
     // preserves the existing receiver on older WebViews and test AudioContext
     // shims. Proximity voice loses only spatial pan in that environment.

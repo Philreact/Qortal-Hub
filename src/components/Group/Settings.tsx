@@ -193,13 +193,7 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
   const [isPrivateKeyPasswordEditable, setIsPrivateKeyPasswordEditable] =
     useState(false);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
     setChecked(event.target.checked);
@@ -1138,19 +1132,13 @@ const ExportPrivateKey = ({ rawWallet }) => {
   const setOpenSnackGlobal = useSetAtom(openSnackGlobalAtom);
   const setInfoSnackCustom = useSetAtom(infoSnackGlobalAtom);
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
   const exportPrivateKeyFunc = async () => {
     try {
       setInfoSnackCustom({
         type: 'info',
-        message: t('group:message.generic.descrypt_wallet', {
+        message: t('group:message.generic.decrypt_wallet', {
           postProcess: 'capitalizeFirstChar',
         }),
       });
@@ -1172,14 +1160,10 @@ const ExportPrivateKey = ({ rawWallet }) => {
     } catch (error) {
       setInfoSnackCustom({
         type: 'error',
-        message: error?.message
-          ? t('group:message.error.decrypt_wallet', {
-              message: error?.message,
-              postProcess: 'capitalizeFirstChar',
-            })
-          : t('group:message.error.descrypt_wallet', {
-              postProcess: 'capitalizeFirstChar',
-            }),
+        message: t('group:message.error.decrypt_wallet', {
+          message: error?.message ?? '',
+          postProcess: 'capitalizeFirstChar',
+        }),
       });
 
       setOpenSnackGlobal(true);

@@ -21,10 +21,13 @@ import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import { getBaseApiReact } from '../../App';
 import { getNameInfo } from '../Group/groupApi';
 import { executeEvent } from '../../utils/events';
+import { formatQortAmount } from '../../utils/numberFunctions';
 import { statusDotColor } from '../../hooks/usePresence';
+import { usePresenceStatusLabel } from '../common/accountStatus';
 import { MinterAvatarOrnament } from './MinterAvatarOrnament';
 import { AvatarPreviewModal } from './AvatarPreviewModal';
 import { ReticulumRoleBadge } from './ReticulumRoleBadge';
+import { useTranslation } from 'react-i18next';
 import {
   ReticulumHideUserAction,
   type ReticulumSilenceContext,
@@ -58,28 +61,10 @@ type CardProfile = {
   name: string;
 };
 
-const getStatusLabel = (status: string | null) => {
-  if (!status || status === 'offline') return 'Offline';
-  if (status === 'idle') return 'Away';
-  if (status === 'busy') return 'Busy';
-  return 'Online';
-};
-
 const shortenAddress = (address: string) =>
-  address.length <= 14 ? address : `${address.slice(0, 6)}...${address.slice(-6)}`;
-
-const formatWholeQort = (balance: string | number | null) => {
-  if (balance === null || balance === undefined || balance === '') return null;
-  const normalized = String(balance).replaceAll(',', '').trim();
-  const whole = normalized.match(/^(-?\d+)/)?.[1];
-  if (!whole) return null;
-
-  try {
-    return BigInt(whole).toLocaleString('en-US');
-  } catch {
-    return null;
-  }
-};
+  address.length <= 14
+    ? address
+    : `${address.slice(0, 6)}...${address.slice(-6)}`;
 
 export const ReticulumUserCard = ({
   anchorEl,
@@ -90,18 +75,26 @@ export const ReticulumUserCard = ({
   onClose,
   silenceContext,
 }: ReticulumUserCardProps) => {
+
+  const { i18n, t } = useTranslation(['core', 'reticulum']);
+  const getPresenceStatusLabel = usePresenceStatusLabel();
+
   const theme = useTheme();
   const open = Boolean(anchorEl || anchorPosition);
   const [profile, setProfile] = useState<CardProfile | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [resolvedMinterLevel, setResolvedMinterLevel] = useState<number | null>(
-    data.isMinterResolved ? data.minterLevel ?? null : null
+    data.isMinterResolved ? (data.minterLevel ?? null) : null
   );
-  const [isMinterResolved, setIsMinterResolved] = useState(data.isMinterResolved);
+  const [isMinterResolved, setIsMinterResolved] = useState(
+    data.isMinterResolved
+  );
   const [isAvatarPreviewOpen, setIsAvatarPreviewOpen] = useState(false);
   const [avatarPreviewSrc, setAvatarPreviewSrc] = useState<string | null>(null);
-  const [hideMenuAnchor, setHideMenuAnchor] = useState<HTMLElement | null>(null);
+  const [hideMenuAnchor, setHideMenuAnchor] = useState<HTMLElement | null>(
+    null
+  );
   const cardContentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -112,7 +105,8 @@ export const ReticulumUserCard = ({
     };
 
     document.addEventListener('contextmenu', closeOnOutsideContextMenu);
-    return () => document.removeEventListener('contextmenu', closeOnOutsideContextMenu);
+    return () =>
+      document.removeEventListener('contextmenu', closeOnOutsideContextMenu);
   }, [onClose, open]);
 
   useEffect(() => {
@@ -125,7 +119,9 @@ export const ReticulumUserCard = ({
 
     void Promise.all([
       getNameInfo(data.address).catch(() => ''),
-      fetch(`${getBaseApiReact()}/addresses/balance/${encodeURIComponent(data.address)}`)
+      fetch(
+        `${getBaseApiReact()}/addresses/balance/${encodeURIComponent(data.address)}`
+      )
         .then(async (response) => (response.ok ? response.json() : null))
         .catch(() => null),
     ]).then(([registeredName, balance]) => {
@@ -153,10 +149,14 @@ export const ReticulumUserCard = ({
     setResolvedMinterLevel(null);
 
     void Promise.all([
-      fetch(`${getBaseApiReact()}/groups/member/${encodeURIComponent(data.address)}`)
+      fetch(
+        `${getBaseApiReact()}/groups/member/${encodeURIComponent(data.address)}`
+      )
         .then(async (response) => (response.ok ? response.json() : []))
         .catch(() => []),
-      fetch(`${getBaseApiReact()}/addresses/${encodeURIComponent(data.address)}`)
+      fetch(
+        `${getBaseApiReact()}/addresses/${encodeURIComponent(data.address)}`
+      )
         .then(async (response) => (response.ok ? response.json() : null))
         .catch(() => null),
     ]).then(([membership, addressInfo]) => {
@@ -186,13 +186,13 @@ export const ReticulumUserCard = ({
   const avatarUrl = avatarName
     ? `${getBaseApiReact()}/arbitrary/THUMBNAIL/${encodeURIComponent(avatarName)}/qortal_avatar?async=true`
     : data.avatarUrl;
-  const wholeBalance = useMemo(
-    () => formatWholeQort(profile?.balance ?? null),
-    [profile?.balance]
+  const formattedBalance = useMemo(
+    () => formatQortAmount(profile?.balance ?? null, i18n.language),
+    [i18n.language, profile?.balance]
   );
   const isMinter = typeof resolvedMinterLevel === 'number';
   const isOwnCard = data.isOwn;
-  const statusLabel = getStatusLabel(data.status);
+  const statusLabel = getPresenceStatusLabel(data.status);
   const statusColor = statusDotColor(data.status);
   const cardAvatar = (
     <Avatar
@@ -222,12 +222,18 @@ export const ReticulumUserCard = ({
   };
 
   const handleMessage = () => {
-    executeEvent('openDirectMessageInternal', { address: data.address, name: displayName });
+    executeEvent('openDirectMessageInternal', {
+      address: data.address,
+      name: displayName,
+    });
     onClose();
   };
 
   const handleSendQort = () => {
-    executeEvent('openPaymentInternal', { address: data.address, name: displayName });
+    executeEvent('openPaymentInternal', {
+      address: data.address,
+      name: displayName,
+    });
     onClose();
   };
 
@@ -290,15 +296,37 @@ export const ReticulumUserCard = ({
           },
         }}
       >
-      <Box aria-label={`${displayName} user card`} ref={cardContentRef} role="dialog" sx={{ pb: 1.75, pt: 2.5, px: 2 }}>
-        <Box sx={{ alignItems: 'flex-start', display: 'flex', gap: 2.25, minHeight: 112, position: 'relative' }}>
-          <Box sx={{ minWidth: 98, ml: 1 }}>
-            {isMinter ? (
-              <MinterAvatarOrnament
-                accentColor={data.role ? data.roleColor : undefined}
-                level={resolvedMinterLevel}
-                size="card"
-              >
+        <Box
+          aria-label={`${displayName} user card`}
+          ref={cardContentRef}
+          role="dialog"
+          sx={{ pb: 1.75, pt: 2.5, px: 2 }}
+        >
+          <Box
+            sx={{
+              alignItems: 'flex-start',
+              display: 'flex',
+              gap: 2.25,
+              minHeight: 112,
+              position: 'relative',
+            }}
+          >
+            <Box sx={{ minWidth: 98, ml: 1 }}>
+              {isMinter ? (
+                <MinterAvatarOrnament
+                  accentColor={data.role ? data.roleColor : undefined}
+                  level={resolvedMinterLevel}
+                  size="card"
+                >
+                  <IconButton
+                    aria-label={`Open ${displayName}'s avatar`}
+                    onClick={handleAvatarPreview}
+                    sx={{ borderRadius: '50%', p: 0 }}
+                  >
+                    {cardAvatar}
+                  </IconButton>
+                </MinterAvatarOrnament>
+              ) : (
                 <IconButton
                   aria-label={`Open ${displayName}'s avatar`}
                   onClick={handleAvatarPreview}
@@ -306,167 +334,288 @@ export const ReticulumUserCard = ({
                 >
                   {cardAvatar}
                 </IconButton>
-              </MinterAvatarOrnament>
-            ) : (
-              <IconButton
-                aria-label={`Open ${displayName}'s avatar`}
-                onClick={handleAvatarPreview}
-                sx={{ borderRadius: '50%', p: 0 }}
-              >
-                {cardAvatar}
-              </IconButton>
-            )}
-          </Box>
-
-          <Box sx={{ minWidth: 0, pt: 0.15 }}>
-            <Box sx={{ alignItems: 'center', display: 'flex', gap: 1, minWidth: 0 }}>
-              <Typography
-                sx={{
-                  color: data.roleColor || theme.palette.text.primary,
-                  fontSize: 21,
-                  fontWeight: 750,
-                  lineHeight: '26px',
-                  minWidth: 0,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {displayName}
-              </Typography>
-              {data.role && (
-                <ReticulumRoleBadge
-                  color={data.roleColor}
-                  role={data.role}
-                  size="card"
-                />
               )}
             </Box>
-            <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.85, mt: 0.45 }}>
+
+            <Box sx={{ minWidth: 0, pt: 0.15 }}>
               <Box
-                aria-hidden
                 sx={{
-                  backgroundColor: data.status ? statusColor : 'transparent',
-                  border: data.status ? 'none' : `2px solid ${statusColor}`,
-                  borderRadius: '50%',
-                  boxSizing: 'border-box',
-                  height: 10,
-                  width: 10,
+                  alignItems: 'center',
+                  display: 'flex',
+                  gap: 1,
+                  minWidth: 0,
                 }}
-              />
-              <Typography sx={{ color: theme.palette.text.secondary, fontSize: 14 }}>
-                {statusLabel}
-              </Typography>
-            </Box>
-            <Box sx={{ transform: 'translateY(16px)' }}>
-              <Typography sx={cardLabelSx}>
-                QORTAL ADDRESS
-              </Typography>
-              <Box sx={{ alignItems: 'center', display: 'flex', gap: 0.75, mt: 0.55, minWidth: 0 }}>
-                <Typography sx={{ color: theme.palette.text.primary, fontSize: 14.5, letterSpacing: 0.2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {shortenAddress(data.address)}
+              >
+                <Typography
+                  sx={{
+                    color: data.roleColor || theme.palette.text.primary,
+                    fontSize: 21,
+                    fontWeight: 750,
+                    lineHeight: '26px',
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {displayName}
                 </Typography>
-                <Tooltip title={copyState === 'copied' ? 'Address copied' : 'Copy address'}>
-                  <IconButton aria-label="Copy full Qortal address" onClick={handleCopy} size="small" sx={{ border: `1px solid ${alpha(theme.palette.divider, 0.9)}`, borderRadius: '8px', color: theme.palette.text.primary, height: 28, transform: 'translate(4px, -6px)', width: 28 }}>
-                    <ContentCopyRoundedIcon sx={{ fontSize: 17 }} />
-                  </IconButton>
-                </Tooltip>
+                {data.role && (
+                  <ReticulumRoleBadge
+                    color={data.roleColor}
+                    role={data.role}
+                    size="card"
+                  />
+                )}
+              </Box>
+              <Box
+                sx={{
+                  alignItems: 'center',
+                  display: 'flex',
+                  gap: 0.85,
+                  mt: 0.45,
+                }}
+              >
+                <Box
+                  aria-hidden
+                  sx={{
+                    backgroundColor: data.status ? statusColor : 'transparent',
+                    border: data.status ? 'none' : `2px solid ${statusColor}`,
+                    borderRadius: '50%',
+                    boxSizing: 'border-box',
+                    height: 10,
+                    width: 10,
+                  }}
+                />
+                <Typography
+                  sx={{ color: theme.palette.text.secondary, fontSize: 14 }}
+                >
+                  {statusLabel}
+                </Typography>
+              </Box>
+              <Box sx={{ transform: 'translateY(16px)' }}>
+                <Typography sx={cardLabelSx}>
+                  {t('reticulum:user_card.qortal_address', {
+                    postProcess: 'capitalizeAll',
+                  })}
+                </Typography>
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    display: 'flex',
+                    gap: 0.75,
+                    mt: 0.55,
+                    minWidth: 0,
+                  }}
+                >
+                  <Typography
+                    sx={{
+                      color: theme.palette.text.primary,
+                      fontSize: 14.5,
+                      letterSpacing: 0.2,
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {shortenAddress(data.address)}
+                  </Typography>
+                  <Tooltip
+                    title={
+                      copyState === 'copied'
+                        ? t('reticulum:user_card.address_copied', {
+                            postProcess: 'capitalizeFirstChar',
+                          })
+                        : t('reticulum:user_card.copy_address', {
+                            postProcess: 'capitalizeFirstChar',
+                          })
+                    }
+                  >
+                    <IconButton
+                      aria-label={t('reticulum:user_card.copy_full_address', {
+                        postProcess: 'capitalizeFirstChar',
+                      })}
+                      onClick={handleCopy}
+                      size="small"
+                      sx={{
+                        border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
+                        borderRadius: '8px',
+                        color: theme.palette.text.primary,
+                        height: 28,
+                        transform: 'translate(4px, -6px)',
+                        width: 28,
+                      }}
+                    >
+                      <ContentCopyRoundedIcon sx={{ fontSize: 17 }} />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
               </Box>
             </Box>
-          </Box>
-          <Tooltip title="View profile">
-            <IconButton
-              aria-label={`View ${displayName}'s profile`}
-              onClick={handleViewProfile}
-              sx={{ border: `1px solid ${alpha(theme.palette.divider, 0.9)}`, borderRadius: '9px', color: theme.palette.primary.main, height: 36, ml: 'auto', width: 36 }}
+            <Tooltip
+              title={t('reticulum:user_card.view_profile', {
+                postProcess: 'capitalizeFirstChar',
+              })}
             >
-              <OpenInNewRoundedIcon sx={{ fontSize: 22 }} />
-            </IconButton>
-          </Tooltip>
-        </Box>
-
-        <Divider
-          sx={{
-            borderColor:
-              theme.palette.mode === 'dark'
-                ? 'rgba(255, 255, 255, 0.075)'
-                : alpha(theme.palette.text.primary, 0.2),
-            mb: 0.5,
-            mt: 2.75,
-          }}
-        />
-
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', minHeight: 64 }}>
-          <CardStat label="QORT BALANCE" value={isLoading ? 'Loading...' : wholeBalance === null ? 'N/A' : `${wholeBalance} QORT`} />
-          <CardStat
-            bordered
-            label="MINTER LEVEL"
-            value={!isMinterResolved ? 'Loading...' : !isMinter ? 'N/A' : `Level ${resolvedMinterLevel}`}
-          />
-        </Box>
-
-        {!isOwnCard && (
-          <>
-            <Divider
-              sx={{
-                borderColor:
-                  theme.palette.mode === 'dark'
-                    ? 'rgba(255, 255,255, 0.075)'
-                    : alpha(theme.palette.text.primary, 0.2),
-                mb: 1.75,
-                mt: 0.5,
-              }}
-            />
-            <Box sx={{ display: 'grid', gap: 1.75, gridTemplateColumns: '146px minmax(0, 1fr) 48px' }}>
-              <Button variant="contained" startIcon={<ChatBubbleOutlineRoundedIcon />} onClick={handleMessage} sx={primaryActionSx}>
-                Message
-              </Button>
-              <Button variant="outlined" startIcon={<NorthEastRoundedIcon />} onClick={handleSendQort} sx={secondaryActionSx}>
-                Send QORT
-              </Button>
-              <Button
-                aria-label="Hide user"
-                disabled={!silenceContext}
-                variant="outlined"
-                onClick={(event) => setHideMenuAnchor(event.currentTarget)}
-                sx={blockActionSx}
-              >
-                <VisibilityOffRoundedIcon />
-              </Button>
-            </Box>
-            {silenceContext && (
-              <Menu
-                anchorEl={hideMenuAnchor}
-                open={Boolean(hideMenuAnchor)}
-                onClose={() => setHideMenuAnchor(null)}
-                anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
-                transformOrigin={{ horizontal: 'right', vertical: 'top' }}
-                slotProps={{
-                  paper: {
-                    sx: {
-                      backgroundColor: theme.palette.background.paper,
-                      border: `1px solid ${theme.palette.divider}`,
-                      borderRadius: '8px',
-                      mt: 0.75,
-                      minWidth: 210,
-                    },
-                  },
+              <IconButton
+                aria-label={t('reticulum:user_card.view_profile_of', {
+                  name: displayName,
+                  postProcess: 'capitalizeFirstChar',
+                })}
+                onClick={handleViewProfile}
+                sx={{
+                  border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
+                  borderRadius: '9px',
+                  color: theme.palette.primary.main,
+                  height: 36,
+                  ml: 'auto',
+                  width: 36,
                 }}
               >
-                <ReticulumHideUserAction
-                  address={data.address}
-                  context={silenceContext}
-                  handleClose={() => {
-                    setHideMenuAnchor(null);
-                    onClose();
+                <OpenInNewRoundedIcon sx={{ fontSize: 22 }} />
+              </IconButton>
+            </Tooltip>
+          </Box>
+
+          <Divider
+            sx={{
+              borderColor:
+                theme.palette.mode === 'dark'
+                  ? 'rgba(255, 255, 255, 0.075)'
+                  : alpha(theme.palette.text.primary, 0.2),
+              mb: 0.5,
+              mt: 2.75,
+            }}
+          />
+
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              minHeight: 64,
+            }}
+          >
+            <CardStat
+              label={t('reticulum:user_card.qort_balance', {
+                postProcess: 'capitalizeAll',
+              })}
+              value={
+                isLoading
+                  ? t('core:loading_ellipsis', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+                  : formattedBalance === null
+                    ? t('core:not_available', { postProcess: 'capitalizeAll' })
+                    : t('reticulum:user_card.qort_balance_value', {
+                        amount: formattedBalance,
+                      })
+              }
+            />
+            <CardStat
+              bordered
+              label={t('reticulum:user_card.minter_level', {
+                postProcess: 'capitalizeAll',
+              })}
+              value={
+                !isMinterResolved
+                  ? t('core:loading_ellipsis', {
+                      postProcess: 'capitalizeFirstChar',
+                    })
+                  : !isMinter
+                    ? t('core:not_available', { postProcess: 'capitalizeAll' })
+                    : t('reticulum:user_card.minter_level_value', {
+                        level: resolvedMinterLevel,
+                        postProcess: 'capitalizeFirstChar',
+                      })
+              }
+            />
+          </Box>
+
+          {!isOwnCard && (
+            <>
+              <Divider
+                sx={{
+                  borderColor:
+                    theme.palette.mode === 'dark'
+                      ? 'rgba(255, 255,255, 0.075)'
+                      : alpha(theme.palette.text.primary, 0.2),
+                  mb: 1.75,
+                  mt: 0.5,
+                }}
+              />
+              <Box
+                sx={{
+                  display: 'grid',
+                  gap: 1.75,
+                  gridTemplateColumns: '146px minmax(0, 1fr) 48px',
+                }}
+              >
+                <Button
+                  variant="contained"
+                  startIcon={<ChatBubbleOutlineRoundedIcon />}
+                  onClick={handleMessage}
+                  sx={primaryActionSx}
+                >
+                  {t('reticulum:user_card.message', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                </Button>
+                <Button
+                  variant="outlined"
+                  startIcon={<NorthEastRoundedIcon />}
+                  onClick={handleSendQort}
+                  sx={secondaryActionSx}
+                >
+                  {t('reticulum:user_card.send_qort', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                </Button>
+                <Button
+                  aria-label={t('reticulum:user_card.hide_user', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                  disabled={!silenceContext}
+                  variant="outlined"
+                  onClick={(event) => setHideMenuAnchor(event.currentTarget)}
+                  sx={blockActionSx}
+                >
+                  <VisibilityOffRoundedIcon />
+                </Button>
+              </Box>
+              {silenceContext && (
+                <Menu
+                  anchorEl={hideMenuAnchor}
+                  open={Boolean(hideMenuAnchor)}
+                  onClose={() => setHideMenuAnchor(null)}
+                  anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
+                  transformOrigin={{ horizontal: 'right', vertical: 'top' }}
+                  slotProps={{
+                    paper: {
+                      sx: {
+                        backgroundColor: theme.palette.background.paper,
+                        border: `1px solid ${theme.palette.divider}`,
+                        borderRadius: '8px',
+                        mt: 0.75,
+                        minWidth: 210,
+                      },
+                    },
                   }}
-                  initiallyShowDurations
-                />
-              </Menu>
-            )}
-          </>
-        )}
-      </Box>
+                >
+                  <ReticulumHideUserAction
+                    address={data.address}
+                    context={silenceContext}
+                    handleClose={() => {
+                      setHideMenuAnchor(null);
+                      onClose();
+                    }}
+                    initiallyShowDurations
+                  />
+                </Menu>
+              )}
+            </>
+          )}
+        </Box>
       </Popover>
       <AvatarPreviewModal
         alt={displayName}
@@ -489,11 +638,33 @@ const CardStat = ({
 }) => {
   const theme = useTheme();
   return (
-    <Box sx={{ alignSelf: bordered ? 'center' : undefined, borderLeft: bordered ? `1px solid ${theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.075)' : alpha(theme.palette.text.primary, 0.2)}` : undefined, display: 'flex', flexDirection: 'column', height: bordered ? '70%' : undefined, justifyContent: 'center', minWidth: 0, pl: bordered ? 2 : 1.25, pr: 1.25 }}>
+    <Box
+      sx={{
+        alignSelf: bordered ? 'center' : undefined,
+        borderLeft: bordered
+          ? `1px solid ${theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.075)' : alpha(theme.palette.text.primary, 0.2)}`
+          : undefined,
+        display: 'flex',
+        flexDirection: 'column',
+        height: bordered ? '70%' : undefined,
+        justifyContent: 'center',
+        minWidth: 0,
+        pl: bordered ? 2 : 1.25,
+        pr: 1.25,
+      }}
+    >
       <Typography sx={{ ...cardLabelSx, mt: 0, whiteSpace: 'nowrap' }}>
         {label}
       </Typography>
-      <Typography sx={{ color: theme.palette.text.primary, fontSize: 17, fontWeight: 700, mt: 0.45, whiteSpace: 'nowrap' }}>
+      <Typography
+        sx={{
+          color: theme.palette.text.primary,
+          fontSize: 17,
+          fontWeight: 700,
+          mt: 0.45,
+          whiteSpace: 'nowrap',
+        }}
+      >
         {value}
       </Typography>
     </Box>
@@ -549,5 +720,8 @@ const blockActionSx = {
   px: 0,
   '& .MuiSvgIcon-root': { fontSize: 24 },
   textTransform: 'none',
-  '&:hover': { backgroundColor: 'rgba(239, 68, 68, 0.08)', borderColor: 'error.main' },
+  '&:hover': {
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderColor: 'error.main',
+  },
 };

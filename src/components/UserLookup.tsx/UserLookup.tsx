@@ -62,6 +62,10 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import { formatTimestamp } from '../../utils/time';
+import {
+  formatQortAmount,
+  type QortAmountFormatOptions,
+} from '../../utils/numberFunctions';
 import magnifierSvg from '../../assets/user-search/magnifier.svg?raw';
 import qortalLogo512 from '../../assets/user-search/qortal-logo-512.png';
 
@@ -111,25 +115,16 @@ function formatAddress(value: string) {
   return `${value.slice(0, 6)}....${value.slice(-6)}`;
 }
 
-function formatBalance(value: number | string | undefined): string {
-  if (value == null || value === '') return '0';
-  const numericValue =
-    typeof value === 'string' ? parseFloat(value) : Number(value);
-  if (Number.isNaN(numericValue)) return '0';
-  return numericValue.toLocaleString('en-US', {
-    maximumFractionDigits: 4,
-    minimumFractionDigits: 2,
-  });
-}
-
-function formatStatBalance(value: number | string | undefined): string {
-  if (value == null || value === '') return '0';
-  const numericValue =
-    typeof value === 'string' ? parseFloat(value) : Number(value);
-  if (Number.isNaN(numericValue)) return '0';
-  return numericValue.toLocaleString(undefined, {
-    maximumFractionDigits: 0,
-  });
+function formatQortValue(
+  value: number | string | undefined,
+  locale: string,
+  options?: QortAmountFormatOptions
+): string {
+  return (
+    formatQortAmount(value, locale, options) ??
+    formatQortAmount(0, locale, options) ??
+    '0'
+  );
 }
 
 function UserSearchIllustration({
@@ -329,13 +324,7 @@ export const UserLookup = ({
   setIsOpenDrawerLookup,
 }: UserLookupProps) => {
   const theme = useTheme();
-  const { t } = useTranslation([
-    'auth',
-    'core',
-    'group',
-    'question',
-    'tutorial',
-  ]);
+  const { i18n, t } = useTranslation(['auth', 'core', 'group', 'question']);
   const currentUser = useAtomValue(userInfoAtom);
   const isRunningPublicNode = useAtomValue(isRunningPublicNodeAtom);
   const setInfoSnack = useSetAtom(infoSnackGlobalAtom);
@@ -698,7 +687,7 @@ export const UserLookup = ({
     navigator.clipboard.writeText(addressInfo.address);
     pushSnack(
       'success',
-      t('tutorial:home.address_copied', {
+      t('group:home.address_copied', {
         postProcess: 'capitalizeFirstChar',
       })
     );
@@ -942,25 +931,27 @@ export const UserLookup = ({
   const displayStatRows = [
     {
       label: t('core:balance', { postProcess: 'capitalizeFirstChar' }),
-      value: `${formatStatBalance(addressInfo?.balance)} QORT`,
+      value: `${formatQortValue(addressInfo?.balance, i18n.language)} QORT`,
     },
     {
       label: t('core:total_received', { postProcess: 'capitalizeFirstChar' }),
       value:
         totalReceived != null
-          ? `${formatStatBalance(totalReceived)} QORT`
+          ? `${formatQortValue(totalReceived, i18n.language)} QORT`
           : '\u2014',
     },
     {
       label: t('core:total_sent', { postProcess: 'capitalizeFirstChar' }),
       value:
-        totalSent != null ? `${formatStatBalance(totalSent)} QORT` : '\u2014',
+        totalSent != null
+          ? `${formatQortValue(totalSent, i18n.language)} QORT`
+          : '\u2014',
     },
     {
       label: t('core:total_blocks_minted', {
         postProcess: 'capitalizeFirstChar',
       }),
-      value: currentBlocks.toLocaleString(),
+      value: currentBlocks.toLocaleString(i18n.language),
     },
   ];
 
@@ -1633,8 +1624,8 @@ export const UserLookup = ({
                       <Typography
                         sx={{ fontSize: '0.84rem', fontWeight: 700, mt: 0.85 }}
                       >
-                        {currentBlocks.toLocaleString()} /{' '}
-                        {targetBlocks.toLocaleString()}
+                        {currentBlocks.toLocaleString(i18n.language)} /{' '}
+                        {targetBlocks.toLocaleString(i18n.language)}
                       </Typography>
                       <Typography
                         sx={{
@@ -1645,12 +1636,16 @@ export const UserLookup = ({
                       >
                         {nextLevelNumber != null
                           ? t('core:account_lookup.minting_blocks_to_level', {
-                              remaining: remainingBlocks.toLocaleString(),
+                              remaining: remainingBlocks.toLocaleString(
+                                i18n.language
+                              ),
                               level: nextLevelNumber,
                               postProcess: 'capitalizeFirstChar',
                             })
                           : t('core:account_lookup.minting_remaining', {
-                              remaining: remainingBlocks.toLocaleString(),
+                              remaining: remainingBlocks.toLocaleString(
+                                i18n.language
+                              ),
                               postProcess: 'capitalizeFirstChar',
                             })}
                       </Typography>
@@ -2131,7 +2126,12 @@ export const UserLookup = ({
                                       whiteSpace: 'nowrap',
                                     }}
                                   >
-                                    {formatBalance(payment?.amount)} QORT
+                                    {formatQortValue(
+                                      payment?.amount,
+                                      i18n.language,
+                                      { expandSmallAmounts: true }
+                                    )}{' '}
+                                    QORT
                                   </TableCell>
                                   <TableCell
                                     align="right"

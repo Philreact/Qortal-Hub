@@ -56,13 +56,7 @@ const MenuBar = memo(
     const { editor } = useCurrentEditor();
     const fileInputRef = useRef(null);
     const theme = useTheme();
-    const { t } = useTranslation([
-      'auth',
-      'core',
-      'group',
-      'question',
-      'tutorial',
-    ]);
+    const { t } = useTranslation(['auth', 'core', 'group', 'question']);
 
     useEffect(() => {
       if (editor && setEditorRef) {
@@ -456,7 +450,11 @@ const MenuBar = memo(
                 style={{ display: 'none' }}
                 onChange={(event) => {
                   const files = Array.from(event.target.files || []);
-                  if (isChat && files.length > 0 && typeof insertFiles === 'function') {
+                  if (
+                    isChat &&
+                    files.length > 0 &&
+                    typeof insertFiles === 'function'
+                  ) {
                     void insertFiles(files);
                     if (fileInputRef.current) {
                       fileInputRef.current.value = '';
@@ -564,6 +562,7 @@ const Tiptap = ({
   collapseFormattingTraySignal,
 }: TiptapProps) => {
   const theme = useTheme();
+  const { t } = useTranslation(['auth', 'core', 'group', 'question']);
   const compactFileInputRef = useRef<HTMLInputElement | null>(null);
   const [showFormattingTray, setShowFormattingTray] = useState(false);
 
@@ -611,7 +610,9 @@ const Tiptap = ({
   );
 
   const extensionsFiltered = isChat
-    ? extensions.filter((item) => item?.name !== 'image' && item?.name !== 'placeholder')
+    ? extensions.filter(
+        (item) => item?.name !== 'image' && item?.name !== 'placeholder'
+      )
     : extensions.filter((item) => item?.name !== 'placeholder');
   const placeholderExtension = useMemo(
     () =>
@@ -646,16 +647,18 @@ const Tiptap = ({
 
   const users = useMemo(() => {
     if (mentionSuggestions) return mentionSuggestions;
-    return (membersWithNames || [])?.map((item) => {
-      const label = String(item || '').trim();
-      return {
-        id: label,
-        label,
-        section: 'people' as const,
-        kind: 'person' as const,
-        description: 'Member',
-      };
-    }).filter((item) => item.label);
+    return (membersWithNames || [])
+      ?.map((item) => {
+        const label = String(item || '').trim();
+        return {
+          id: label,
+          label,
+          section: 'people' as const,
+          kind: 'person' as const,
+          description: 'Member',
+        };
+      })
+      .filter((item) => item.label);
   }, [membersWithNames, mentionSuggestions]);
 
   const usersRef = useRef([]);
@@ -683,8 +686,8 @@ const Tiptap = ({
           options.HTMLAttributes,
           renderMentionLabel(node),
         ],
-          suggestion: {
-            items: ({ query }) => {
+        suggestion: {
+          items: ({ query }) => {
             const normalizedQuery = query.trim().toLowerCase();
             if (!normalizedQuery) return usersRef.current;
             const sectionOrder: Record<
@@ -829,7 +832,11 @@ const Tiptap = ({
     <EditorProvider
       editable={!readOnly}
       slotBefore={slotBefore}
-      extensions={[...extensionsFiltered, placeholderExtension, ...additionalExtensions]}
+      extensions={[
+        ...extensionsFiltered,
+        placeholderExtension,
+        ...additionalExtensions,
+      ]}
       content={content}
       onCreate={({ editor }) => {
         setEditorRefFunc(editor);
@@ -942,10 +949,7 @@ const Tiptap = ({
                 }
                 return i === 0
                   ? [schema.text(t)]
-                  : [
-                      schema.nodes.hardBreak.create(),
-                      schema.text(t),
-                    ];
+                  : [schema.nodes.hardBreak.create(), schema.text(t)];
               });
               return schema.nodes.paragraph.create(
                 null,
@@ -1011,10 +1015,16 @@ const Tiptap = ({
             width: '100%',
           }}
         >
-          <Tooltip title="Add attachment">
+          <Tooltip
+            title={t('core:action.add_attachment', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+          >
             <span>
               <IconButton
-                disabled={readOnly || disableEnter || typeof insertFiles !== 'function'}
+                disabled={
+                  readOnly || disableEnter || typeof insertFiles !== 'function'
+                }
                 onClick={() => compactFileInputRef.current?.click()}
                 size="small"
                 sx={{
@@ -1045,7 +1055,11 @@ const Tiptap = ({
               event.currentTarget.value = '';
             }}
           />
-          <Tooltip title="Formatting">
+          <Tooltip
+            title={t('core:action.formatting', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+          >
             <IconButton
               disabled={readOnly}
               onClick={() => setShowFormattingTray((show) => !show)}

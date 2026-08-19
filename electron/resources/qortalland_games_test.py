@@ -230,6 +230,63 @@ class QortalLandGameProtocolTest(unittest.TestCase):
         request_path.assert_not_called()
         manager._schedule_open_retry.assert_called_once_with(match_id)
 
+    def test_active_game_close_refreshes_path_before_resume(self):
+        refreshes = []
+        manager, _events = self.make_manager()
+        manager.refresh_path = lambda peer, reason: refreshes.append((peer, reason)) or False
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        link = object()
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "peerHash": "11" * 16,
+            "phase": "active",
+            "outbound": True,
+            "link": link,
+            "pendingInboundMoves": {},
+            "pendingOutboundMoves": {},
+        }
+        manager.links_by_object[id(link)] = match_id
+
+        with mock.patch.object(threading, "Timer") as timer:
+            manager._link_closed(link)
+
+        self.assertEqual(
+            refreshes,
+            [("11" * 16, "game_resume_link_closed")],
+        )
+        self.assertEqual(manager.matches[match_id]["phase"], "recovering")
+        self.assertIsNone(manager.matches[match_id]["link"])
+        timer.assert_called_once()
+
+    def test_game_resume_waits_for_confirmed_path_before_opening_link(self):
+        refreshes = []
+
+        class Destination:
+            hash = bytes.fromhex("11" * 16)
+
+        manager, _events = self.make_manager()
+        manager.build_destination = lambda _identity: Destination()
+        manager.path_available = lambda _destination_hash: False
+        manager.refresh_path = lambda peer, reason: refreshes.append((peer, reason)) or True
+        match_id = "00112233-4455-6677-8899-aabbccddeeff"
+        manager.matches[match_id] = {
+            "matchId": match_id,
+            "peerHash": "11" * 16,
+            "phase": "recovering",
+            "outbound": True,
+            "disconnectedAt": time.time(),
+        }
+
+        with mock.patch.object(RNS, "Link") as open_link, mock.patch.object(
+            threading, "Timer"
+        ) as timer, mock.patch.object(RNS.Transport, "request_path") as request_path:
+            manager._reopen_for_resume(match_id)
+
+        self.assertEqual(refreshes, [("11" * 16, "game_resume_no_path")])
+        open_link.assert_not_called()
+        request_path.assert_not_called()
+        timer.assert_called_once()
+
     def test_qortal_address_cross_language_fixture(self):
         self.assertEqual(
             derive_qortal_address("1thX6LZfHDZZKUs92febYZhYRcXddmzfzF2NvTkPNE"),

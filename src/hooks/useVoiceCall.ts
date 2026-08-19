@@ -1,9 +1,8 @@
 /**
- * useVoiceCall — direct (1:1) voice over Reticulum only.
- *
- * Signaling (CALL_REQUEST / ACCEPT / REJECT / HANGUP) uses window.call IPC → Reticulum.
- * Media is owned by the audio surface: GC_JOIN → GC_KEY → audio-surface capture/decode →
- * window.groupCall.sendAudio → Reticulum. There is no renderer media fallback.
+ * Direct (1:1) voice call lifecycle. Control, key exchange, and WebRTC
+ * negotiation use authenticated Reticulum links. The audio surface prefers an
+ * encrypted native WebRTC audio track and retains the existing application-
+ * encrypted Reticulum media path as the automatic fallback.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -28,13 +27,13 @@ import {
   sendDirectVoiceRoomKeyRequest,
   isDmVoiceRoomId,
 } from '../lib/call/directVoiceReticulumMedia';
+import { signGroupCallFields } from '../lib/group-call/groupCallJoinSigning';
 import {
   clearDirectVoiceUiLogs,
   pushDirectVoiceUiLog,
 } from '../lib/call/directVoiceUiLog';
 import { startDirectOutboundRingtone } from '../lib/call/directIncomingRingtone';
 import i18n from '../i18n/i18n';
-import { applyCallAudioOutput } from '../lib/call/audioDevices';
 import {
   type DecodedAudioPacket,
   decodeAudioPackets,
@@ -73,6 +72,12 @@ import {
 } from '../lib/group-call/groupCallAudioSenderEngine';
 import AudioDecryptWorker from '../workers/audio-decrypt.worker?worker';
 import { createRouteBoundId } from '../lib/reticulum/routeBoundId';
+import { isReticulumCallEnabled } from '../lib/call/directVoiceCallTransport';
+import type { DirectVoiceRtcSignal } from '../lib/call/directVoiceWebRtcTransport';
+import {
+  DirectScreenShareWebRtcTransport,
+  type DirectScreenShareRtcSignal,
+} from '../lib/call/directScreenShareWebRtcTransport';
 
 const DM_MEDIA_RECOVERY_REQUEST_COOLDOWN_MS = 4_000;
 const DM_ROOM_KEY_REPLAY_RETRY_MS = 750;
@@ -124,16 +129,129 @@ type GcallKeyRequestEventPayload = {
   verified?: boolean;
 };
 
+type GcallDirectRtcEventPayload = {
+  roomId?: string;
+  callSessionId?: string;
+  mediaSessionGeneration?: number;
+  fromAddress?: string;
+  toAddress?: string;
+  signalType?:
+    | 'capability'
+    | 'offer'
+    | 'answer'
+    | 'candidate'
+    | 'ack'
+    | 'reconnect';
+  payload?: string;
+  verified?: boolean;
+};
+
 function uint8ToBase64Local(bytes: Uint8Array): string {
   let s = '';
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]!);
   return btoa(s);
 }
 
+function createDirectVoiceRtcSignalId(): string {
+  return uint8ToBase64Local(crypto.getRandomValues(new Uint8Array(12)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+const DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION = 'native_audio_v1';
+const DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY = {
+  kind: 'capability',
+  audio: 'native-track',
+  screen: 'video-track',
+  screenVersion: 1,
+  version: 1,
+} as const;
+
+type DirectVoiceCapabilityPayload = {
+  kind: 'capability';
+  audio: 'native-track';
+  screen: 'video-track';
+  screenVersion: 1;
+  version: 1;
+  capabilityId: string;
+};
+
+type DirectVoiceCapabilityAckPayload = {
+  kind: 'capability-ack';
+  generation: typeof DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION;
+  capabilityId: string;
+};
+
+function isDirectScreenShareRtcSignal(
+  value: unknown
+): value is DirectScreenShareRtcSignal {
+  if (!value || typeof value !== 'object') return false;
+  const signal = value as Record<string, unknown>;
+  if (
+    typeof signal.generation !== 'string' ||
+    !/^[A-Za-z0-9_-]{8,64}$/.test(signal.generation)
+  ) {
+    return false;
+  }
+  if (signal.kind === 'screen-stop') return true;
+  if (signal.kind === 'screen-ice') {
+    if (!signal.candidate || typeof signal.candidate !== 'object') return false;
+    const candidate = signal.candidate as RTCIceCandidateInit;
+    return (
+      typeof candidate.candidate === 'string' &&
+      candidate.candidate.length <= 8 * 1024 &&
+      (candidate.sdpMid === undefined ||
+        candidate.sdpMid === null ||
+        typeof candidate.sdpMid === 'string') &&
+      (candidate.sdpMLineIndex === undefined ||
+        candidate.sdpMLineIndex === null ||
+        (Number.isInteger(candidate.sdpMLineIndex) &&
+          Number(candidate.sdpMLineIndex) >= 0))
+    );
+  }
+  if (signal.kind !== 'screen-description') return false;
+  if (!signal.description || typeof signal.description !== 'object') {
+    return false;
+  }
+  const type = (signal.description as RTCSessionDescriptionInit).type;
+  const sdp = (signal.description as RTCSessionDescriptionInit).sdp;
+  return (
+    (type === 'offer' || type === 'answer') &&
+    typeof sdp === 'string' &&
+    sdp.length > 0 &&
+    sdp.length <= 64 * 1024
+  );
+}
+
+async function sha256HexUtf8(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value)
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 export type CallState = 'idle' | 'calling' | 'ringing' | 'connected' | 'ended';
 
-/** Reticulum/group-call media only (legacy UI read `audioMode`). */
-export type AudioMode = 'reticulum' | null;
+/** Active DM audio data plane reported to the existing call UI. */
+export type AudioMode = 'reticulum' | 'webrtc' | null;
+
+export type DirectScreenShareState =
+  | 'idle'
+  | 'choosing'
+  | 'starting'
+  | 'sharing'
+  | 'viewing';
+
+export interface DirectScreenShareSource {
+  id: string;
+  name: string;
+  thumbnail: string;
+  appIcon: string;
+}
 
 export interface IncomingCall {
   callId: string;
@@ -160,6 +278,12 @@ export interface UseVoiceCallReturn {
   callDuration: number;
   incomingCall: IncomingCall | null;
   activeCallChatId: string | null;
+  screenShareState: DirectScreenShareState;
+  screenShareSupported: boolean;
+  screenShareSources: DirectScreenShareSource[];
+  screenShareStream: MediaStream | null;
+  screenShareViewerOpen: boolean;
+  screenShareIsLocal: boolean;
   initiateCall: (
     targetAddress: string,
     chatId: string,
@@ -174,6 +298,11 @@ export interface UseVoiceCallReturn {
   toggleMute: () => void;
   setHearCall: (hear: boolean) => void;
   toggleHearCall: () => void;
+  openScreenSharePicker: () => Promise<void>;
+  cancelScreenSharePicker: () => void;
+  startScreenShare: (sourceId: string) => Promise<void>;
+  stopScreenShare: () => Promise<void>;
+  setScreenShareViewerOpen: (open: boolean) => void;
 }
 
 export type VoiceCallApi = {
@@ -209,6 +338,17 @@ export type VoiceCallApi = {
     publicKey: string,
     timestamp: number
   ) => Promise<{ success: boolean; error?: string }>;
+  sendRtcSignal?: (input: {
+    callId: string;
+    generation: string;
+    signalId: string;
+    signalType: 'capability' | 'offer' | 'answer' | 'candidate';
+    payload: string;
+    payloadHash: string;
+    timestamp: number;
+    signature: string;
+    publicKey: string;
+  }) => Promise<{ success: boolean; error?: string }>;
   setLocalAddresses?: (
     addresses: string[]
   ) => Promise<{ success: boolean; error?: string }>;
@@ -224,6 +364,12 @@ export interface UseVoiceCallOptions {
    * authoritative nor consumed by that protocol.
    */
   callApiSignsSignals?: boolean;
+  /**
+   * Permit this custom call-control API to use the shared, session-bound DM
+   * media WebRTC path. The RTC envelope is still signed by the renderer and
+   * is carried only over the authenticated Reticulum audio-link channel.
+   */
+  enableDirectVoiceWebRtc?: boolean;
   skipSystemReadiness?: boolean;
   skipDirectFriendValidation?: boolean;
   getPeerPublicKey?: (address: string) => string | undefined;
@@ -299,6 +445,11 @@ export function useVoiceCall(
     options.callApi ??
     ((window as any).call as VoiceCallApi | undefined) ??
     null;
+  const prefersDirectVoiceWebRtc =
+    !isReticulumCallEnabled &&
+    (options.callApiSignsSignals !== true ||
+      options.enableDirectVoiceWebRtc === true) &&
+    typeof window.groupCall?.sendRtcSignal === 'function';
 
   const [callState, setCallState] = useState<CallState>('idle');
   const [audioMode, setAudioMode] = useState<AudioMode>(null);
@@ -308,15 +459,25 @@ export function useVoiceCall(
   const [callDuration, setCallDuration] = useState(0);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
   const [activeCallChatId, setActiveCallChatId] = useState<string | null>(null);
+  const [screenShareState, setScreenShareState] =
+    useState<DirectScreenShareState>('idle');
+  const [screenShareSupported, setScreenShareSupported] = useState(false);
+  const screenShareSupportedRef = useRef(false);
+  const [screenShareSources, setScreenShareSources] = useState<
+    DirectScreenShareSource[]
+  >([]);
+  const [screenShareStream, setScreenShareStream] =
+    useState<MediaStream | null>(null);
+  const [screenShareViewerOpen, setScreenShareViewerOpen] = useState(false);
+  const [screenShareIsLocal, setScreenShareIsLocal] = useState(false);
   const [callAudioWireNonce, setCallAudioWireNonce] = useState(0);
   const [startupClock, setStartupClock] = useState(0);
+  const audioModeRef = useRef<AudioMode>(null);
+  audioModeRef.current = audioMode;
 
   const callAudioDevices = useAtomValue(callAudioDevicesAtom);
-  const setCallAudioDevices = useSetAtom(callAudioDevicesAtom);
   const callAudioPrefsRef = useRef(callAudioDevices);
   callAudioPrefsRef.current = callAudioDevices;
-  const setCallAudioDevicesRef = useRef(setCallAudioDevices);
-  setCallAudioDevicesRef.current = setCallAudioDevices;
 
   const showGlobalCallSnack = useCallback(
     (type: 'error' | 'info', message: string) => {
@@ -335,6 +496,8 @@ export function useVoiceCall(
   );
 
   const callIdRef = useRef<string | null>(null);
+  const directVoiceOwnerCallIdRef = useRef<string | null>(null);
+  const directVoiceOwnerIdRef = useRef<string | null>(null);
   const callStateRef = useRef<CallState>('idle');
   const incomingCallRef = useRef<IncomingCall | null>(null);
   const blockedAddressesRef = useRef(blockedAddresses);
@@ -446,6 +609,37 @@ export function useVoiceCall(
   const startReticulumCaptureRef = useRef<() => Promise<void>>(async () => {});
   const dmMediaOnAudioSurfaceRef = useRef(false);
   const dmReceiveOnAudioSurfaceRef = useRef(false);
+  const dmRtcOnAudioSurfaceRef = useRef(false);
+  const dmRtcOpenRef = useRef(false);
+  const dmRtcOpenWaitersRef = useRef(new Set<(ready: boolean) => void>());
+  const dmRtcLifecycleGenerationRef = useRef(0);
+  const dmRtcStartPromiseRef = useRef<Promise<boolean> | null>(null);
+  const dmRtcPeerNativeCapabilityCallIdRef = useRef<string | null>(null);
+  const dmRtcLocalCapabilityRef = useRef<{
+    callId: string;
+    capabilityId: string;
+    acknowledged: boolean;
+  } | null>(null);
+  const dmRtcSignalSendChainRef = useRef<Promise<void>>(Promise.resolve());
+  const screenShareTransportRef =
+    useRef<DirectScreenShareWebRtcTransport | null>(null);
+  const screenShareStateRef = useRef<DirectScreenShareState>('idle');
+  const screenShareStreamRef = useRef<MediaStream | null>(null);
+  const screenShareCaptureAttemptRef = useRef(0);
+  const screenSharePendingIceRef = useRef(
+    new Map<string, DirectScreenShareRtcSignal[]>()
+  );
+  const screenShareTerminalGenerationsRef = useRef(new Set<string>());
+  const screenShareSignalHandlerRef = useRef<
+    (signal: DirectScreenShareRtcSignal) => Promise<void>
+  >(async () => {});
+  const stopScreenShareRef = useRef<(notifyPeer: boolean) => Promise<void>>(
+    async () => {}
+  );
+  const pendingDirectVoiceRtcSignalsRef = useRef<DirectVoiceRtcSignal[]>([]);
+  const pendingDirectVoiceLinkSignalsRef = useRef<GcallDirectRtcEventPayload[]>(
+    []
+  );
   const decryptWorkerRef = useRef<Worker | null>(null);
   const decryptWorkerKeyVersionRef = useRef(0);
   const decryptWorkerAppliedKeyVersionRef = useRef(0);
@@ -466,10 +660,31 @@ export function useVoiceCall(
     new Set()
   );
 
+  const ensureDirectVoiceOwnerId = useCallback((): string | null => {
+    const callId = callIdRef.current;
+    if (!callId) return null;
+    if (
+      directVoiceOwnerCallIdRef.current !== callId ||
+      !directVoiceOwnerIdRef.current
+    ) {
+      directVoiceOwnerCallIdRef.current = callId;
+      directVoiceOwnerIdRef.current = `dvc:${createDirectVoiceRtcSignalId()}`;
+    }
+    return directVoiceOwnerIdRef.current;
+  }, []);
+
   const updateCallState = useCallback((nextState: CallState) => {
     callStateRef.current = nextState;
     setCallState(nextState);
   }, []);
+
+  const updateScreenShareState = useCallback(
+    (nextState: DirectScreenShareState) => {
+      screenShareStateRef.current = nextState;
+      setScreenShareState(nextState);
+    },
+    []
+  );
 
   const updateIncomingCall = useCallback(
     (nextIncomingCall: IncomingCall | null) => {
@@ -544,16 +759,18 @@ export function useVoiceCall(
   );
 
   const startDirectVoiceReceiveOnAudioSurface = useCallback(async () => {
+    const ownerId = ensureDirectVoiceOwnerId();
     const roomId = dmRoomIdRef.current;
     const peer = peerAddressRef.current;
     const roomKey = roomKeyRef.current;
-    if (!window.audioSurface || !roomId || !peer || !roomKey) {
+    if (!window.audioSurface || !ownerId || !roomId || !peer || !roomKey) {
       dmReceiveOnAudioSurfaceRef.current = false;
       return false;
     }
     const keyBuffer = roomKey.slice().buffer as ArrayBuffer;
     const response = await window.audioSurface.sendCommand({
       type: 'start-direct-voice-receive',
+      ownerId,
       roomId,
       peerAddress: peer,
       roomKey: keyBuffer,
@@ -568,14 +785,767 @@ export function useVoiceCall(
       });
     }
     return response.ok === true;
-  }, []);
+  }, [ensureDirectVoiceOwnerId]);
+
+  const applyDirectVoiceRtcSignalOnAudioSurface = useCallback(
+    async (signal: DirectVoiceRtcSignal): Promise<boolean> => {
+      const roomId = dmRoomIdRef.current;
+      const peer = peerAddressRef.current;
+      const ownerId = directVoiceOwnerIdRef.current;
+      if (
+        !window.audioSurface ||
+        !ownerId ||
+        !roomId ||
+        !peer ||
+        !dmRtcOnAudioSurfaceRef.current
+      ) {
+        if (callStateRef.current === 'connected') {
+          const pending = pendingDirectVoiceRtcSignalsRef.current;
+          const candidateCount = (entry: DirectVoiceRtcSignal): number =>
+            entry.kind === 'ice-candidates'
+              ? entry.candidates.length
+              : entry.kind === 'ice'
+                ? 1
+                : 0;
+          if (signal.kind === 'description') {
+            const duplicate = pending.some(
+              (entry) =>
+                entry.kind === 'description' &&
+                entry.generation === signal.generation &&
+                entry.description.type === signal.description.type
+            );
+            if (!duplicate) {
+              if (pending.length >= 128) {
+                const candidateIndex = pending.findIndex(
+                  (entry) => candidateCount(entry) > 0
+                );
+                const refreshIndex = pending.findIndex(
+                  (entry) => entry.kind === 'ice-refresh-request'
+                );
+                pending.splice(
+                  candidateIndex >= 0
+                    ? candidateIndex
+                    : refreshIndex >= 0
+                      ? refreshIndex
+                      : 0,
+                  1
+                );
+              }
+              pending.push(signal);
+            }
+          } else {
+            const incomingCount = candidateCount(signal);
+            let queuedCount = pending.reduce(
+              (total, entry) => total + candidateCount(entry),
+              0
+            );
+            while (
+              queuedCount + incomingCount > 128 &&
+              pending.some((entry) => candidateCount(entry) > 0)
+            ) {
+              const candidateIndex = pending.findIndex(
+                (entry) => candidateCount(entry) > 0
+              );
+              const [removed] = pending.splice(candidateIndex, 1);
+              queuedCount -= candidateCount(removed);
+            }
+            if (
+              incomingCount <= 128 &&
+              (incomingCount > 0 || pending.length < 128)
+            ) {
+              pending.push(signal);
+            }
+          }
+        }
+        return false;
+      }
+      const response = await window.audioSurface.sendCommand({
+        type: 'apply-direct-voice-rtc-signal',
+        ownerId,
+        roomId,
+        peerAddress: peer,
+        signal,
+      });
+      return response.ok === true;
+    },
+    []
+  );
+
+  const startDirectVoiceRtcOnAudioSurface = useCallback(async () => {
+    if (!prefersDirectVoiceWebRtc) return false;
+    const callId = callIdRef.current;
+    if (!callId || dmRtcPeerNativeCapabilityCallIdRef.current !== callId) {
+      return false;
+    }
+    if (dmRtcOnAudioSurfaceRef.current) return true;
+    const existingStart = dmRtcStartPromiseRef.current;
+    if (existingStart) return existingStart;
+    const startAttempt = (async (): Promise<boolean> => {
+      const roomId = dmRoomIdRef.current;
+      const peer = peerAddressRef.current;
+      const ownerId = ensureDirectVoiceOwnerId();
+      if (!window.audioSurface || !ownerId || !roomId || !peer) return false;
+      const lifecycleGeneration = dmRtcLifecycleGenerationRef.current;
+      dmRtcOpenRef.current = false;
+      let iceServers: RTCIceServer[] = [];
+      try {
+        const discovered = await (window as any).hub?.getIceServers?.();
+        if (Array.isArray(discovered)) iceServers = discovered;
+      } catch {
+        // Host candidates can still work; Reticulum remains the media fallback.
+      }
+      if (
+        lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
+        roomId !== dmRoomIdRef.current ||
+        peer !== peerAddressRef.current
+      ) {
+        return false;
+      }
+      const response = await window.audioSurface.sendCommand({
+        type: 'start-direct-voice-rtc',
+        ownerId,
+        roomId,
+        peerAddress: peer,
+        initiator: isOutboundCallRef.current,
+        inputDeviceId: callAudioPrefsRef.current.inputDeviceId ?? null,
+        outputDeviceId: callAudioPrefsRef.current.outputDeviceId ?? null,
+        muted: isMutedRef.current,
+        hearCall: hearCallRef.current,
+        iceServers,
+      });
+      if (
+        lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
+        roomId !== dmRoomIdRef.current ||
+        peer !== peerAddressRef.current
+      ) {
+        if (response.ok) {
+          await window.audioSurface
+            .sendCommand({ type: 'stop-direct-voice-rtc', ownerId })
+            .catch(() => {});
+        }
+        return false;
+      }
+      dmRtcOnAudioSurfaceRef.current = response.ok === true;
+      if (!response.ok) return false;
+      const pending = pendingDirectVoiceRtcSignalsRef.current.splice(0);
+      for (const signal of pending) {
+        if (lifecycleGeneration !== dmRtcLifecycleGenerationRef.current) break;
+        await applyDirectVoiceRtcSignalOnAudioSurface(signal);
+      }
+      return true;
+    })();
+    dmRtcStartPromiseRef.current = startAttempt;
+    try {
+      return await startAttempt;
+    } finally {
+      if (dmRtcStartPromiseRef.current === startAttempt) {
+        dmRtcStartPromiseRef.current = null;
+      }
+    }
+  }, [
+    applyDirectVoiceRtcSignalOnAudioSurface,
+    ensureDirectVoiceOwnerId,
+    prefersDirectVoiceWebRtc,
+  ]);
+
+  const stopDirectVoiceRtcOnAudioSurface = useCallback(
+    async (ownerId = directVoiceOwnerIdRef.current) => {
+      dmRtcLifecycleGenerationRef.current += 1;
+      dmRtcSignalSendChainRef.current = Promise.resolve();
+      pendingDirectVoiceRtcSignalsRef.current = [];
+      pendingDirectVoiceLinkSignalsRef.current = [];
+      dmRtcStartPromiseRef.current = null;
+      dmRtcPeerNativeCapabilityCallIdRef.current = null;
+      dmRtcLocalCapabilityRef.current = null;
+      dmRtcOnAudioSurfaceRef.current = false;
+      dmRtcOpenRef.current = false;
+      for (const resolve of dmRtcOpenWaitersRef.current) resolve(false);
+      dmRtcOpenWaitersRef.current.clear();
+      if (!window.audioSurface || !ownerId) return;
+      await window.audioSurface
+        .sendCommand({ type: 'stop-direct-voice-rtc', ownerId })
+        .catch(() => {});
+    },
+    []
+  );
+
+  const sendAuthenticatedDirectVoiceRtcPayload = useCallback(
+    async (input: {
+      generation: string;
+      signalType:
+        | 'capability'
+        | 'offer'
+        | 'answer'
+        | 'candidate'
+        | 'ack'
+        | 'reconnect';
+      payload: string;
+    }): Promise<boolean> => {
+      const callId = callIdRef.current;
+      const roomId = dmRoomIdRef.current;
+      const callSessionId = callSessionIdRef.current;
+      const mediaSessionGeneration = mediaGenRef.current >>> 0;
+      const fromAddress = userInfo?.address?.trim() ?? '';
+      const toAddress = peerAddressRef.current?.trim() ?? '';
+      const api = window.groupCall;
+      if (
+        !callId ||
+        !roomId ||
+        !callSessionId ||
+        !fromAddress ||
+        !toAddress ||
+        !api?.sendRtcSignal ||
+        isReticulumCallEnabled
+      ) {
+        return false;
+      }
+      const payloadHash = await sha256HexUtf8(input.payload);
+      const signalId = crypto.randomUUID();
+      const timestamp = Date.now();
+      // This must match the canonical, session-bound connection identifier
+      // enforced by the wallet signing policy and used by group-call WebRTC.
+      // The native RTC generation remains inside the authenticated payload;
+      // it must not replace the media-session identity here.
+      const connectionId = `${callSessionId}:${mediaSessionGeneration}:${[
+        fromAddress,
+        toAddress,
+      ]
+        .sort()
+        .join(':')}`;
+      const fields = {
+        type: 'GC_RTC_SIGNAL',
+        roomId,
+        callSessionId,
+        mediaSessionGeneration,
+        fromAddress,
+        toAddress,
+        connectionId,
+        signalId,
+        signalType: input.signalType,
+        payloadHash,
+        fromPublicKey: userInfo?.publicKey ?? '',
+        timestamp,
+      };
+      let signature = '';
+      try {
+        signature = await signGroupCallFields(fields);
+      } catch (error) {
+        pushDirectVoiceUiLog('warn', 'WebRTC signal signing failed', {
+          signalType: input.signalType,
+          callTrunc: callId.slice(0, 8),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+      const publicKey = userInfo?.publicKey ?? '';
+      if (
+        callIdRef.current !== callId ||
+        dmRoomIdRef.current !== roomId ||
+        callSessionIdRef.current !== callSessionId ||
+        mediaGenRef.current >>> 0 !== mediaSessionGeneration ||
+        peerAddressRef.current?.trim() !== toAddress
+      ) {
+        return false;
+      }
+      if (!signature || !publicKey) {
+        pushDirectVoiceUiLog('warn', 'WebRTC signal signing failed', {
+          signalType: input.signalType,
+          callTrunc: callId.slice(0, 8),
+          error: !signature ? 'missing-signature' : 'missing-public-key',
+        });
+        return false;
+      }
+      let result: { success: boolean; error?: string };
+      try {
+        result = await api.sendRtcSignal({
+          roomId,
+          callSessionId,
+          mediaSessionGeneration,
+          fromAddress,
+          toAddress,
+          connectionId,
+          signalId,
+          signalType: input.signalType,
+          payload: input.payload,
+          payloadHash,
+          timestamp,
+          signature,
+          publicKey,
+        });
+      } catch (error) {
+        pushDirectVoiceUiLog('warn', 'WebRTC signal transport failed', {
+          signalType: input.signalType,
+          callTrunc: callId.slice(0, 8),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+      if (!result.success) {
+        pushDirectVoiceUiLog('warn', 'WebRTC signal send rejected', {
+          signalType: input.signalType,
+          callTrunc: callId.slice(0, 8),
+          error: result.error ?? 'unknown',
+        });
+        return false;
+      }
+      if (input.signalType !== 'candidate') {
+        pushDirectVoiceUiLog('log', 'WebRTC signal queued', {
+          signalType: input.signalType,
+          callTrunc: callId.slice(0, 8),
+        });
+      }
+      return true;
+    },
+    [userInfo?.address, userInfo?.publicKey]
+  );
+
+  const announceDirectVoiceNativeAudioCapability = useCallback(async () => {
+    const expectedCallId = callIdRef.current;
+    if (!expectedCallId) return false;
+    const existing = dmRtcLocalCapabilityRef.current;
+    const capability =
+      existing?.callId === expectedCallId
+        ? existing
+        : {
+            callId: expectedCallId,
+            capabilityId: crypto.randomUUID(),
+            acknowledged: false,
+          };
+    dmRtcLocalCapabilityRef.current = capability;
+    const payload: DirectVoiceCapabilityPayload = {
+      ...DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY,
+      capabilityId: capability.capabilityId,
+    };
+    // A successful enqueue only proves that the local bridge accepted the
+    // bundle. Retry until the remote application confirms that it accepted
+    // this exact, session-bound capability. The bounded backoff avoids control
+    // churn while recovering room/link initialization races.
+    const retryDelaysMs = [1_000, 1_500, 2_500, 4_000, 6_000, 8_000, 10_000];
+    for (let attempt = 0; attempt < retryDelaysMs.length; attempt += 1) {
+      if (
+        callIdRef.current !== expectedCallId ||
+        callStateRef.current !== 'connected'
+      ) {
+        return false;
+      }
+      if (capability.acknowledged || dmRtcOpenRef.current) return true;
+      const queued = await sendAuthenticatedDirectVoiceRtcPayload({
+        generation: DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION,
+        signalType: 'capability',
+        payload: JSON.stringify(payload),
+      });
+      if (queued) {
+        pushDirectVoiceUiLog('log', 'WebRTC capability awaiting peer ack', {
+          callTrunc: expectedCallId.slice(0, 8),
+          attempt: attempt + 1,
+        });
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, retryDelaysMs[attempt])
+      );
+    }
+    if (capability.acknowledged || dmRtcOpenRef.current) return true;
+    pushDirectVoiceUiLog(
+      'warn',
+      'WebRTC capability was not acknowledged before the retry deadline',
+      { callTrunc: expectedCallId.slice(0, 8) }
+    );
+    return false;
+  }, [sendAuthenticatedDirectVoiceRtcPayload]);
+
+  const sendDirectScreenShareSignal = useCallback(
+    async (signal: DirectScreenShareRtcSignal): Promise<boolean> => {
+      const signalType =
+        signal.kind === 'screen-ice'
+          ? 'candidate'
+          : signal.kind === 'screen-description'
+            ? signal.description.type === 'offer'
+              ? 'offer'
+              : 'answer'
+            : 'reconnect';
+      return sendAuthenticatedDirectVoiceRtcPayload({
+        generation: signal.generation,
+        signalType,
+        payload: JSON.stringify(signal),
+      });
+    },
+    [sendAuthenticatedDirectVoiceRtcPayload]
+  );
+
+  const markScreenShareGenerationTerminal = useCallback(
+    (generation: string) => {
+      const generations = screenShareTerminalGenerationsRef.current;
+      generations.delete(generation);
+      generations.add(generation);
+      while (generations.size > 32) {
+        const oldest = generations.values().next().value;
+        if (typeof oldest !== 'string') break;
+        generations.delete(oldest);
+      }
+      screenSharePendingIceRef.current.delete(generation);
+    },
+    []
+  );
+
+  const resetScreenShare = useCallback(
+    async (notifyPeer: boolean): Promise<void> => {
+      screenShareCaptureAttemptRef.current += 1;
+      const transport = screenShareTransportRef.current;
+      const generation = transport?.getGeneration() ?? '';
+      if (generation) markScreenShareGenerationTerminal(generation);
+      screenShareTransportRef.current = null;
+      transport?.close();
+      const stream = screenShareStreamRef.current;
+      screenShareStreamRef.current = null;
+      stream?.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // Already stopped by the operating system.
+        }
+      });
+      screenSharePendingIceRef.current.clear();
+      setScreenShareStream(null);
+      setScreenShareSources([]);
+      setScreenShareViewerOpen(false);
+      setScreenShareIsLocal(false);
+      updateScreenShareState('idle');
+      if (notifyPeer && generation && callStateRef.current === 'connected') {
+        await sendDirectScreenShareSignal({
+          kind: 'screen-stop',
+          generation,
+        }).catch(() => false);
+      }
+    },
+    [
+      markScreenShareGenerationTerminal,
+      sendDirectScreenShareSignal,
+      updateScreenShareState,
+    ]
+  );
+  stopScreenShareRef.current = resetScreenShare;
+
+  const createScreenShareTransport = useCallback(
+    (
+      sender: boolean,
+      generation: string,
+      localStream?: MediaStream
+    ): DirectScreenShareWebRtcTransport => {
+      const transport = new DirectScreenShareWebRtcTransport({
+        generation,
+        sender,
+        localStream,
+        getIceServers: async () => {
+          const servers = await window.hub?.getIceServers?.();
+          return Array.isArray(servers) ? servers : [];
+        },
+        onSignal: (signal) => sendDirectScreenShareSignal(signal),
+        onRemoteStream: (stream) => {
+          if (screenShareTransportRef.current !== transport) {
+            stream.getTracks().forEach((track) => track.stop());
+            return;
+          }
+          screenShareStreamRef.current = stream;
+          setScreenShareStream(stream);
+          setScreenShareViewerOpen(true);
+          for (const track of stream.getVideoTracks()) {
+            track.onended = () => {
+              if (screenShareTransportRef.current === transport) {
+                void resetScreenShare(false);
+              }
+            };
+          }
+        },
+        onState: (state) => {
+          if (screenShareTransportRef.current !== transport) return;
+          pushDirectVoiceUiLog(
+            state === 'failed' ? 'warn' : 'log',
+            'Screen share WebRTC state',
+            {
+              state,
+              role: sender ? 'sender' : 'receiver',
+              generation: generation.slice(0, 8),
+            }
+          );
+          if (state === 'open') {
+            updateScreenShareState(sender ? 'sharing' : 'viewing');
+            setScreenShareViewerOpen(true);
+            return;
+          }
+          if (state === 'failed') {
+            showGlobalCallSnack(
+              'info',
+              'Screen sharing stopped because the direct connection was lost.'
+            );
+            void resetScreenShare(true);
+          }
+        },
+      });
+      return transport;
+    },
+    [
+      resetScreenShare,
+      sendDirectScreenShareSignal,
+      showGlobalCallSnack,
+      updateScreenShareState,
+    ]
+  );
+
+  const handleDirectScreenShareSignal = useCallback(
+    async (signal: DirectScreenShareRtcSignal): Promise<void> => {
+      if (
+        callStateRef.current !== 'connected' ||
+        audioModeRef.current !== 'webrtc'
+      ) {
+        return;
+      }
+      if (
+        signal.kind !== 'screen-stop' &&
+        screenShareTerminalGenerationsRef.current.has(signal.generation)
+      ) {
+        return;
+      }
+      if (signal.kind === 'screen-stop') {
+        markScreenShareGenerationTerminal(signal.generation);
+        if (
+          screenShareTransportRef.current?.getGeneration() === signal.generation
+        ) {
+          await resetScreenShare(false);
+        }
+        return;
+      }
+      let transport = screenShareTransportRef.current;
+      if (
+        signal.kind === 'screen-description' &&
+        signal.description.type === 'offer'
+      ) {
+        // Candidates can overtake an offer while its wallet signature is
+        // being verified. Capture them before any simultaneous-share cleanup.
+        const pendingForOffer =
+          screenSharePendingIceRef.current.get(signal.generation) ?? [];
+        if (transport?.isSender()) {
+          const localAddress = userInfo?.address?.trim() ?? '';
+          const peerAddress = peerAddressRef.current?.trim() ?? '';
+          // Deterministically resolve the rare case where both users press
+          // Share at once. The lexicographically smaller address keeps its
+          // share; both clients independently reach the same decision.
+          const keepLocalShare =
+            localAddress && peerAddress
+              ? localAddress < peerAddress
+              : transport.getGeneration() < signal.generation;
+          if (keepLocalShare) return;
+          await resetScreenShare(false);
+          transport = null;
+        }
+        if (!transport || transport.getGeneration() !== signal.generation) {
+          const previousGeneration = transport?.getGeneration();
+          if (previousGeneration) {
+            markScreenShareGenerationTerminal(previousGeneration);
+          }
+          await resetScreenShare(false);
+          if (pendingForOffer.length > 0) {
+            screenSharePendingIceRef.current.set(
+              signal.generation,
+              pendingForOffer
+            );
+          }
+          transport = createScreenShareTransport(false, signal.generation);
+          screenShareTransportRef.current = transport;
+          updateScreenShareState('starting');
+        }
+      }
+      if (!transport || transport.getGeneration() !== signal.generation) {
+        if (signal.kind === 'screen-ice') {
+          const pending =
+            screenSharePendingIceRef.current.get(signal.generation) ?? [];
+          if (pending.length < 128) pending.push(signal);
+          screenSharePendingIceRef.current.set(signal.generation, pending);
+          while (screenSharePendingIceRef.current.size > 4) {
+            const oldest = screenSharePendingIceRef.current.keys().next().value;
+            if (typeof oldest !== 'string') break;
+            screenSharePendingIceRef.current.delete(oldest);
+          }
+        }
+        return;
+      }
+      await transport.handleSignal(signal);
+      const pending =
+        screenSharePendingIceRef.current.get(signal.generation) ?? [];
+      screenSharePendingIceRef.current.delete(signal.generation);
+      for (const candidate of pending) {
+        await transport.handleSignal(candidate);
+      }
+    },
+    [
+      createScreenShareTransport,
+      markScreenShareGenerationTerminal,
+      resetScreenShare,
+      updateScreenShareState,
+      userInfo?.address,
+    ]
+  );
+  screenShareSignalHandlerRef.current = handleDirectScreenShareSignal;
+
+  const openScreenSharePicker = useCallback(async (): Promise<void> => {
+    if (
+      callStateRef.current !== 'connected' ||
+      audioModeRef.current !== 'webrtc' ||
+      !screenShareSupportedRef.current
+    ) {
+      return;
+    }
+    if (screenShareStateRef.current === 'sharing') {
+      setScreenShareViewerOpen(true);
+      return;
+    }
+    const listSources = window.electronAPI?.listScreenShareSources;
+    if (!listSources) {
+      showGlobalCallSnack('error', 'Screen sharing is unavailable.');
+      return;
+    }
+    updateScreenShareState('choosing');
+    setScreenShareViewerOpen(true);
+    const result = await listSources().catch(() => ({
+      success: false,
+      error: 'Unable to access screens and windows',
+      sources: [],
+    }));
+    if (
+      callStateRef.current !== 'connected' ||
+      screenShareStateRef.current !== 'choosing'
+    ) {
+      return;
+    }
+    if (!result.success || result.sources.length === 0) {
+      await resetScreenShare(false);
+      showGlobalCallSnack(
+        'error',
+        result.error || 'No screens or windows are available to share.'
+      );
+      return;
+    }
+    setScreenShareSources(result.sources);
+  }, [resetScreenShare, showGlobalCallSnack, updateScreenShareState]);
+
+  const cancelScreenSharePicker = useCallback(() => {
+    if (screenShareStateRef.current === 'choosing') {
+      void resetScreenShare(false);
+    } else {
+      setScreenShareViewerOpen(false);
+    }
+  }, [resetScreenShare]);
+
+  const startScreenShare = useCallback(
+    async (sourceId: string): Promise<void> => {
+      if (
+        callStateRef.current !== 'connected' ||
+        audioModeRef.current !== 'webrtc' ||
+        !screenShareSupportedRef.current ||
+        screenShareStateRef.current !== 'choosing' ||
+        !screenShareSources.some((source) => source.id === sourceId)
+      ) {
+        return;
+      }
+      updateScreenShareState('starting');
+      setScreenShareIsLocal(true);
+      setScreenShareSources([]);
+      const captureAttempt = ++screenShareCaptureAttemptRef.current;
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: sourceId,
+              maxWidth: 1920,
+              maxHeight: 1080,
+              maxFrameRate: 30,
+            },
+          } as unknown as MediaTrackConstraints,
+        });
+      } catch (error) {
+        await resetScreenShare(false);
+        showGlobalCallSnack(
+          'error',
+          error instanceof DOMException && error.name === 'NotAllowedError'
+            ? 'Screen sharing permission was not granted.'
+            : 'Unable to start screen sharing.'
+        );
+        return;
+      }
+      if (screenShareCaptureAttemptRef.current !== captureAttempt) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      if (
+        screenShareStateRef.current !== 'starting' ||
+        callStateRef.current !== 'connected' ||
+        audioModeRef.current !== 'webrtc'
+      ) {
+        stream.getTracks().forEach((track) => track.stop());
+        await resetScreenShare(false);
+        return;
+      }
+      const track = stream.getVideoTracks()[0];
+      if (!track) {
+        stream.getTracks().forEach((entry) => entry.stop());
+        await resetScreenShare(false);
+        showGlobalCallSnack('error', 'No screen video was captured.');
+        return;
+      }
+      track.contentHint = 'detail';
+      const generation = createDirectVoiceRtcSignalId();
+      pushDirectVoiceUiLog('log', 'Starting screen share', {
+        generation: generation.slice(0, 8),
+      });
+      const transport = createScreenShareTransport(true, generation, stream);
+      screenShareTransportRef.current = transport;
+      screenShareStreamRef.current = stream;
+      setScreenShareStream(stream);
+      setScreenShareViewerOpen(true);
+      track.onended = () => {
+        if (screenShareTransportRef.current === transport) {
+          void resetScreenShare(true);
+        }
+      };
+      try {
+        await transport.startSender();
+      } catch {
+        if (screenShareTransportRef.current === transport) {
+          await resetScreenShare(true);
+          showGlobalCallSnack('error', 'Unable to establish screen sharing.');
+        }
+      }
+    },
+    [
+      createScreenShareTransport,
+      resetScreenShare,
+      screenShareSources,
+      showGlobalCallSnack,
+      updateScreenShareState,
+    ]
+  );
+
+  const stopScreenShare = useCallback(
+    () => resetScreenShare(true),
+    [resetScreenShare]
+  );
 
   const startDirectVoiceMediaOnAudioSurface = useCallback(async () => {
+    const ownerId = ensureDirectVoiceOwnerId();
     const roomId = dmRoomIdRef.current;
     const peer = peerAddressRef.current;
     const roomKey = roomKeyRef.current;
     const localAddress = userInfo?.address ?? '';
-    if (!window.audioSurface || !roomId || !peer || !roomKey || !localAddress) {
+    if (
+      !window.audioSurface ||
+      !ownerId ||
+      !roomId ||
+      !peer ||
+      !roomKey ||
+      !localAddress
+    ) {
       dmMediaOnAudioSurfaceRef.current = false;
       return false;
     }
@@ -583,6 +1553,7 @@ export function useVoiceCall(
     const response = await window.audioSurface
       .sendCommand({
         type: 'start-direct-voice-media',
+        ownerId,
         roomId,
         peerAddress: peer,
         localAddress,
@@ -605,13 +1576,20 @@ export function useVoiceCall(
       });
     }
     return response.ok === true;
-  }, [userInfo?.address]);
+  }, [ensureDirectVoiceOwnerId, userInfo?.address]);
 
   const updateDirectVoiceMediaOnAudioSurface = useCallback(async () => {
-    if (!dmMediaOnAudioSurfaceRef.current || !window.audioSurface) return;
+    if (
+      (!dmMediaOnAudioSurfaceRef.current && !dmRtcOnAudioSurfaceRef.current) ||
+      !window.audioSurface ||
+      !directVoiceOwnerIdRef.current
+    ) {
+      return;
+    }
     await window.audioSurface
       .sendCommand({
         type: 'update-direct-voice-media',
+        ownerId: directVoiceOwnerIdRef.current,
         inputDeviceId: callAudioPrefsRef.current.inputDeviceId ?? null,
         outputDeviceId: callAudioPrefsRef.current.outputDeviceId ?? null,
         muted: isMutedRef.current,
@@ -621,24 +1599,30 @@ export function useVoiceCall(
       .catch(() => {});
   }, []);
 
-  const stopDirectVoiceMediaOnAudioSurface = useCallback(async () => {
-    if (!dmMediaOnAudioSurfaceRef.current || !window.audioSurface) {
+  const stopDirectVoiceMediaOnAudioSurface = useCallback(
+    async (ownerId = directVoiceOwnerIdRef.current) => {
+      if (!dmMediaOnAudioSurfaceRef.current || !window.audioSurface) {
+        dmMediaOnAudioSurfaceRef.current = false;
+        return;
+      }
       dmMediaOnAudioSurfaceRef.current = false;
       dmReceiveOnAudioSurfaceRef.current = false;
-      return;
-    }
-    dmMediaOnAudioSurfaceRef.current = false;
-    dmReceiveOnAudioSurfaceRef.current = false;
-    await window.audioSurface
-      .sendCommand({ type: 'stop-direct-voice-media' })
-      .catch(() => {});
-  }, []);
+      if (!ownerId) return;
+      await window.audioSurface
+        .sendCommand({ type: 'stop-direct-voice-media', ownerId })
+        .catch(() => {});
+    },
+    []
+  );
 
   const updateDirectVoiceReceiveOnAudioSurface = useCallback(async () => {
-    if (!dmReceiveOnAudioSurfaceRef.current || !window.audioSurface) return;
+    const ownerId = directVoiceOwnerIdRef.current;
+    if (!dmReceiveOnAudioSurfaceRef.current || !window.audioSurface || !ownerId)
+      return;
     await window.audioSurface
       .sendCommand({
         type: 'update-direct-voice-receive',
+        ownerId,
         outputDeviceId: callAudioPrefsRef.current.outputDeviceId ?? null,
         hearCall: hearCallRef.current,
         profile: readGroupCallAudioProfile(),
@@ -646,19 +1630,23 @@ export function useVoiceCall(
       .catch(() => {});
   }, []);
 
-  const stopDirectVoiceReceiveOnAudioSurface = useCallback(async () => {
-    if (dmMediaOnAudioSurfaceRef.current) {
-      return;
-    }
-    if (!dmReceiveOnAudioSurfaceRef.current || !window.audioSurface) {
+  const stopDirectVoiceReceiveOnAudioSurface = useCallback(
+    async (ownerId = directVoiceOwnerIdRef.current) => {
+      if (dmMediaOnAudioSurfaceRef.current) {
+        return;
+      }
+      if (!dmReceiveOnAudioSurfaceRef.current || !window.audioSurface) {
+        dmReceiveOnAudioSurfaceRef.current = false;
+        return;
+      }
       dmReceiveOnAudioSurfaceRef.current = false;
-      return;
-    }
-    dmReceiveOnAudioSurfaceRef.current = false;
-    await window.audioSurface
-      .sendCommand({ type: 'stop-direct-voice-receive' })
-      .catch(() => {});
-  }, []);
+      if (!ownerId) return;
+      await window.audioSurface
+        .sendCommand({ type: 'stop-direct-voice-receive', ownerId })
+        .catch(() => {});
+    },
+    []
+  );
 
   const resetDmVoiceMediaSession = useCallback(() => {
     metricsRef.current = new GroupCallPerformanceTracker();
@@ -701,7 +1689,12 @@ export function useVoiceCall(
   );
 
   const waitForDmPeerMediaReadiness = useCallback(
-    async (roomId: string, peer: string, reason: string): Promise<boolean> => {
+    async (
+      roomId: string,
+      peer: string,
+      reason: string,
+      options?: { cancelled?: () => boolean }
+    ): Promise<boolean> => {
       const gc = (window as any).groupCall;
       if (!roomId || !peer) {
         pushDirectVoiceUiLog('warn', 'DM media readiness skipped: bad inputs', {
@@ -717,6 +1710,7 @@ export function useVoiceCall(
 
       let deadlineReached = false;
       do {
+        if (options?.cancelled?.()) return false;
         if (
           callStateRef.current !== 'connected' ||
           !reticulumSessionActiveRef.current ||
@@ -826,6 +1820,36 @@ export function useVoiceCall(
       return false;
     },
     []
+  );
+
+  /**
+   * Start capture as soon as either transport is genuinely usable. This keeps
+   * the WebRTC fast path fast without weakening the proven Reticulum fallback
+   * for older clients, failed ICE negotiation, or restrictive NATs.
+   */
+  const waitForDmMediaTransportReadiness = useCallback(
+    async (roomId: string, peer: string, reason: string): Promise<boolean> => {
+      if (!prefersDirectVoiceWebRtc) {
+        return waitForDmPeerMediaReadiness(roomId, peer, reason);
+      }
+      if (dmRtcOpenRef.current) return true;
+
+      let settled = false;
+      let resolveRtc!: (ready: boolean) => void;
+      const rtcReady = new Promise<boolean>((resolve) => {
+        resolveRtc = resolve;
+        dmRtcOpenWaitersRef.current.add(resolve);
+        if (dmRtcOpenRef.current) resolve(true);
+      });
+      const reticulumReady = waitForDmPeerMediaReadiness(roomId, peer, reason, {
+        cancelled: () => settled,
+      });
+      const ready = await Promise.race([rtcReady, reticulumReady]);
+      settled = true;
+      dmRtcOpenWaitersRef.current.delete(resolveRtc);
+      return ready;
+    },
+    [prefersDirectVoiceWebRtc, waitForDmPeerMediaReadiness]
   );
 
   const clearDmRoomKeyReplayTimers = useCallback(() => {
@@ -991,10 +2015,15 @@ export function useVoiceCall(
   }, []);
 
   const teardownReticulumMediaInner = useCallback(async () => {
+    const ownerId = directVoiceOwnerIdRef.current;
     clearDmRoomKeyReplayTimers();
     clearDmRoomKeyRequestTimers();
-    await stopDirectVoiceMediaOnAudioSurface();
-    await stopDirectVoiceReceiveOnAudioSurface();
+    await resetScreenShare(false);
+    screenShareSupportedRef.current = false;
+    setScreenShareSupported(false);
+    await stopDirectVoiceRtcOnAudioSurface(ownerId);
+    await stopDirectVoiceMediaOnAudioSurface(ownerId);
+    await stopDirectVoiceReceiveOnAudioSurface(ownerId);
     await dmReceiveEngineRef.current?.dispose();
     dmReceiveEngineRef.current = new GroupCallAudioReceiveEngine(() => {});
     await stopCapturePipeline();
@@ -1038,13 +2067,20 @@ export function useVoiceCall(
     audioSeqRef.current = 0;
     isSpeakingRef.current = false;
     resetDmVoiceMediaSession();
+    audioModeRef.current = null;
     setAudioMode(null);
+    if (directVoiceOwnerIdRef.current === ownerId) {
+      directVoiceOwnerIdRef.current = null;
+      directVoiceOwnerCallIdRef.current = null;
+    }
   }, [
     clearPendingWorkerJobs,
     clearDmRoomKeyReplayTimers,
     clearDmRoomKeyRequestTimers,
     resetDmVoiceMediaSession,
+    resetScreenShare,
     stopCapturePipeline,
+    stopDirectVoiceRtcOnAudioSurface,
     stopDirectVoiceMediaOnAudioSurface,
     stopDirectVoiceReceiveOnAudioSurface,
     syncDecryptWorkerRoomKey,
@@ -1385,7 +2421,7 @@ export function useVoiceCall(
       roomKeyRef.current = keyBytes;
       callSessionIdRef.current = payload.callSessionId;
       mediaGenRef.current = payload.mediaSessionGeneration >>> 0;
-      const ready = await waitForDmPeerMediaReadiness(
+      const ready = await waitForDmMediaTransportReadiness(
         dmRoomIdRef.current ?? '',
         peerAddressRef.current ?? '',
         'key-applied'
@@ -1409,7 +2445,10 @@ export function useVoiceCall(
         endCall(true);
         return;
       }
-      setAudioMode('reticulum');
+      if (audioModeRef.current !== 'webrtc') {
+        audioModeRef.current = 'reticulum';
+        setAudioMode('reticulum');
+      }
       clearDmRoomKeyRequestTimers();
       setCallAudioWireNonce((n) => n + 1);
       pushDirectVoiceUiLog('log', 'room key applied', {
@@ -1423,7 +2462,7 @@ export function useVoiceCall(
       resetDmVoiceMediaSession,
       showGlobalCallSnack,
       startDirectVoiceMediaOnAudioSurface,
-      waitForDmPeerMediaReadiness,
+      waitForDmMediaTransportReadiness,
     ]
   );
   applyDecryptedRoomKeyRef.current = applyDecryptedRoomKey;
@@ -1669,8 +2708,6 @@ export function useVoiceCall(
       );
     }
     dmRoomIdRef.current = roomId;
-    flushPendingDmVoiceGcallKey(roomId);
-
     pushDirectVoiceUiLog('log', 'media session start', {
       outbound: isOutboundCallRef.current,
       roomTrunc: roomId.slice(0, 32),
@@ -1737,18 +2774,37 @@ export function useVoiceCall(
     callSessionIdRef.current = joinRes.callSessionId;
     mediaGenRef.current = (joinRes.mediaSessionGeneration ?? 1) >>> 0;
     reticulumSessionActiveRef.current = true;
-    setAudioMode('reticulum');
+    const pendingLinkSignals =
+      pendingDirectVoiceLinkSignalsRef.current.splice(0);
+    for (const pendingSignal of pendingLinkSignals) {
+      await groupCallDmIpcHandlerRef.current('gcall:rtc-signal', pendingSignal);
+    }
+    // WebRTC setup uses the authenticated audio link's reliable control
+    // channel, so it cannot be advertised until this DM media room exists.
+    if (prefersDirectVoiceWebRtc) {
+      void announceDirectVoiceNativeAudioCapability().catch(() => {});
+      if (dmRtcPeerNativeCapabilityCallIdRef.current === callIdRef.current) {
+        void startDirectVoiceRtcOnAudioSurface().catch(() => {});
+      }
+    }
+    // A key can arrive immediately after CALL_ACCEPT, before GC_JOIN finishes.
+    // Applying it earlier makes readiness see an inactive session and can end a
+    // valid call. Replay it only after this exact media session is active.
+    flushPendingDmVoiceGcallKey(roomId);
+    if (audioModeRef.current !== 'webrtc') {
+      audioModeRef.current = 'reticulum';
+      setAudioMode('reticulum');
+    }
     requestDmPeerMediaWarmup(roomId, 'dm-call-start', {
       ignoreCooldown: true,
     });
-
     if (isOutboundCallRef.current) {
       const roomKey = new Uint8Array(32);
       crypto.getRandomValues(roomKey);
       roomKeyRef.current = roomKey;
       void sendCurrentDmRoomKey('dm-call-start').catch(() => {});
       scheduleDmRoomKeyReplays('dm-call-start');
-      const ready = await waitForDmPeerMediaReadiness(
+      const ready = await waitForDmMediaTransportReadiness(
         roomId,
         peer,
         'caller-start'
@@ -1794,6 +2850,7 @@ export function useVoiceCall(
       }
     }
   }, [
+    announceDirectVoiceNativeAudioCapability,
     endCall,
     flushPendingDmVoiceGcallKey,
     requestDmPeerMediaWarmup,
@@ -1802,8 +2859,9 @@ export function useVoiceCall(
     sendCurrentDmRoomKey,
     showGlobalCallSnack,
     startDirectVoiceMediaOnAudioSurface,
+    startDirectVoiceRtcOnAudioSurface,
     startReticulumCapture,
-    waitForDmPeerMediaReadiness,
+    waitForDmMediaTransportReadiness,
     userInfo?.address,
     userInfo?.publicKey,
   ]);
@@ -1812,6 +2870,110 @@ export function useVoiceCall(
     event: string,
     payload: unknown
   ) => {
+    if (event === 'gcall:rtc-signal') {
+      const p = payload as GcallDirectRtcEventPayload;
+      const callId = callIdRef.current;
+      const isDirectSignalType =
+        p.signalType === 'capability' ||
+        p.signalType === 'offer' ||
+        p.signalType === 'answer' ||
+        p.signalType === 'candidate' ||
+        p.signalType === 'ack' ||
+        p.signalType === 'reconnect';
+      const invalidActiveCallRoute =
+        p.verified !== true ||
+        !isDirectSignalType ||
+        !callId ||
+        p.roomId !== dmRoomIdRef.current ||
+        p.fromAddress !== peerAddressRef.current ||
+        p.toAddress !== userInfo?.address ||
+        typeof p.payload !== 'string';
+      if (invalidActiveCallRoute) {
+        return;
+      }
+      if (!callSessionIdRef.current) {
+        const pending = pendingDirectVoiceLinkSignalsRef.current;
+        if (pending.length >= 16) pending.shift();
+        pending.push({ ...p });
+        return;
+      }
+      if (
+        p.callSessionId !== callSessionIdRef.current ||
+        (p.mediaSessionGeneration ?? -1) >>> 0 !== mediaGenRef.current >>> 0
+      ) {
+        return;
+      }
+      let signalGeneration = '';
+      let decodedPayload: Record<string, unknown>;
+      try {
+        const decoded = JSON.parse(p.payload) as {
+          kind?: unknown;
+          audio?: unknown;
+          version?: unknown;
+          generation?: unknown;
+        };
+        decodedPayload = decoded;
+        signalGeneration =
+          typeof decoded.generation === 'string'
+            ? decoded.generation
+            : decoded.kind === 'capability' &&
+                decoded.audio === 'native-track' &&
+                decoded.version === 1
+              ? DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION
+              : '';
+      } catch {
+        return;
+      }
+      if (!signalGeneration) return;
+      if (p.signalType === 'ack') {
+        const localCapability = dmRtcLocalCapabilityRef.current;
+        if (
+          decodedPayload.kind !== 'capability-ack' ||
+          signalGeneration !==
+            DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION ||
+          typeof decodedPayload.capabilityId !== 'string' ||
+          localCapability?.callId !== callId ||
+          decodedPayload.capabilityId !== localCapability.capabilityId
+        ) {
+          return;
+        }
+        localCapability.acknowledged = true;
+        pushDirectVoiceUiLog('log', 'WebRTC capability acknowledged', {
+          callTrunc: callId.slice(0, 8),
+        });
+        return;
+      }
+      await callIpcHandlerRef.current('call:rtc-signal', {
+        callId,
+        generation: signalGeneration,
+        signalType: p.signalType!,
+        payload: p.payload,
+      });
+      if (
+        p.signalType === 'capability' &&
+        decodedPayload.kind === 'capability' &&
+        decodedPayload.audio === 'native-track' &&
+        decodedPayload.version === 1 &&
+        typeof decodedPayload.capabilityId === 'string' &&
+        decodedPayload.capabilityId.length > 0 &&
+        decodedPayload.capabilityId.length <= 128 &&
+        dmRtcPeerNativeCapabilityCallIdRef.current === callId &&
+        dmRtcOnAudioSurfaceRef.current
+      ) {
+        const ack: DirectVoiceCapabilityAckPayload = {
+          kind: 'capability-ack',
+          generation: DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION,
+          capabilityId: decodedPayload.capabilityId,
+        };
+        await sendAuthenticatedDirectVoiceRtcPayload({
+          generation: DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION,
+          signalType: 'ack',
+          payload: JSON.stringify(ack),
+        });
+      }
+      return;
+    }
+
     if (event === 'gcall:participant-joined') {
       const p = payload as {
         roomId?: string;
@@ -1900,6 +3062,14 @@ export function useVoiceCall(
         });
         return;
       }
+      if (!reticulumSessionActiveRef.current) {
+        pendingDmVoiceGcallKeyRef.current = p;
+        pushDirectVoiceUiLog(
+          'log',
+          'gcall:key queued (media session is still joining)'
+        );
+        return;
+      }
       void handleDmVoiceGcallKeyPayload(p);
       return;
     }
@@ -1938,17 +3108,92 @@ export function useVoiceCall(
   useEffect(() => {
     if (!window.audioSurface?.onEvent) return;
     return window.audioSurface.onEvent((event) => {
-      if (event.type !== 'direct-voice-media-ready') return;
       const roomId = dmRoomIdRef.current;
       const peer = peerAddressRef.current;
-      if (event.roomId !== roomId || event.peerAddress !== peer) return;
-      setCallMediaReady(true);
-      pushDirectVoiceUiLog('log', 'direct voice media ready', {
-        roomTrunc: event.roomId.slice(0, 24),
-        peerTrunc: event.peerAddress.slice(0, 8),
+      if (
+        'ownerId' in event &&
+        event.ownerId !== directVoiceOwnerIdRef.current
+      ) {
+        return;
+      }
+      if (
+        'roomId' in event &&
+        'peerAddress' in event &&
+        (event.roomId !== roomId || event.peerAddress !== peer)
+      ) {
+        return;
+      }
+      if (event.type === 'direct-voice-media-ready') {
+        setCallMediaReady(true);
+        pushDirectVoiceUiLog('log', 'direct voice media ready', {
+          roomTrunc: event.roomId.slice(0, 24),
+          peerTrunc: event.peerAddress.slice(0, 8),
+        });
+        return;
+      }
+      if (event.type === 'direct-voice-rtc-state') {
+        dmRtcOpenRef.current = event.state === 'open';
+        pushDirectVoiceUiLog(
+          event.state === 'failed' ? 'warn' : 'log',
+          'WebRTC transport state',
+          {
+            state: event.state,
+            roomTrunc: event.roomId.slice(0, 24),
+            peerTrunc: event.peerAddress.slice(0, 8),
+          }
+        );
+        if (event.state === 'open') {
+          for (const resolve of dmRtcOpenWaitersRef.current) resolve(true);
+          dmRtcOpenWaitersRef.current.clear();
+        }
+        const nextAudioMode = event.state === 'open' ? 'webrtc' : 'reticulum';
+        audioModeRef.current = nextAudioMode;
+        setAudioMode(nextAudioMode);
+        if (
+          (event.state === 'failed' || event.state === 'closed') &&
+          screenShareStateRef.current !== 'idle'
+        ) {
+          void stopScreenShareRef.current(true);
+        }
+        return;
+      }
+      if (event.type !== 'direct-voice-rtc-signal') return;
+      const lifecycleGeneration = dmRtcLifecycleGenerationRef.current;
+      const expectedCallId = callIdRef.current;
+      const expectedRoomId = dmRoomIdRef.current;
+      const expectedPeerAddress = peerAddressRef.current;
+      const sendTask = dmRtcSignalSendChainRef.current.then(async () => {
+        if (
+          lifecycleGeneration !== dmRtcLifecycleGenerationRef.current ||
+          expectedCallId !== callIdRef.current ||
+          expectedRoomId !== dmRoomIdRef.current ||
+          expectedPeerAddress !== peerAddressRef.current
+        ) {
+          return;
+        }
+        const payload = JSON.stringify(event.signal);
+        const signalType =
+          event.signal.kind === 'ice' || event.signal.kind === 'ice-candidates'
+            ? 'candidate'
+            : event.signal.kind === 'ice-refresh-request'
+              ? 'reconnect'
+              : event.signal.description.type === 'offer'
+                ? 'offer'
+                : 'answer';
+        await sendAuthenticatedDirectVoiceRtcPayload({
+          generation: event.signal.generation,
+          signalType,
+          payload,
+        });
+      });
+      dmRtcSignalSendChainRef.current = sendTask.catch(() => {});
+      void sendTask.catch((error) => {
+        pushDirectVoiceUiLog('warn', 'WebRTC signaling failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
     });
-  }, []);
+  }, [sendAuthenticatedDirectVoiceRtcPayload]);
 
   const startDurationTimer = useCallback(() => {
     setCallDuration(0);
@@ -1962,6 +3207,96 @@ export function useVoiceCall(
     const p = payload as Record<string, unknown>;
 
     switch (event) {
+      case 'call:rtc-signal': {
+        if (
+          isReticulumCallEnabled ||
+          p.callId !== callIdRef.current ||
+          callStateRef.current !== 'connected' ||
+          typeof p.payload !== 'string' ||
+          p.payload.length > 64 * 1024
+        ) {
+          break;
+        }
+        try {
+          const decoded = JSON.parse(p.payload);
+          if (isDirectScreenShareRtcSignal(decoded)) {
+            const expectedSignalType =
+              decoded.kind === 'screen-ice'
+                ? 'candidate'
+                : decoded.kind === 'screen-stop'
+                  ? 'reconnect'
+                  : decoded.description.type;
+            if (
+              decoded.generation !== p.generation ||
+              expectedSignalType !== p.signalType
+            ) {
+              break;
+            }
+            try {
+              await screenShareSignalHandlerRef.current(decoded);
+            } catch (error) {
+              pushDirectVoiceUiLog('warn', 'Screen share signaling failed', {
+                error: error instanceof Error ? error.message : String(error),
+              });
+              await resetScreenShare(true);
+              showGlobalCallSnack(
+                'info',
+                'Screen sharing stopped because the direct connection could not be established.'
+              );
+            }
+            break;
+          }
+          if (p.signalType === 'capability') {
+            const capability = decoded as Record<string, unknown>;
+            if (
+              p.generation !==
+                DIRECT_VOICE_NATIVE_AUDIO_CAPABILITY_GENERATION ||
+              capability.kind !== 'capability' ||
+              capability.audio !== 'native-track' ||
+              capability.version !== 1
+            ) {
+              break;
+            }
+            const callId = callIdRef.current;
+            dmRtcPeerNativeCapabilityCallIdRef.current = callId;
+            const supportsScreenShare =
+              capability.screen === 'video-track' &&
+              capability.screenVersion === 1;
+            screenShareSupportedRef.current = supportsScreenShare;
+            setScreenShareSupported(supportsScreenShare);
+            pushDirectVoiceUiLog('log', 'peer supports native WebRTC audio', {
+              callTrunc: callId?.slice(0, 8) ?? '',
+              screenShare: supportsScreenShare,
+            });
+            if (dmRoomIdRef.current) {
+              await startDirectVoiceRtcOnAudioSurface();
+            }
+            break;
+          }
+          const signal = decoded as DirectVoiceRtcSignal;
+          const validGeneration =
+            typeof signal?.generation === 'string' &&
+            /^[A-Za-z0-9_-]{8,64}$/.test(signal.generation) &&
+            signal.generation === p.generation;
+          const validKind =
+            (p.signalType === 'candidate' &&
+              (signal?.kind === 'ice' || signal?.kind === 'ice-candidates')) ||
+            (p.signalType === 'reconnect' &&
+              signal?.kind === 'ice-refresh-request') ||
+            ((p.signalType === 'offer' || p.signalType === 'answer') &&
+              signal?.kind === 'description' &&
+              signal.description?.type === p.signalType);
+          if (!validGeneration || !validKind) break;
+          // The bounded pending queue preserves an offer/candidate that beats
+          // its capability packet. It is never activated unless the peer later
+          // advertises the exact native-track capability for this call.
+          await applyDirectVoiceRtcSignalOnAudioSurface(signal);
+        } catch {
+          // Invalid authenticated payloads are ignored without touching media.
+        }
+        break;
+      }
+
       case 'call:incoming': {
         const incCallId = p.callId as string;
         const incFrom = p.fromAddress as string;
@@ -2036,7 +3371,6 @@ export function useVoiceCall(
           try {
             const roomId = await buildDmVoiceRoomId(chatIdForRoom);
             dmRoomIdRef.current = roomId;
-            flushPendingDmVoiceGcallKey(roomId);
             pushDirectVoiceUiLog('log', 'DM voice room id ready (caller)', {
               roomTrunc: roomId.slice(0, 32),
             });
@@ -2052,6 +3386,9 @@ export function useVoiceCall(
           'log',
           'call:accepted — starting Reticulum media session'
         );
+        screenShareTerminalGenerationsRef.current.clear();
+        screenShareSupportedRef.current = false;
+        setScreenShareSupported(false);
         updateCallState('connected');
         setCallMediaReady(false);
         startDurationTimer();
@@ -2362,12 +3699,14 @@ export function useVoiceCall(
 
     activeCallChatIdRef.current = acceptedChatId;
     setActiveCallChatId(acceptedChatId);
+    screenShareTerminalGenerationsRef.current.clear();
+    screenShareSupportedRef.current = false;
+    setScreenShareSupported(false);
 
     if (isDirectVoiceCallChatId(acceptedChatId)) {
       try {
         const roomId = await buildDmVoiceRoomId(acceptedChatId);
         dmRoomIdRef.current = roomId;
-        flushPendingDmVoiceGcallKey(roomId);
         pushDirectVoiceUiLog('log', 'DM voice room id ready (callee)', {
           roomTrunc: roomId.slice(0, 32),
         });
@@ -2416,7 +3755,6 @@ export function useVoiceCall(
   }, [
     endCall,
     authorizeCallSignal,
-    flushPendingDmVoiceGcallKey,
     startDurationTimer,
     startReticulumMediaSession,
     showSystemNotReadyForCall,
@@ -2495,7 +3833,6 @@ export function useVoiceCall(
   const swapVoiceCallInput = useCallback(
     async (deviceId: string | null) => {
       if (callStateRef.current !== 'connected') return;
-      if (!roomKeyRef.current) return;
       void deviceId;
       await updateDirectVoiceMediaOnAudioSurface();
     },
@@ -2508,7 +3845,6 @@ export function useVoiceCall(
       prevInputPrefRef.current = undefined;
       return;
     }
-    if (!roomKeyRef.current) return;
     const want = callAudioDevices.inputDeviceId;
     if (!inputSwapSeededRef.current) {
       inputSwapSeededRef.current = true;
@@ -2527,21 +3863,15 @@ export function useVoiceCall(
 
   useEffect(() => {
     if (callState !== 'connected') return;
-    void (async () => {
-      const out = callAudioDevices.outputDeviceId;
-      const r = await applyCallAudioOutput(out, {
-        audioContext: null,
-      });
-      if (r.clearPersistedOutput) {
-        setCallAudioDevices((p) => ({ ...p, outputDeviceId: null }));
-      }
-      void updateDirectVoiceMediaOnAudioSurface();
-    })();
+    // Device ids are scoped to the audio-surface origin. Validating an id in
+    // the main renderer can incorrectly classify it as stale and reset DM
+    // playback to the system default. Let the audio surface resolve and apply
+    // its own device id instead.
+    void updateDirectVoiceMediaOnAudioSurface();
   }, [
     callState,
     callAudioDevices.outputDeviceId,
     callAudioWireNonce,
-    setCallAudioDevices,
     updateDirectVoiceMediaOnAudioSurface,
   ]);
 
@@ -2708,6 +4038,12 @@ export function useVoiceCall(
     callDuration,
     incomingCall,
     activeCallChatId,
+    screenShareState,
+    screenShareSupported,
+    screenShareSources,
+    screenShareStream,
+    screenShareViewerOpen,
+    screenShareIsLocal,
     initiateCall,
     acceptCall,
     rejectCall,
@@ -2715,5 +4051,10 @@ export function useVoiceCall(
     toggleMute,
     setHearCall,
     toggleHearCall,
+    openScreenSharePicker,
+    cancelScreenSharePicker,
+    startScreenShare,
+    stopScreenShare,
+    setScreenShareViewerOpen,
   };
 }

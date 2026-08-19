@@ -9,6 +9,7 @@ import type { MenuItemConstructorOptions, WebContents } from 'electron';
 import {
   app,
   BrowserWindow,
+  desktopCapturer,
   Menu,
   MenuItem,
   nativeImage,
@@ -76,6 +77,7 @@ import {
 } from './p2p-network';
 import {
   startStunCoordinator,
+  stopStunCoordinator,
   getStunCoordinator,
   GET_ICE_SERVERS_DEADLINE_MS,
 } from './stun-coordinator';
@@ -115,16 +117,18 @@ import {
   type ReticulumChatHistoryReadOptions,
 } from './reticulum-chat';
 import { startCallManager, stopCallManager, getCallManager } from './call';
+import type { DmCallLinkControlPayload } from './call';
 import {
   startGroupCallManager,
   stopGroupCallManager,
   getGroupCallManager,
   GC_MESSAGE_TYPES,
 } from './group-call';
-import type { GcEnvelope } from './group-call';
+import type { DmCallLinkControlInput, GcEnvelope } from './group-call';
 import type { GroupCallJoinIpcArguments } from './group-call-ipc-contract';
 import {
   getReticulumBridge,
+  setReticulumBridgeDeveloperLogsFiltered,
   startReticulumBridge,
   type ReticulumOverlayVerifiedPeer,
 } from './reticulum-bridge';
@@ -1666,7 +1670,9 @@ const miscPersistentStore = createPersistentJsonStore(
 void persistentStore
   .get(DEV_LOGS_DISABLED_STORAGE_KEY)
   .then((value) => {
-    setDisableDevLogs(value === false ? false : true);
+    const next = value === false ? false : true;
+    setDisableDevLogs(next);
+    setReticulumBridgeDeveloperLogsFiltered(next);
   })
   .catch((err) => {
     loggerError('Error loading dev log setting from persistent store', err);
@@ -1689,7 +1695,9 @@ ipcMain.handle(
   async (_event, key: string, value: unknown) => {
     await persistentStore.set(key, value);
     if (key === DEV_LOGS_DISABLED_STORAGE_KEY) {
-      setDisableDevLogs(value === false ? false : true);
+      const next = value === false ? false : true;
+      setDisableDevLogs(next);
+      setReticulumBridgeDeveloperLogsFiltered(next);
     }
   }
 );
@@ -1698,12 +1706,14 @@ ipcMain.handle('persistentStore:delete', async (_event, key: string) => {
   await persistentStore.deleteKey(key);
   if (key === DEV_LOGS_DISABLED_STORAGE_KEY) {
     setDisableDevLogs(true);
+    setReticulumBridgeDeveloperLogsFiltered(true);
   }
 });
 
 ipcMain.handle('logger:setDisableDevLogs', async (_event, value: boolean) => {
   const next = value === false ? false : true;
   setDisableDevLogs(next);
+  setReticulumBridgeDeveloperLogsFiltered(next);
   await persistentStore.set(DEV_LOGS_DISABLED_STORAGE_KEY, next);
   return next;
 });
@@ -1760,10 +1770,12 @@ export interface AppSettings {
   /** Whether the Hub P2P network auto-starts on launch (default true). */
   p2pEnabled?: boolean;
   /**
-   * When true, append public Google/Cloudflare STUN URLs to ICE (rollback / lab).
-   * Default false — use decentralized peer STUN + bootstrap.
+   * @deprecated Retained only for settings-file compatibility. Centralized
+   * public STUN fallback is no longer used.
    */
   legacyPublicStunFallback?: boolean;
+  /** Contribute this device as an anonymously advertised community STUN server. */
+  communityStunContributionEnabled?: boolean;
   /** When false, skip UPnP for Reticulum hub mesh TCP listen port (default true). */
   reticulumMeshUpnpEnabled?: boolean;
   /** When false, do not write/regenerate Qortal Hub's managed Reticulum config. */
@@ -1782,6 +1794,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   autoLockTimeoutMinutes: DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES,
   disableAutoLockOnIdle: false,
   p2pEnabled: !isDisabledLegacy,
+  communityStunContributionEnabled: true,
   reticulumMeshUpnpEnabled: true,
   reticulumManagedConfigEnabled: true,
   reticulumEnabled: true,
@@ -1818,6 +1831,8 @@ export async function readAppSettings(): Promise<AppSettings> {
       legacyPublicStunFallback: isDisabledLegacy
         ? false
         : parsed.legacyPublicStunFallback === true,
+      communityStunContributionEnabled:
+        parsed.communityStunContributionEnabled === false ? false : true,
       reticulumMeshUpnpEnabled:
         parsed.reticulumMeshUpnpEnabled === false ? false : true,
       reticulumManagedConfigEnabled:
@@ -1863,6 +1878,9 @@ let lastObservedAppSettingsJson = '';
 
 async function notifyAppSettingsChanged(settings: AppSettings): Promise<void> {
   setReticulumRuntimeEnabled(settings.reticulumEnabled !== false);
+  getStunCoordinator()?.setContributionEnabled(
+    settings.communityStunContributionEnabled !== false
+  );
   lastObservedAppSettingsJson = JSON.stringify(settings);
   for (const window of BrowserWindow.getAllWindows()) {
     sendToRenderer(window.webContents, 'appSettings:changed', settings);
@@ -2012,17 +2030,11 @@ ipcMain.handle(
           RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES,
       });
     }
-    if (!isDisabledLegacy) {
-      getStunCoordinator()?.setLegacyPublicStunFallback(
-        next.legacyPublicStunFallback === true
-      );
-    }
     return next;
   }
 );
 
 ipcMain.handle('hub:getIceServers', async () => {
-  if (isDisabledLegacy) return [];
   const c = getStunCoordinator();
   if (!c) return [];
   return await new Promise<{ urls: string }[]>((resolve, reject) => {
@@ -2054,7 +2066,6 @@ ipcMain.handle('hub:getIceServers', async () => {
 ipcMain.handle(
   'hub:reportStunCallOutcome',
   async (_event, urls: unknown, success: unknown) => {
-    if (isDisabledLegacy) return { ok: false };
     const c = getStunCoordinator();
     if (!c) return { ok: false };
     if (!Array.isArray(urls)) return { ok: false };
@@ -2071,7 +2082,6 @@ ipcMain.handle(
 ipcMain.handle(
   'hub:reportObservedStunSources',
   async (_event, urls: unknown) => {
-    if (isDisabledLegacy) return { ok: false };
     const c = getStunCoordinator();
     if (!c) return { ok: false };
     if (!Array.isArray(urls)) return { ok: false };
@@ -2622,19 +2632,11 @@ export async function startDecentralizedStunAfterP2P(
   network: NonNullable<ReturnType<typeof getP2PNetwork>>,
   opts: P2PNetworkOptions
 ): Promise<void> {
-  if (isDisabledLegacy) return;
-  const chatDb =
-    opts.dbPath ?? join(app.getPath('appData'), 'qortal-shared', 'chat.db');
-  const stunPath = join(dirname(chatDb), 'stun-cache.db');
-  const settings = await readAppSettings();
-  await startStunCoordinator(network, {
-    initialPeers: opts.initialPeers ?? [],
-    stunCacheDbPath: stunPath,
-    legacyPublicStunFallback: settings.legacyPublicStunFallback === true,
-  });
-  if (getStunCoordinator()?.didBindStunUdp()) {
-    await network.mapOwnedStunUdpIfPossible();
-  }
+  // Compatibility entry point for the disabled TLS P2P stack. Community STUN
+  // now starts with the Reticulum bridge so discovery never inherits a normal
+  // P2P/presence identity or peer address.
+  void network;
+  void opts;
 }
 
 async function startReticulumManagers(): Promise<void> {
@@ -2679,6 +2681,19 @@ async function startReticulumManagers(): Promise<void> {
     registerLateReticulumBridgeRecovery();
   }
   attachReticulumStatusBridgeEvents(bridgeTransport);
+
+  if (bridgeTransport) {
+    const stunPath = join(
+      app.getPath('appData'),
+      'qortal-shared',
+      'stun-cache.db'
+    );
+    await startStunCoordinator(bridgeTransport, {
+      stunCacheDbPath: stunPath,
+      contributionEnabled:
+        latestGlobalSettings.communityStunContributionEnabled !== false,
+    });
+  }
 
   await registerReticulumResourceProtocol();
   if (
@@ -2797,6 +2812,7 @@ export function stopReticulumManagers(): void {
     reticulumChatSubscriptionReplayTimer = null;
   }
   stopPresenceMainHeartbeatScheduler();
+  stopStunCoordinator();
   stopReticulumMeshCoordinator();
   stopGroupCallManager();
   stopCallManager();
@@ -3979,19 +3995,22 @@ ipcMain.handle(
   'reticulumChat:setLocalDmAddresses',
   async (_event, addresses: string[]) => {
     const accountGeneration = reticulumLocalAccountLifecycleGeneration;
+    const normalizedAddresses = Array.isArray(addresses) ? addresses : [];
     const settings = await readAppSettings();
     if (accountGeneration !== reticulumLocalAccountLifecycleGeneration) {
       return { success: false, error: 'Account session changed' };
     }
     const manager = getReticulumChatManager();
     if (!manager) {
+      if (normalizedAddresses.length === 0) return { success: true };
       return { success: false, error: 'Reticulum chat manager is not running' };
     }
     if (!isReticulumChatEffectivelyEnabled(settings)) {
       manager.setLocalDmAddresses([]);
+      if (normalizedAddresses.length === 0) return { success: true };
       return { success: false, error: 'Reticulum chat is disabled' };
     }
-    manager.setLocalDmAddresses(Array.isArray(addresses) ? addresses : []);
+    manager.setLocalDmAddresses(normalizedAddresses);
     return { success: true };
   }
 );
@@ -4333,7 +4352,6 @@ ipcMain.handle(
     const manager = getReticulumChatManager();
     if (!manager) return [];
     const address = typeof myAddress === 'string' ? myAddress.trim() : '';
-    if (address) manager.setLocalDmAddresses([address]);
     return manager.getDirectSummaries(
       address,
       typeof peerAddress === 'string' ? peerAddress.trim() : undefined
@@ -6294,10 +6312,55 @@ ipcMain.handle('chat:getAttachment', async (_event, eventId: string) => {
 
 const callSubscribers = new Set<Electron.WebContents>();
 
+ipcMain.handle('screenShare:listSources', async (event) => {
+  if (!isMainShellSender(event.sender)) {
+    return { success: false, error: 'Main shell required', sources: [] };
+  }
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 240, height: 135 },
+      fetchWindowIcons: true,
+    });
+    return {
+      success: true,
+      sources: sources.slice(0, 60).map((source) => ({
+        id: source.id,
+        name: source.name.slice(0, 160),
+        thumbnail: source.thumbnail.isEmpty()
+          ? ''
+          : source.thumbnail.toDataURL(),
+        appIcon:
+          source.appIcon && !source.appIcon.isEmpty()
+            ? source.appIcon.resize({ width: 24, height: 24 }).toDataURL()
+            : '',
+      })),
+    };
+  } catch (error) {
+    loggerWarn('[ScreenShare] Failed to enumerate capture sources', {
+      platform: process.platform,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      success: false,
+      error: 'Unable to access screens and windows',
+      sources: [],
+    };
+  }
+});
+
 export function attachCallListeners(
   manager: ReturnType<typeof getCallManager>
 ): void {
   if (!manager) return;
+
+  manager.setDmCallLinkControlSender(async (input) => {
+    const groupCallManager = getGroupCallManager();
+    if (!groupCallManager) {
+      return { success: false, error: 'GroupCall manager not running' };
+    }
+    return groupCallManager.sendDmCallLinkControl(input);
+  });
 
   const forward = (channel: string) => (payload: unknown) =>
     broadcastToSet(callSubscribers, channel, payload);
@@ -6306,6 +6369,13 @@ export function attachCallListeners(
   manager.on('call:accepted', forward('call:accepted'));
   manager.on('call:rejected', forward('call:rejected'));
   manager.on('call:hangup', forward('call:hangup'));
+  manager.on('call:rtc-signal', (payload: unknown) => {
+    for (const webContents of callSubscribers) {
+      if (!webContents.isDestroyed() && isMainShellSender(webContents)) {
+        webContents.send('call:rtc-signal', payload);
+      }
+    }
+  });
   manager.on('call:history', (payload: unknown) => {
     void getReticulumChatManager()?.recordDirectCallHistory(payload as any);
   });
@@ -6357,8 +6427,9 @@ ipcMain.handle(
   ) => {
     const mgr = getCallManager();
     if (!mgr) return { success: false, error: 'Call manager not running' };
-    mgr.acceptCall(callId, signature, publicKey, timestamp);
-    return { success: true };
+    return mgr.acceptCall(callId, signature, publicKey, timestamp)
+      ? { success: true }
+      : { success: false, error: 'Call is no longer ringing' };
   }
 );
 
@@ -6398,8 +6469,33 @@ ipcMain.handle(
   ) => {
     const mgr = getCallManager();
     if (!mgr) return { success: false, error: 'Call manager not running' };
-    mgr.hangUp(callId, signature, publicKey, timestamp);
+    await mgr.hangUp(callId, signature, publicKey, timestamp);
     return { success: true };
+  }
+);
+
+ipcMain.handle(
+  'call:rtc-signal',
+  async (
+    _event,
+    input: {
+      callId: string;
+      generation: string;
+      signalId: string;
+      signalType: 'capability' | 'offer' | 'answer' | 'candidate';
+      payload: string;
+      payloadHash: string;
+      timestamp: number;
+      signature: string;
+      publicKey: string;
+    }
+  ) => {
+    if (!isMainShellSender(_event.sender)) {
+      return { success: false, error: 'Main shell required' };
+    }
+    const mgr = getCallManager();
+    if (!mgr) return { success: false, error: 'Call manager not running' };
+    return mgr.sendRtcSignal(input);
   }
 );
 
@@ -6534,6 +6630,33 @@ export function attachGroupCallListeners(
   });
   manager.on('gcall:key-request', forward('gcall:key-request'));
   manager.on('gcall:session-updated', forward('gcall:session-updated'));
+  manager.on('gcall:rtc-signal', forward('gcall:rtc-signal'));
+  manager.on('gcall:dm-call-control', (payload: unknown) => {
+    const control = payload as DmCallLinkControlInput & {
+      verifiedPeerDestinationHash: string;
+    };
+    const callManager = getCallManager();
+    if (!callManager) return;
+    const callPayload: DmCallLinkControlPayload = {
+      kind: control.kind,
+      callId: control.callId,
+      chatId: control.chatId,
+      controlId: control.controlId,
+      fromAddress: control.fromAddress,
+      toAddress: control.toAddress,
+      timestamp: control.timestamp,
+      publicKey: control.publicKey,
+      signature: control.signature,
+      verifiedPeerDestinationHash: control.verifiedPeerDestinationHash,
+    };
+    if (control.kind === 'hangup-ack') {
+      callManager.acknowledgeDmCallLinkHangup(callPayload);
+      return;
+    }
+    void callManager.handleDmCallLinkHangup(callPayload, (ack) =>
+      manager.sendDmCallLinkControl(ack)
+    );
+  });
   manager.on('gcall:qortal-group-call-activity', (payload: unknown) =>
     broadcastToSet(
       gcallActivitySubscribers,
@@ -6612,7 +6735,8 @@ ipcMain.handle(
         dmVoiceAudioLinkRole,
         takeover,
         selectedDmVoicePeerDestinationHash,
-        Boolean(authenticatedMediaDestination)
+        Boolean(authenticatedMediaDestination),
+        authenticatedMediaDestination ? dmVoiceCallId : undefined
       );
       return {
         success: true,
@@ -6692,7 +6816,8 @@ ipcMain.handle(
     topology: unknown,
     signature: string,
     publicKey: string,
-    timestamp: number
+    timestamp: number,
+    localAuthorityProvisional = false
   ) => {
     const mgr = getGroupCallManager();
     if (!mgr) return { success: false, error: 'GroupCall manager not running' };
@@ -6701,7 +6826,8 @@ ipcMain.handle(
       topology as any,
       signature,
       publicKey,
-      timestamp
+      timestamp,
+      localAuthorityProvisional
     );
     return { success: true };
   }
@@ -6727,6 +6853,27 @@ ipcMain.handle(
     if (!mgr) return { success: false, error: 'GroupCall manager not running' };
     mgr.sendClusterHeartbeat(roomId, payload, signature);
     return { success: true };
+  }
+);
+
+ipcMain.handle(
+  'gcall:sendRtcSignal',
+  async (_event, input: import('./group-call').GroupCallRtcSignalInput) => {
+    const fromAudioSurface = isAudioSurfaceHostSender(_event.sender);
+    const fromMainShell = isMainShellSender(_event.sender);
+    const isDirectVoiceRoom =
+      typeof input?.roomId === 'string' && input.roomId.startsWith('dmv:');
+    if (!fromAudioSurface && !(fromMainShell && isDirectVoiceRoom)) {
+      return {
+        success: false,
+        error: isDirectVoiceRoom
+          ? 'Main shell or audio surface required'
+          : 'Audio surface required',
+      };
+    }
+    const mgr = getGroupCallManager();
+    if (!mgr) return { success: false, error: 'GroupCall manager not running' };
+    return await mgr.sendRtcSignal(input);
   }
 );
 
@@ -7140,6 +7287,7 @@ ipcMain.handle(
       !hasUsableAudioWindow &&
       (command.type === 'logout-cleanup' ||
         command.type === 'leave-group-call' ||
+        command.type === 'stop-direct-voice-rtc' ||
         command.type === 'stop-direct-voice-media' ||
         command.type === 'stop-direct-voice-receive')
     ) {
@@ -7183,6 +7331,7 @@ ipcMain.handle(
     if (
       commandDurationMs >= 250 &&
       (command.type === 'stop-direct-voice-media' ||
+        command.type === 'stop-direct-voice-rtc' ||
         command.type === 'stop-direct-voice-receive')
     ) {
       loggerWarn('[GCall:audio-surface] slow direct-voice stop', {
@@ -7214,6 +7363,7 @@ ipcMain.handle(
       (response as { ok?: boolean }).ok === true &&
       responsePayload?.idle === true &&
       (command.type === 'leave-group-call' ||
+        command.type === 'stop-direct-voice-rtc' ||
         command.type === 'stop-direct-voice-media' ||
         command.type === 'stop-direct-voice-receive')
     ) {
@@ -7279,6 +7429,36 @@ ipcMain.on('audio-surface:host-event', (event, payload: AudioSurfaceEvent) => {
           }
         );
         return;
+      }
+      if (payload.type === 'direct-voice-rtc-state') {
+        loggerLog('[Call][RTC] transport state', {
+          state: payload.state,
+          room: payload.roomId.slice(0, 24),
+          peer: payload.peerAddress.slice(0, 8),
+        });
+      } else if (payload.type === 'direct-voice-rtc-diagnostic') {
+        loggerLog('[Call][RTC] ICE diagnostic', {
+          stage: payload.stage,
+          room: payload.roomId.slice(0, 24),
+          peer: payload.peerAddress.slice(0, 8),
+          ...payload.detail,
+        });
+      } else if (payload.type === 'group-call-rtc-state') {
+        loggerLog('[GCall][RTC] transport state', {
+          state: payload.state,
+          room: payload.roomId.slice(0, 24),
+          peer: payload.peerAddress.slice(0, 8),
+        });
+      } else if (
+        payload.type === 'direct-voice-rtc-signal' &&
+        payload.signal.kind === 'description'
+      ) {
+        // Never log SDP, candidates, keys, or network addresses.
+        loggerLog('[Call][RTC] local description ready', {
+          signalType: payload.signal.description.type,
+          room: payload.roomId.slice(0, 24),
+          peer: payload.peerAddress.slice(0, 8),
+        });
       }
       emitAudioSurfaceEvent(payload);
     }

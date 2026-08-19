@@ -1,5 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { Box, IconButton, Portal, Tooltip, useTheme } from '@mui/material';
+import { useTranslation, type TFunction } from 'react-i18next';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
@@ -33,7 +40,7 @@ const getDownloadFileName = (fileName?: string, mimeType?: string) => {
   return `image.${extension}`;
 };
 
-const toClipboardPng = async (blob: Blob) => {
+const toClipboardPng = async (blob: Blob, t: TFunction) => {
   if (blob.type === 'image/png') return blob;
   const bitmap = await createImageBitmap(blob);
   try {
@@ -41,12 +48,22 @@ const toClipboardPng = async (blob: Blob) => {
     canvas.width = bitmap.width;
     canvas.height = bitmap.height;
     const context = canvas.getContext('2d');
-    if (!context) throw new Error('Unable to prepare image for clipboard');
+    if (!context)
+      throw new Error(
+        t('reticulum:image_viewer.prepare_failed', {
+          postProcess: 'capitalizeFirstChar',
+        })
+      );
     context.drawImage(bitmap, 0, 0);
     const pngBlob = await new Promise<Blob | null>((resolve) => {
       canvas.toBlob(resolve, 'image/png');
     });
-    if (!pngBlob) throw new Error('Unable to prepare image for clipboard');
+    if (!pngBlob)
+      throw new Error(
+        t('reticulum:image_viewer.prepare_failed', {
+          postProcess: 'capitalizeFirstChar',
+        })
+      );
     return pngBlob;
   } finally {
     bitmap.close();
@@ -54,7 +71,7 @@ const toClipboardPng = async (blob: Blob) => {
 };
 
 export const ReticulumImageViewer = ({
-  alt = 'Chat image',
+  alt,
   containerElement,
   fileName,
   mimeType,
@@ -63,6 +80,12 @@ export const ReticulumImageViewer = ({
   src,
 }: ReticulumImageViewerProps) => {
   const theme = useTheme();
+  const { t } = useTranslation(['core', 'reticulum']);
+  const altText =
+    alt ??
+    t('reticulum:image_viewer.chat_image', {
+      postProcess: 'capitalizeFirstChar',
+    });
   const [zoom, setZoom] = useState(MIN_ZOOM);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -72,7 +95,13 @@ export const ReticulumImageViewer = ({
     x: number;
     y: number;
   } | null>(null);
-  const dragRef = useRef({ startX: 0, startY: 0, panX: 0, panY: 0, moved: false });
+  const dragRef = useRef({
+    startX: 0,
+    startY: 0,
+    panX: 0,
+    panY: 0,
+    moved: false,
+  });
   const suppressClickRef = useRef(false);
 
   const resetView = useCallback(() => {
@@ -95,7 +124,8 @@ export const ReticulumImageViewer = ({
       return;
     }
 
-    const updateBounds = () => setBounds(containerElement.getBoundingClientRect());
+    const updateBounds = () =>
+      setBounds(containerElement.getBoundingClientRect());
     updateBounds();
     const observer = new ResizeObserver(updateBounds);
     observer.observe(containerElement);
@@ -181,27 +211,44 @@ export const ReticulumImageViewer = ({
 
   const getImageBlob = useCallback(async () => {
     const response = await fetch(src);
-    if (!response.ok) throw new Error('Unable to read image');
+    if (!response.ok)
+      throw new Error(
+        t('reticulum:image_viewer.read_failed', {
+          postProcess: 'capitalizeFirstChar',
+        })
+      );
     return response.blob();
-  }, [src]);
+  }, [src, t]);
 
   const handleCopy = useCallback(async () => {
     try {
       if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
-        throw new Error('Image clipboard is unavailable');
+        throw new Error(
+          t('reticulum:image_viewer.clipboard_unavailable', {
+            postProcess: 'capitalizeFirstChar',
+          })
+        );
       }
       const blob = await getImageBlob();
-      const imageBlob = await toClipboardPng(blob);
+      const imageBlob = await toClipboardPng(blob, t);
       await navigator.clipboard.write([
         new ClipboardItem({
           'image/png': imageBlob,
         }),
       ]);
-      setActionStatus('Image copied');
+      setActionStatus(
+        t('reticulum:image_viewer.copied', {
+          postProcess: 'capitalizeFirstChar',
+        })
+      );
     } catch {
-      setActionStatus('Unable to copy image');
+      setActionStatus(
+        t('reticulum:image_viewer.copy_failed', {
+          postProcess: 'capitalizeFirstChar',
+        })
+      );
     }
-  }, [getImageBlob]);
+  }, [getImageBlob, t]);
 
   const handleDownload = useCallback(async () => {
     try {
@@ -216,9 +263,13 @@ export const ReticulumImageViewer = ({
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0);
     } catch {
-      setActionStatus('Unable to download image');
+      setActionStatus(
+        t('reticulum:image_viewer.download_failed', {
+          postProcess: 'capitalizeFirstChar',
+        })
+      );
     }
-  }, [fileName, getImageBlob, mimeType]);
+  }, [fileName, getImageBlob, mimeType, t]);
 
   const controlSx = {
     backgroundColor: 'rgba(21, 24, 29, 0.92)',
@@ -258,7 +309,9 @@ export const ReticulumImageViewer = ({
         }}
       >
         <Box
-          aria-label="Image actions"
+          aria-label={t('reticulum:image_viewer.actions', {
+            postProcess: 'capitalizeFirstChar',
+          })}
           onClick={(event) => event.stopPropagation()}
           sx={{
             alignItems: 'center',
@@ -270,15 +323,33 @@ export const ReticulumImageViewer = ({
             zIndex: 1,
           }}
         >
-          <Tooltip title="Copy Image" disableFocusListener>
-            <IconButton aria-label="Copy image" onClick={() => void handleCopy()} sx={controlSx}>
+          <Tooltip
+            title={t('reticulum:image_viewer.copy', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            disableFocusListener
+          >
+            <IconButton
+              aria-label={t('reticulum:image_viewer.copy', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              onClick={() => void handleCopy()}
+              sx={controlSx}
+            >
               <ContentCopyRoundedIcon fontSize="small" />
             </IconButton>
           </Tooltip>
-          <Tooltip title="Zoom Out" disableFocusListener>
+          <Tooltip
+            title={t('reticulum:image_viewer.zoom_out', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            disableFocusListener
+          >
             <span>
               <IconButton
-                aria-label="Zoom out"
+                aria-label={t('reticulum:image_viewer.zoom_out', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
                 disabled={zoom <= MIN_ZOOM}
                 onClick={() => updateZoom(zoom - ZOOM_STEP)}
                 sx={controlSx}
@@ -287,10 +358,17 @@ export const ReticulumImageViewer = ({
               </IconButton>
             </span>
           </Tooltip>
-          <Tooltip title="Zoom In" disableFocusListener>
+          <Tooltip
+            title={t('reticulum:image_viewer.zoom_in', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            disableFocusListener
+          >
             <span>
               <IconButton
-                aria-label="Zoom in"
+                aria-label={t('reticulum:image_viewer.zoom_in', {
+                  postProcess: 'capitalizeFirstChar',
+                })}
                 disabled={zoom >= MAX_ZOOM}
                 onClick={() => updateZoom(zoom + ZOOM_STEP)}
                 sx={controlSx}
@@ -299,17 +377,35 @@ export const ReticulumImageViewer = ({
               </IconButton>
             </span>
           </Tooltip>
-          <Tooltip title="Download Image" disableFocusListener>
+          <Tooltip
+            title={t('reticulum:image_viewer.download', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            disableFocusListener
+          >
             <IconButton
-              aria-label="Download image"
+              aria-label={t('reticulum:image_viewer.download', {
+                postProcess: 'capitalizeFirstChar',
+              })}
               onClick={() => void handleDownload()}
               sx={controlSx}
             >
               <DownloadRoundedIcon fontSize="small" />
             </IconButton>
           </Tooltip>
-          <Tooltip title="Close" disableFocusListener>
-            <IconButton aria-label="Close image viewer" onClick={onClose} sx={controlSx}>
+          <Tooltip
+            title={t('core:action.close', {
+              postProcess: 'capitalizeFirstChar',
+            })}
+            disableFocusListener
+          >
+            <IconButton
+              aria-label={t('reticulum:image_viewer.close', {
+                postProcess: 'capitalizeFirstChar',
+              })}
+              onClick={onClose}
+              sx={controlSx}
+            >
               <CloseRoundedIcon fontSize="small" />
             </IconButton>
           </Tooltip>
@@ -341,7 +437,7 @@ export const ReticulumImageViewer = ({
         >
           <Box
             component="img"
-            alt={alt}
+            alt={altText}
             draggable={false}
             src={src}
             onClick={(event) => {
@@ -362,7 +458,12 @@ export const ReticulumImageViewer = ({
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerUp}
             sx={{
-              cursor: zoom > MIN_ZOOM ? (isDragging ? 'grabbing' : 'grab') : 'zoom-in',
+              cursor:
+                zoom > MIN_ZOOM
+                  ? isDragging
+                    ? 'grabbing'
+                    : 'grab'
+                  : 'zoom-in',
               maxHeight: 'calc(100% - 64px)',
               maxWidth: 'calc(100% - 64px)',
               objectFit: 'contain',

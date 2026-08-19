@@ -48,7 +48,9 @@ function mergeDirectChatReferences(
       (rawItem: any) =>
         rawItem &&
         rawItem.chatReference &&
-        (rawItem?.type === 'reaction' || rawItem?.type === 'edit' || rawItem?.isEdited)
+        (rawItem?.type === 'reaction' ||
+          rawItem?.type === 'edit' ||
+          rawItem?.isEdited)
     )
     .forEach((item: any) => {
       try {
@@ -73,22 +75,25 @@ function mergeDirectChatReferences(
           }
           organizedChatReferences[item.chatReference] = {
             ...(organizedChatReferences[item.chatReference] || {}),
-            reactions: organizedChatReferences[item.chatReference]?.reactions || {},
+            reactions:
+              organizedChatReferences[item.chatReference]?.reactions || {},
           };
           organizedChatReferences[item.chatReference].reactions[content] =
-            organizedChatReferences[item.chatReference].reactions[content] || [];
+            organizedChatReferences[item.chatReference].reactions[content] ||
+            [];
           let latestTimestampForSender: number | null = null;
-          organizedChatReferences[item.chatReference].reactions[content] = organizedChatReferences[
-            item.chatReference
-          ].reactions[content].filter((reaction: any) => {
-            if (reaction.sender === sender) {
-              latestTimestampForSender = Math.max(
-                latestTimestampForSender || 0,
-                reaction.timestamp
-              );
-            }
-            return reaction.sender !== sender;
-          });
+          organizedChatReferences[item.chatReference].reactions[content] =
+            organizedChatReferences[item.chatReference].reactions[
+              content
+            ].filter((reaction: any) => {
+              if (reaction.sender === sender) {
+                latestTimestampForSender = Math.max(
+                  latestTimestampForSender || 0,
+                  reaction.timestamp
+                );
+              }
+              return reaction.sender !== sender;
+            });
           if (
             latestTimestampForSender &&
             newTimestamp < latestTimestampForSender
@@ -96,12 +101,17 @@ function mergeDirectChatReferences(
             return;
           }
           if (contentState !== false) {
-            organizedChatReferences[item.chatReference].reactions[content].push(item);
+            organizedChatReferences[item.chatReference].reactions[content].push(
+              item
+            );
           }
           if (
-            organizedChatReferences[item.chatReference].reactions[content].length === 0
+            organizedChatReferences[item.chatReference].reactions[content]
+              .length === 0
           ) {
-            delete organizedChatReferences[item.chatReference].reactions[content];
+            delete organizedChatReferences[item.chatReference].reactions[
+              content
+            ];
           }
         }
       } catch (err) {
@@ -132,7 +142,9 @@ export function MiniDirectThread({
   const { t } = useTranslation(['core', 'group']);
   const { queueChats, addToQueue, processWithNewMessages } = useMessageQueue();
   const [messages, setMessages] = useState<any[]>([]);
-  const [chatReferences, setChatReferences] = useState<Record<string, { edit?: any; reactions?: Record<string, any[]> }>>({});
+  const [chatReferences, setChatReferences] = useState<
+    Record<string, { edit?: any; reactions?: Record<string, any[]> }>
+  >({});
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [inputValue, setInputValue] = useState('');
@@ -143,18 +155,27 @@ export function MiniDirectThread({
   const socketRef = useRef<WebSocket | null>(null);
   const timeoutIdRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const appendIncomingMessagesRef = useRef<(data: any) => Promise<void>>(() => Promise.resolve());
+  const appendIncomingMessagesRef = useRef<(data: any) => Promise<void>>(() =>
+    Promise.resolve()
+  );
   const processWithNewMessagesRef = useRef(processWithNewMessages);
   processWithNewMessagesRef.current = processWithNewMessages;
 
   const tempMessages = useMemo(() => {
     if (!direct?.address) return [];
-    return queueChats[direct.address]?.filter((item: any) => !item?.chatReference) ?? [];
+    return (
+      queueChats[direct.address]?.filter((item: any) => !item?.chatReference) ??
+      []
+    );
   }, [direct?.address, queueChats]);
 
   const tempChatReferences = useMemo(() => {
     if (!direct?.address) return [];
-    return queueChats[direct.address]?.filter((item: any) => !!item?.chatReference) ?? [];
+    return (
+      queueChats[direct.address]?.filter(
+        (item: any) => !!item?.chatReference
+      ) ?? []
+    );
   }, [direct?.address, queueChats]);
 
   const loadMessages = useCallback(async () => {
@@ -220,7 +241,9 @@ export function MiniDirectThread({
 
   const appendIncomingMessages = useCallback(
     async (encryptedData: any) => {
-      const encrypted = Array.isArray(encryptedData) ? encryptedData : [encryptedData];
+      const encrypted = Array.isArray(encryptedData)
+        ? encryptedData
+        : [encryptedData];
       if (encrypted.length === 0) return;
       try {
         const decrypted = await new Promise<any[]>((resolve, reject) => {
@@ -232,7 +255,10 @@ export function MiniDirectThread({
             .then((r: any) => (r?.error ? reject(r.error) : resolve(r || [])))
             .catch(reject);
         });
-        const processed = processWithNewMessages(decrypted || [], direct?.address ?? '');
+        const processed = processWithNewMessages(
+          decrypted || [],
+          direct?.address ?? ''
+        );
         const response = Array.isArray(processed) ? processed : decrypted || [];
         const formatted = response
           .filter((item: any) => !item?.chatReference)
@@ -248,7 +274,9 @@ export function MiniDirectThread({
             const existing = new Set(prev.map((m) => m.signature));
             const newOnes = formatted.filter((f) => !existing.has(f.signature));
             if (newOnes.length === 0) return prev;
-            return [...prev, ...newOnes].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+            return [...prev, ...newOnes].sort(
+              (a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0)
+            );
           });
         }
       } catch (e) {
@@ -339,7 +367,6 @@ export function MiniDirectThread({
       cancelled = true;
     };
   }, [direct?.address]);
-
 
   const handleReply = useCallback((message: any) => {
     setReplyMessage(message);
@@ -626,7 +653,8 @@ export function MiniDirectThread({
                     postProcess: 'capitalizeFirstChar',
                   })
                 : t('core:message.generic.replying_to', {
-                    name: replyMessage?.senderName || replyMessage?.sender || '',
+                    name:
+                      replyMessage?.senderName || replyMessage?.sender || '',
                     postProcess: 'capitalizeFirstChar',
                   })}
             </Typography>
@@ -634,7 +662,9 @@ export function MiniDirectThread({
               size="small"
               onClick={clearReplyEdit}
               sx={{ padding: 0.25 }}
-              aria-label={t('core:action.cancel', { postProcess: 'capitalizeFirstChar' })}
+              aria-label={t('core:action.cancel', {
+                postProcess: 'capitalizeFirstChar',
+              })}
             >
               <CloseRoundedIcon sx={{ fontSize: 18 }} />
             </IconButton>
@@ -660,28 +690,30 @@ export function MiniDirectThread({
             }}
             disabled={sending}
             sx={{
-            '& .MuiOutlinedInput-root': {
-              borderRadius: '20px',
-              backgroundColor: theme.palette.background.default,
-              fontFamily: 'Inter',
-              fontSize: '14px',
-              '& fieldset': { borderColor: theme.palette.divider },
-              '&:hover fieldset': { borderColor: theme.palette.text.secondary },
-            },
-          }}
-        />
-        <IconButton
-          onClick={handleSend}
-          disabled={sending || !inputValue?.trim()}
-          sx={{
-            color: theme.palette.primary.main,
-            bgcolor: theme.palette.action.hover,
-            '&:hover': { bgcolor: theme.palette.action.selected },
-            '&.Mui-disabled': { color: theme.palette.text.disabled },
-          }}
-          aria-label={t('core:action.send', {
-            postProcess: 'capitalizeFirstChar',
-          })}
+              '& .MuiOutlinedInput-root': {
+                borderRadius: '20px',
+                backgroundColor: theme.palette.background.default,
+                fontFamily: 'Inter',
+                fontSize: '14px',
+                '& fieldset': { borderColor: theme.palette.divider },
+                '&:hover fieldset': {
+                  borderColor: theme.palette.text.secondary,
+                },
+              },
+            }}
+          />
+          <IconButton
+            onClick={handleSend}
+            disabled={sending || !inputValue?.trim()}
+            sx={{
+              color: theme.palette.primary.main,
+              bgcolor: theme.palette.action.hover,
+              '&:hover': { bgcolor: theme.palette.action.selected },
+              '&.Mui-disabled': { color: theme.palette.text.disabled },
+            }}
+            aria-label={t('core:action.send', {
+              postProcess: 'capitalizeFirstChar',
+            })}
           >
             <SendRoundedIcon sx={{ fontSize: 22 }} />
           </IconButton>

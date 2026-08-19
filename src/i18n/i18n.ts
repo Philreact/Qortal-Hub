@@ -58,8 +58,8 @@ export const namespaces = [
   'core',
   'group',
   'question',
-  'tutorial',
   'node',
+  'reticulum',
 ] as const;
 
 i18n

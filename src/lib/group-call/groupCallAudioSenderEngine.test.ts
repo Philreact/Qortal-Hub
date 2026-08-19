@@ -94,6 +94,7 @@ describe('GroupCallAudioSenderEngine', () => {
     connect: ReturnType<typeof vi.fn>;
     disconnect: ReturnType<typeof vi.fn>;
   } | null = null;
+  let latestMicStream: MediaStream | null = null;
   let latestKeepAliveGain: {
     connect: ReturnType<typeof vi.fn>;
     disconnect: ReturnType<typeof vi.fn>;
@@ -111,11 +112,13 @@ describe('GroupCallAudioSenderEngine', () => {
     capturePorts = [];
     latestCapturePort = null;
     latestMicSource = null;
+    latestMicStream = null;
     latestKeepAliveGain = null;
     latestCaptureNode = null;
     nowMs = 0;
     FakeAudioEncoder.instances = [];
     FakeWorker.instances = [];
+    getUserAudioStreamForCall.mockReset();
     getUserAudioStreamForCall.mockResolvedValue({
       stream: {
         getTracks: () => [{ stop: vi.fn() }],
@@ -133,13 +136,26 @@ describe('GroupCallAudioSenderEngine', () => {
       },
     });
     vi.stubGlobal(
+      'MediaStream',
+      class {
+        constructor(private readonly tracks: MediaStreamTrack[] = []) {}
+        getTracks() {
+          return this.tracks;
+        }
+        getAudioTracks() {
+          return this.tracks.filter((track) => track.kind === 'audio');
+        }
+      }
+    );
+    vi.stubGlobal(
       'AudioContext',
       class {
         sampleRate = 48_000;
         state = 'running';
         destination = {};
         audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) };
-        createMediaStreamSource() {
+        createMediaStreamSource(stream: MediaStream) {
+          latestMicStream = stream;
           latestMicSource = { connect: vi.fn(), disconnect: vi.fn() };
           return latestMicSource;
         }
@@ -166,6 +182,8 @@ describe('GroupCallAudioSenderEngine', () => {
           if (name === 'capture-processor') {
             latestCapturePort = this.port;
             capturePorts.push(this.port);
+            // The test needs the exact node instance used as the graph target.
+            // eslint-disable-next-line @typescript-eslint/no-this-alias
             latestCaptureNode = this;
           }
         }
@@ -229,6 +247,45 @@ describe('GroupCallAudioSenderEngine', () => {
     expect(latestKeepAliveGain?.gain.value).toBe(0.0001);
 
     await engine.stop();
+  });
+
+  it('clones a shared native WebRTC microphone without opening it twice', async () => {
+    const clonedTrack = {
+      id: 'fallback-clone',
+      kind: 'audio',
+      enabled: false,
+      muted: false,
+      readyState: 'live',
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const sourceTrack = {
+      id: 'native-webrtc-mic',
+      kind: 'audio',
+      enabled: true,
+      muted: false,
+      readyState: 'live',
+      clone: vi.fn(() => clonedTrack),
+    } as unknown as MediaStreamTrack;
+    const sourceStream = {
+      getAudioTracks: () => [sourceTrack],
+    } as unknown as MediaStream;
+    const engine = new GroupCallAudioSenderEngine();
+
+    await engine.startOrUpdate({
+      inputDeviceId: null,
+      inputStream: sourceStream,
+      outputDeviceId: null,
+      muted: false,
+      profile: 'low-latency',
+      onEncodedFrame: vi.fn(),
+    });
+
+    expect(sourceTrack.clone).toHaveBeenCalledOnce();
+    expect(getUserAudioStreamForCall).not.toHaveBeenCalled();
+    expect(latestMicStream?.getAudioTracks()).toEqual([clonedTrack]);
+    expect(clonedTrack.enabled).toBe(true);
+    await engine.stop();
+    expect(clonedTrack.stop).toHaveBeenCalledOnce();
   });
 
   it('serializes overlapping start requests onto one active capture graph', async () => {

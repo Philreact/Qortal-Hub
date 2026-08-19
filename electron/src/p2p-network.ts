@@ -17,9 +17,7 @@ import {
   createNatApiClient,
   destroyNatClient,
   mapTcpPort,
-  mapUdpPort,
   unmapTcpPort,
-  unmapUdpPort,
 } from './upnp-nat';
 import { isDisabledLegacy } from './feature-flags';
 
@@ -217,8 +215,6 @@ export class P2PNetwork extends EventEmitter {
   private everHadInbound = false;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private upnpClient: any = null;
-  /** True only if this process mapped STUN UDP via UPnP (must unmap on stop). */
-  private ownsStunUdpMapping = false;
   /** Set to true in stop() so a concurrent setupUPnP() knows to tear down immediately. */
   private upnpStopped = false;
   private stopped = false;
@@ -384,14 +380,8 @@ export class P2PNetwork extends EventEmitter {
     // mapping on the router.  Fire-and-forget (stop() stays synchronous).
     if (this.upnpClient) {
       const client = this.upnpClient;
-      const unmapStun = this.ownsStunUdpMapping;
-      const stunPort = STUN_FIXED_UDP_PORT;
       this.upnpClient = null;
-      this.ownsStunUdpMapping = false;
       void unmapTcpPort(client, this.port, this.port)
-        .then(() =>
-          unmapStun ? unmapUdpPort(client, stunPort, stunPort) : Promise.resolve()
-        )
         .finally(() => {
           void destroyNatClient(client);
         });
@@ -463,37 +453,6 @@ export class P2PNetwork extends EventEmitter {
 
   getPort(): number {
     return this.port;
-  }
-
-  /**
-   * Map fixed STUN UDP on the existing UPnP client (same gateway as P2P TCP).
-   * Call only after this process bound the local STUN UDP socket.
-   */
-  async mapOwnedStunUdpIfPossible(): Promise<void> {
-    if (this.upnpStopped) return;
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const coord = require('./stun-coordinator').getStunCoordinator() as {
-      didBindStunUdp(): boolean;
-    } | null;
-    if (!coord?.didBindStunUdp()) return;
-    if (!this.upnpClient) return;
-    try {
-      const udpRes = await mapUdpPort(this.upnpClient, {
-        publicPort: STUN_FIXED_UDP_PORT,
-        privatePort: STUN_FIXED_UDP_PORT,
-        description: 'Qortal Hub STUN',
-      });
-      if (this.upnpStopped) return;
-      if (udpRes) {
-        this.ownsStunUdpMapping = true;
-        loggerLog(
-          `[P2P] UPnP: port ${STUN_FIXED_UDP_PORT}/UDP mapped successfully.`
-        );
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      loggerLog(`[P2P] UPnP: STUN UDP map failed (${msg}).`);
-    }
   }
 
   getNodeId(): string {
@@ -639,9 +598,6 @@ export class P2PNetwork extends EventEmitter {
 
       this.upnpClient = client;
       loggerLog(`[P2P] UPnP: port ${this.port}/TCP mapped successfully.`);
-      // STUN UDP (fixed port): mapOwnedStunUdpIfPossible() is also called from setup after coordinator bind;
-      // this await covers the common case where TCP map completes after that early attempt (no client yet).
-      await this.mapOwnedStunUdpIfPossible();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       loggerLog(

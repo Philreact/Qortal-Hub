@@ -1,68 +1,131 @@
 {
-  "setup": {
-    "title": "Paikallinen asetus: Hub ja Core toimivat samassa järjestelmässä",
-    "advancedOptions": "lisäasetukset",
-    "pickPath": "valitse mukautettu Qortalin asennuspolku, jos Core on asennettu muuhun kuin oletussijaintiin.",
-    "removePath": "poista mukautettu Qortal-polku"
+  "actions": {
+    "continue": "jatka",
+    "continueLocal": "jatka Localilla",
+    "continuePublic": "jatka julkisella solmulla",
+    "finished": "valmis",
+    "goToDownloads": "siirry latauksiin",
+    "install": "asenna ja käynnistä Qortal Core",
+    "openSetup": "avaa paikallinen asetus",
+    "resetKey": "nollaa apikey",
+    "start": "käynnistä Qortal Core"
+  },
+  "bootstrap": "bootstrap",
+  "bootstrapChainHelp": {
+    "body": "Yksi työkalu: tilannevedoksen bootstrap kun Core käynnissä; tai paikallisen ketjutietokannan tyhjennys ja Core uudelleen kun bootstrap ei onnistu. Lompakko tallennetaan erilleen.",
+    "title": "Ketjun bootstrap"
+  },
+  "confirmations": {
+    "bootstrap": "oletko varma, että haluat käynnistää bootstrapin?",
+    "bootstrapOrClearChain": "Suorittaa bootstrapin tilannevedoksesta, kun Core käynnissä paikallisesti. Ellei onnistu tai bootstrap epäonnistuu, paikallinen ketjutietokanta voidaan poistaa ja Core käynnistää uudelleen; lompakkotiedostoja ei kosketa. Jatketaanko?",
+    "delete": "oletko varma, että haluat poistaa tietokannan?",
+    "stop": "oletko varma, että haluat pysäyttää Coren?"
+  },
+  "coreSetupDialog": {
+    "actionDone": "Valmis",
+    "actionDownload": "Lataa Core",
+    "actionStart": "Käynnistä Core",
+    "advancedSubtitle": "Edistyneet Core-työokalut ja -asetukset.",
+    "advancedTitle": "Lisäasetukset",
+    "cancel": "Peruuta",
+    "change": "Vaihda",
+    "choose": "Valitse",
+    "clear": "Tyhjennä",
+    "confirmTitle": "Vahvista toiminto",
+    "folderCopied": "Core-kansio kopioitu",
+    "helpers": {
+      "downloadActive": "Ladataan ja valmistellaan Qortal Core.",
+      "downloadDone": "Core-tiedostot on asennettu ja valmiit.",
+      "downloadIdle": "Lataa Qortal Core omalle solmullasi.",
+      "runningBlocked": "Käytettävissä Core-latauksen jälkeen.",
+      "runningDone": "Core on käynnissä paikallisesti.",
+      "runningDoneSyncing": "Core on käynnissä ja synkronoi lohkoketjutietoja.",
+      "runningWaiting": "Core käynnistyy ja aloittaa synkronoinnin taustalla."
+    },
+    "introSubtitle": "Voit käyttää julkista solmua Core käynnistyksen ja synkronoinnin aikana.",
+    "introTitle": "Suorita oma solmu paikallisesti.",
+    "locationCustom": "Qortal Core suoritetaan tästä kansiosta.",
+    "locationDefault": "Qortal Core käyttää järjestelmän oletuskansiota.",
+    "locationPathDefault": "Oletus Qortal Core -sijainti",
+    "locationTitle": "Core-sijainti",
+    "maintenanceUnavailable": "Core-huoltotyökalut eivät ole käytettävissä Core käynnistyksen tai synkronoinnin aikana.",
+    "nextStepPill": "Seuraava vaihe",
+    "progressAriaLabel": "Edistyminen: {{label}}",
+    "publicNodeUnavailable": "Julkiset solmut eivät ole juuri nyt käytettävissä. Pidä tämä näyttö auki paikallisen Core käynnistyksen ja synkronoinnin ajan.",
+    "readyToDownload": "Valmis lataamaan",
+    "readyToStart": "Valmis käynnistymään",
+    "steps": {
+      "downloadActive": "Ladataan Core",
+      "downloadDone": "Core ladattu",
+      "downloadIdle": "Lataa Core",
+      "runningActive": "Käynnistetään Core",
+      "runningDone": "Core käynnissä",
+      "runningIdle": "Käynnistä Core"
+    },
+    "stopButton": "Pysäytä",
+    "stopCoreBody": "Pysäyttää paikallisen Core-prosessin.",
+    "stopCoreTitle": "Pysäytä Core",
+    "syncing": "Synkronoidaan",
+    "title": "Määritä Qortal Core"
+  },
+  "coreStatusNotice": {
+    "actions": {
+      "ignore": "Ohita",
+      "later": "Myöhemmin",
+      "openSetup": "Avaa asennus",
+      "start": "Käynnistä",
+      "starting": "Käynnistetään...",
+      "switchToLocal": "Vaihda paikalliseen"
+    },
+    "installedPrompt": {
+      "description": "Sinulla on jo paikallinen node asennettuna. Haluatko käynnistää sen samalla kun käytät julkista nodea?",
+      "title": "Paikallinen node on asennettu"
+    },
+    "installing": {
+      "description": "Ladataan ja asennetaan Qortal Corea.",
+      "title": "Asennetaan Qortal Corea"
+    },
+    "localReady": {
+      "description": "Qortal Core on synkronoitu. Voit nyt vaihtaa julkisesta nodesta paikalliseen nodeesi.",
+      "title": "Paikallinen node valmis"
+    },
+    "needsAttention": {
+      "description": "Core vaatii huomiota. Avaa asennusnäkymä tarkistaaksesi ongelman.",
+      "title": "Core-asennus vaatii huomiota"
+    },
+    "starting": {
+      "description": "Käynnistetään Qortal Corea.",
+      "preparing": "Core käynnistyy ja valmistelee blockchain-dataa.",
+      "title": "Käynnistetään paikallista Corea"
+    },
+    "syncing": {
+      "checking": "Core on käynnissä. Tarkistetaan blockchainin synkronoinnin edistymistä.",
+      "description": "Paikallinen nodesi kirii kiinni taustalla.",
+      "title": "Synkronoidaan blockchainia"
+    }
+  },
+  "delete": "poista tietokanta",
+  "enableAuthWhenSyncing": "ota todennus käyttöön synkronoinnin aikana",
+  "error": {
+    "failed_bootstrap": "bootstrap epäonnistui",
+    "failed_bootstrap_or_clear": "bootstrap, ketjun tietojen tyhjennys tai Coren käynnistys epäonnistui",
+    "failed_delete": "tietokannan poistaminen epäonnistui",
+    "failed_stop": "Coren pysäyttäminen epäonnistui",
+    "invalidKey": "virheellinen apikey",
+    "noJar": "valittu hakemisto ei sisällä qortal.jar -tiedostoa"
   },
   "introSetup": {
-    "paragraph1": "Qortal on hajautettu alusta, joka antaa sinulle täyden hallinnan tietoihisi, sovelluksiisi ja talouteesi. Aloittaaksesi suosittelemme asentamaan **Qortal Core**, joka antaa virtaa verkolle ja mahdollistaa kaikki Qortalin ominaisuudet.",
-    "paragraph2": "Tämä asennusohjelma opastaa sinua Qortal Coren asentamisessa ja määrittämisessä laitteellesi. Jatkaaksesi asennusta, napsauta **Seuraava**.",
+    "advanced": "jos käytät etäsolmua, sulje tämä asennusohjelma ja napsauta sitten \"Valitse mukautettu solmu\"",
     "note": "huomautus edistyneille käyttäjille",
-    "advanced": "jos käytät etäsolmua, sulje tämä asennusohjelma ja napsauta sitten \"Valitse mukautettu solmu\""
-  },
-  "sync": {
-    "behind": "Olet {{count}} lohkoa jäljessä.",
-    "waiting": "Odota, kunnes synkronointi on valmis.",
-    "not_synchronized": "ei synkronoitu",
-    "synchronized": "synkronoitu",
-    "synchronized_desc": "olet nyt synkronoitu. voit jatkaa.",
-    "description": "Jos et halua odottaa, että Local Node synkronoituu, jatka toistaiseksi publicin avulla. (Jos tiedät, että node on jäljessä/pois päältä, voit silti jatkaa localin kautta tai vaihtaa public nodeen.)"
-  },
-  "steps": {
-    "java": "java on asennettu",
-    "downloaded": "Core ladattu",
-    "running": "Core käynnissä"
-  },
-  "actions": {
-    "finished": "valmis",
-    "start": "käynnistä Qortal Core",
-    "install": "asenna ja käynnistä Qortal Core",
-    "continuePublic": "jatka julkisella solmulla",
-    "openSetup": "avaa paikallinen asetus",
-    "goToDownloads": "siirry latauksiin",
-    "resetKey": "nollaa apikey",
-    "continue": "jatka",
-    "continueLocal": "jatka Localilla"
-  },
-  "error": {
-    "noJar": "valittu hakemisto ei sisällä qortal.jar -tiedostoa",
-    "invalidKey": "virheellinen apikey",
-    "failed_stop": "Coren pysäyttäminen epäonnistui",
-    "failed_bootstrap": "bootstrap epäonnistui",
-    "failed_delete": "tietokannan poistaminen epäonnistui",
-    "failed_bootstrap_or_clear": "bootstrap, ketjun tietojen tyhjennys tai Coren käynnistys epäonnistui"
-  },
-  "status": {
-    "complete": "valmis",
-    "inProgress": "käynnissä",
-    "pending": "odottaa",
-    "error": "virhe"
-  },
-  "recommendation": {
-    "title": "paikallisen Coren käyttö",
-    "description": "Voit halutessasi jatkaa public nodella, mutta suosittelemme vahvasti käyttämään local nodea parhaan käyttökokemuksen saamiseksi. (Jos yrität käyttää ilman yhteyttä, voit jatkaa publicilla ilman yhteyttä.)",
-    "subTitle": "paikallisen solmun käytön edut:",
-    "point1": "täysi hajautettu pääsy",
-    "point2": "nopeammat lataukset",
-    "point3": "käyttäjän hallitsema data",
-    "publicExplanation": "julkinen solmu, johon yhdistät, on itse asiassa yksityisesti ylläpidetty solmu, joka on tehty julkisesti saataville. Vaikka se on kätevä, siihen liittyy tiettyjä rajoituksia verrattuna oman solmun ajamiseen."
+    "paragraph1": "Qortal on hajautettu alusta, joka antaa sinulle täyden hallinnan tietoihisi, sovelluksiisi ja talouteesi. Aloittaaksesi suosittelemme asentamaan **Qortal Core**, joka antaa virtaa verkolle ja mahdollistaa kaikki Qortalin ominaisuudet.",
+    "paragraph2": "Tämä asennusohjelma opastaa sinua Qortal Coren asentamisessa ja määrittämisessä laitteellesi. Jatkaaksesi asennusta, napsauta **Seuraava**."
   },
   "invalidKey": {
-    "title": "virheellinen apikey",
     "description": "Apikeysi on virheellinen. Anna kelvollinen apikey.",
-    "resetDescription": "Apikeysi on virheellinen. Napsauta nollaa (reset) jatkaaksesi."
+    "resetDescription": "Apikeysi on virheellinen. Napsauta nollaa (reset) jatkaaksesi.",
+    "title": "virheellinen apikey"
   },
+  "less": "vähemmän vaihtoehtoja",
   "messages": {
     "001": "käynnistetään Core... odota hetki.",
     "002": "virhe: tallennustilan käynnistäminen ei onnistu",
@@ -75,113 +138,50 @@
     "009": "ladataan Qortal Core... odota hetki.",
     "010": "virhe: Corea ei voida ladata tai asentaa"
   },
-  "url": {
-    "title": "url virheellinen",
-    "description": "virheellinen url tai solmu ei ole käynnissä"
+  "more": "lisää vaihtoehtoja",
+  "NotFullyStarted": {
+    "descNotReady": "Qortal Core ei ole vielä täysin käynnistynyt. Odota hetki.",
+    "descReady": "Kaikki valmista jatkamiseen",
+    "titleNotReady": "Core ei ole täysin käynnistynyt",
+    "titleReady": "Qortal Core on valmis"
   },
-  "confirmations": {
-    "stop": "oletko varma, että haluat pysäyttää Coren?",
-    "bootstrap": "oletko varma, että haluat käynnistää bootstrapin?",
-    "delete": "oletko varma, että haluat poistaa tietokannan?",
-    "bootstrapOrClearChain": "Suorittaa bootstrapin tilannevedoksesta, kun Core käynnissä paikallisesti. Ellei onnistu tai bootstrap epäonnistuu, paikallinen ketjutietokanta voidaan poistaa ja Core käynnistää uudelleen; lompakkotiedostoja ei kosketa. Jatketaanko?"
+  "recommendation": {
+    "description": "Voit halutessasi jatkaa public nodella, mutta suosittelemme vahvasti käyttämään local nodea parhaan käyttökokemuksen saamiseksi. (Jos yrität käyttää ilman yhteyttä, voit jatkaa publicilla ilman yhteyttä.)",
+    "point1": "täysi hajautettu pääsy",
+    "point2": "nopeammat lataukset",
+    "point3": "käyttäjän hallitsema data",
+    "publicExplanation": "julkinen solmu, johon yhdistät, on itse asiassa yksityisesti ylläpidetty solmu, joka on tehty julkisesti saataville. Vaikka se on kätevä, siihen liittyy tiettyjä rajoituksia verrattuna oman solmun ajamiseen.",
+    "subTitle": "paikallisen solmun käytön edut:",
+    "title": "paikallisen Coren käyttö"
   },
-  "bootstrapChainHelp": {
-    "title": "Ketjun bootstrap",
-    "body": "Yksi työkalu: tilannevedoksen bootstrap kun Core käynnissä; tai paikallisen ketjutietokannan tyhjennys ja Core uudelleen kun bootstrap ei onnistu. Lompakko tallennetaan erilleen."
+  "setup": {
+    "advancedOptions": "lisäasetukset",
+    "pickPath": "valitse mukautettu Qortalin asennuspolku, jos Core on asennettu muuhun kuin oletussijaintiin.",
+    "removePath": "poista mukautettu Qortal-polku",
+    "title": "Paikallinen asetus: Hub ja Core toimivat samassa järjestelmässä"
+  },
+  "status": {
+    "complete": "valmis",
+    "error": "virhe",
+    "inProgress": "käynnissä",
+    "pending": "odottaa"
+  },
+  "steps": {
+    "downloaded": "Core ladattu",
+    "java": "java on asennettu",
+    "running": "Core käynnissä"
   },
   "stop": "pysäytä Core",
-  "bootstrap": "bootstrap",
-  "delete": "poista tietokanta",
-  "more": "lisää vaihtoehtoja",
-  "less": "vähemmän vaihtoehtoja",
-  "enableAuthWhenSyncing": "ota todennus käyttöön synkronoinnin aikana",
-  "coreSetupDialog": {
-    "title": "Määritä Qortal Core",
-    "introTitle": "Suorita oma solmu paikallisesti.",
-    "introSubtitle": "Voit käyttää julkista solmua Core käynnistyksen ja synkronoinnin aikana.",
-    "publicNodeUnavailable": "Julkiset solmut eivät ole juuri nyt käytettävissä. Pidä tämä näyttö auki paikallisen Core käynnistyksen ja synkronoinnin ajan.",
-    "steps": {
-      "downloadDone": "Core ladattu",
-      "downloadActive": "Ladataan Core",
-      "downloadIdle": "Lataa Core",
-      "runningDone": "Core käynnissä",
-      "runningActive": "Käynnistetään Core",
-      "runningIdle": "Käynnistä Core"
-    },
-    "readyToDownload": "Valmis lataamaan",
-    "readyToStart": "Valmis käynnistymään",
-    "syncing": "Synkronoidaan",
-    "helpers": {
-      "downloadDone": "Core-tiedostot on asennettu ja valmiit.",
-      "downloadActive": "Ladataan ja valmistellaan Qortal Core.",
-      "downloadIdle": "Lataa Qortal Core omalle solmullasi.",
-      "runningDoneSyncing": "Core on käynnissä ja synkronoi lohkoketjutietoja.",
-      "runningDone": "Core on käynnissä paikallisesti.",
-      "runningWaiting": "Core käynnistyy ja aloittaa synkronoinnin taustalla.",
-      "runningBlocked": "Käytettävissä Core-latauksen jälkeen."
-    },
-    "nextStepPill": "Seuraava vaihe",
-    "locationTitle": "Core-sijainti",
-    "locationCustom": "Qortal Core suoritetaan tästä kansiosta.",
-    "locationDefault": "Qortal Core käyttää järjestelmän oletuskansiota.",
-    "locationPathDefault": "Oletus Qortal Core -sijainti",
-    "change": "Vaihda",
-    "choose": "Valitse",
-    "clear": "Tyhjennä",
-    "advancedTitle": "Lisäasetukset",
-    "advancedSubtitle": "Edistyneet Core-työokalut ja -asetukset.",
-    "maintenanceUnavailable": "Core-huoltotyökalut eivät ole käytettävissä Core käynnistyksen tai synkronoinnin aikana.",
-    "stopCoreTitle": "Pysäytä Core",
-    "stopCoreBody": "Pysäyttää paikallisen Core-prosessin.",
-    "stopButton": "Pysäytä",
-    "cancel": "Peruuta",
-    "actionDownload": "Lataa Core",
-    "actionStart": "Käynnistä Core",
-    "actionDone": "Valmis",
-    "confirmTitle": "Vahvista toiminto",
-    "folderCopied": "Core-kansio kopioitu",
-    "progressAriaLabel": "Edistyminen: {{label}}"
+  "sync": {
+    "behind": "Olet {{count}} lohkoa jäljessä.",
+    "description": "Jos et halua odottaa, että Local Node synkronoituu, jatka toistaiseksi publicin avulla. (Jos tiedät, että node on jäljessä/pois päältä, voit silti jatkaa localin kautta tai vaihtaa public nodeen.)",
+    "not_synchronized": "ei synkronoitu",
+    "synchronized": "synkronoitu",
+    "synchronized_desc": "olet nyt synkronoitu. voit jatkaa.",
+    "waiting": "Odota, kunnes synkronointi on valmis."
   },
-  "NotFullyStarted": {
-    "titleNotReady": "Core ei ole täysin käynnistynyt",
-    "descNotReady": "Qortal Core ei ole vielä täysin käynnistynyt. Odota hetki.",
-    "titleReady": "Qortal Core on valmis",
-    "descReady": "Kaikki valmista jatkamiseen"
-  },
-  "coreStatusNotice": {
-    "installedPrompt": {
-      "title": "Paikallinen node on asennettu",
-      "description": "Sinulla on jo paikallinen node asennettuna. Haluatko käynnistää sen samalla kun käytät julkista nodea?"
-    },
-    "localReady": {
-      "title": "Paikallinen node valmis",
-      "description": "Qortal Core on synkronoitu. Voit nyt vaihtaa julkisesta nodesta paikalliseen nodeesi."
-    },
-    "installing": {
-      "title": "Asennetaan Qortal Corea",
-      "description": "Ladataan ja asennetaan Qortal Corea."
-    },
-    "starting": {
-      "title": "Käynnistetään paikallista Corea",
-      "description": "Käynnistetään Qortal Corea.",
-      "preparing": "Core käynnistyy ja valmistelee blockchain-dataa."
-    },
-    "syncing": {
-      "title": "Synkronoidaan blockchainia",
-      "description": "Paikallinen nodesi kirii kiinni taustalla.",
-      "checking": "Core on käynnissä. Tarkistetaan blockchainin synkronoinnin edistymistä."
-    },
-    "needsAttention": {
-      "title": "Core-asennus vaatii huomiota",
-      "description": "Core vaatii huomiota. Avaa asennusnäkymä tarkistaaksesi ongelman."
-    },
-    "actions": {
-      "ignore": "Ohita",
-      "start": "Käynnistä",
-      "starting": "Käynnistetään...",
-      "later": "Myöhemmin",
-      "switchToLocal": "Vaihda paikalliseen",
-      "openSetup": "Avaa asennus"
-    }
+  "url": {
+    "description": "virheellinen url tai solmu ei ole käynnissä",
+    "title": "url virheellinen"
   }
 }

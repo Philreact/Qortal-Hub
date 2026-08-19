@@ -850,7 +850,7 @@ export const GroupsWidget = ({
   refreshToken = 0,
 }: GroupsWidgetProps) => {
   const theme = useTheme();
-  const { t } = useTranslation('group');
+  const { t } = useTranslation(['group', 'reticulum']);
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const reticulumChatEnabled = useAtomValue(reticulumChatEnabledAtom);
   const memberGroups = useAtomValue(memberGroupsWithReticulumChatAtom);
@@ -994,10 +994,7 @@ export const GroupsWidget = ({
     setPromotionDialogOpen(false);
   }, [activeTab, reticulumChatEnabled]);
 
-  useEffect(
-    () => subscribeToReticulumGroupOrder(setManualGroupOrder),
-    []
-  );
+  useEffect(() => subscribeToReticulumGroupOrder(setManualGroupOrder), []);
 
   useEffect(() => {
     onRefreshStateChange?.(isAnyLoading);
@@ -1009,10 +1006,7 @@ export const GroupsWidget = ({
 
   const notificationItems = useMemo<GroupNotificationItem[]>(() => {
     if (reticulumChatEnabled) {
-      return orderReticulumGroups(
-        [...(memberGroups ?? [])],
-        manualGroupOrder
-      )
+      return orderReticulumGroups([...(memberGroups ?? [])], manualGroupOrder)
         .map((group: any): GroupNotificationItem | null => {
           const numericGroupId = Number(group?.groupId);
           if (!Number.isInteger(numericGroupId) || numericGroupId <= 0) {
@@ -1100,7 +1094,8 @@ export const GroupsWidget = ({
             !!groupChatTimestamps[groupId] &&
             group.sender !== currentAddress &&
             !!timestamp &&
-            ((!timestampEnterData[groupId] && Date.now() - timestamp < 900000) ||
+            ((!timestampEnterData[groupId] &&
+              Date.now() - timestamp < 900000) ||
               (timestampEnterData[groupId] ?? 0) < timestamp));
         const ownerName = ownerNamesByGroupId?.[groupId] ?? null;
 
@@ -1482,10 +1477,7 @@ export const GroupsWidget = ({
         loadMiscStoredIds(dismissedInviteStorageKey),
         loadMiscStoredIds(dismissedRequestStorageKey),
       ]);
-      if (
-        cancelled ||
-        dismissedIdsMutationVersionRef.current !== loadVersion
-      ) {
+      if (cancelled || dismissedIdsMutationVersionRef.current !== loadVersion) {
         return;
       }
       setDismissedInviteIds(storedInvites);
@@ -2190,8 +2182,7 @@ export const GroupsWidget = ({
 
   const reticulumNotificationPlaceholderCount = Math.max(
     0,
-    RETICULUM_NOTIFICATION_GRID_SLOT_COUNT -
-      effectiveNotificationItems.length
+    RETICULUM_NOTIFICATION_GRID_SLOT_COUNT - effectiveNotificationItems.length
   );
 
   const renderReticulumNotificationGrid = () => (
@@ -2219,13 +2210,13 @@ export const GroupsWidget = ({
         <ButtonBase
           aria-label={`${item.groupName}. ${
             item.newMessageCount > 0
-              ? t('groups_widget.reticulum_new_messages', {
+              ? t('reticulum:groups_widget.new_messages', {
                   count: item.newMessageCount,
                 })
               : ''
           } ${
             item.mentionCount > 0
-              ? t('groups_widget.reticulum_mentions', {
+              ? t('reticulum:groups_widget.mentions', {
                   count: item.mentionCount,
                 })
               : ''
@@ -2307,7 +2298,7 @@ export const GroupsWidget = ({
                   lineHeight: 1.35,
                 }}
               >
-                {t('groups_widget.reticulum_new_messages', {
+                {t('reticulum:groups_widget.new_messages', {
                   count: item.newMessageCount,
                 })}
               </Typography>
@@ -2329,7 +2320,7 @@ export const GroupsWidget = ({
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {t('groups_widget.reticulum_mentions', {
+                  {t('reticulum:groups_widget.mentions', {
                     count: item.mentionCount,
                   })}
                 </Typography>
@@ -2400,12 +2391,8 @@ export const GroupsWidget = ({
     <QAppWidgetContainer
       emptyMessage={t('groups_widget.notifications_empty_message')}
       emptyTitle={t('groups_widget.notifications_empty_title')}
-      hasContent={
-        reticulumChatEnabled || effectiveNotificationItems.length > 0
-      }
-      isEmpty={
-        !reticulumChatEnabled && effectiveNotificationItems.length === 0
-      }
+      hasContent={reticulumChatEnabled || effectiveNotificationItems.length > 0}
+      isEmpty={!reticulumChatEnabled && effectiveNotificationItems.length === 0}
       isLoading={false}
       loadingLabel={t('groups_widget.loading_notifications')}
       onSecondaryAction={handleOpenGroupDiscovery}
@@ -2439,183 +2426,163 @@ export const GroupsWidget = ({
           )
         ) : (
           renderVirtualizedList(effectiveNotificationItems.length, (index) => {
-          const item = effectiveNotificationItems[index];
-          if (!item) return null;
+            const item = effectiveNotificationItems[index];
+            if (!item) return null;
 
-          return (
-            <ButtonBase
-              onClick={() => handleOpenGroupChat(item.groupId)}
-              sx={{
-                alignItems: 'flex-start',
-                background: item.isUnread
-                  ? unreadNotificationSurfaceColor
-                  : readNotificationSurfaceColor,
-                border: `1px solid ${
-                  item.isUnread
-                    ? unreadNotificationBorderColor
-                    : widgetItemBorderColor
-                }`,
-                borderRadius: GROUP_WIDGET_CARD_RADIUS,
-                boxShadow: widgetItemInsetShadow,
-                display: 'flex',
-                flexShrink: 0,
-                gap: rowGap,
-                overflow: 'hidden',
-                p: rowPadding,
-                position: 'relative',
-                textAlign: 'left',
-                transition:
-                  'background 140ms ease, border-color 140ms ease, transform 120ms ease, box-shadow 140ms ease',
-                width: '100%',
-                '&::before': item.isUnread
-                  ? {
-                      backgroundColor: alpha(
-                        theme.palette.primary.main,
-                        theme.palette.mode === 'dark' ? 0.34 : 0.28
-                      ),
-                      borderBottomLeftRadius: GROUP_WIDGET_CARD_RADIUS,
-                      borderTopLeftRadius: GROUP_WIDGET_CARD_RADIUS,
-                      content: '""',
-                      left: 0,
-                      position: 'absolute',
-                      top: 0,
-                      bottom: 0,
-                      width: '3px',
-                    }
-                  : undefined,
-                '&:hover': {
+            return (
+              <ButtonBase
+                onClick={() => handleOpenGroupChat(item.groupId)}
+                sx={{
+                  alignItems: 'flex-start',
                   background: item.isUnread
-                    ? unreadNotificationHoverSurfaceColor
-                    : readNotificationHoverSurfaceColor,
-                  borderColor: item.isUnread
-                    ? alpha(
-                        theme.palette.primary.main,
-                        theme.palette.mode === 'dark' ? 0.18 : 0.13
-                      )
-                    : widgetItemHoverBorderColor,
-                  boxShadow:
-                    theme.palette.mode === 'dark'
-                      ? `0 14px 28px rgba(0,0,0,0.22), inset 0 1px 0 ${alpha(theme.palette.common.white, 0.05)}`
-                      : widgetItemInsetShadow,
-                  transform: 'translateY(-1px)',
-                },
-              }}
-            >
-              <Avatar
-                alt={item.groupName}
-                src={item.avatarUrl ?? undefined}
-                sx={{
-                  bgcolor: alpha(theme.palette.primary.main, 0.12),
-                  color: theme.palette.text.primary,
-                  flexShrink: 0,
-                  height: isCompact ? 34 : 38,
-                  width: isCompact ? 34 : 38,
-                }}
-              >
-                {item.groupName.charAt(0).toUpperCase()}
-              </Avatar>
-
-              <Box
-                sx={{
+                    ? unreadNotificationSurfaceColor
+                    : readNotificationSurfaceColor,
+                  border: `1px solid ${
+                    item.isUnread
+                      ? unreadNotificationBorderColor
+                      : widgetItemBorderColor
+                  }`,
+                  borderRadius: GROUP_WIDGET_CARD_RADIUS,
+                  boxShadow: widgetItemInsetShadow,
                   display: 'flex',
-                  flex: '1 1 auto',
-                  flexDirection: 'column',
-                  gap: isCompact ? '4px' : '5px',
-                  minWidth: 0,
+                  flexShrink: 0,
+                  gap: rowGap,
+                  overflow: 'hidden',
+                  p: rowPadding,
+                  position: 'relative',
+                  textAlign: 'left',
+                  transition:
+                    'background 140ms ease, border-color 140ms ease, transform 120ms ease, box-shadow 140ms ease',
+                  width: '100%',
+                  '&::before': item.isUnread
+                    ? {
+                        backgroundColor: alpha(
+                          theme.palette.primary.main,
+                          theme.palette.mode === 'dark' ? 0.34 : 0.28
+                        ),
+                        borderBottomLeftRadius: GROUP_WIDGET_CARD_RADIUS,
+                        borderTopLeftRadius: GROUP_WIDGET_CARD_RADIUS,
+                        content: '""',
+                        left: 0,
+                        position: 'absolute',
+                        top: 0,
+                        bottom: 0,
+                        width: '3px',
+                      }
+                    : undefined,
+                  '&:hover': {
+                    background: item.isUnread
+                      ? unreadNotificationHoverSurfaceColor
+                      : readNotificationHoverSurfaceColor,
+                    borderColor: item.isUnread
+                      ? alpha(
+                          theme.palette.primary.main,
+                          theme.palette.mode === 'dark' ? 0.18 : 0.13
+                        )
+                      : widgetItemHoverBorderColor,
+                    boxShadow:
+                      theme.palette.mode === 'dark'
+                        ? `0 14px 28px rgba(0,0,0,0.22), inset 0 1px 0 ${alpha(theme.palette.common.white, 0.05)}`
+                        : widgetItemInsetShadow,
+                    transform: 'translateY(-1px)',
+                  },
                 }}
               >
+                <Avatar
+                  alt={item.groupName}
+                  src={item.avatarUrl ?? undefined}
+                  sx={{
+                    bgcolor: alpha(theme.palette.primary.main, 0.12),
+                    color: theme.palette.text.primary,
+                    flexShrink: 0,
+                    height: isCompact ? 34 : 38,
+                    width: isCompact ? 34 : 38,
+                  }}
+                >
+                  {item.groupName.charAt(0).toUpperCase()}
+                </Avatar>
+
                 <Box
                   sx={{
-                    alignItems: 'center',
                     display: 'flex',
-                    gap: '8px',
-                    justifyContent: 'space-between',
+                    flex: '1 1 auto',
+                    flexDirection: 'column',
+                    gap: isCompact ? '4px' : '5px',
                     minWidth: 0,
                   }}
                 >
                   <Box
                     sx={{
                       alignItems: 'center',
-                      display: 'inline-flex',
-                      gap: '8px',
-                      minWidth: 0,
-                    }}
-                  >
-                    <Typography
-                      sx={{
-                        color: theme.palette.text.primary,
-                        fontSize: isCompact ? '0.8rem' : '0.84rem',
-                        fontWeight: item.isUnread ? 760 : 680,
-                        minWidth: 0,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {item.groupName}
-                    </Typography>
-                    {!reticulumChatEnabled &&
-                      (item.hasUnreadMention ? (
-                        <AlternateEmailRoundedIcon
-                          sx={{
-                            color: theme.palette.warning.main,
-                            flexShrink: 0,
-                            fontSize: '0.95rem',
-                          }}
-                        />
-                      ) : item.isUnread ? (
-                        <MarkChatUnreadRoundedIcon
-                          sx={{
-                            color: theme.palette.primary.main,
-                            flexShrink: 0,
-                            fontSize: '0.95rem',
-                          }}
-                        />
-                      ) : null)}
-                  </Box>
-                  {!reticulumChatEnabled ? (
-                    <Typography
-                      sx={{
-                        color: theme.palette.text.secondary,
-                        flexShrink: 0,
-                        fontSize: '0.67rem',
-                        fontWeight: 600,
-                      }}
-                    >
-                      {formatTimestamp(item.timestamp)}
-                    </Typography>
-                  ) : null}
-                </Box>
-                {reticulumChatEnabled ? (
-                  <Box
-                    sx={{
                       display: 'flex',
-                      flexDirection: 'column',
-                      gap: '4px',
+                      gap: '8px',
+                      justifyContent: 'space-between',
                       minWidth: 0,
                     }}
                   >
-                    {item.newMessageCount > 0 ? (
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'inline-flex',
+                        gap: '8px',
+                        minWidth: 0,
+                      }}
+                    >
+                      <Typography
+                        sx={{
+                          color: theme.palette.text.primary,
+                          fontSize: isCompact ? '0.8rem' : '0.84rem',
+                          fontWeight: item.isUnread ? 760 : 680,
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {item.groupName}
+                      </Typography>
+                      {!reticulumChatEnabled &&
+                        (item.hasUnreadMention ? (
+                          <AlternateEmailRoundedIcon
+                            sx={{
+                              color: theme.palette.warning.main,
+                              flexShrink: 0,
+                              fontSize: '0.95rem',
+                            }}
+                          />
+                        ) : item.isUnread ? (
+                          <MarkChatUnreadRoundedIcon
+                            sx={{
+                              color: theme.palette.primary.main,
+                              flexShrink: 0,
+                              fontSize: '0.95rem',
+                            }}
+                          />
+                        ) : null)}
+                    </Box>
+                    {!reticulumChatEnabled ? (
                       <Typography
                         sx={{
                           color: theme.palette.text.secondary,
-                          fontSize: isCompact ? '0.72rem' : '0.75rem',
-                          lineHeight: 1.35,
+                          flexShrink: 0,
+                          fontSize: '0.67rem',
+                          fontWeight: 600,
                         }}
                       >
-                        {t('groups_widget.reticulum_new_messages', {
-                          count: item.newMessageCount,
-                        })}
+                        {formatTimestamp(item.timestamp)}
                       </Typography>
                     ) : null}
-                    {item.mentionCount > 0 ? (
-                      <Box
-                        sx={{
-                          alignItems: 'center',
-                          display: 'flex',
-                          gap: '6px',
-                        }}
-                      >
+                  </Box>
+                  {reticulumChatEnabled ? (
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '4px',
+                        minWidth: 0,
+                      }}
+                    >
+                      {item.newMessageCount > 0 ? (
                         <Typography
                           sx={{
                             color: theme.palette.text.secondary,
@@ -2623,160 +2590,180 @@ export const GroupsWidget = ({
                             lineHeight: 1.35,
                           }}
                         >
-                          {t('groups_widget.reticulum_mentions', {
-                            count: item.mentionCount,
+                          {t('reticulum:groups_widget.new_messages', {
+                            count: item.newMessageCount,
                           })}
                         </Typography>
+                      ) : null}
+                      {item.mentionCount > 0 ? (
                         <Box
-                          component="span"
                           sx={{
-                            backgroundColor: '#f23f42',
-                            borderRadius: '6px',
-                            color: theme.palette.common.white,
-                            fontSize: '0.65rem',
-                            fontWeight: 750,
-                            lineHeight: '18px',
-                            minWidth: '28px',
-                            px: '5px',
-                            textAlign: 'center',
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: '6px',
                           }}
                         >
-                          @ {item.mentionCount}
+                          <Typography
+                            sx={{
+                              color: theme.palette.text.secondary,
+                              fontSize: isCompact ? '0.72rem' : '0.75rem',
+                              lineHeight: 1.35,
+                            }}
+                          >
+                            {t('reticulum:groups_widget.mentions', {
+                              count: item.mentionCount,
+                            })}
+                          </Typography>
+                          <Box
+                            component="span"
+                            sx={{
+                              backgroundColor: '#f23f42',
+                              borderRadius: '6px',
+                              color: theme.palette.common.white,
+                              fontSize: '0.65rem',
+                              fontWeight: 750,
+                              lineHeight: '18px',
+                              minWidth: '28px',
+                              px: '5px',
+                              textAlign: 'center',
+                            }}
+                          >
+                            @ {item.mentionCount}
+                          </Box>
                         </Box>
-                      </Box>
-                    ) : null}
-                  </Box>
-                ) : (
-                  <>
-                    <Box
-                      sx={{
-                        alignItems: 'baseline',
-                        display: 'inline-flex',
-                        fontSize: '0.7rem',
-                        gap: '4px',
-                      }}
-                    >
-                      <Typography
-                        component="span"
-                        sx={{
-                          color: alpha(theme.palette.text.secondary, 0.72),
-                          fontSize: 'inherit',
-                          fontWeight: 600,
-                          lineHeight: 1.3,
-                        }}
-                      >
-                        {t('groups_widget.from_label')}
-                      </Typography>
-                      <Typography
-                        component="span"
-                        sx={{
-                          color: theme.palette.primary.main,
-                          fontSize: 'inherit',
-                          fontWeight: 700,
-                          lineHeight: 1.3,
-                        }}
-                      >
-                        {item.senderLabel}
-                      </Typography>
+                      ) : null}
                     </Box>
-                    <Box
-                      sx={{
-                        color: theme.palette.text.secondary,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap:
-                          item.isEncryptedLike || item.isGenericMessage
-                            ? '4px'
-                            : 0,
-                        minWidth: 0,
-                        pb:
-                          item.isEncryptedLike || item.isGenericMessage
-                            ? '4px'
-                            : 0,
-                      }}
-                    >
-                      {item.isGenericMessage ? (
+                  ) : (
+                    <>
+                      <Box
+                        sx={{
+                          alignItems: 'baseline',
+                          display: 'inline-flex',
+                          fontSize: '0.7rem',
+                          gap: '4px',
+                        }}
+                      >
                         <Typography
                           component="span"
                           sx={{
-                            color: alpha(theme.palette.text.secondary, 0.82),
-                            fontSize: '0.68rem',
+                            color: alpha(theme.palette.text.secondary, 0.72),
+                            fontSize: 'inherit',
                             fontWeight: 600,
-                            lineHeight: 1.25,
+                            lineHeight: 1.3,
                           }}
                         >
-                          {t('groups_widget.new_message', {
-                            defaultValue: 'New message',
-                          })}
+                          {t('groups_widget.from_label')}
                         </Typography>
-                      ) : item.isEncryptedLike ? (
-                        <Box
+                        <Typography
+                          component="span"
                           sx={{
-                            alignItems: 'baseline',
-                            color: alpha(theme.palette.text.secondary, 0.82),
-                            display: 'inline-flex',
-                            gap: '5px',
-                            minWidth: 0,
+                            color: theme.palette.primary.main,
+                            fontSize: 'inherit',
+                            fontWeight: 700,
+                            lineHeight: 1.3,
                           }}
                         >
-                          <LockRoundedIcon
-                            sx={{
-                              fontSize: '0.8rem',
-                              transform: 'translateY(1px)',
-                            }}
-                          />
+                          {item.senderLabel}
+                        </Typography>
+                      </Box>
+                      <Box
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap:
+                            item.isEncryptedLike || item.isGenericMessage
+                              ? '4px'
+                              : 0,
+                          minWidth: 0,
+                          pb:
+                            item.isEncryptedLike || item.isGenericMessage
+                              ? '4px'
+                              : 0,
+                        }}
+                      >
+                        {item.isGenericMessage ? (
                           <Typography
                             component="span"
                             sx={{
-                              color: 'inherit',
+                              color: alpha(theme.palette.text.secondary, 0.82),
                               fontSize: '0.68rem',
                               fontWeight: 600,
                               lineHeight: 1.25,
                             }}
                           >
-                            {t('groups_widget.new_encrypted_message')}
+                            {t('groups_widget.new_message', {
+                              defaultValue: 'New message',
+                            })}
                           </Typography>
-                        </Box>
-                      ) : (
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            display: '-webkit-box',
-                            flex: '1 1 auto',
-                            fontSize: isCompact ? '0.73rem' : '0.76rem',
-                            lineHeight: 1.5,
-                            minWidth: 0,
-                            overflow: 'hidden',
-                            WebkitBoxOrient: 'vertical',
-                            WebkitLineClamp: messageLineClamp,
-                            wordBreak: 'break-word',
-                          }}
-                        >
-                          {item.snippet}
-                        </Typography>
-                      )}
-                    </Box>
-                  </>
-                )}
-                <Box
-                  sx={{
-                    alignItems: 'center',
-                    color: theme.palette.text.secondary,
-                    display: 'inline-flex',
-                    fontSize: '0.67rem',
-                    fontWeight: 700,
-                    gap: '5px',
-                    mt: '2px',
-                  }}
-                >
-                  <OpenInNewRoundedIcon sx={{ fontSize: '0.82rem' }} />
-                  {!reticulumChatEnabled && item.isEncryptedLike
-                    ? t('groups_widget.view_conversation')
-                    : t('groups_widget.open_conversation')}
+                        ) : item.isEncryptedLike ? (
+                          <Box
+                            sx={{
+                              alignItems: 'baseline',
+                              color: alpha(theme.palette.text.secondary, 0.82),
+                              display: 'inline-flex',
+                              gap: '5px',
+                              minWidth: 0,
+                            }}
+                          >
+                            <LockRoundedIcon
+                              sx={{
+                                fontSize: '0.8rem',
+                                transform: 'translateY(1px)',
+                              }}
+                            />
+                            <Typography
+                              component="span"
+                              sx={{
+                                color: 'inherit',
+                                fontSize: '0.68rem',
+                                fontWeight: 600,
+                                lineHeight: 1.25,
+                              }}
+                            >
+                              {t('groups_widget.new_encrypted_message')}
+                            </Typography>
+                          </Box>
+                        ) : (
+                          <Typography
+                            sx={{
+                              color: theme.palette.text.secondary,
+                              display: '-webkit-box',
+                              flex: '1 1 auto',
+                              fontSize: isCompact ? '0.73rem' : '0.76rem',
+                              lineHeight: 1.5,
+                              minWidth: 0,
+                              overflow: 'hidden',
+                              WebkitBoxOrient: 'vertical',
+                              WebkitLineClamp: messageLineClamp,
+                              wordBreak: 'break-word',
+                            }}
+                          >
+                            {item.snippet}
+                          </Typography>
+                        )}
+                      </Box>
+                    </>
+                  )}
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      color: theme.palette.text.secondary,
+                      display: 'inline-flex',
+                      fontSize: '0.67rem',
+                      fontWeight: 700,
+                      gap: '5px',
+                      mt: '2px',
+                    }}
+                  >
+                    <OpenInNewRoundedIcon sx={{ fontSize: '0.82rem' }} />
+                    {!reticulumChatEnabled && item.isEncryptedLike
+                      ? t('groups_widget.view_conversation')
+                      : t('groups_widget.open_conversation')}
+                  </Box>
                 </Box>
-              </Box>
-            </ButtonBase>
-          );
+              </ButtonBase>
+            );
           })
         )}
       </Box>

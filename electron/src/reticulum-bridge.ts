@@ -198,6 +198,9 @@ type BridgeCmdFrame = {
     | 'overlay_sync_state'
     | 'configure_reticulum_chat_pinned_peers'
     | 'overlay_note_candidate_failure'
+    | 'configure_community_stun'
+    | 'get_community_stun_endpoints'
+    | 'configure_developer_log_filter'
     | 'stop'
     | 'send_call'
     | 'prepare_reticulum_resource_session'
@@ -220,6 +223,7 @@ type BridgeCmdFrame = {
     | 'send_reticulum_chat'
     | 'send_reticulum_chat_targets'
     | 'fanout_reticulum_chat'
+    | 'send_group_audio_link_control'
     | 'send_group_audio_link_heartbeat'
     | 'open_group_audio_link'
     | 'close_group_audio_link'
@@ -846,6 +850,11 @@ type BridgeEventFrame =
     }
   | {
       type: 'event';
+      event: 'community_stun_endpoint';
+      payload?: { host?: string; port?: number; expiresAt?: number };
+    }
+  | {
+      type: 'event';
       event: 'error';
       payload?: {
         code?: string;
@@ -1141,6 +1150,9 @@ function commandPriorityForAction(
     case 'overlay_sync_state':
     case 'configure_reticulum_chat_pinned_peers':
     case 'overlay_note_candidate_failure':
+    case 'configure_community_stun':
+    case 'get_community_stun_endpoints':
+    case 'configure_developer_log_filter':
       return 'low';
     default:
       return 'high';
@@ -1192,6 +1204,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   readonly kind = 'reticulum' as const;
 
   private child: ChildProcess | null = null;
+  private developerLogsFiltered = reticulumDeveloperLogsFiltered;
   private gameTransportToken: string | null = null;
   private gameTransportInstanceId: string | null = null;
   private gameTransportUrl: string | null = null;
@@ -1747,8 +1760,11 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     const peerPresenceHash = payload.peerPresenceHash.trim().toLowerCase();
     const logicalResourceType = payload.logicalResourceType ?? '';
     const lane =
-      logicalResourceType === 'reticulum_chat_dm_page' ||
+      ['reticulum_chat_dm_page', 'reticulum_chat_live_event'].includes(
+        logicalResourceType
+      ) ||
       (![
+        'reticulum_chat_author_range',
         'reticulum_chat_history_page',
         'reticulum_chat_metadata_snapshot',
         'reticulum_chat_event_page',
@@ -2161,7 +2177,8 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
 
   async fanoutReticulumChatDetailed(
     messages: Record<string, unknown>[],
-    excludePeerPresenceHashes: string[] = []
+    excludePeerPresenceHashes: string[] = [],
+    options: { maxPeerCount?: number; selectionKey?: string } = {}
   ): Promise<ReticulumSendResult> {
     if (messages.length === 0) {
       return {
@@ -2173,6 +2190,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return this.sendDetailed('fanout_reticulum_chat', {
       messages,
       excludePeerPresenceHashes,
+      ...(Number.isInteger(options.maxPeerCount) &&
+      Number(options.maxPeerCount) > 0
+        ? { maxPeerCount: Number(options.maxPeerCount) }
+        : {}),
+      ...(typeof options.selectionKey === 'string' && options.selectionKey
+        ? { selectionKey: options.selectionKey }
+        : {}),
     });
   }
 
@@ -2209,6 +2233,50 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       ...(typeof opts.packetRxRecent === 'boolean'
         ? { packetRxRecent: opts.packetRxRecent }
         : {}),
+    });
+  }
+
+  /**
+   * Queue call-control frames on the reliable RNS Channel attached to an
+   * authenticated group-audio link. Unlike enqueueGroupAudio(), this path is
+   * ordered, receipt-backed and never competes with the lossy Opus queue.
+   */
+  async sendGroupAudioLinkControlDetailed(opts: {
+    roomId: string;
+    payload: Buffer;
+    signalType: string;
+    signalId: string;
+    callSessionId: string;
+    peerPresenceHash?: string;
+    linkId?: string;
+  }): Promise<ReticulumSendResult> {
+    const linkId = typeof opts.linkId === 'string' ? opts.linkId.trim() : '';
+    const peerPresenceHash =
+      typeof opts.peerPresenceHash === 'string'
+        ? opts.peerPresenceHash.trim().toLowerCase()
+        : '';
+    if (!linkId && !peerPresenceHash) {
+      return {
+        ok: false,
+        reason: 'send-command-failed',
+        error: 'Missing linkId or peerPresenceHash',
+      };
+    }
+    if (!Buffer.isBuffer(opts.payload) || opts.payload.length === 0) {
+      return {
+        ok: false,
+        reason: 'send-command-failed',
+        error: 'Missing control payload',
+      };
+    }
+    return this.sendDetailed('send_group_audio_link_control', {
+      roomId: opts.roomId,
+      payload: opts.payload.toString('base64'),
+      signalType: opts.signalType,
+      signalId: opts.signalId,
+      callSessionId: opts.callSessionId,
+      ...(linkId ? { linkId } : {}),
+      ...(peerPresenceHash ? { peerPresenceHash } : {}),
     });
   }
 
@@ -3220,6 +3288,55 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return resp.ok;
   }
 
+  /**
+   * Configure the anonymous community-STUN advertisement owned by the Python
+   * bridge. The discovery destination has its own rotating RNS identity and is
+   * deliberately unrelated to this bridge's presence/account identity.
+   */
+  async configureCommunityStun(
+    endpoint: { host: string; port: number; expiresAt: number } | null
+  ): Promise<boolean> {
+    await this.start();
+    if (this.state !== 'ready') return false;
+    const resp = await this.sendCommand('configure_community_stun', {
+      enabled: endpoint !== null,
+      ...(endpoint ?? {}),
+    });
+    return resp.ok;
+  }
+
+  async getCommunityStunEndpoints(): Promise<
+    Array<{ host: string; port: number; expiresAt: number }>
+  > {
+    await this.start();
+    if (this.state !== 'ready') return [];
+    const resp = await this.sendCommand('get_community_stun_endpoints', {});
+    if (!resp.ok || !Array.isArray(resp.payload?.endpoints)) return [];
+    return resp.payload.endpoints.filter(
+      (value): value is { host: string; port: number; expiresAt: number } =>
+        value != null &&
+        typeof value === 'object' &&
+        typeof (value as { host?: unknown }).host === 'string' &&
+        typeof (value as { port?: unknown }).port === 'number' &&
+        typeof (value as { expiresAt?: unknown }).expiresAt === 'number'
+    );
+  }
+
+  async setDeveloperLogsFiltered(filtered: boolean): Promise<boolean> {
+    const changed = this.developerLogsFiltered !== filtered;
+    this.developerLogsFiltered = filtered;
+    reticulumDeveloperLogsFiltered = filtered;
+    if (!changed || this.state !== 'ready') return true;
+    try {
+      const resp = await this.sendCommand('configure_developer_log_filter', {
+        filtered,
+      });
+      return resp.ok;
+    } catch {
+      return false;
+    }
+  }
+
   getState(): BridgeState {
     return this.state;
   }
@@ -3547,6 +3664,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       ...(launch.envExtra ?? {}),
       PYTHONUNBUFFERED: '1',
       QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
+      QORTAL_FILTER_DEVELOPER_LOGS: reticulumDeveloperLogsFiltered ? '1' : '0',
       QORTAL_RETICULUM_CONFIG_DIR: configDir,
       // rnsd owns configDir/logfile. Each simultaneously supported app
       // instance gets a separate bridge log so independent Python processes
@@ -5153,6 +5271,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         );
         return;
       }
+      case 'community_stun_endpoint': {
+        this.emitBridgeFrameEvent(
+          'community-stun-endpoint',
+          frame.payload ?? {}
+        );
+        return;
+      }
       case 'error': {
         const payload = frame.payload;
         const message =
@@ -5425,6 +5550,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       | 'fanout_group_call'
       | 'send_reticulum_chat'
       | 'fanout_reticulum_chat'
+      | 'send_group_audio_link_control'
       | 'send_group_audio_link_heartbeat'
       | 'close_group_audio_link'
       | 'reset_group_audio_peer_state'
@@ -5501,8 +5627,16 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   }
 }
 
+let reticulumDeveloperLogsFiltered = true;
 let bridgeInstance: ReticulumBridge | null = null;
 let bridgeStopPromise: Promise<void> | null = null;
+
+export function setReticulumBridgeDeveloperLogsFiltered(value: boolean): void {
+  reticulumDeveloperLogsFiltered = value;
+  if (bridgeInstance) {
+    void bridgeInstance.setDeveloperLogsFiltered(value);
+  }
+}
 
 export function getReticulumBridge(): ReticulumBridge | null {
   return bridgeInstance;

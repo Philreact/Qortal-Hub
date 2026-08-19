@@ -1,68 +1,131 @@
 {
-  "setup": {
-    "title": "本地设置：Hub 和 Core 在同一系统上运行",
-    "advancedOptions": "高级选项",
-    "pickPath": "如果您的 Core 安装在非默认位置，请选择自定义 Qortal 安装路径。",
-    "removePath": "移除自定义 Qortal 路径"
+  "actions": {
+    "continue": "继续",
+    "continueLocal": "继续使用 Local",
+    "continuePublic": "继续使用公共节点",
+    "finished": "已完成",
+    "goToDownloads": "前往下载",
+    "install": "安装并启动 Qortal Core",
+    "openSetup": "打开本地设置",
+    "resetKey": "重置 API 密钥",
+    "start": "启动 Qortal Core"
+  },
+  "bootstrap": "引导启动",
+  "bootstrapChainHelp": {
+    "body": "一项操作：在 Core 可用时从快照引导；若无法引导，则清除本地链数据库并再次启动 Core。钱包单独保存。",
+    "title": "链引导"
+  },
+  "confirmations": {
+    "bootstrap": "确定要引导启动吗？",
+    "bootstrapOrClearChain": "当 Core 在本地运行时，从快照执行引导。若无法执行或引导失败，可能会删除本地链数据库并重新启动 Core；钱包文件不会被改动。是否继续？",
+    "delete": "确定要删除数据库吗？",
+    "stop": "确定要停止 Core 吗？"
+  },
+  "coreSetupDialog": {
+    "actionDone": "完成",
+    "actionDownload": "下载 Core",
+    "actionStart": "启动 Core",
+    "advancedSubtitle": "适用于 Core 的高级工具与选项。",
+    "advancedTitle": "高级",
+    "cancel": "取消",
+    "change": "更改",
+    "choose": "选择",
+    "clear": "清除",
+    "confirmTitle": "确认操作",
+    "folderCopied": "已复制 Core 文件夹",
+    "helpers": {
+      "downloadActive": "正在下载并准备 Qortal Core。",
+      "downloadDone": "Core 文件已安装并就绪。",
+      "downloadIdle": "下载 Qortal Core 以运行您自己的节点。",
+      "runningBlocked": "在下载 Core 后可用。",
+      "runningDone": "Core 在本地运行中。",
+      "runningDoneSyncing": "Core 正在运行并同步区块链数据。",
+      "runningWaiting": "Core 将在后台启动并开始同步。"
+    },
+    "introSubtitle": "在 Core 启动并同步时，您可以使用公共节点。",
+    "introTitle": "在本地运行您自己的节点。",
+    "locationCustom": "Qortal Core 将从此文件夹运行。",
+    "locationDefault": "Qortal Core 将使用此系统的默认文件夹。",
+    "locationPathDefault": "默认 Qortal Core 位置",
+    "locationTitle": "Core 位置",
+    "maintenanceUnavailable": "在 Core 启动或同步期间，Core 维护工具不可用。",
+    "nextStepPill": "下一步",
+    "progressAriaLabel": "{{label}} 进度",
+    "publicNodeUnavailable": "公共节点当前不可用。请在本地 Core 启动并同步时保持此界面打开。",
+    "readyToDownload": "准备下载",
+    "readyToStart": "准备启动",
+    "steps": {
+      "downloadActive": "正在下载 Core",
+      "downloadDone": "已下载 Core",
+      "downloadIdle": "下载 Core",
+      "runningActive": "正在启动 Core",
+      "runningDone": "Core 运行中",
+      "runningIdle": "启动 Core"
+    },
+    "stopButton": "停止",
+    "stopCoreBody": "停止本地 Core 进程。",
+    "stopCoreTitle": "停止 Core",
+    "syncing": "同步中",
+    "title": "设置 Qortal Core"
+  },
+  "coreStatusNotice": {
+    "actions": {
+      "ignore": "忽略",
+      "later": "稍后",
+      "openSetup": "打开设置",
+      "start": "启动",
+      "starting": "正在启动...",
+      "switchToLocal": "切换到本地"
+    },
+    "installedPrompt": {
+      "description": "你已经安装了本地节点。是否要在使用公共节点时启动它？",
+      "title": "本地节点已安装"
+    },
+    "installing": {
+      "description": "正在下载并安装 Qortal Core。",
+      "title": "正在安装 Qortal Core"
+    },
+    "localReady": {
+      "description": "Qortal Core 已同步。你现在可以从公共节点切换到本地节点。",
+      "title": "本地节点已就绪"
+    },
+    "needsAttention": {
+      "description": "Core 需要处理。请打开设置查看问题。",
+      "title": "Core 设置需要处理"
+    },
+    "starting": {
+      "description": "正在启动 Qortal Core。",
+      "preparing": "Core 正在启动并准备区块链数据。",
+      "title": "正在启动本地 Core"
+    },
+    "syncing": {
+      "checking": "Core 正在运行。正在检查区块链同步进度。",
+      "description": "你的本地节点正在后台追赶同步。",
+      "title": "正在同步区块链"
+    }
+  },
+  "delete": "删除数据库",
+  "enableAuthWhenSyncing": "同步时启用身份验证",
+  "error": {
+    "failed_bootstrap": "无法引导启动",
+    "failed_bootstrap_or_clear": "无法完成引导、清除链数据或启动 Core",
+    "failed_delete": "无法删除数据库",
+    "failed_stop": "无法停止 Core",
+    "invalidKey": "无效的 API 密钥",
+    "noJar": "所选目录不包含 qortal.jar"
   },
   "introSetup": {
-    "paragraph1": "Qortal 是一个去中心化平台，让您完全掌控数据、应用和财务。开始之前，我们建议您安装 <strong>Qortal Core</strong>，它驱动网络并启用 Qortal 的所有功能。",
-    "paragraph2": "此安装向导将引导您在设备上安装和配置 Qortal Core。点击 <strong>下一步</strong> 继续安装。",
+    "advanced": "如果您正在使用远程节点，请关闭此安装向导，然后点击“选择自定义节点”",
     "note": "高级用户注意",
-    "advanced": "如果您正在使用远程节点，请关闭此安装向导，然后点击“选择自定义节点”"
-  },
-  "sync": {
-    "behind": "您落后 {{count}} 个区块。",
-    "waiting": "请等待同步完成。",
-    "not_synchronized": "未同步",
-    "synchronized": "已同步",
-    "synchronized_desc": "您现在已同步，可以继续。",
-    "description": "如果你不想等待你的 Local Node 完成同步，可以先使用 public 继续。 (如果你知道你的 node 落后/离线，你仍然可以继续使用 local，或切换到 public node。)"
-  },
-  "steps": {
-    "java": "已安装 Java",
-    "downloaded": "已下载 Core",
-    "running": "Core 正在运行"
-  },
-  "actions": {
-    "finished": "已完成",
-    "start": "启动 Qortal Core",
-    "install": "安装并启动 Qortal Core",
-    "continuePublic": "继续使用公共节点",
-    "openSetup": "打开本地设置",
-    "goToDownloads": "前往下载",
-    "resetKey": "重置 API 密钥",
-    "continue": "继续",
-    "continueLocal": "继续使用 Local"
-  },
-  "error": {
-    "noJar": "所选目录不包含 qortal.jar",
-    "invalidKey": "无效的 API 密钥",
-    "failed_stop": "无法停止 Core",
-    "failed_bootstrap": "无法引导启动",
-    "failed_delete": "无法删除数据库",
-    "failed_bootstrap_or_clear": "无法完成引导、清除链数据或启动 Core"
-  },
-  "status": {
-    "complete": "完成",
-    "inProgress": "进行中",
-    "pending": "待处理",
-    "error": "错误"
-  },
-  "recommendation": {
-    "title": "使用你的本地 Core",
-    "description": "如果你愿意，你可以继续使用 public node，但我们强烈建议使用你的 local node 以获得最佳体验。 (如果你在没有连接的情况下尝试访问，你可以在无连接时继续使用 public。)",
-    "subTitle": "使用本地节点的优点：",
-    "point1": "完全去中心化访问",
-    "point2": "下载更快",
-    "point3": "用户控制的数据",
-    "publicExplanation": "你连接的公共节点实际上是一个对外开放的私人节点。虽然方便，但相比自己运行节点有一些限制。"
+    "paragraph1": "Qortal 是一个去中心化平台，让您完全掌控数据、应用和财务。开始之前，我们建议您安装 <strong>Qortal Core</strong>，它驱动网络并启用 Qortal 的所有功能。",
+    "paragraph2": "此安装向导将引导您在设备上安装和配置 Qortal Core。点击 <strong>下一步</strong> 继续安装。"
   },
   "invalidKey": {
-    "title": "无效的 API 密钥",
     "description": "你的 API 密钥无效。请输入有效的密钥。",
-    "resetDescription": "你的 API 密钥无效。点击重置以继续。"
+    "resetDescription": "你的 API 密钥无效。点击重置以继续。",
+    "title": "无效的 API 密钥"
   },
+  "less": "更少选项",
   "messages": {
     "001": "正在启动 Core...请稍候。",
     "002": "错误：无法启动存储库",
@@ -75,113 +138,50 @@
     "009": "正在下载 Qortal Core...请稍候。",
     "010": "错误：无法下载或安装 Core"
   },
-  "url": {
-    "title": "URL 无效",
-    "description": "URL 不正确或节点未运行"
+  "more": "更多选项",
+  "NotFullyStarted": {
+    "descNotReady": "Qortal Core 尚未完全启动。请稍候。",
+    "descReady": "一切准备就绪",
+    "titleNotReady": "Core 尚未完全启动",
+    "titleReady": "Qortal Core 已就绪"
   },
-  "confirmations": {
-    "stop": "确定要停止 Core 吗？",
-    "bootstrap": "确定要引导启动吗？",
-    "delete": "确定要删除数据库吗？",
-    "bootstrapOrClearChain": "当 Core 在本地运行时，从快照执行引导。若无法执行或引导失败，可能会删除本地链数据库并重新启动 Core；钱包文件不会被改动。是否继续？"
+  "recommendation": {
+    "description": "如果你愿意，你可以继续使用 public node，但我们强烈建议使用你的 local node 以获得最佳体验。 (如果你在没有连接的情况下尝试访问，你可以在无连接时继续使用 public。)",
+    "point1": "完全去中心化访问",
+    "point2": "下载更快",
+    "point3": "用户控制的数据",
+    "publicExplanation": "你连接的公共节点实际上是一个对外开放的私人节点。虽然方便，但相比自己运行节点有一些限制。",
+    "subTitle": "使用本地节点的优点：",
+    "title": "使用你的本地 Core"
   },
-  "bootstrapChainHelp": {
-    "title": "链引导",
-    "body": "一项操作：在 Core 可用时从快照引导；若无法引导，则清除本地链数据库并再次启动 Core。钱包单独保存。"
+  "setup": {
+    "advancedOptions": "高级选项",
+    "pickPath": "如果您的 Core 安装在非默认位置，请选择自定义 Qortal 安装路径。",
+    "removePath": "移除自定义 Qortal 路径",
+    "title": "本地设置：Hub 和 Core 在同一系统上运行"
+  },
+  "status": {
+    "complete": "完成",
+    "error": "错误",
+    "inProgress": "进行中",
+    "pending": "待处理"
+  },
+  "steps": {
+    "downloaded": "已下载 Core",
+    "java": "已安装 Java",
+    "running": "Core 正在运行"
   },
   "stop": "停止 Core",
-  "bootstrap": "引导启动",
-  "delete": "删除数据库",
-  "more": "更多选项",
-  "less": "更少选项",
-  "enableAuthWhenSyncing": "同步时启用身份验证",
-  "coreSetupDialog": {
-    "title": "设置 Qortal Core",
-    "introTitle": "在本地运行您自己的节点。",
-    "introSubtitle": "在 Core 启动并同步时，您可以使用公共节点。",
-    "publicNodeUnavailable": "公共节点当前不可用。请在本地 Core 启动并同步时保持此界面打开。",
-    "steps": {
-      "downloadDone": "已下载 Core",
-      "downloadActive": "正在下载 Core",
-      "downloadIdle": "下载 Core",
-      "runningDone": "Core 运行中",
-      "runningActive": "正在启动 Core",
-      "runningIdle": "启动 Core"
-    },
-    "readyToDownload": "准备下载",
-    "readyToStart": "准备启动",
-    "syncing": "同步中",
-    "helpers": {
-      "downloadDone": "Core 文件已安装并就绪。",
-      "downloadActive": "正在下载并准备 Qortal Core。",
-      "downloadIdle": "下载 Qortal Core 以运行您自己的节点。",
-      "runningDoneSyncing": "Core 正在运行并同步区块链数据。",
-      "runningDone": "Core 在本地运行中。",
-      "runningWaiting": "Core 将在后台启动并开始同步。",
-      "runningBlocked": "在下载 Core 后可用。"
-    },
-    "nextStepPill": "下一步",
-    "locationTitle": "Core 位置",
-    "locationCustom": "Qortal Core 将从此文件夹运行。",
-    "locationDefault": "Qortal Core 将使用此系统的默认文件夹。",
-    "locationPathDefault": "默认 Qortal Core 位置",
-    "change": "更改",
-    "choose": "选择",
-    "clear": "清除",
-    "advancedTitle": "高级",
-    "advancedSubtitle": "适用于 Core 的高级工具与选项。",
-    "maintenanceUnavailable": "在 Core 启动或同步期间，Core 维护工具不可用。",
-    "stopCoreTitle": "停止 Core",
-    "stopCoreBody": "停止本地 Core 进程。",
-    "stopButton": "停止",
-    "cancel": "取消",
-    "actionDownload": "下载 Core",
-    "actionStart": "启动 Core",
-    "actionDone": "完成",
-    "confirmTitle": "确认操作",
-    "folderCopied": "已复制 Core 文件夹",
-    "progressAriaLabel": "{{label}} 进度"
+  "sync": {
+    "behind": "您落后 {{count}} 个区块。",
+    "description": "如果你不想等待你的 Local Node 完成同步，可以先使用 public 继续。 (如果你知道你的 node 落后/离线，你仍然可以继续使用 local，或切换到 public node。)",
+    "not_synchronized": "未同步",
+    "synchronized": "已同步",
+    "synchronized_desc": "您现在已同步，可以继续。",
+    "waiting": "请等待同步完成。"
   },
-  "NotFullyStarted": {
-    "titleNotReady": "Core 尚未完全启动",
-    "descNotReady": "Qortal Core 尚未完全启动。请稍候。",
-    "titleReady": "Qortal Core 已就绪",
-    "descReady": "一切准备就绪"
-  },
-  "coreStatusNotice": {
-    "installedPrompt": {
-      "title": "本地节点已安装",
-      "description": "你已经安装了本地节点。是否要在使用公共节点时启动它？"
-    },
-    "localReady": {
-      "title": "本地节点已就绪",
-      "description": "Qortal Core 已同步。你现在可以从公共节点切换到本地节点。"
-    },
-    "installing": {
-      "title": "正在安装 Qortal Core",
-      "description": "正在下载并安装 Qortal Core。"
-    },
-    "starting": {
-      "title": "正在启动本地 Core",
-      "description": "正在启动 Qortal Core。",
-      "preparing": "Core 正在启动并准备区块链数据。"
-    },
-    "syncing": {
-      "title": "正在同步区块链",
-      "description": "你的本地节点正在后台追赶同步。",
-      "checking": "Core 正在运行。正在检查区块链同步进度。"
-    },
-    "needsAttention": {
-      "title": "Core 设置需要处理",
-      "description": "Core 需要处理。请打开设置查看问题。"
-    },
-    "actions": {
-      "ignore": "忽略",
-      "start": "启动",
-      "starting": "正在启动...",
-      "later": "稍后",
-      "switchToLocal": "切换到本地",
-      "openSetup": "打开设置"
-    }
+  "url": {
+    "description": "URL 不正确或节点未运行",
+    "title": "URL 无效"
   }
 }

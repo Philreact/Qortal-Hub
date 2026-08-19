@@ -7,7 +7,7 @@ import { executeEvent } from '../../utils/events';
 
 export const Explore = ({ setDesktopViewMode }) => {
   const theme = useTheme();
-  const { t } = useTranslation(['auth', 'core', 'group', 'tutorial']);
+  const { t } = useTranslation(['auth', 'core', 'group']);
 
   return (
     <Box
@@ -45,7 +45,7 @@ export const Explore = ({ setDesktopViewMode }) => {
             fontSize: '1rem',
           }}
         >
-          {t('tutorial:initial.trade_qort', {
+          {t('group:initial.trade_qort', {
             postProcess: 'capitalizeFirstChar',
           })}
         </Typography>
@@ -75,7 +75,7 @@ export const Explore = ({ setDesktopViewMode }) => {
             fontSize: '1rem',
           }}
         >
-          {t('tutorial:initial.see_apps', {
+          {t('group:initial.see_apps', {
             postProcess: 'capitalizeFirstChar',
           })}
         </Typography>
