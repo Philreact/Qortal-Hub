@@ -34,7 +34,7 @@ type ReleaseHighlight = {
   id: string;
 };
 
-const QCHAT_RELEASE_VERSION = '3.0.1';
+const QCHAT_RELEASE_VERSION = '3.0.2';
 
 const RELEASE_HIGHLIGHTS: ReleaseHighlight[] = [
   { icon: <HubRoundedIcon />, id: 'network' },
