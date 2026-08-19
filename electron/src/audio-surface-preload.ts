@@ -41,6 +41,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }>,
 });
 
+// Group WebRTC is owned by this hidden audio renderer, so it needs the same
+// ICE discovery input as the main renderer without exposing any unrelated Hub
+// APIs into the hardened audio window.
+contextBridge.exposeInMainWorld('hub', {
+  getIceServers: () =>
+    ipcRenderer.invoke('hub:getIceServers') as Promise<{ urls: string }[]>,
+});
+
 contextBridge.exposeInMainWorld('groupCall', {
   join: async (...args: GroupCallJoinIpcArguments) =>
     // Electron sandboxed preloads cannot runtime-require local modules. Keep
@@ -81,7 +89,8 @@ contextBridge.exposeInMainWorld('groupCall', {
     topology: unknown,
     signature: string,
     publicKey: string,
-    timestamp: number
+    timestamp: number,
+    localAuthorityProvisional = false
   ) =>
     ipcRenderer.invoke(
       'gcall:broadcastTopology',
@@ -89,7 +98,8 @@ contextBridge.exposeInMainWorld('groupCall', {
       topology,
       signature,
       publicKey,
-      timestamp
+      timestamp,
+      localAuthorityProvisional
     ),
   sendClusterHeartbeat: async (
     roomId: string,
@@ -129,6 +139,28 @@ contextBridge.exposeInMainWorld('groupCall', {
       data,
       timing
     ),
+  sendRtcSignal: async (input: {
+    roomId: string;
+    callSessionId: string;
+    mediaSessionGeneration: number;
+    fromAddress: string;
+    toAddress: string;
+    connectionId: string;
+    signalId: string;
+    signalType:
+      | 'capability'
+      | 'offer'
+      | 'answer'
+      | 'candidate'
+      | 'candidates'
+      | 'ack'
+      | 'reconnect';
+    payload: string;
+    payloadHash: string;
+    timestamp: number;
+    signature: string;
+    publicKey: string;
+  }) => ipcRenderer.invoke('gcall:sendRtcSignal', input),
   getAudioDataPlaneSession: async (roomId: string, toAddresses: string[]) =>
     ipcRenderer.invoke('gcall:getAudioDataPlaneSession', roomId, toAddresses),
   requestPeerMediaRecovery: async (
@@ -211,6 +243,7 @@ contextBridge.exposeInMainWorld('groupCall', {
     const channels = [
       'gcall:participant-joined',
       'gcall:participant-left',
+      'gcall:local-session-taken-over',
       'gcall:topology',
       'gcall:cluster-heartbeat',
       'gcall:heartbeat',
@@ -218,6 +251,7 @@ contextBridge.exposeInMainWorld('groupCall', {
       'gcall:key',
       'gcall:key-request',
       'gcall:session-updated',
+      'gcall:rtc-signal',
     ] as const;
 
     const handlers = new Map<string, (...args: unknown[]) => void>();

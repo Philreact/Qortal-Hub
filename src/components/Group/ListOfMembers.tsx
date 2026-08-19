@@ -268,7 +268,7 @@ const ListOfMembers = ({
     );
     const admins = allAdmins.filter(isMemberOnline).sort(sortAdmins);
     const allRegularMembers = allMembers.filter(
-      (member) => member?.member !== ownerAddress && !Boolean(member?.isAdmin)
+      (member) => member?.member !== ownerAddress && !member?.isAdmin
     );
     const loungeMembers = allRegularMembers
       .filter(

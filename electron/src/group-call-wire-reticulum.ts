@@ -113,6 +113,8 @@ export const GROUP_CALL_RETICULUM_WIRE_TYPES = new Set<string>([
   'GR',
   'GR0',
   'GR1',
+  'GO0',
+  'GO1',
 ]);
 
 export function isGroupCallReticulumWireType(t: unknown): boolean {

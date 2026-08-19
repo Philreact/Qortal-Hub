@@ -163,6 +163,18 @@ const presenceSchemas: Readonly<Record<string, SigningSchema>> = {
   // callers.
   CALL_REJECT: schema(['type', 'callId', 'timestamp'], ['reason']),
   CALL_HANGUP: schema(['type', 'callId', 'timestamp']),
+  // WebRTC SDP/ICE payloads are transported separately. The wallet signs
+  // only this bounded digest envelope so negotiation remains authenticated
+  // without exposing the payload to the signing policy.
+  CALL_RTC_SIGNAL: schema([
+    'type',
+    'callId',
+    'generation',
+    'signalId',
+    'signalType',
+    'payloadHash',
+    'timestamp',
+  ]),
   QCHAT_FILE_LINK_AUTH: schema([
     'type',
     'transferId',
@@ -248,6 +260,23 @@ const presenceSchemas: Readonly<Record<string, SigningSchema>> = {
     'callSessionId',
     'mediaSessionGeneration',
     'keyMessageVersion',
+    'timestamp',
+  ]),
+  // Group-call WebRTC SDP/ICE remains outside the wallet signer. As with
+  // direct calls, only the bounded routing and payload-digest envelope is
+  // signed so peers can authenticate negotiation received over Reticulum.
+  GC_RTC_SIGNAL: schema([
+    'type',
+    'roomId',
+    'callSessionId',
+    'mediaSessionGeneration',
+    'fromAddress',
+    'toAddress',
+    'connectionId',
+    'signalId',
+    'signalType',
+    'payloadHash',
+    'fromPublicKey',
     'timestamp',
   ]),
 };
@@ -375,6 +404,33 @@ const rchatSchemas: Readonly<Record<string, SigningSchema>> = {
     'timestamp',
   ]),
   RCHAT_EVENT_REQ: schema(['type', 'eventId', 'groupId', 'timestamp']),
+  RCHAT_RANGE_REQ: schema([
+    'type',
+    'groupId',
+    'ranges',
+    'limit',
+    'sourcePeerHash',
+    'timestamp',
+  ]),
+  RCHAT_LINKED_EVENT_REQUEST: schema([
+    'type',
+    'transferId',
+    'eventId',
+    'groupId',
+    'requesterPeerHash',
+    'providerPeerHash',
+    'timestamp',
+  ]),
+  RCHAT_LINKED_AUTHOR_RANGE_REQUEST: schema([
+    'type',
+    'transferId',
+    'groupId',
+    'range',
+    'limit',
+    'requesterPeerHash',
+    'providerPeerHash',
+    'timestamp',
+  ]),
   RCHAT_RESOURCE_AUTH: schema(['type', 'groupId', 'timestamp', 'transferId']),
   RCHAT_GROUP_KEY_DIGEST: schema([
     'type',
@@ -710,6 +766,102 @@ function assertSafeProximityCapability(payload: Record<string, unknown>): void {
   }
 }
 
+function assertSafeGroupRtcSignal(payload: Record<string, unknown>): void {
+  const now = Date.now();
+  const isBoundedString = (key: string, maxLength: number): boolean =>
+    typeof payload[key] === 'string' &&
+    String(payload[key]).length > 0 &&
+    String(payload[key]).length <= maxLength;
+  const isQortalIdentity = (key: string): boolean =>
+    isBoundedString(key, 64) &&
+    String(payload[key]).length >= 20 &&
+    /^[1-9A-HJ-NP-Za-km-z]+$/.test(String(payload[key]));
+  const expectedConnectionId = `${String(payload.callSessionId)}:${String(
+    payload.mediaSessionGeneration
+  )}:${[String(payload.fromAddress), String(payload.toAddress)]
+    .sort()
+    .join(':')}`;
+
+  if (
+    !isBoundedString('roomId', 128) ||
+    !isBoundedString('callSessionId', 128) ||
+    typeof payload.mediaSessionGeneration !== 'number' ||
+    !Number.isSafeInteger(payload.mediaSessionGeneration) ||
+    payload.mediaSessionGeneration < 0 ||
+    payload.mediaSessionGeneration > 0xffffffff ||
+    !isQortalIdentity('fromAddress') ||
+    !isQortalIdentity('toAddress') ||
+    !isBoundedString('connectionId', 160) ||
+    payload.connectionId !== expectedConnectionId ||
+    typeof payload.signalId !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      payload.signalId
+    ) ||
+    ![
+      'capability',
+      'offer',
+      'answer',
+      'candidate',
+      'candidates',
+      'ack',
+      'reconnect',
+    ].includes(String(payload.signalType)) ||
+    typeof payload.payloadHash !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(payload.payloadHash) ||
+    !isQortalIdentity('fromPublicKey') ||
+    typeof payload.timestamp !== 'number' ||
+    !Number.isSafeInteger(payload.timestamp) ||
+    Math.abs(payload.timestamp - now) > 2 * 60 * 1000
+  ) {
+    throw new Error('Group WebRTC signal envelope is invalid');
+  }
+}
+
+function assertSafeRchatRangeRequest(payload: Record<string, unknown>): void {
+  const ranges = payload.ranges;
+  if (
+    !Number.isSafeInteger(payload.groupId) ||
+    Number(payload.groupId) <= 0 ||
+    !Number.isSafeInteger(payload.limit) ||
+    Number(payload.limit) < 1 ||
+    Number(payload.limit) > 100 ||
+    typeof payload.sourcePeerHash !== 'string' ||
+    !/^[0-9a-f]{32}$/iu.test(payload.sourcePeerHash) ||
+    !Number.isSafeInteger(payload.timestamp) ||
+    Number(payload.timestamp) <= 0 ||
+    !Array.isArray(ranges) ||
+    ranges.length < 1 ||
+    ranges.length > 100
+  ) {
+    throw new Error('Reticulum author range request is invalid');
+  }
+  for (const range of ranges) {
+    if (!isRecord(range)) {
+      throw new Error('Reticulum author range request is invalid');
+    }
+    const keys = Object.keys(range).sort();
+    if (
+      keys.length !== 4 ||
+      keys[0] !== 'a' ||
+      keys[1] !== 'from' ||
+      keys[2] !== 's' ||
+      keys[3] !== 'to' ||
+      typeof range.a !== 'string' ||
+      range.a.length < 20 ||
+      range.a.length > 64 ||
+      !/^[1-9A-HJ-NP-Za-km-z]+$/u.test(range.a) ||
+      typeof range.s !== 'string' ||
+      !/^[0-9a-f]{32}$/iu.test(range.s) ||
+      !Number.isSafeInteger(range.from) ||
+      Number(range.from) <= 0 ||
+      !Number.isSafeInteger(range.to) ||
+      Number(range.to) < Number(range.from)
+    ) {
+      throw new Error('Reticulum author range request is invalid');
+    }
+  }
+}
+
 function assertPayload(
   payload: unknown,
   schemas: Readonly<Record<string, SigningSchema>>,
@@ -732,6 +884,9 @@ function assertPayload(
     }
     if (type === 'QORTAL_LAND_PROXIMITY_VOICE_SESSION') {
       assertSafeProximityCapability(payload);
+    }
+    if (type === 'GC_RTC_SIGNAL') {
+      assertSafeGroupRtcSignal(payload);
     }
     return;
   }
@@ -756,6 +911,29 @@ export function assertAllowedPresenceSigningPayload(
   ) {
     throw new Error('Call rejection reason is invalid');
   }
+  if (payload.type === 'CALL_RTC_SIGNAL') {
+    const now = Date.now();
+    if (
+      typeof payload.callId !== 'string' ||
+      payload.callId.length < 1 ||
+      payload.callId.length > 64 ||
+      typeof payload.generation !== 'string' ||
+      !/^[A-Za-z0-9_-]{8,64}$/u.test(payload.generation) ||
+      typeof payload.signalId !== 'string' ||
+      !/^[A-Za-z0-9_-]{8,24}$/u.test(payload.signalId) ||
+      !['capability', 'offer', 'answer', 'candidate'].includes(
+        String(payload.signalType)
+      ) ||
+      typeof payload.payloadHash !== 'string' ||
+      !/^[0-9a-f]{64}$/iu.test(payload.payloadHash) ||
+      typeof payload.timestamp !== 'number' ||
+      !Number.isSafeInteger(payload.timestamp) ||
+      now - payload.timestamp > 30_000 ||
+      now - payload.timestamp < -10_000
+    ) {
+      throw new Error('WebRTC signal signing envelope is invalid');
+    }
+  }
   if (
     typeof payload.type === 'string' &&
     payload.type.startsWith('QORTAL_LAND_GAME_') &&
@@ -774,4 +952,7 @@ export function assertAllowedReticulumSigningPayload(
     [groupEventSchema, directEventSchema, directEventStreamSchema],
     RCHAT_SIGNING_MAX_BYTES
   );
+  if (payload.type === 'RCHAT_RANGE_REQ') {
+    assertSafeRchatRangeRequest(payload);
+  }
 }

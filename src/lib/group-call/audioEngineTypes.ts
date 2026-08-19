@@ -10,7 +10,7 @@ export type AudioEngineRole =
   | 'root-forwarder'
   | 'standby-forwarder';
 
-export type AudioEngineTopologyLabel = 'Reticulum';
+export type AudioEngineTopologyLabel = 'Reticulum' | 'WebRTC';
 
 export type AudioEngineSelectableStatus =
   | 'online'

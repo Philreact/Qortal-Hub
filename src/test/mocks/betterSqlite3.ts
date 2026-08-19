@@ -8,6 +8,8 @@ type MockStore = {
   reticulumChatEventHeaders: ReticulumChatRow[];
   reticulumChatMessages: ReticulumChatRow[];
   reticulumChatExpiredEventMarkers: ReticulumChatRow[];
+  reticulumChatRejectedEventMarkers: ReticulumChatRow[];
+  reticulumChatRejectedDigestMarkers: ReticulumChatRow[];
   reticulumChatMetadataSnapshots: ReticulumChatRow[];
   reticulumChatMetadataEntityRevisions: ReticulumChatRow[];
   reticulumChatChannels: ReticulumChatRow[];
@@ -157,6 +159,23 @@ class Statement {
             Number(candidate.read_at) === 0
         ).length,
       }));
+    }
+    if (
+      this.sql.includes('FROM rchat_rejected_event_markers') &&
+      this.sql.includes('SELECT author_seq')
+    ) {
+      const [groupId, authorAddress, authorStreamId, fromSeq, toSeq] = args;
+      return this.store.reticulumChatRejectedEventMarkers
+        .filter(
+          (row) =>
+            row.group_id === groupId &&
+            row.author_address === authorAddress &&
+            row.author_stream_id === authorStreamId &&
+            Number(row.author_seq) >= Number(fromSeq) &&
+            Number(row.author_seq) <= Number(toSeq)
+        )
+        .sort((left, right) => Number(left.author_seq) - Number(right.author_seq))
+        .map((row) => ({ author_seq: row.author_seq }));
     }
     if (this.sql.includes('FROM rchat_missing_range_peer_observations')) {
       const [groupId, authorAddress, authorStreamId, fromSeq, toSeq] = args;
@@ -993,6 +1012,21 @@ class Statement {
   }
 
   get(...args: any[]) {
+    if (this.sql.includes('FROM rchat_rejected_digest_markers')) {
+      const [groupId, digestFingerprint] = args;
+      const row = this.store.reticulumChatRejectedDigestMarkers.find(
+        (candidate) =>
+          candidate.group_id === groupId &&
+          candidate.digest_fingerprint === digestFingerprint
+      );
+      return row ? { 1: 1 } : undefined;
+    }
+    if (this.sql.includes('FROM rchat_rejected_event_markers')) {
+      const [groupId, eventId] = args;
+      return this.store.reticulumChatRejectedEventMarkers.find(
+        (row) => row.group_id === groupId && row.event_id === eventId
+      );
+    }
     if (
       this.sql.includes('FROM rchat_calendar_events e') &&
       this.sql.includes('JOIN rchat_calendar_mutations m')
@@ -1578,6 +1612,193 @@ class Statement {
   }
 
   run(...args: any[]) {
+    if (
+      this.sql.includes('UPDATE rchat_rejected_event_markers') &&
+      this.sql.includes('SET next_revalidate_at = rejected_at + ?')
+    ) {
+      const retentionMs = Number(args[0]);
+      let changes = 0;
+      for (const row of this.store.reticulumChatRejectedEventMarkers) {
+        const retainUntil = Number(row.rejected_at) + retentionMs;
+        if (Number(row.next_revalidate_at) >= retainUntil) continue;
+        row.next_revalidate_at = retainUntil;
+        changes += 1;
+      }
+      return { changes, lastInsertRowid: 0 };
+    }
+    if (
+      this.sql.includes('UPDATE rchat_rejected_digest_markers') &&
+      this.sql.includes('SELECT events.next_revalidate_at')
+    ) {
+      let changes = 0;
+      for (const row of this.store.reticulumChatRejectedDigestMarkers) {
+        const event = this.store.reticulumChatRejectedEventMarkers.find(
+          (candidate) =>
+            candidate.group_id === row.group_id &&
+            candidate.event_id === row.event_id
+        );
+        if (
+          !event ||
+          Number(row.next_revalidate_at) >= Number(event.next_revalidate_at)
+        ) {
+          continue;
+        }
+        row.next_revalidate_at = event.next_revalidate_at;
+        changes += 1;
+      }
+      return { changes, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('INSERT INTO rchat_rejected_digest_markers')) {
+      const [
+        groupId,
+        eventId,
+        eventFingerprint,
+        digestFingerprint,
+        rejectedAt,
+        nextRevalidateAt,
+      ] = args;
+      const row = {
+        group_id: groupId,
+        event_id: eventId,
+        event_fingerprint: eventFingerprint,
+        digest_fingerprint: digestFingerprint,
+        rejected_at: rejectedAt,
+        next_revalidate_at: nextRevalidateAt,
+      };
+      const index = this.store.reticulumChatRejectedDigestMarkers.findIndex(
+        (candidate) =>
+          candidate.group_id === groupId &&
+          candidate.event_id === eventId &&
+          candidate.digest_fingerprint === digestFingerprint
+      );
+      if (index >= 0) {
+        this.store.reticulumChatRejectedDigestMarkers[index] = row;
+      } else {
+        this.store.reticulumChatRejectedDigestMarkers.push(row);
+      }
+      return {
+        changes: 1,
+        lastInsertRowid:
+          index >= 0
+            ? index + 1
+            : this.store.reticulumChatRejectedDigestMarkers.length,
+      };
+    }
+    if (this.sql.includes('DELETE FROM rchat_rejected_digest_markers')) {
+      const before = this.store.reticulumChatRejectedDigestMarkers.length;
+      if (this.sql.includes('WHERE group_id = ? AND event_id = ?')) {
+        const [groupId, eventId] = args;
+        this.store.reticulumChatRejectedDigestMarkers =
+          this.store.reticulumChatRejectedDigestMarkers.filter(
+            (row) => row.group_id !== groupId || row.event_id !== eventId
+          );
+      } else if (this.sql.includes('WHERE NOT EXISTS')) {
+        this.store.reticulumChatRejectedDigestMarkers =
+          this.store.reticulumChatRejectedDigestMarkers.filter((row) =>
+            this.store.reticulumChatRejectedEventMarkers.some(
+              (event) =>
+                event.group_id === row.group_id &&
+                event.event_id === row.event_id
+            )
+          );
+      } else if (this.sql.includes('WHERE rowid NOT IN')) {
+        const limit = Math.max(1, Number(args[0]) || 1);
+        this.store.reticulumChatRejectedDigestMarkers = [
+          ...this.store.reticulumChatRejectedDigestMarkers,
+        ]
+          .sort(
+            (left, right) =>
+              Number(right.rejected_at) - Number(left.rejected_at) ||
+              Number(right.group_id) - Number(left.group_id) ||
+              String(right.event_id).localeCompare(String(left.event_id)) ||
+              String(right.digest_fingerprint).localeCompare(
+                String(left.digest_fingerprint)
+              )
+          )
+          .slice(0, limit);
+      }
+      return {
+        changes: before - this.store.reticulumChatRejectedDigestMarkers.length,
+        lastInsertRowid: 0,
+      };
+    }
+    if (this.sql.includes('INSERT INTO rchat_rejected_event_markers')) {
+      const [
+        groupId,
+        eventId,
+        eventFingerprint,
+        authorAddress,
+        authorStreamId,
+        authorSeq,
+        digestFingerprint,
+        rejectedAt,
+        nextRevalidateAt,
+        revalidationAttempts,
+      ] = args;
+      const row = {
+        group_id: groupId,
+        event_id: eventId,
+        event_fingerprint: eventFingerprint,
+        author_address: authorAddress,
+        author_stream_id: authorStreamId,
+        author_seq: authorSeq,
+        digest_fingerprint: digestFingerprint,
+        rejected_at: rejectedAt,
+        next_revalidate_at: nextRevalidateAt,
+        revalidation_attempts: revalidationAttempts,
+      };
+      const index = this.store.reticulumChatRejectedEventMarkers.findIndex(
+        (candidate) =>
+          candidate.group_id === groupId && candidate.event_id === eventId
+      );
+      if (index >= 0) this.store.reticulumChatRejectedEventMarkers[index] = row;
+      else this.store.reticulumChatRejectedEventMarkers.push(row);
+      return {
+        changes: 1,
+        lastInsertRowid:
+          index >= 0
+            ? index + 1
+            : this.store.reticulumChatRejectedEventMarkers.length,
+      };
+    }
+    if (this.sql.includes('DELETE FROM rchat_rejected_event_markers')) {
+      const before = this.store.reticulumChatRejectedEventMarkers.length;
+      if (this.sql.includes('WHERE group_id = ? AND event_id = ?')) {
+        const [groupId, eventId] = args;
+        this.store.reticulumChatRejectedEventMarkers =
+          this.store.reticulumChatRejectedEventMarkers.filter(
+            (row) => row.group_id !== groupId || row.event_id !== eventId
+          );
+      } else if (this.sql.includes('WHERE rejected_at <= ?')) {
+        const cutoff = Number(args[0]);
+        this.store.reticulumChatRejectedEventMarkers =
+          this.store.reticulumChatRejectedEventMarkers.filter(
+            (row) => Number(row.rejected_at) > cutoff
+          );
+      } else if (this.sql.includes('WHERE next_revalidate_at <= ?')) {
+        const cutoff = Number(args[0]);
+        this.store.reticulumChatRejectedEventMarkers =
+          this.store.reticulumChatRejectedEventMarkers.filter(
+            (row) => Number(row.next_revalidate_at) > cutoff
+          );
+      } else if (this.sql.includes('WHERE rowid NOT IN')) {
+        const limit = Math.max(1, Number(args[0]) || 1);
+        this.store.reticulumChatRejectedEventMarkers = [
+          ...this.store.reticulumChatRejectedEventMarkers,
+        ]
+          .sort(
+            (left, right) =>
+              Number(right.rejected_at) - Number(left.rejected_at) ||
+              Number(right.group_id) - Number(left.group_id) ||
+              String(right.event_id).localeCompare(String(left.event_id))
+          )
+          .slice(0, limit);
+      }
+      return {
+        changes: before - this.store.reticulumChatRejectedEventMarkers.length,
+        lastInsertRowid: 0,
+      };
+    }
     if (this.sql.includes('INSERT INTO rchat_calendar_mutations')) {
       const [
         mutationId,
@@ -3253,6 +3474,8 @@ class MockDatabase {
       reticulumChatEventHeaders: [],
       reticulumChatMessages: [],
       reticulumChatExpiredEventMarkers: [],
+      reticulumChatRejectedEventMarkers: [],
+      reticulumChatRejectedDigestMarkers: [],
       reticulumChatMetadataSnapshots: [],
       reticulumChatMetadataEntityRevisions: [],
       reticulumChatChannels: [],

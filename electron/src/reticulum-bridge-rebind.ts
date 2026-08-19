@@ -8,6 +8,7 @@ import { log as loggerLog, warn as loggerWarn } from './logger';
 import { getPresenceManager, setPresenceManagerTransports } from './presence';
 import { getReticulumBridge } from './reticulum-bridge';
 import { getReticulumChatManager } from './reticulum-chat';
+import { rebindStunCoordinatorBridge } from './stun-coordinator';
 
 export function rebindReticulumBridgeConsumers(): void {
   const bridge = getReticulumBridge();
@@ -25,6 +26,7 @@ export function rebindReticulumBridgeConsumers(): void {
   getCallManager()?.setReticulumBridge(bridge);
   getGroupCallManager()?.setReticulumBridge(bridge);
   getReticulumChatManager()?.setBridge(bridge);
+  rebindStunCoordinatorBridge(bridge);
   loggerLog(
     '[Reticulum] Rebound call + group-call + chat managers after bridge restart'
   );

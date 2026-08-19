@@ -365,8 +365,277 @@ describe('Reticulum manager late bridge binding', () => {
       'peer-hash',
       expect.objectContaining({ t: 'CA', c: 'call-accept-repeat' })
     );
+    expect(bridge.fanoutCallDetailed).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          t: 'CA',
+          c: 'call-accept-repeat',
+          U: 'Q-peer',
+          L: 4,
+        }),
+      ],
+      []
+    );
     await vi.advanceTimersByTimeAsync(350 * 4);
     expect(bridge.sendCallDetailed).toHaveBeenCalledTimes(5);
+    manager.stop();
+  });
+
+  it('keeps CALL_ACCEPT delivery alive while the pinned return link opens', async () => {
+    vi.useFakeTimers();
+    const bridge = new CallBridgeStub();
+    const routeReadyAt = Date.now() + 5_000;
+    bridge.sendCallDetailed.mockImplementation(async () =>
+      Date.now() >= routeReadyAt
+        ? { ok: true as const }
+        : {
+            ok: false as const,
+            reason: 'send-command-failed' as const,
+            error: 'Packet send returned False',
+          }
+    );
+    const manager = new CallManager(presenceStub() as any, bridge as any);
+
+    manager.start();
+    (manager as any).activeCalls.set('call-link-opening', {
+      callId: 'call-link-opening',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: 'peer-hash',
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'inbound',
+      state: 'pending',
+      startedAt: Date.now(),
+    });
+
+    expect(
+      manager.acceptCall('call-link-opening', 'sig', 'pub', Date.now())
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(5_100);
+
+    expect(bridge.sendCallDetailed).toHaveBeenCalledWith(
+      'peer-hash',
+      expect.objectContaining({ t: 'CA', c: 'call-link-opening' })
+    );
+    const latestSend = bridge.sendCallDetailed.mock.results.at(-1);
+    expect(latestSend?.type).toBe('return');
+    await expect(latestSend?.value).resolves.toEqual({ ok: true });
+    manager.stop();
+  });
+
+  it('uses an acknowledged authenticated media link for active DM hangup without fanout', async () => {
+    const peerHash = 'b'.repeat(32);
+    const bridge = new CallBridgeStub();
+    const manager = new CallManager(presenceStub() as any, bridge as any);
+    manager.start();
+    (manager as any).activeCalls.set('call-direct-hangup', {
+      callId: 'call-direct-hangup',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: peerHash,
+      acceptedReticulumPeerHash: peerHash,
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'outbound',
+      state: 'active',
+      startedAt: Date.now(),
+    });
+    manager.setDmCallLinkControlSender(async (input) => {
+      queueMicrotask(() => {
+        manager.acknowledgeDmCallLinkHangup({
+          kind: 'hangup-ack',
+          callId: input.callId,
+          chatId: input.chatId,
+          controlId: input.controlId,
+          fromAddress: input.toAddress,
+          toAddress: input.fromAddress,
+          timestamp: Date.now(),
+          verifiedPeerDestinationHash: peerHash,
+        });
+      });
+      return { success: true };
+    });
+
+    await manager.hangUp(
+      'call-direct-hangup',
+      'hangup-signature',
+      'local-public-key',
+      Date.now()
+    );
+
+    expect(bridge.sendCallDetailed).not.toHaveBeenCalled();
+    expect(bridge.fanoutCallDetailed).not.toHaveBeenCalled();
+    expect((manager as any).activeCalls.has('call-direct-hangup')).toBe(false);
+    manager.stop();
+  });
+
+  it('fans out active DM hangup when the dedicated media link is not acknowledged', async () => {
+    vi.useFakeTimers();
+    const peerHash = 'c'.repeat(32);
+    const bridge = new CallBridgeStub();
+    const manager = new CallManager(presenceStub() as any, bridge as any);
+    manager.start();
+    (manager as any).activeCalls.set('call-hangup-fallback', {
+      callId: 'call-hangup-fallback',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: peerHash,
+      acceptedReticulumPeerHash: peerHash,
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'outbound',
+      state: 'active',
+      startedAt: Date.now(),
+    });
+    manager.setDmCallLinkControlSender(
+      () => new Promise<{ success: boolean }>(() => {})
+    );
+
+    const hangup = manager.hangUp(
+      'call-hangup-fallback',
+      'hangup-signature',
+      'local-public-key',
+      Date.now()
+    );
+    await vi.advanceTimersByTimeAsync(901);
+    await hangup;
+
+    expect(bridge.sendCallDetailed).toHaveBeenCalledWith(
+      peerHash,
+      expect.objectContaining({ t: 'CH', c: 'call-hangup-fallback' })
+    );
+    expect(bridge.fanoutCallDetailed).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          t: 'CH',
+          c: 'call-hangup-fallback',
+          U: 'Q-peer',
+          L: 4,
+        }),
+      ],
+      []
+    );
+    manager.stop();
+  });
+
+  it('does not let a stuck acknowledgment enqueue delay remote DM hangup', async () => {
+    vi.useFakeTimers();
+    const peerHash = 'e'.repeat(32);
+    const manager = new CallManager(
+      presenceStub() as any,
+      new CallBridgeStub() as any
+    );
+    (manager as any).verifyPool = {
+      start: vi.fn(),
+      verify: vi.fn(async () => true),
+      stop: vi.fn(),
+    };
+    manager.start();
+    (manager as any).activeCalls.set('call-stuck-ack', {
+      callId: 'call-stuck-ack',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: peerHash,
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'inbound',
+      state: 'active',
+      startedAt: Date.now(),
+    });
+    const remoteHangups: unknown[] = [];
+    manager.on('call:hangup', (payload) => remoteHangups.push(payload));
+
+    const handled = manager.handleDmCallLinkHangup(
+      {
+        kind: 'hangup',
+        callId: 'call-stuck-ack',
+        chatId: 'direct:Q-local:Q-peer',
+        controlId: 'control-stuck-ack',
+        fromAddress: 'Q-peer',
+        toAddress: 'Q-local',
+        timestamp: Date.now(),
+        publicKey: 'peer-public-key',
+        signature: 'hangup-signature',
+        verifiedPeerDestinationHash: peerHash,
+      },
+      () => new Promise<{ success: boolean }>(() => {})
+    );
+    await vi.advanceTimersByTimeAsync(501);
+
+    await expect(handled).resolves.toBe(true);
+    expect(remoteHangups).toEqual([{ callId: 'call-stuck-ack' }]);
+    expect((manager as any).activeCalls.has('call-stuck-ack')).toBe(false);
+    manager.stop();
+  });
+
+  it('accepts a wallet-verified hangup only from the selected DM media endpoint', async () => {
+    const peerHash = 'd'.repeat(32);
+    const manager = new CallManager(
+      presenceStub() as any,
+      new CallBridgeStub() as any
+    );
+    (manager as any).verifyPool = {
+      start: vi.fn(),
+      verify: vi.fn(async () => true),
+      stop: vi.fn(),
+    };
+    manager.start();
+    (manager as any).activeCalls.set('call-inbound-link-hangup', {
+      callId: 'call-inbound-link-hangup',
+      localAddress: 'Q-local',
+      remoteAddress: 'Q-peer',
+      reticulumPeerPresenceHash: peerHash,
+      chatId: 'direct:Q-local:Q-peer',
+      direction: 'inbound',
+      state: 'active',
+      startedAt: Date.now(),
+    });
+    const ack = vi.fn(async () => ({ success: true }));
+    const remoteHangups: unknown[] = [];
+    manager.on('call:hangup', (payload) => remoteHangups.push(payload));
+
+    await expect(
+      manager.handleDmCallLinkHangup(
+        {
+          kind: 'hangup',
+          callId: 'call-inbound-link-hangup',
+          chatId: 'direct:Q-local:Q-peer',
+          controlId: 'control-1',
+          fromAddress: 'Q-peer',
+          toAddress: 'Q-local',
+          timestamp: Date.now(),
+          publicKey: 'peer-public-key',
+          signature: 'hangup-signature',
+          verifiedPeerDestinationHash: peerHash,
+        },
+        ack
+      )
+    ).resolves.toBe(true);
+
+    expect(ack).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'hangup-ack',
+        callId: 'call-inbound-link-hangup',
+        fromAddress: 'Q-local',
+        toAddress: 'Q-peer',
+      })
+    );
+    expect(remoteHangups).toEqual([
+      { callId: 'call-inbound-link-hangup' },
+    ]);
+    expect((manager as any).activeCalls.has('call-inbound-link-hangup')).toBe(
+      false
+    );
+    manager.stop();
+  });
+
+  it('refuses to report acceptance for a call that is no longer ringing', () => {
+    const manager = new CallManager(
+      presenceStub() as any,
+      new CallBridgeStub() as any
+    );
+    manager.start();
+
+    expect(manager.acceptCall('missing-call', 'sig', 'pub', Date.now())).toBe(
+      false
+    );
     manager.stop();
   });
 
@@ -409,7 +678,17 @@ describe('Reticulum manager late bridge binding', () => {
       'other-laptop',
       expect.anything()
     );
-    expect(bridge.fanoutCallDetailed).not.toHaveBeenCalled();
+    expect(bridge.fanoutCallDetailed).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          t: 'CA',
+          c: 'call-source-device',
+          U: 'Q-peer',
+          L: 4,
+        }),
+      ],
+      []
+    );
     manager.stop();
   });
 
@@ -527,7 +806,7 @@ describe('Reticulum manager late bridge binding', () => {
     await Promise.resolve();
     expect(bridge.sendCallDetailed).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(250);
     expect(bridge.sendCallDetailed).toHaveBeenCalledTimes(2);
     expect(bridge.sendCallDetailed).toHaveBeenLastCalledWith(
       'peer-b',

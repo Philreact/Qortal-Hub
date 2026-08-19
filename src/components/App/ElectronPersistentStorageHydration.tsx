@@ -9,6 +9,7 @@ import {
   filterSeenInAppRecordByAge,
   notificationSeenInAppKeysRecordAtom,
   parseSeenInAppStored,
+  reticulumChatTextScaleAtom,
   reticulumHighlightOwnMessagesAtom,
   reticulumLegacyThreadsEnabledAtom,
   seenAllNotificationsByAddressAtom,
@@ -37,6 +38,7 @@ export function ElectronPersistentStorageHydration() {
   const setReticulumHighlightOwnMessages = useSetAtom(
     reticulumHighlightOwnMessagesAtom
   );
+  const setReticulumChatTextScale = useSetAtom(reticulumChatTextScaleAtom);
   const setReticulumLegacyThreadsEnabled = useSetAtom(
     reticulumLegacyThreadsEnabledAtom
   );
@@ -79,6 +81,7 @@ export function ElectronPersistentStorageHydration() {
         dmFriendsPayload,
         disableDevLogsPayload,
         reticulumHighlightOwnMessagesPayload,
+        reticulumChatTextScalePayload,
         reticulumLegacyThreadsEnabledPayload,
       ] =
         await Promise.all([
@@ -93,6 +96,9 @@ export function ElectronPersistentStorageHydration() {
           appStorage.get(ELECTRON_PERSISTENT_ATOM_KEYS.disableDevLogs),
           appStorage.get(
             ELECTRON_PERSISTENT_ATOM_KEYS.reticulumHighlightOwnMessages
+          ),
+          appStorage.get(
+            ELECTRON_PERSISTENT_ATOM_KEYS.reticulumChatTextScale
           ),
           appStorage.get(
             ELECTRON_PERSISTENT_ATOM_KEYS.reticulumLegacyThreadsEnabled
@@ -141,6 +147,13 @@ export function ElectronPersistentStorageHydration() {
           reticulumHighlightOwnMessagesPayload
         );
       }
+      if (
+        reticulumChatTextScalePayload === 'default' ||
+        reticulumChatTextScalePayload === 'medium' ||
+        reticulumChatTextScalePayload === 'high'
+      ) {
+        setReticulumChatTextScale(reticulumChatTextScalePayload);
+      }
       if (typeof reticulumLegacyThreadsEnabledPayload === 'boolean') {
         setReticulumLegacyThreadsEnabled(reticulumLegacyThreadsEnabledPayload);
       }
@@ -152,6 +165,7 @@ export function ElectronPersistentStorageHydration() {
     setDmFriendsByAccount,
     setDisableDevLogs,
     setReticulumHighlightOwnMessages,
+    setReticulumChatTextScale,
     setReticulumLegacyThreadsEnabled,
   ]);
 

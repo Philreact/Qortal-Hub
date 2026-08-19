@@ -116,7 +116,7 @@ export function ReticulumModePill({ target, onClick }: ReticulumModePillProps) {
               : 'none',
             background:
               'linear-gradient(90deg, transparent, rgba(185,220,255,0.24), transparent)',
-            content: '\"\"',
+            content: '""',
             inset: 0,
             pointerEvents: 'none',
             position: 'absolute',

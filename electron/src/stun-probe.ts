@@ -13,7 +13,11 @@ export function sendStunBindingProbe(
   host: string,
   port: number,
   timeoutMs: number
-): Promise<{ ok: boolean; rttMs?: number }> {
+): Promise<{
+  ok: boolean;
+  rttMs?: number;
+  failureReason?: 'timeout' | 'socket-error' | 'send-error';
+}> {
   return new Promise((resolve) => {
     const socket = dgram.createSocket('udp4');
     const txId = crypto.randomBytes(12);
@@ -24,13 +28,24 @@ export function sendStunBindingProbe(
     txId.copy(buf, 8);
 
     const started = Date.now();
-    const timer = setTimeout(() => {
+    let settled = false;
+    const finish = (result: {
+      ok: boolean;
+      rttMs?: number;
+      failureReason?: 'timeout' | 'socket-error' | 'send-error';
+    }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       try {
         socket.close();
       } catch {
         /* ignore */
       }
-      resolve({ ok: false });
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      finish({ ok: false, failureReason: 'timeout' });
     }, timeoutMs);
 
     socket.on('message', (msg) => {
@@ -38,35 +53,17 @@ export function sendStunBindingProbe(
       if (!txId.equals(msg.subarray(8, 20))) return;
       const typ = msg.readUInt16BE(0);
       if ((typ & 0x3fff) !== 0x0101) return;
-      clearTimeout(timer);
-      try {
-        socket.close();
-      } catch {
-        /* ignore */
-      }
-      resolve({ ok: true, rttMs: Date.now() - started });
+      finish({ ok: true, rttMs: Date.now() - started });
     });
 
     socket.on('error', () => {
-      clearTimeout(timer);
-      try {
-        socket.close();
-      } catch {
-        /* ignore */
-      }
-      resolve({ ok: false });
+      finish({ ok: false, failureReason: 'socket-error' });
     });
 
     socket.bind(0, () => {
       socket.send(buf, port, host, (err) => {
         if (err) {
-          clearTimeout(timer);
-          try {
-            socket.close();
-          } catch {
-            /* ignore */
-          }
-          resolve({ ok: false });
+          finish({ ok: false, failureReason: 'send-error' });
         }
       });
     });

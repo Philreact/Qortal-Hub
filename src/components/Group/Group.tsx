@@ -1900,7 +1900,6 @@ export const Group = ({
         return;
       }
       try {
-        await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
         const summaries =
           await window.reticulumChat?.getDirectSummaries?.(myAddress);
         if (!Array.isArray(summaries)) {
@@ -1974,10 +1973,8 @@ export const Group = ({
       setReticulumChatEnabled(enabled);
       if (!enabled || !myAddress) {
         setReticulumDirectSummaries({});
-        void window.reticulumChat?.setLocalDmAddresses?.([]);
         return;
       }
-      await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
       await refreshReticulumDirectSummaries(true);
       for (const delayMs of [750, 2000, 5000]) {
         retryTimers.push(

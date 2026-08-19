@@ -107,7 +107,6 @@ import { useAtomValue } from 'jotai';
 import { reticulumHighlightOwnMessagesAtom } from '../../atoms/global';
 
 const QCHAT_FILE_TRANSFER_TTL_MS = 2 * 60 * 60 * 1000;
-const RETICULUM_FILE_DOWNLOAD_STALL_MS = 2 * 60 * 1000;
 const RETICULUM_FILE_UNAVAILABLE_TIMEOUT_MS = 12_000;
 const RETICULUM_EXPIRING_SOON_MS = 15 * 60 * 60 * 1000;
 const RETICULUM_INLINE_IMAGE_THRESHOLD_BYTES = 1_000_000;
@@ -969,6 +968,7 @@ export const MessageItemComponent = ({
     averageBytesPerSecond?: number;
     nextRequestAt?: number | null;
   } | null>(null);
+  const fileResourceFailureCheckRef = useRef(0);
   const [isFileOpenWarningOpen, setIsFileOpenWarningOpen] = useState(false);
   const [isOpeningFile, setIsOpeningFile] = useState(false);
   const [fileOpenError, setFileOpenError] = useState<string | null>(null);
@@ -1368,6 +1368,7 @@ export const MessageItemComponent = ({
       const verificationFailed =
         payload.failureReason === 'verification_failed';
       if (verificationFailed) {
+        fileResourceFailureCheckRef.current += 1;
         const restartedAt = Date.now();
         setFileResourceFailureReason('verification_failed');
         setFileResourceProgress(0);
@@ -1446,6 +1447,7 @@ export const MessageItemComponent = ({
         setFileResourceLastChunkAt(payload.latestRangeUpdatedAt);
       }
       if (payload.canceled) {
+        fileResourceFailureCheckRef.current += 1;
         setFileResourceFailureReason(null);
         setFileResourceStatus('idle');
         setFileResourceProgress(null);
@@ -1456,13 +1458,11 @@ export const MessageItemComponent = ({
         return;
       }
       if (payload.complete) {
+        fileResourceFailureCheckRef.current += 1;
         setFileResourceFailureReason(null);
         setFileResourceStatus('ready');
         setFileResourceProgress(100);
         setFileResourceBytes(null);
-      }
-      if (payload.failed) {
-        setFileResourceStatus('error');
       }
     },
     []
@@ -1476,6 +1476,29 @@ export const MessageItemComponent = ({
     if (!status?.success) return false;
     applyFileResourceStatus(status);
     return status.complete === true;
+  }, [applyFileResourceStatus, reticulumFileResourceId]);
+
+  const reconcileFileResourceFailure = useCallback(async () => {
+    if (!reticulumFileResourceId) return;
+    const checkId = fileResourceFailureCheckRef.current + 1;
+    fileResourceFailureCheckRef.current = checkId;
+    const status = await window.reticulumResources
+      ?.getStatus?.(reticulumFileResourceId)
+      .catch(() => null);
+    if (fileResourceFailureCheckRef.current !== checkId) return;
+    if (status?.success && status.complete) {
+      applyFileResourceStatus(status);
+      return;
+    }
+    if (status?.success && status.runtime?.active) {
+      applyFileResourceStatus(status);
+      setFileResourceFailureReason(null);
+      setFileResourceStatus('downloading');
+      return;
+    }
+    setFileResourceRuntime(status?.success ? (status.runtime ?? null) : null);
+    setFileResourceFailureReason(null);
+    setFileResourceStatus('error');
   }, [applyFileResourceStatus, reticulumFileResourceId]);
 
   useEffect(() => {
@@ -1503,6 +1526,18 @@ export const MessageItemComponent = ({
         applyFileResourceStatus(payload);
         if (payload.complete) {
           void markFileResourceReadyIfComplete();
+        } else if (
+          payload.failed &&
+          payload.failureReason !== 'verification_failed'
+        ) {
+          void reconcileFileResourceFailure();
+        } else if (!payload.failed && !payload.canceled) {
+          fileResourceFailureCheckRef.current += 1;
+          setFileResourceStatus((status) =>
+            status === 'ready' || status === 'saving'
+              ? status
+              : 'downloading'
+          );
         }
       }
     });
@@ -1510,6 +1545,7 @@ export const MessageItemComponent = ({
     applyFileResourceStatus,
     imageResourceId,
     markFileResourceReadyIfComplete,
+    reconcileFileResourceFailure,
     reticulumFileResourceId,
     reticulumImageRequestKey,
     shouldAutoDownloadReticulumImage,
@@ -1534,6 +1570,7 @@ export const MessageItemComponent = ({
     if (ready) {
       return { success: true };
     }
+    fileResourceFailureCheckRef.current += 1;
     setFileResourceStatus('downloading');
     setFileResourceFailureReason(null);
     setFileResourceProgress((progress) =>
@@ -1565,7 +1602,7 @@ export const MessageItemComponent = ({
           reticulumResourceEventId || undefined
         );
     if (response?.success === false) {
-      setFileResourceStatus('error');
+      await reconcileFileResourceFailure();
       return response;
     }
     return { success: true };
@@ -1577,12 +1614,14 @@ export const MessageItemComponent = ({
     reticulumResourceGroupId,
     isReticulumDirectResourceMessage,
     markFileResourceReadyIfComplete,
+    reconcileFileResourceFailure,
     myAddress,
     reticulumDirectPeerAddress,
   ]);
 
   const cancelReticulumFileResource = useCallback(async () => {
     if (!reticulumFileResourceId) return;
+    fileResourceFailureCheckRef.current += 1;
     setFileResourceStatus('idle');
     setFileResourceFailureReason(null);
     setFileResourceProgress(null);
@@ -1645,6 +1684,8 @@ export const MessageItemComponent = ({
 
   useEffect(() => {
     let cancelled = false;
+    const checkId = fileResourceFailureCheckRef.current + 1;
+    fileResourceFailureCheckRef.current = checkId;
     if (!reticulumFileResourceId) {
       setFileResourceStatus('idle');
       setFileResourceFailureReason(null);
@@ -1655,9 +1696,13 @@ export const MessageItemComponent = ({
     void window.reticulumResources
       ?.getStatus?.(reticulumFileResourceId)
       .then((result) => {
-        if (cancelled) return;
+        if (cancelled || fileResourceFailureCheckRef.current !== checkId)
+          return;
         if (result?.success && result.complete) {
           applyFileResourceStatus(result);
+        } else if (result?.success && result.runtime?.active) {
+          applyFileResourceStatus(result);
+          setFileResourceStatus('downloading');
         } else {
           setFileResourceStatus('idle');
           setFileResourceFailureReason(null);
@@ -1722,18 +1767,6 @@ export const MessageItemComponent = ({
     );
     return () => window.clearTimeout(timer);
   }, [expiryClockMs, reticulumExpiryMs]);
-  useEffect(() => {
-    if (fileResourceStatus !== 'downloading') return;
-    const referenceAt = fileResourceLastChunkAt || fileResourceStartedAt;
-    if (!referenceAt) return;
-    if (Date.now() - referenceAt < RETICULUM_FILE_DOWNLOAD_STALL_MS) return;
-    setFileResourceStatus('error');
-  }, [
-    fileResourceLastChunkAt,
-    fileResourceStartedAt,
-    fileResourceStatus,
-    nowMs,
-  ]);
   const fileResourceActivityText = (() => {
     if (fileResourceStatus !== 'downloading') return '';
     const referenceAt = fileResourceLastChunkAt || fileResourceStartedAt;

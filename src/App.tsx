@@ -54,6 +54,7 @@ import { LazyAuthenticatedShell } from './components/App/LazyAuthenticatedShell'
 import { SupportChat, SUPPORT_ADDRESSES } from './components/Chat/SupportChat';
 import { VoiceCallProvider } from './context/VoiceCallContext';
 import { DirectVoiceCallGlobalOverlay } from './components/Chat/DirectVoiceCallGlobalOverlay';
+import { DirectVoiceScreenShareOverlay } from './components/Chat/DirectVoiceScreenShareOverlay';
 import { DirectVoiceCallNavWidget } from './components/Group/DirectVoiceCallNavWidget';
 import { AgentSupportDashboard } from './components/Chat/AgentSupportDashboard';
 import {
@@ -121,6 +122,7 @@ import {
 } from './constants/constants.ts';
 import { CoreSetup } from './components/CoreSetup.tsx';
 import { usePresence } from './hooks/usePresence';
+import { useReticulumDmAccountRegistration } from './hooks/useReticulumDmAccountRegistration';
 import { useAuth } from './hooks/useAuth.tsx';
 import type { extStates } from './types/app';
 import { AppContextInterface, QORTAL_APP_CONTEXT } from './context/AppContext';
@@ -276,6 +278,7 @@ function App() {
   const [autoLockTimeoutMinutes, setAutoLockTimeoutMinutes] =
     useState<AutoLockTimeoutMinutes>(DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES);
   const [reticulumEnabled, setReticulumEnabled] = useAtom(reticulumEnabledAtom);
+  const [reticulumChatEnabled, setReticulumChatEnabled] = useState(true);
   const [desktopViewMode, setDesktopViewMode] = useState('home');
   const [rawWallet, setRawWallet] = useAtom(rawWalletAtom);
   const [qortBalanceLoading, setQortBalanceLoading] = useAtom(
@@ -291,9 +294,11 @@ function App() {
       autoLockTimeoutMinutes?: number;
       disableAutoLockOnIdle?: boolean;
       reticulumEnabled?: boolean;
+      reticulumChatEnabled?: boolean;
     }) => {
       if (cancelled) return;
       setReticulumEnabled(settings?.reticulumEnabled !== false);
+      setReticulumChatEnabled(settings?.reticulumChatEnabled !== false);
       setAutoLockTimeoutMinutes(
         resolveAutoLockTimeoutMinutes(
           settings?.autoLockTimeoutMinutes,
@@ -720,6 +725,13 @@ function App() {
     if (!rawWallet?.address0) return '';
     return rawWallet.address0;
   }, [rawWallet]);
+
+  useReticulumDmAccountRegistration({
+    managed: isMainWindow,
+    authenticated: extState === 'authenticated',
+    enabled: reticulumEnabled && reticulumChatEnabled,
+    address,
+  });
 
   const { getRootProps, getInputProps } = useDropzone({
     accept: {
@@ -1737,6 +1749,9 @@ function App() {
                         <DirectVoiceCallNavWidget />
                         <QortalGroupVoiceCallStage />
                         <DirectVoiceCallGlobalOverlay
+                          isAppLocked={isAppLocked}
+                        />
+                        <DirectVoiceScreenShareOverlay
                           isAppLocked={isAppLocked}
                         />
                       </>

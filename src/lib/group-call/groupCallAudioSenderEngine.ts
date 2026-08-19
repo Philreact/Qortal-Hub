@@ -69,6 +69,7 @@ export interface GroupCallAudioSenderFrame {
   capturePerfMs: number;
   encoderInputPerfMs: number;
   encodeOutPerfMs: number;
+  pipelineGeneration: string;
 }
 
 type CaptureWorkletMessage = {
@@ -130,6 +131,8 @@ type EncodeWorkerStats = {
 
 export interface GroupCallAudioSenderEngineConfig {
   inputDeviceId: string | null;
+  /** Optional shared capture source. The engine clones and owns its copy. */
+  inputStream?: MediaStream | null;
   outputDeviceId: string | null;
   muted: boolean;
   profile: GroupCallAudioQualityProfile;
@@ -168,10 +171,14 @@ export class GroupCallAudioSenderEngine {
   private encoderGeneration = 0;
   private startToken = 0;
   private lifecycleChain: Promise<void> = Promise.resolve();
-  private activeConfig: Omit<
-    GroupCallAudioSenderEngineConfig,
-    'onEncodedFrame' | 'onVadChanged'
-  > | null = null;
+  private activeConfig: {
+    inputDeviceId: string | null;
+    inputTrackId: string | null;
+    outputDeviceId: string | null;
+    muted: boolean;
+    profile: GroupCallAudioQualityProfile;
+    cpuDegraded: boolean;
+  } | null = null;
   private onEncodedFrame: ((frame: GroupCallAudioSenderFrame) => void) | null =
     null;
   private onVadChanged: ((vad: boolean) => void) | null = null;
@@ -289,6 +296,7 @@ export class GroupCallAudioSenderEngine {
   ): Promise<void> {
     const nextShape = {
       inputDeviceId: config.inputDeviceId ?? null,
+      inputTrackId: config.inputStream?.getAudioTracks()[0]?.id ?? null,
       outputDeviceId: config.outputDeviceId ?? null,
       muted: config.muted === true,
       profile: config.profile,
@@ -298,6 +306,7 @@ export class GroupCallAudioSenderEngine {
     const sameAudioShape =
       currentShape &&
       currentShape.inputDeviceId === nextShape.inputDeviceId &&
+      currentShape.inputTrackId === nextShape.inputTrackId &&
       currentShape.outputDeviceId === nextShape.outputDeviceId &&
       currentShape.muted === nextShape.muted &&
       currentShape.profile === nextShape.profile;
@@ -358,8 +367,17 @@ export class GroupCallAudioSenderEngine {
     let encoder: AudioEncoder | null = null;
     let committed = false;
     try {
-      const gum = await getUserAudioStreamForCall(nextShape.inputDeviceId);
-      stream = gum.stream;
+      const sharedTrack = config.inputStream?.getAudioTracks()[0] ?? null;
+      if (sharedTrack?.readyState === 'live') {
+        const ownedTrack = sharedTrack.clone();
+        // The capture worklet owns fallback muting. Keeping this clone enabled
+        // ensures a call that began muted can later unmute its Reticulum path.
+        ownedTrack.enabled = true;
+        stream = new MediaStream([ownedTrack]);
+      } else {
+        const gum = await getUserAudioStreamForCall(nextShape.inputDeviceId);
+        stream = gum.stream;
+      }
       if (!stream || token !== this.startToken) return;
 
       ctx = new AudioContext({ sampleRate: OPUS_SAMPLE_RATE });
@@ -662,6 +680,7 @@ export class GroupCallAudioSenderEngine {
           capturePerfMs,
           encoderInputPerfMs,
           encodeOutPerfMs,
+          pipelineGeneration: `main:${generation}`,
         });
       },
       error: (error) => {
@@ -846,6 +865,7 @@ export class GroupCallAudioSenderEngine {
         encoderInputPerfMs:
           data.encoderInputPerfMs ?? this.lastEncoderInputPerfMs,
         encodeOutPerfMs: data.encodeOutPerfMs ?? performance.now(),
+        pipelineGeneration: `worker:${data.generation ?? this.encodeWorkerConfiguredGeneration}`,
       });
       return;
     }

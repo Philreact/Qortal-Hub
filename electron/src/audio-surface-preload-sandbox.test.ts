@@ -25,4 +25,17 @@ describe('audio-surface sandbox preload', () => {
 
     expect(runtimeRequires).toEqual(['electron']);
   });
+
+  it('exposes both directions of authenticated group WebRTC signaling', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'electron/src/audio-surface-preload.ts'),
+      'utf8'
+    );
+
+    expect(source).toContain('sendRtcSignal: async');
+    expect(source).toContain("ipcRenderer.invoke('gcall:sendRtcSignal', input)");
+    expect(source).toContain("'gcall:rtc-signal'");
+    expect(source).toContain("'gcall:local-session-taken-over'");
+    expect(source).toContain("ipcRenderer.invoke('hub:getIceServers')");
+  });
 });

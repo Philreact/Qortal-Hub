@@ -27,6 +27,7 @@ import {
 import { useGroupCallContext } from '../../contexts/GroupCallContext';
 import { QORTAL_GROUP_CALL_NAV_SLOT_ID } from '../Desktop/GlobalQortalNavBar';
 import { useLivePortalTarget } from '../../hooks/useLivePortalTarget';
+import { isResolvedGroupCallParticipantAddress } from '../../lib/group-call/groupCallTopology';
 import {
   addrHue,
   initialsFromDisplayLabel,
@@ -75,7 +76,9 @@ export function QortalGroupVoiceCallNavWidget() {
 
   const sortedParticipants = useMemo(() => {
     const my = userInfo?.address ?? '';
-    const list = [...participants];
+    const list = participants.filter((participant) =>
+      isResolvedGroupCallParticipantAddress(participant.address)
+    );
     list.sort((a, b) => {
       if (a.address === my) return -1;
       if (b.address === my) return 1;
@@ -138,7 +141,7 @@ export function QortalGroupVoiceCallNavWidget() {
         display: 'flex',
         gap: 0.75,
         height: 36,
-        maxWidth: { xs: 208, sm: 300, md: 360 },
+        maxWidth: { xs: 208, sm: 300, md: 430 },
         minWidth: 0,
         px: 0.75,
       }}
@@ -164,7 +167,9 @@ export function QortalGroupVoiceCallNavWidget() {
         }}
       >
         <Chip
-          label="Q-CALL"
+          label={t('core:group_call_short_label', {
+            postProcess: 'capitalizeAll',
+          })}
           size="small"
           sx={{
             bgcolor: alpha(theme.palette.primary.main, 0.16),

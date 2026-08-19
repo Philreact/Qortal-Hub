@@ -7,7 +7,7 @@
 
 Qortal Hub is the primary interface for Qortal. It brings together the desktop app, and the new real-time reticulum based communication features.
 
-Qortal 2.0 introduced Reticulum-based voice calling, including beta Q-call group calls with up to 7 participants.
+Qortal 2.0 introduced Reticulum-based voice calling, including beta Q-call group calls with up to 15 participants.
 
 For the best experience, run a local Qortal Core. If you just want to explore first or use Qortal without installing anything, hosted (public node, and hosted hub) access is available.
 
@@ -15,7 +15,7 @@ For the best experience, run a local Qortal Core. If you just want to explore fi
 
 - Primary interface for Qortal users and ongoing UI development
 - Reticulum-based direct voice calls and group voice calls
-- Beta Q-call group calling with up to 7 participants
+- Beta Q-call group calling with up to 15 participants
 - Hosted access for quick entry without a local install
 - Local node support for the full Qortal experience
 - Built-in support for internationalization and multiple languages

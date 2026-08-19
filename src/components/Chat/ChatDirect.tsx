@@ -636,7 +636,6 @@ export const ChatDirect = ({
     let cancelled = false;
     const refresh = async () => {
       try {
-        await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
         if (cancelled) return;
         const silence = await window.reticulumChat?.getSilence?.(
           myAddress,

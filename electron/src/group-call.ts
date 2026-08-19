@@ -5,8 +5,8 @@
  * All GC_* messages are ephemeral (never stored to disk).
  *
  * Architecture (handled entirely in the renderer):
- *   - Adaptive topology: ≤10 members → single forwarder, 11-50 → hierarchical
- *   - Reticulum Links for audio transport (Opus ~24 kbps)
+ *   - Adaptive topology: ≤15 members → single forwarder, 16-50 → hierarchical
+ *   - WebRTC DataChannels for low-latency encrypted audio, with Reticulum per-edge fallback
  *   - End-to-end encryption: v2/v3 wire nonce||secretbox(inner); v1 decode fallback in renderer
  *
  * This module handles only the signaling layer:
@@ -16,10 +16,13 @@
  *   GC_KEY                   — room media key distribution (Reticulum)
  *
  * Security: GC_JOIN, GC_LEAVE, GC_TOPOLOGY, GC_CLUSTER_HEARTBEAT, GC_KEY, and
- * GC_KEY_REQUEST carry Ed25519 signatures. In-room peers verify before use.
+ * GC_KEY_REQUEST and direct GC_RTC_SIGNAL envelopes carry Ed25519 signatures.
+ * RTC descriptions/candidates travel only over authenticated point-to-point
+ * Reticulum audio links; they are never sent through group overlay fanout.
  */
 
 import * as nodeCrypto from 'crypto';
+import * as nodeZlib from 'zlib';
 import { EventEmitter } from 'events';
 import {
   log as loggerLog,
@@ -110,6 +113,16 @@ const GCALL_AUDIO_TIMING_DELAY_LOG_THRESHOLD_MS = 80;
 const GCALL_AUDIO_TIMING_GAP_LOG_THRESHOLD_MS = 320;
 const GCALL_AUDIO_TIMING_LOG_THROTTLE_MS = 2_000;
 const GCALL_AUDIO_DATA_PLANE_V2_ENABLED = true;
+const GCALL_RTC_SIGNAL_TTL_MS = 20_000;
+const GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES = 96 * 1024;
+const GCALL_RTC_SIGNAL_MAX_ENCODED_CHARS =
+  Math.ceil((GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES * 4) / 3) + 4;
+// The Python bridge fragments outbound signals against the actual RNS Channel
+// MDU. This is only a defensive receive bound, not an outbound packet size.
+const GCALL_RTC_SIGNAL_FRAGMENT_CHARS = 384;
+const GCALL_RTC_SIGNAL_MAX_FRAGMENTS = 1_024;
+const GCALL_RTC_SIGNAL_MAX_REASSEMBLIES = 64;
+const GCALL_RTC_SIGNAL_MAX_REPLAY_IDS = 2_048;
 
 type ReticulumAudioTimingMetadata = {
   rendererSendAtMs?: number;
@@ -225,7 +238,7 @@ export const GC_JOIN_MAX_AGE_MS = GC_JOIN_TTL_MS + GC_JOIN_SKEW_ALLOWANCE_MS;
  */
 export const GCALL_DISABLE_ROOM_BOOTSTRAP_CACHE = true;
 
-export const MAX_QORTAL_GROUP_CALL_PARTICIPANTS = 7;
+export const MAX_QORTAL_GROUP_CALL_PARTICIPANTS = 15;
 const GC_RETICULUM_ACTIVITY_HEARTBEAT_INTERVAL_MS = 5_000;
 /** Must exceed heartbeat interval so peers do not drop `GA` as stale between beats. */
 const GC_RETICULUM_ACTIVITY_MAX_AGE_MS = 7_000;
@@ -1142,6 +1155,10 @@ interface GroupRoom {
     clusters: ClusterDef[];
     lastSeen?: number | null;
   };
+  /** Local receipt time, used for incumbent liveness without trusting peer clocks. */
+  lastTopologyObservedAtMs?: number;
+  /** True only while this installation's renderer is reconciling a self-election. */
+  localTopologyProvisional?: boolean;
   joinTimestamp?: number;
   /** Main-owned media session id; immutable until room is empty. */
   callSessionId: string;
@@ -1154,7 +1171,59 @@ interface GroupRoom {
   dmVoiceAudioLinkRole?: 'opener' | 'waiter';
   /** Exact verified endpoint selected by an endpoint-aware 1:1 call. */
   dmVoicePeerDestinationHash?: string;
+  /** Exact active CallManager call bound to this authenticated 1:1 media room. */
+  dmVoiceCallId?: string;
 }
+
+export type DmCallLinkControlInput = {
+  version: 1;
+  kind: 'hangup' | 'hangup-ack';
+  roomId: string;
+  callSessionId: string;
+  mediaSessionGeneration: number;
+  callId: string;
+  chatId: string;
+  controlId: string;
+  fromAddress: string;
+  toAddress: string;
+  timestamp: number;
+  publicKey?: string;
+  signature?: string;
+};
+
+export interface GroupCallRtcSignalInput {
+  roomId: string;
+  callSessionId: string;
+  mediaSessionGeneration: number;
+  fromAddress: string;
+  toAddress: string;
+  connectionId: string;
+  signalId: string;
+  signalType:
+    | 'capability'
+    | 'offer'
+    | 'answer'
+    | 'candidate'
+    | 'candidates'
+    | 'ack'
+    | 'reconnect';
+  payload: string;
+  payloadHash: string;
+  timestamp: number;
+  signature: string;
+  publicKey: string;
+}
+
+type GroupCallRtcReassembly = {
+  roomId: string;
+  digest: string;
+  partCount: number;
+  parts: Map<number, string>;
+  encodedChars: number;
+  senderDestinationHash: string;
+  peerPresenceHash: string;
+  deadline: number;
+};
 
 interface ReticulumAudioPendingFrame {
   roomId: string;
@@ -1653,6 +1722,94 @@ export function chooseMainTopologyAuthority(
   return { acceptIncoming: false, reason: 'same-topology' };
 }
 
+export function shouldProtectHealthyMainTopologyRoot(opts: {
+  currentRoot: string;
+  incomingRoot: string;
+  incomingAuthor: string;
+  currentRootPresent: boolean;
+  currentTopologyObservedAtMs: number;
+  nowMs: number;
+  localTopologyProvisional: boolean;
+  healthyWindowMs?: number;
+}): boolean {
+  const currentRoot = opts.currentRoot.trim();
+  const incomingRoot = opts.incomingRoot.trim();
+  const incomingAuthor = opts.incomingAuthor.trim();
+  if (
+    !currentRoot ||
+    !incomingRoot ||
+    currentRoot === incomingRoot ||
+    incomingAuthor === currentRoot ||
+    !opts.currentRootPresent
+  ) {
+    return false;
+  }
+  // A joining renderer can briefly self-elect while discovering the live root.
+  // Only a topology authored by its claimed root may reconcile that provisional state.
+  if (opts.localTopologyProvisional && incomingAuthor === incomingRoot) {
+    return false;
+  }
+  const observedAt = opts.currentTopologyObservedAtMs;
+  const healthyWindowMs = opts.healthyWindowMs ?? GC_HEALTHY_ROOT_AUTHORITY_MS;
+  return (
+    observedAt > 0 &&
+    Number.isFinite(observedAt) &&
+    opts.nowMs - observedAt <= healthyWindowMs
+  );
+}
+
+export function resolveMainRootObservationTime(opts: {
+  previousRoot: string;
+  nextRoot: string;
+  topologyAuthor: string;
+  previousObservedAtMs: number;
+  nowMs: number;
+}): number {
+  const previousRoot = opts.previousRoot.trim();
+  const nextRoot = opts.nextRoot.trim();
+  if (nextRoot && opts.topologyAuthor.trim() === nextRoot) {
+    return opts.nowMs;
+  }
+  return previousRoot === nextRoot ? opts.previousObservedAtMs : 0;
+}
+
+export function resolveMainLocalTopologyProvisional(opts: {
+  currentRoot: string;
+  incomingRoot: string;
+  currentlyProvisional: boolean;
+  reconciledWithIncumbent: boolean;
+}): boolean {
+  if (
+    opts.reconciledWithIncumbent ||
+    opts.currentRoot.trim() !== opts.incomingRoot.trim()
+  ) {
+    return false;
+  }
+  return opts.currentlyProvisional;
+}
+
+export function isAuthorizedMainRootTransition(opts: {
+  currentRoot: string;
+  incomingRoot: string;
+  incomingAuthor: string;
+  currentStandby: string;
+  currentRootPresent: boolean;
+  reconcileProvisionalLocalRoot: boolean;
+}): boolean {
+  const currentRoot = opts.currentRoot.trim();
+  const incomingRoot = opts.incomingRoot.trim();
+  const incomingAuthor = opts.incomingAuthor.trim();
+  if (!currentRoot || !incomingRoot || currentRoot === incomingRoot) {
+    return true;
+  }
+  if (incomingAuthor === currentRoot) return true;
+  if (incomingAuthor !== incomingRoot) return false;
+  if (opts.reconcileProvisionalLocalRoot || !opts.currentRootPresent) {
+    return true;
+  }
+  return incomingRoot === opts.currentStandby.trim();
+}
+
 function sha256Hex(input: string): string {
   return nodeCrypto.createHash('sha256').update(input).digest('hex');
 }
@@ -1793,6 +1950,8 @@ const GC_MAX_PENDING_VERIFY = 4096;
 const GC_VERIFIED_SIGNATURE_CACHE_MAX = 4096;
 /** Rate-limit stale topology logs (hot path under mesh relay). */
 const GC_STALE_TOPOLOGY_LOG_MIN_MS = 5_000;
+/** Must match the renderer's root-heartbeat failover window. */
+const GC_HEALTHY_ROOT_AUTHORITY_MS = 11_500;
 /** Rate-limit GC_JOIN drop logs per (reason, fromAddress). */
 const GC_JOIN_DROP_LOG_MIN_MS = 5_000;
 /** Throttle broadcastTopology with no local room (ordering / race diagnostic). */
@@ -1881,6 +2040,11 @@ export function getGroupCallManager(): GroupCallManager | null {
 }
 
 export class GroupCallManager extends EventEmitter {
+  private readonly rtcSignalReassemblies = new Map<
+    string,
+    GroupCallRtcReassembly
+  >();
+  private readonly receivedRtcSignalIds = new Map<string, number>();
   private presence: PresenceManager;
   private reticulumBridge: ReticulumBridge | null;
   private started = false;
@@ -2831,6 +2995,8 @@ export class GroupCallManager extends EventEmitter {
     this.reticulumAudioFlushCursor = 0;
     this.rooms.clear();
     this.verifiedGcSignatures.clear();
+    this.rtcSignalReassemblies.clear();
+    this.receivedRtcSignalIds.clear();
     this.inFlightGcVerify.clear();
     this.lastStaleTopologyLogAt = 0;
     this.joinDropLogAt.clear();
@@ -4688,18 +4854,402 @@ export class GroupCallManager extends EventEmitter {
       return;
     }
 
+    if (t === 'GO0') {
+      this.handleRtcSignalStartWire(
+        wire,
+        senderDestinationHash,
+        peerPresenceHash,
+        now
+      );
+      return;
+    }
+    if (t === 'GO1') {
+      this.handleRtcSignalPartWire(
+        wire,
+        senderDestinationHash,
+        peerPresenceHash,
+        now
+      );
+      return;
+    }
+
     if (
       t === 'GX' ||
       t === 'GO' ||
       t === 'GE' ||
-      t === 'GO0' ||
-      t === 'GO1' ||
       t === 'GE0' ||
       t === 'GE1' ||
       t === 'GF'
     ) {
       return;
     }
+  }
+
+  private sweepRtcSignalState(now = Date.now()): void {
+    for (const [key, entry] of this.rtcSignalReassemblies) {
+      if (entry.deadline <= now) this.rtcSignalReassemblies.delete(key);
+    }
+    for (const [key, expiresAt] of this.receivedRtcSignalIds) {
+      if (expiresAt <= now) this.receivedRtcSignalIds.delete(key);
+    }
+    while (
+      this.rtcSignalReassemblies.size >= GCALL_RTC_SIGNAL_MAX_REASSEMBLIES
+    ) {
+      const key = this.rtcSignalReassemblies.keys().next().value as
+        | string
+        | undefined;
+      if (!key) break;
+      this.rtcSignalReassemblies.delete(key);
+    }
+    while (this.receivedRtcSignalIds.size >= GCALL_RTC_SIGNAL_MAX_REPLAY_IDS) {
+      const key = this.receivedRtcSignalIds.keys().next().value as
+        | string
+        | undefined;
+      if (!key) break;
+      this.receivedRtcSignalIds.delete(key);
+    }
+  }
+
+  private handleRtcSignalStartWire(
+    wire: Record<string, unknown>,
+    senderDestinationHash: string,
+    peerPresenceHash: string,
+    now: number
+  ): void {
+    const roomId = typeof wire.R === 'string' ? wire.R : '';
+    const digest = typeof wire.z === 'string' ? wire.z : '';
+    const partCount = Number(wire.n);
+    if (
+      !roomId ||
+      !/^[0-9a-f]{64}$/iu.test(digest) ||
+      !Number.isInteger(partCount) ||
+      partCount < 1 ||
+      partCount > GCALL_RTC_SIGNAL_MAX_FRAGMENTS
+    ) {
+      return;
+    }
+    this.sweepRtcSignalState(now);
+    const key = `${roomId}:${digest}`;
+    const existing = this.rtcSignalReassemblies.get(key);
+    const normalizedSenderHash = senderDestinationHash.trim().toLowerCase();
+    const normalizedPresenceHash = peerPresenceHash.trim().toLowerCase();
+    if (
+      existing &&
+      existing.partCount === partCount &&
+      existing.senderDestinationHash === normalizedSenderHash &&
+      existing.peerPresenceHash === normalizedPresenceHash
+    ) {
+      existing.deadline = now + GCALL_RTC_SIGNAL_TTL_MS;
+      return;
+    }
+    this.rtcSignalReassemblies.set(key, {
+      roomId,
+      digest,
+      partCount,
+      parts: new Map(),
+      encodedChars: 0,
+      senderDestinationHash: normalizedSenderHash,
+      peerPresenceHash: normalizedPresenceHash,
+      deadline: now + GCALL_RTC_SIGNAL_TTL_MS,
+    });
+  }
+
+  private handleRtcSignalPartWire(
+    wire: Record<string, unknown>,
+    senderDestinationHash: string,
+    peerPresenceHash: string,
+    now: number
+  ): void {
+    const roomId = typeof wire.R === 'string' ? wire.R : '';
+    const digest = typeof wire.z === 'string' ? wire.z : '';
+    const partCount = Number(wire.n);
+    const index = Number(wire.x);
+    const part = typeof wire.p === 'string' ? wire.p : '';
+    const key = `${roomId}:${digest}`;
+    const entry = this.rtcSignalReassemblies.get(key);
+    if (
+      !entry ||
+      entry.deadline <= now ||
+      entry.senderDestinationHash !==
+        senderDestinationHash.trim().toLowerCase() ||
+      entry.peerPresenceHash !== peerPresenceHash.trim().toLowerCase() ||
+      partCount !== entry.partCount ||
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= partCount ||
+      part.length > GCALL_RTC_SIGNAL_FRAGMENT_CHARS
+    ) {
+      return;
+    }
+    const previousPart = entry.parts.get(index);
+    const nextEncodedChars =
+      entry.encodedChars - (previousPart?.length ?? 0) + part.length;
+    if (nextEncodedChars > GCALL_RTC_SIGNAL_MAX_ENCODED_CHARS) {
+      this.rtcSignalReassemblies.delete(key);
+      return;
+    }
+    entry.parts.set(index, part);
+    entry.encodedChars = nextEncodedChars;
+    if (entry.parts.size !== entry.partCount) return;
+    this.rtcSignalReassemblies.delete(key);
+    const encoded = Array.from({ length: entry.partCount }, (_, i) =>
+      entry.parts.get(i)
+    );
+    if (encoded.some((value) => typeof value !== 'string')) return;
+    const compressed = Buffer.from(encoded.join(''), 'base64url');
+    if (
+      compressed.length === 0 ||
+      compressed.length > GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES ||
+      nodeCrypto.createHash('sha256').update(compressed).digest('hex') !==
+        entry.digest
+    ) {
+      return;
+    }
+    let input: unknown;
+    try {
+      const inflated = nodeZlib.inflateRawSync(compressed, {
+        maxOutputLength: GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES,
+      });
+      input = JSON.parse(inflated.toString('utf8')) as unknown;
+    } catch {
+      return;
+    }
+    if (this.isDmCallLinkControlInput(input)) {
+      this.verifyAndDeliverDmCallLinkControl(
+        input,
+        entry.senderDestinationHash,
+        entry.peerPresenceHash,
+        now
+      );
+      return;
+    }
+    void this.verifyAndDeliverRtcSignal(
+      input as GroupCallRtcSignalInput,
+      entry.senderDestinationHash,
+      entry.peerPresenceHash,
+      now
+    );
+  }
+
+  private isDmCallLinkControlInput(
+    input: unknown
+  ): input is DmCallLinkControlInput {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return false;
+    }
+    const value = input as Partial<DmCallLinkControlInput>;
+    return Boolean(
+      value.version === 1 &&
+      (value.kind === 'hangup' || value.kind === 'hangup-ack') &&
+      typeof value.roomId === 'string' &&
+      value.roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
+      typeof value.callSessionId === 'string' &&
+      value.callSessionId.length > 0 &&
+      value.callSessionId.length <= 128 &&
+      Number.isInteger(value.mediaSessionGeneration) &&
+      typeof value.callId === 'string' &&
+      value.callId.length > 0 &&
+      value.callId.length <= 64 &&
+      typeof value.chatId === 'string' &&
+      value.chatId.startsWith('direct:') &&
+      value.chatId.length <= 256 &&
+      typeof value.controlId === 'string' &&
+      value.controlId.length > 0 &&
+      value.controlId.length <= 128 &&
+      typeof value.fromAddress === 'string' &&
+      value.fromAddress.length > 0 &&
+      value.fromAddress.length <= 128 &&
+      typeof value.toAddress === 'string' &&
+      value.toAddress.length > 0 &&
+      value.toAddress.length <= 128 &&
+      typeof value.timestamp === 'number' &&
+      Number.isFinite(value.timestamp) &&
+      (value.kind === 'hangup-ack' ||
+        (typeof value.publicKey === 'string' &&
+          value.publicKey.length > 0 &&
+          typeof value.signature === 'string' &&
+          value.signature.length > 0))
+    );
+  }
+
+  private verifyAndDeliverDmCallLinkControl(
+    input: DmCallLinkControlInput,
+    senderDestinationHash: string,
+    peerPresenceHash: string,
+    now: number
+  ): void {
+    if (Math.abs(now - input.timestamp) > 30_000) return;
+    const room = this.rooms.get(input.roomId);
+    if (
+      !room ||
+      room.dmVoiceCallId !== input.callId ||
+      room.chatId !== input.chatId ||
+      room.callSessionId !== input.callSessionId ||
+      room.mediaSessionGeneration >>> 0 !==
+        input.mediaSessionGeneration >>> 0 ||
+      !this.localAddresses.has(input.toAddress)
+    ) {
+      return;
+    }
+    const authenticatedDmPeerHash =
+      this.resolveAuthenticatedDmMediaPeerDestinationHash(
+        room,
+        input.fromAddress,
+        input.toAddress
+      );
+    const source = room.participants.get(input.fromAddress);
+    const target = room.participants.get(input.toAddress);
+    if (!target || (!source && !authenticatedDmPeerHash)) return;
+    const sourceHash = source?.reticulumDestinationHash.trim().toLowerCase();
+    if (
+      authenticatedDmPeerHash &&
+      sourceHash &&
+      sourceHash !== authenticatedDmPeerHash
+    ) {
+      return;
+    }
+    const expectedHash = authenticatedDmPeerHash || sourceHash || '';
+    const transportHash = resolveGroupCallSourcePeerHash(
+      senderDestinationHash,
+      peerPresenceHash
+    );
+    if (
+      !expectedHash ||
+      !transportHash ||
+      expectedHash !== transportHash ||
+      (room.dmVoicePeerDestinationHash &&
+        room.dmVoicePeerDestinationHash.trim().toLowerCase() !== expectedHash)
+    ) {
+      return;
+    }
+    const replayKey = `dm-control:${input.roomId}:${input.controlId}:${input.kind}`;
+    this.sweepRtcSignalState(now);
+    if (this.receivedRtcSignalIds.has(replayKey)) return;
+    this.receivedRtcSignalIds.set(replayKey, now + 60_000);
+    this.emit('gcall:dm-call-control', {
+      ...input,
+      verifiedPeerDestinationHash: expectedHash,
+    });
+  }
+
+  private async verifyAndDeliverRtcSignal(
+    input: GroupCallRtcSignalInput,
+    senderDestinationHash: string,
+    peerPresenceHash: string,
+    now: number
+  ): Promise<void> {
+    if (!this.isValidRtcSignalInput(input, now)) return;
+    const room = this.rooms.get(input.roomId);
+    if (!room || !this.localAddresses.has(input.toAddress)) return;
+    if (
+      input.callSessionId !== room.callSessionId ||
+      input.mediaSessionGeneration >>> 0 !== room.mediaSessionGeneration >>> 0
+    ) {
+      return;
+    }
+    const authenticatedDmPeerHash =
+      this.resolveAuthenticatedDmMediaPeerDestinationHash(
+        room,
+        input.fromAddress,
+        input.toAddress
+      );
+    const source = room.participants.get(input.fromAddress);
+    const target = room.participants.get(input.toAddress);
+    if (!target || (!source && !authenticatedDmPeerHash)) return;
+    if (source?.publicKey && source.publicKey !== input.publicKey) return;
+    const sourceHash = source?.reticulumDestinationHash.trim().toLowerCase();
+    if (
+      authenticatedDmPeerHash &&
+      sourceHash &&
+      sourceHash !== authenticatedDmPeerHash
+    ) {
+      return;
+    }
+    const expectedHash = authenticatedDmPeerHash || sourceHash || '';
+    const transportHash = resolveGroupCallSourcePeerHash(
+      senderDestinationHash,
+      peerPresenceHash
+    );
+    // RTC negotiation is accepted only from the exact authenticated link
+    // selected for this participant. A signed account claim alone is not
+    // enough to inject SDP or ICE data through another transport route.
+    if (!expectedHash || !transportHash || expectedHash !== transportHash) {
+      return;
+    }
+    if (
+      nodeCrypto
+        .createHash('sha256')
+        .update(input.payload, 'utf8')
+        .digest('hex') !== input.payloadHash
+    ) {
+      return;
+    }
+    const replayKey = `${input.roomId}:${input.fromAddress}:${input.signalId}`;
+    this.sweepRtcSignalState(now);
+    if (this.receivedRtcSignalIds.has(replayKey)) return;
+    const fields = {
+      type: 'GC_RTC_SIGNAL',
+      roomId: input.roomId,
+      callSessionId: input.callSessionId,
+      mediaSessionGeneration: input.mediaSessionGeneration >>> 0,
+      fromAddress: input.fromAddress,
+      toAddress: input.toAddress,
+      connectionId: input.connectionId,
+      signalId: input.signalId,
+      signalType: input.signalType,
+      payloadHash: input.payloadHash,
+      fromPublicKey: input.publicKey,
+      timestamp: input.timestamp,
+    };
+    const ok = await this.verifyPool.verify({
+      kind: 'gc',
+      fields,
+      signature: input.signature,
+      fromPublicKey: input.publicKey,
+      fromAddress: input.fromAddress,
+    });
+    if (!ok) return;
+    // Verification runs asynchronously, so another copy may have completed
+    // while this one was awaiting the worker.
+    if (this.receivedRtcSignalIds.has(replayKey)) return;
+    this.receivedRtcSignalIds.set(replayKey, now + GCALL_RTC_SIGNAL_TTL_MS * 2);
+    this.emit('gcall:rtc-signal', { ...input, verified: true });
+  }
+
+  private isValidRtcSignalInput(
+    input: GroupCallRtcSignalInput,
+    now = Date.now()
+  ): boolean {
+    return Boolean(
+      input &&
+      typeof input.roomId === 'string' &&
+      typeof input.callSessionId === 'string' &&
+      input.callSessionId.length <= 128 &&
+      Number.isInteger(input.mediaSessionGeneration) &&
+      typeof input.fromAddress === 'string' &&
+      typeof input.toAddress === 'string' &&
+      typeof input.connectionId === 'string' &&
+      input.connectionId.length <= 160 &&
+      typeof input.signalId === 'string' &&
+      input.signalId.length <= 128 &&
+      [
+        'capability',
+        'offer',
+        'answer',
+        'candidate',
+        'candidates',
+        'ack',
+        'reconnect',
+      ].includes(input.signalType) &&
+      typeof input.payload === 'string' &&
+      Buffer.byteLength(input.payload, 'utf8') <=
+        GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES &&
+      /^[0-9a-f]{64}$/iu.test(input.payloadHash) &&
+      typeof input.signature === 'string' &&
+      typeof input.publicKey === 'string' &&
+      Number.isFinite(input.timestamp) &&
+      Math.abs(now - input.timestamp) <= GCALL_RTC_SIGNAL_TTL_MS
+    );
   }
 
   private flushQortalGroupCallActivity(): void {
@@ -4732,7 +5282,9 @@ export class GroupCallManager extends EventEmitter {
     /** Exact peer endpoint selected by QortalLand's signed call handshake. */
     dmVoicePeerDestinationHash?: string,
     /** Set only by main after resolving an active authenticated CallManager record. */
-    dmVoicePeerDestinationHashVerifiedByCall = false
+    dmVoicePeerDestinationHashVerifiedByCall = false,
+    /** Exact CallManager call bound to this DM media room. */
+    dmVoiceCallId?: string
   ): { callSessionId: string; mediaSessionGeneration: number } {
     this.clearReticulumOverlayLogicalDedupeForRoomLifecycle(roomId, 'join');
     if (this.shouldRejectLocalJoinAtParticipantCap(roomId, localAddress)) {
@@ -4780,6 +5332,15 @@ export class GroupCallManager extends EventEmitter {
       typeof dmVoicePeerDestinationHash === 'string' &&
       isRnsDestinationHashHex(dmVoicePeerDestinationHash)
         ? dmVoicePeerDestinationHash.trim().toLowerCase()
+        : undefined;
+    const normalizedDmVoiceCallId =
+      roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
+      dmVoicePeerDestinationHashVerifiedByCall &&
+      Boolean(normalizedDmVoicePeerDestinationHash) &&
+      typeof dmVoiceCallId === 'string' &&
+      dmVoiceCallId.length > 0 &&
+      dmVoiceCallId.length <= 64
+        ? dmVoiceCallId
         : undefined;
     if (normalizedDmVoicePeerDestinationHash) {
       const directParticipants = chatId.startsWith('direct:')
@@ -4847,6 +5408,9 @@ export class GroupCallManager extends EventEmitter {
               dmVoicePeerDestinationHash: normalizedDmVoicePeerDestinationHash,
             }
           : {}),
+        ...(normalizedDmVoiceCallId
+          ? { dmVoiceCallId: normalizedDmVoiceCallId }
+          : {}),
       };
       this.rooms.set(roomId, room);
     } else {
@@ -4859,6 +5423,9 @@ export class GroupCallManager extends EventEmitter {
       }
       if (normalizedDmVoicePeerDestinationHash) {
         room.dmVoicePeerDestinationHash = normalizedDmVoicePeerDestinationHash;
+      }
+      if (normalizedDmVoiceCallId) {
+        room.dmVoiceCallId = normalizedDmVoiceCallId;
       }
     }
     const rk =
@@ -5201,7 +5768,8 @@ export class GroupCallManager extends EventEmitter {
     >,
     signature: string,
     publicKey: string,
-    timestamp: number
+    timestamp: number,
+    localAuthorityProvisional = false
   ): void {
     const env: GcTopologyEnvelope = {
       type: 'GC_TOPOLOGY',
@@ -5224,6 +5792,14 @@ export class GroupCallManager extends EventEmitter {
         clusters: topology.clusters,
         lastSeen: topology.lastSeen,
       };
+      room.lastTopologyObservedAtMs = resolveMainRootObservationTime({
+        previousRoot,
+        nextRoot: topology.rootForwarder,
+        topologyAuthor: topology.fromAddress,
+        previousObservedAtMs: room.lastTopologyObservedAtMs ?? 0,
+        nowMs: Date.now(),
+      });
+      room.localTopologyProvisional = localAuthorityProvisional;
       if (
         previousRoot &&
         topology.rootForwarder &&
@@ -5302,9 +5878,240 @@ export class GroupCallManager extends EventEmitter {
     );
   }
 
+  /** Send terminal DM-call control over its authenticated media link. */
+  async sendDmCallLinkControl(
+    input: Omit<
+      DmCallLinkControlInput,
+      'version' | 'roomId' | 'callSessionId' | 'mediaSessionGeneration'
+    >
+  ): Promise<{ success: boolean; error?: string }> {
+    const room = [...this.rooms.values()].find(
+      (candidate) =>
+        candidate.roomId.startsWith(DM_VOICE_ROOM_PREFIX) &&
+        candidate.dmVoiceCallId === input.callId &&
+        candidate.chatId === input.chatId &&
+        this.localAddresses.has(input.fromAddress) &&
+        candidate.participants.has(input.fromAddress)
+    );
+    if (!room) return { success: false, error: 'dm-call-room-not-found' };
+    const expectedPeerHash =
+      this.resolveAuthenticatedDmMediaPeerDestinationHash(
+        room,
+        input.fromAddress,
+        input.toAddress
+      );
+    const peer = room.participants.get(input.toAddress);
+    if (
+      !expectedPeerHash ||
+      (peer &&
+        peer.reticulumDestinationHash.trim().toLowerCase() !== expectedPeerHash)
+    ) {
+      return { success: false, error: 'dm-call-peer-mismatch' };
+    }
+    const linkState = this.reticulumAudioPeersByAddress.get(input.toAddress);
+    if (
+      !linkState?.established ||
+      !linkState.linkId ||
+      !linkState.rooms.has(room.roomId) ||
+      !this.isReticulumAudioLinkVerifiedForAddress(
+        input.toAddress,
+        linkState.peerPresenceHash,
+        linkState.peerDestinationHash
+      ) ||
+      linkState.peerPresenceHash.trim().toLowerCase() !== expectedPeerHash
+    ) {
+      return { success: false, error: 'direct-link-not-ready' };
+    }
+    const control: DmCallLinkControlInput = {
+      ...input,
+      version: 1,
+      roomId: room.roomId,
+      callSessionId: room.callSessionId,
+      mediaSessionGeneration: room.mediaSessionGeneration >>> 0,
+    };
+    if (!this.isDmCallLinkControlInput(control)) {
+      return { success: false, error: 'invalid-dm-call-control' };
+    }
+    const compressed = nodeZlib.deflateRawSync(
+      Buffer.from(JSON.stringify(control), 'utf8')
+    );
+    if (compressed.length > GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES) {
+      return { success: false, error: 'dm-call-control-too-large' };
+    }
+    const result =
+      await this.reticulumBridge?.sendGroupAudioLinkControlDetailed({
+        roomId: room.roomId,
+        payload: compressed,
+        signalType: 'call-control',
+        signalId: input.controlId,
+        callSessionId: room.callSessionId,
+        linkId: linkState.linkId,
+        peerPresenceHash: linkState.peerPresenceHash,
+      });
+    if (!result?.ok) {
+      const failure = result as
+        | Extract<ReticulumSendResult, { ok: false }>
+        | undefined;
+      return {
+        success: false,
+        error: failure?.error ?? failure?.reason ?? 'direct-link-send-failed',
+      };
+    }
+    return { success: true };
+  }
+
+  async sendRtcSignal(input: GroupCallRtcSignalInput): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    const now = Date.now();
+    if (!this.isValidRtcSignalInput(input, now)) {
+      return { success: false, error: 'invalid-rtc-signal' };
+    }
+    const room = this.rooms.get(input.roomId);
+    if (!room) return { success: false, error: 'room-not-found' };
+    if (!this.localAddresses.has(input.fromAddress)) {
+      return { success: false, error: 'sender-not-local' };
+    }
+    const authenticatedDmPeerHash =
+      this.resolveAuthenticatedDmMediaPeerDestinationHash(
+        room,
+        input.fromAddress,
+        input.toAddress
+      );
+    const source = room.participants.get(input.fromAddress);
+    if (
+      !source ||
+      (!authenticatedDmPeerHash && !room.participants.has(input.toAddress))
+    ) {
+      return { success: false, error: 'participant-not-found' };
+    }
+    if (source.publicKey && source.publicKey !== input.publicKey) {
+      return { success: false, error: 'sender-public-key-mismatch' };
+    }
+    if (
+      input.callSessionId !== room.callSessionId ||
+      input.mediaSessionGeneration >>> 0 !== room.mediaSessionGeneration >>> 0
+    ) {
+      return { success: false, error: 'media-session-mismatch' };
+    }
+    if (
+      nodeCrypto
+        .createHash('sha256')
+        .update(input.payload, 'utf8')
+        .digest('hex') !== input.payloadHash
+    ) {
+      return { success: false, error: 'payload-hash-mismatch' };
+    }
+    const verified = await this.verifyPool.verify({
+      kind: 'gc',
+      fields: {
+        type: 'GC_RTC_SIGNAL',
+        roomId: input.roomId,
+        callSessionId: input.callSessionId,
+        mediaSessionGeneration: input.mediaSessionGeneration >>> 0,
+        fromAddress: input.fromAddress,
+        toAddress: input.toAddress,
+        connectionId: input.connectionId,
+        signalId: input.signalId,
+        signalType: input.signalType,
+        payloadHash: input.payloadHash,
+        fromPublicKey: input.publicKey,
+        timestamp: input.timestamp,
+      },
+      signature: input.signature,
+      fromPublicKey: input.publicKey,
+      fromAddress: input.fromAddress,
+    });
+    if (!verified) return { success: false, error: 'invalid-signature' };
+    const compressed = nodeZlib.deflateRawSync(
+      Buffer.from(JSON.stringify(input), 'utf8')
+    );
+    if (compressed.length > GCALL_RTC_SIGNAL_MAX_PAYLOAD_BYTES) {
+      return { success: false, error: 'rtc-signal-too-large' };
+    }
+    const bridge = this.reticulumBridge;
+    const linkState = this.reticulumAudioPeersByAddress.get(input.toAddress);
+    if (
+      bridge?.getState() === 'ready' &&
+      linkState?.established &&
+      linkState.linkId &&
+      (!authenticatedDmPeerHash || linkState.rooms.has(input.roomId)) &&
+      this.isReticulumAudioLinkVerifiedForAddress(
+        input.toAddress,
+        linkState.peerPresenceHash,
+        linkState.peerDestinationHash
+      ) &&
+      (!authenticatedDmPeerHash ||
+        linkState.peerPresenceHash.trim().toLowerCase() ===
+          authenticatedDmPeerHash)
+    ) {
+      const channelResult = await bridge.sendGroupAudioLinkControlDetailed({
+        roomId: input.roomId,
+        payload: compressed,
+        signalType: input.signalType,
+        signalId: input.signalId,
+        callSessionId: input.callSessionId,
+        linkId: linkState.linkId,
+        peerPresenceHash: linkState.peerPresenceHash,
+      });
+      if (channelResult.ok) {
+        loggerLog(
+          `[GCall] Queued rtc-${input.signalType} over reliable Reticulum link channel room=${input.roomId} link=${linkState.linkId.slice(0, 16)} bytes=${compressed.length}`
+        );
+        return { success: true };
+      }
+      const channelFailure = channelResult as Extract<
+        typeof channelResult,
+        { ok: false }
+      >;
+      loggerWarn(
+        `[GCall] Reliable rtc-${input.signalType} channel unavailable room=${input.roomId} reason=${channelFailure.reason}${channelFailure.error ? `:${channelFailure.error}` : ''}`
+      );
+      return {
+        success: false,
+        error: channelFailure.error ?? channelFailure.reason,
+      };
+    }
+    return { success: false, error: 'direct-link-not-ready' };
+  }
+
   /**
-   * Send encrypted group audio over a persistent Reticulum link.
+   * A direct-call media room is bound by main to the exact device selected by
+   * CallManager. That binding remains authoritative while a relayed GC_JOIN is
+   * delayed, so DM RTC setup must not depend on the remote participant row.
    */
+  private resolveAuthenticatedDmMediaPeerDestinationHash(
+    room: GroupRoom,
+    fromAddress: string,
+    toAddress: string
+  ): string | null {
+    if (
+      !room.roomId.startsWith(DM_VOICE_ROOM_PREFIX) ||
+      !room.dmVoiceCallId ||
+      !room.chatId.startsWith('direct:')
+    ) {
+      return null;
+    }
+    const addresses = room.chatId
+      .slice('direct:'.length)
+      .split(':')
+      .filter(Boolean);
+    if (
+      addresses.length !== 2 ||
+      fromAddress === toAddress ||
+      !addresses.includes(fromAddress) ||
+      !addresses.includes(toAddress)
+    ) {
+      return null;
+    }
+    const fromIsLocal = this.localAddresses.has(fromAddress);
+    const toIsLocal = this.localAddresses.has(toAddress);
+    if (fromIsLocal === toIsLocal) return null;
+    const pinned = room.dmVoicePeerDestinationHash?.trim().toLowerCase() ?? '';
+    return isRnsDestinationHashHex(pinned) ? pinned : null;
+  }
+
   private computeReticulumAudioTargetsForRoom(room: GroupRoom): Set<string> {
     const targets = new Set<string>();
     const topology = room.lastTopology;
@@ -6932,7 +7739,10 @@ export class GroupCallManager extends EventEmitter {
           skippedLinks++;
         }
       }
-      if (enqueuedForLink > 0) sentLinks++;
+      // Fragmented control messages are useful only when every frame reaches
+      // the same link. Reporting a partial enqueue as success suppresses the
+      // caller's retry and leaves an unreconstructable envelope at the peer.
+      if (enqueuedForLink === encodedFrames.length) sentLinks++;
     }
     if (sentLinks > 0) {
       this.scheduleReticulumAudioFlush();
@@ -10687,35 +11497,71 @@ export class GroupCallManager extends EventEmitter {
     }
     this.noteRecentCallActivity(env.roomId, env.fromAddress, env.timestamp);
     this.noteRecentCallActivityForTopology(env.roomId, env, env.timestamp);
+    const verifiedObservedAtMs = Date.now();
     // Update local epoch tracking
     const room = this.rooms.get(env.roomId);
     const topologySignature = buildTopologySignature(env);
     let emitFullTopology = true;
     if (room) {
+      const now = verifiedObservedAtMs;
       const previousRoot = room.lastTopology?.rootForwarder ?? '';
       const incomingTopology = {
         topologyEpoch: env.topologyEpoch,
         rootForwarder: env.rootForwarder,
         standbyForwarder: env.standbyForwarder,
         clusters: env.clusters,
-        lastSeen: env.lastSeen,
+        lastSeen: now,
       };
       const currentRoot = room.lastTopology?.rootForwarder?.trim() ?? '';
       const incomingRoot = incomingTopology.rootForwarder?.trim() ?? '';
-      const acceptRemoteAuthorityOverLocalRoot =
+      const rootChanged =
+        Boolean(currentRoot) &&
+        Boolean(incomingRoot) &&
+        currentRoot !== incomingRoot;
+      const reconcileProvisionalLocalRoot =
         Boolean(currentRoot) &&
         this.localAddresses.has(currentRoot) &&
+        room.localTopologyProvisional === true &&
         Boolean(incomingRoot) &&
         !this.localAddresses.has(incomingRoot) &&
-        room.participants.has(incomingRoot) &&
-        [...room.participants.keys()].filter(
-          (address) => address && !this.localAddresses.has(address)
-        ).length >= 2;
+        env.fromAddress === incomingRoot &&
+        room.participants.has(incomingRoot);
+      if (
+        rootChanged &&
+        !isAuthorizedMainRootTransition({
+          currentRoot,
+          incomingRoot,
+          incomingAuthor: env.fromAddress,
+          currentStandby: room.lastTopology?.standbyForwarder?.trim() ?? '',
+          currentRootPresent: room.participants.has(currentRoot),
+          reconcileProvisionalLocalRoot,
+        })
+      ) {
+        loggerWarn(
+          `[GCall] Dropped unauthorized GC_TOPOLOGY root transition room=${env.roomId} currentRoot=${currentRoot} standby=${room.lastTopology?.standbyForwarder ?? ''} incomingRoot=${incomingRoot} author=${env.fromAddress}`
+        );
+        return;
+      }
+      if (
+        shouldProtectHealthyMainTopologyRoot({
+          currentRoot,
+          incomingRoot,
+          incomingAuthor: env.fromAddress,
+          currentRootPresent: room.participants.has(currentRoot),
+          currentTopologyObservedAtMs: room.lastTopologyObservedAtMs ?? 0,
+          nowMs: now,
+          localTopologyProvisional: room.localTopologyProvisional === true,
+        })
+      ) {
+        loggerLog(
+          `[GCall] Dropped GC_TOPOLOGY root takeover while incumbent is healthy room=${env.roomId} currentRoot=${currentRoot} incomingRoot=${incomingRoot} author=${env.fromAddress}`
+        );
+        return;
+      }
       if (
         env.topologyEpoch < room.topologyEpoch &&
-        !acceptRemoteAuthorityOverLocalRoot
+        !reconcileProvisionalLocalRoot
       ) {
-        const now = Date.now();
         if (now - this.lastStaleTopologyLogAt >= GC_STALE_TOPOLOGY_LOG_MIN_MS) {
           this.lastStaleTopologyLogAt = now;
           loggerLog(
@@ -10726,16 +11572,17 @@ export class GroupCallManager extends EventEmitter {
       }
       if (
         env.topologyEpoch < room.topologyEpoch &&
-        acceptRemoteAuthorityOverLocalRoot
+        reconcileProvisionalLocalRoot
       ) {
         loggerLog(
-          `[GCall] Accepted stale remote-root GC_TOPOLOGY to resolve local-root split-brain room=${env.roomId} incomingEpoch=${env.topologyEpoch} currentEpoch=${room.topologyEpoch} currentRoot=${currentRoot} incomingRoot=${incomingRoot}`
+          `[GCall] Accepted stale incumbent GC_TOPOLOGY to reconcile provisional local root room=${env.roomId} incomingEpoch=${env.topologyEpoch} currentEpoch=${room.topologyEpoch} currentRoot=${currentRoot} incomingRoot=${incomingRoot}`
         );
       }
       if (
         room.lastTopology &&
         incomingTopology.topologyEpoch === room.lastTopology.topologyEpoch &&
-        incomingTopology.rootForwarder !== room.lastTopology.rootForwarder
+        incomingTopology.rootForwarder !== room.lastTopology.rootForwarder &&
+        !reconcileProvisionalLocalRoot
       ) {
         const decision = chooseMainTopologyAuthority(
           room.lastTopology,
@@ -10755,6 +11602,22 @@ export class GroupCallManager extends EventEmitter {
       room.topologyEpoch = env.topologyEpoch;
       room.topologySignature = topologySignature;
       room.lastTopology = incomingTopology;
+      // Only a verified message authored by the claimed root proves that the
+      // root itself is alive. A relayed topology authored by another member
+      // must not be able to keep a departed root protected indefinitely.
+      room.lastTopologyObservedAtMs = resolveMainRootObservationTime({
+        previousRoot: currentRoot,
+        nextRoot: incomingRoot,
+        topologyAuthor: env.fromAddress,
+        previousObservedAtMs: room.lastTopologyObservedAtMs ?? 0,
+        nowMs: now,
+      });
+      room.localTopologyProvisional = resolveMainLocalTopologyProvisional({
+        currentRoot,
+        incomingRoot,
+        currentlyProvisional: room.localTopologyProvisional === true,
+        reconciledWithIncumbent: reconcileProvisionalLocalRoot,
+      });
       if (
         previousRoot &&
         incomingTopology.rootForwarder &&
@@ -10772,12 +11635,13 @@ export class GroupCallManager extends EventEmitter {
         rootForwarder: env.rootForwarder,
         standbyForwarder: env.standbyForwarder,
         clusters: env.clusters,
-        lastSeen: env.lastSeen,
+        lastSeen: verifiedObservedAtMs,
+        fromAddress: env.fromAddress,
       });
-    } else if (room) {
+    } else if (room && env.fromAddress === env.rootForwarder) {
       this.emit('gcall:heartbeat', {
         roomId: env.roomId,
-        lastSeen: env.lastSeen,
+        lastSeen: verifiedObservedAtMs,
         rootForwarder: env.rootForwarder,
       });
     }

@@ -318,9 +318,6 @@ export function useReticulumDirectChat(
       if (cancelled) return;
       const nextEnabled = value === true;
       setEnabled(nextEnabled);
-      if (nextEnabled && myAddress) {
-        void window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
-      }
     })();
     return () => {
       cancelled = true;
@@ -640,7 +637,6 @@ export function useReticulumDirectChat(
           actualPeerAddress === myAddress ? 'sent' : 'pending',
         localDeliveryUpdatedAt: Date.now(),
       };
-      await window.reticulumChat?.setLocalDmAddresses?.([myAddress]);
       const result = await window.reticulumChat?.publishDirectEvent?.(event);
       if (result?.success) {
         const optimisticEvent: ReticulumDmEvent = {

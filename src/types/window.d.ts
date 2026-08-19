@@ -130,6 +130,16 @@ declare global {
       ) => () => void;
       onSystemLockRequested?: (callback: () => void) => () => void;
       getPlatform?: () => Promise<string>;
+      listScreenShareSources?: () => Promise<{
+        success: boolean;
+        error?: string;
+        sources: Array<{
+          id: string;
+          name: string;
+          thumbnail: string;
+          appIcon: string;
+        }>;
+      }>;
       getSystemCallReadiness?: () => Promise<{
         status: 'good' | 'warning' | 'blocked' | 'unknown';
         reasons: string[];
@@ -155,6 +165,7 @@ declare global {
         disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
+        communityStunContributionEnabled?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
         reticulumEnabled?: boolean;
@@ -168,6 +179,7 @@ declare global {
         disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
+        communityStunContributionEnabled?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
         reticulumEnabled?: boolean;
@@ -180,6 +192,7 @@ declare global {
         disableAutoLockOnIdle?: boolean;
         p2pEnabled?: boolean;
         legacyPublicStunFallback?: boolean;
+        communityStunContributionEnabled?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
         reticulumEnabled?: boolean;
@@ -193,6 +206,7 @@ declare global {
           reticulumEnabled?: boolean;
           reticulumManagedConfigEnabled?: boolean;
           reticulumChatEnabled?: boolean;
+          communityStunContributionEnabled?: boolean;
         }) => void
       ) => () => void;
       /** Reticulum (rnsd) child process status from main process. */
@@ -637,6 +651,17 @@ declare global {
         publicKey: string,
         timestamp: number
       ) => Promise<{ success: boolean }>;
+      sendRtcSignal: (input: {
+        callId: string;
+        generation: string;
+        signalId: string;
+        signalType: 'capability' | 'offer' | 'answer' | 'candidate';
+        payload: string;
+        payloadHash: string;
+        timestamp: number;
+        signature: string;
+        publicKey: string;
+      }) => Promise<{ success: boolean; error?: string }>;
       setLocalAddresses: (
         addresses: string[],
         source?: string
@@ -1371,7 +1396,8 @@ declare global {
         topology: unknown,
         signature: string,
         publicKey: string,
-        timestamp: number
+        timestamp: number,
+        localAuthorityProvisional?: boolean
       ) => Promise<{ success: boolean }>;
       sendClusterHeartbeat?: (
         roomId: string,
@@ -1507,6 +1533,28 @@ declare global {
           };
         };
       }>;
+      sendRtcSignal: (input: {
+        roomId: string;
+        callSessionId: string;
+        mediaSessionGeneration: number;
+        fromAddress: string;
+        toAddress: string;
+        connectionId: string;
+        signalId: string;
+        signalType:
+          | 'capability'
+          | 'offer'
+          | 'answer'
+          | 'candidate'
+          | 'candidates'
+          | 'ack'
+          | 'reconnect';
+        payload: string;
+        payloadHash: string;
+        timestamp: number;
+        signature: string;
+        publicKey: string;
+      }) => Promise<{ success: boolean; error?: string }>;
       sendAudioBatch?: (
         roomId: string,
         toAddresses: string[],
