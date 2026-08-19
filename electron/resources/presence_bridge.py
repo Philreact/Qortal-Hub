@@ -338,7 +338,8 @@ _RESOURCE_SESSION_REQUEST_PATH = "/qortal/resource/v1"
 _RESOURCE_SESSION_HELLO_TYPE = "RETICULUM_RESOURCE_SESSION_HELLO"
 _RESOURCE_SESSION_READY_TYPE = "RETICULUM_RESOURCE_SESSION_READY"
 _RESOURCE_SESSION_CANCEL_TYPE = "RETICULUM_RESOURCE_SESSION_CANCEL"
-_RESOURCE_SESSION_ESTABLISH_TIMEOUT_SECONDS = 30.0
+_RESOURCE_SESSION_FAST_ESTABLISH_TIMEOUT_SECONDS = 10.0
+_RESOURCE_SESSION_BULK_ESTABLISH_TIMEOUT_SECONDS = 30.0
 # An established Link timeout retains its proven route for one replacement
 # attempt. Keep the marker long enough for the lane backoff and a complete
 # replacement establishment timeout, but bounded so an unrelated later Link
@@ -23153,9 +23154,14 @@ def _resource_session_create_link(state: Dict[str, Any], outbound) -> None:
         state["peerDestinationHash"] = destination_hash_hex(outbound.hash)
         with _state_lock:
             _qchat_file_link_ids_by_object[id(link)] = str(state.get("linkId") or "")
+        establish_timeout_seconds = (
+            _RESOURCE_SESSION_FAST_ESTABLISH_TIMEOUT_SECONDS
+            if state.get("sessionLane") == "fast"
+            else _RESOURCE_SESSION_BULK_ESTABLISH_TIMEOUT_SECONDS
+        )
         remaining_establish_seconds = max(
             1.0,
-            _RESOURCE_SESSION_ESTABLISH_TIMEOUT_SECONDS
+            establish_timeout_seconds
             - (time.time() - float(state.get("created_at") or time.time())),
         )
         timer = threading.Timer(
