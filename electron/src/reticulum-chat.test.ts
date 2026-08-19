@@ -23949,6 +23949,102 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('coalesces the same group digest from multiple peers into one repair', () => {
+    const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    const remoteGroupLatest = {
+      eventId: 'shared-remote-head',
+      feedTimestamp: 90_000,
+    };
+    const remoteDigestHash = 'd'.repeat(64);
+
+    for (const [index, peerHash] of [
+      'peer-digest-a',
+      'peer-digest-b',
+    ].entries()) {
+      (manager as any).enqueueDigestRepair({
+        peerHash,
+        providerPeerHash: peerHash,
+        groupId: 59,
+        wire: { channels: [{ c: `channel-${index}` }] },
+        remoteGroupLatest,
+        remoteDigestHash,
+      });
+    }
+
+    expect((manager as any).digestRepairQueue).toHaveLength(1);
+    expect((manager as any).digestRepairItems.size).toBe(1);
+    expect(
+      [...(manager as any).digestRepairItems.values()][0].candidatePeerHashes
+    ).toEqual(['peer-digest-a', 'peer-digest-b']);
+    expect(
+      [...(manager as any).digestRepairItems.values()][0].wire.channels
+    ).toEqual([{ c: 'channel-0' }]);
+    expect((manager as any).digestRepairQueueStats.coalesced).toBe(1);
+    manager.close();
+  });
+
+  it('discovers unchanged author gaps once per group instead of once per peer', () => {
+    let now = 100_000;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+    });
+    manager.setLocalGroupMemberships([59]);
+    manager.subscribeGroup(59);
+    const [first, latest] = signedAuthorEvents([
+      {
+        eventId: 'event-group-gap-discovery-first',
+        groupId: 59,
+        authorSeq: 1,
+        timestamp: 10_001,
+      },
+      {
+        eventId: 'event-group-gap-discovery-latest',
+        groupId: 59,
+        authorSeq: 3,
+        timestamp: 10_003,
+      },
+    ]);
+    expect((manager as any).db.insertEvent(first, true)).toBe(true);
+    expect((manager as any).db.insertEvent(latest, true)).toBe(true);
+    const getGaps = vi.spyOn((manager as any).db, 'getAuthorSequenceGaps');
+
+    expect(
+      (manager as any).requestKnownAuthorGaps(
+        59,
+        'peer-gap-a',
+        'group_state_digest_v3',
+        false,
+        { immediate: false }
+      )
+    ).toBe(true);
+    expect(
+      (manager as any).requestKnownAuthorGaps(
+        59,
+        'peer-gap-b',
+        'group_state_digest_v3',
+        false,
+        { immediate: false }
+      )
+    ).toBe(false);
+    expect(getGaps).toHaveBeenCalledTimes(1);
+
+    now += 60_000;
+    expect(
+      (manager as any).requestKnownAuthorGaps(
+        59,
+        'peer-gap-b',
+        'group_state_digest_v3',
+        false,
+        { immediate: false }
+      )
+    ).toBe(true);
+    expect(getGaps).toHaveBeenCalledTimes(2);
+    manager.close();
+  });
+
   it('ignores malformed and duplicate channel rows in a group digest', () => {
     const manager = new ReticulumChatManager({ dbPath: tempDbPath() });
     manager.setLocalGroupMemberships([61]);
@@ -27409,6 +27505,73 @@ describe('reticulum chat manager', () => {
 
     expect(validateGroupMember).not.toHaveBeenCalled();
     expect(eventSpy).not.toHaveBeenCalled();
+    manager.close();
+  });
+
+  it('stops processing an event page after a bounded protocol rejection burst', async () => {
+    const dbPath = tempDbPath();
+    const manager = new ReticulumChatManager({
+      dbPath,
+      now: () => 100_000,
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([57]);
+    manager.subscribeGroup(57);
+    const validTailEvent = signedEvent({
+      eventId: 'event-after-invalid-page-prefix',
+      groupId: 57,
+      channelId: 'general',
+      timestamp: 90_000,
+    });
+    const page = {
+      v: 1,
+      g: 57,
+      c: 'general',
+      d: 'before',
+      more: false,
+      start: { id: validTailEvent.eventId, ts: validTailEvent.timestamp },
+      end: { id: validTailEvent.eventId, ts: validTailEvent.timestamp },
+      wh: 'invalid-window',
+      events: [null, 'invalid', [], validTailEvent],
+    };
+    const blob = JSON.stringify(page);
+    const pageHash = nodeCrypto
+      .createHash('sha256')
+      .update(blob, 'utf8')
+      .digest('hex');
+    const transferId = 'bounded-invalid-page-transfer';
+    const filePath = path.join(path.dirname(dbPath), `${transferId}.json`);
+    fs.writeFileSync(filePath, blob, 'utf8');
+    (manager as any).eventPageOffers.set(transferId, {
+      transferId,
+      groupId: 57,
+      channelId: 'general',
+      direction: 'before',
+      pageHash,
+      sizeBytes: Buffer.byteLength(blob, 'utf8'),
+      eventCount: page.events.length,
+      sourcePeerHash: 'peer-invalid-page',
+      hasMore: false,
+    });
+    const cancelRelatedRequests = vi.spyOn(
+      manager as any,
+      'cancelRelatedDirectHistoryPageRequests'
+    );
+
+    await (manager as any).importReceivedEventPageResource({
+      status: 'received',
+      path: filePath,
+      transferId,
+      peerPresenceHash: 'peer-invalid-page',
+    });
+
+    expect((manager as any).db.hasEvent(validTailEvent.eventId)).toBe(false);
+    expect(
+      (manager as any).peerProtocolViolations.get(
+        'peer-invalid-page:event_history'
+      )
+    ).toMatchObject({ count: 3, cooldownUntil: 400_000 });
+    expect(cancelRelatedRequests).not.toHaveBeenCalled();
     manager.close();
   });
 
