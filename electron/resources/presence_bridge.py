@@ -98,6 +98,12 @@ _RETICULUM_PATH_NEGATIVE_CACHE_SECONDS = 0.05
 _known_peers: Dict[str, Any] = {}
 _candidate_peers: Dict[str, Dict[str, Any]] = {}
 _verified_overlay_peers: Dict[str, Dict[str, Any]] = {}
+# The Electron process periodically refreshes account leases even when its
+# desired overlay topology is unchanged. Track topology separately so those
+# safety refreshes cannot repeatedly invoke link reconciliation.
+_overlay_sync_topology_fingerprint: Optional[
+    Tuple[Tuple[str, ...], Tuple[str, ...]]
+] = None
 # Wallet-authenticated, expiring account -> Reticulum endpoint leases. Kept
 # separate from transport peers because one installation can serve different
 # Qortal accounts over time (or several active account sessions).
@@ -503,8 +509,40 @@ def _call_wire_json_bytes(out: Dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-def _reticulum_chat_digest_fingerprint(msg: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-    if msg.get("t") != _RETICULUM_CHAT_WIRE_TYPE or msg.get("k") != "group_digest":
+def _reticulum_chat_digest_fingerprint(
+    msg: Dict[str, Any], inbound_peer_hash: str = ""
+) -> Optional[Tuple[str, str]]:
+    if msg.get("t") != _RETICULUM_CHAT_WIRE_TYPE:
+        return None
+    message_type = msg.get("k")
+    if message_type == "group_state_digest_v3":
+        group_id = str(msg.get("g") or "").strip()
+        state = msg.get("d")
+        if not group_id or not isinstance(state, dict):
+            return None
+        # generatedAt is a refresh timestamp, not replicated state. Excluding
+        # it lets the bridge suppress repeated publication of the same state.
+        # Keep the origin in the fingerprint: a second origin advertising the
+        # same state is a useful alternate provider and must reach Electron.
+        stable_state = dict(state)
+        stable_state.pop("generatedAt", None)
+        try:
+            state_hash = hashlib.sha256(
+                json.dumps(
+                    stable_state,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ).encode("utf-8")
+            ).hexdigest()
+        except (TypeError, ValueError):
+            return None
+        origin = str(
+            msg.get("o") or msg.get("r") or inbound_peer_hash or ""
+        ).strip().lower()
+        return group_id, f"v3:{origin}:{state_hash}"
+    if message_type != "group_digest":
         return None
     group_id = str(msg.get("g") or "").strip()
     if not group_id:
@@ -6375,6 +6413,7 @@ def _set_verified_overlay_peers(
     verified_peers: list[Dict[str, Any]],
     active_neighbor_hashes: list[str],
     account_endpoint_leases: Optional[list[Dict[str, Any]]] = None,
+    reconcile_topology: bool = True,
 ) -> None:
     global _verified_overlay_peers, _account_endpoint_leases
     now = time.time()
@@ -6492,6 +6531,9 @@ def _set_verified_overlay_peers(
     with _state_lock:
         _verified_overlay_peers = next_verified
         _account_endpoint_leases = next_leases
+
+    if not reconcile_topology:
+        return
 
     for peer_hash in list(_active_overlay_neighbors.keys()):
         if not _overlay_peer_has_established_link(peer_hash):
@@ -12480,8 +12522,20 @@ def _emit_presence_message(message: Dict[str, Any], link_id: Optional[str] = Non
 
 def _reticulum_chat_inbound_dedup_key(
     message: Dict[str, Any],
+    inbound_peer_hash: str = "",
 ) -> Optional[Tuple[str, float]]:
     message_type = message.get("k")
+    if message_type == "group_state_digest_v3":
+        digest_fingerprint = _reticulum_chat_digest_fingerprint(
+            message, inbound_peer_hash
+        )
+        if digest_fingerprint is None:
+            return None
+        group_id, fingerprint = digest_fingerprint
+        return (
+            f"group_state_digest_v3:{group_id}:{fingerprint}",
+            _RETICULUM_CHAT_DISCOVERY_DEDUP_TTL_SECONDS,
+        )
     if message_type in {"event_offer", "event_page_offer"}:
         body = (
             message.get("o")
@@ -12682,11 +12736,12 @@ def _reticulum_chat_inbound_dedup_key(
 
 def _should_drop_duplicate_reticulum_chat_inbound(
     message: Dict[str, Any],
+    inbound_peer_hash: str = "",
 ) -> bool:
     global _reticulum_chat_routed_control_dedup_last_prune_at
     global _reticulum_chat_inbound_dedup_last_log_at
     global _reticulum_chat_inbound_dedup_suppressed_since_log
-    keyed_ttl = _reticulum_chat_inbound_dedup_key(message)
+    keyed_ttl = _reticulum_chat_inbound_dedup_key(message, inbound_peer_hash)
     if keyed_ttl is None:
         return False
     key, ttl_seconds = keyed_ttl
@@ -12767,7 +12822,9 @@ def _emit_call_bridge_message(
     )
     t = message.get("t")
     if t == _RETICULUM_CHAT_WIRE_TYPE:
-        if _should_drop_duplicate_reticulum_chat_inbound(message):
+        if _should_drop_duplicate_reticulum_chat_inbound(
+            message, str(resolved_presence_hash or "")
+        ):
             return True
         _note_presence_pressure("decoded:reticulum_chat", str(message.get("k") or ""))
         payload: Dict[str, Any] = {
@@ -21031,24 +21088,66 @@ def handle_configure_reticulum_chat_pinned_peers(
 
 
 def handle_overlay_sync_state(req_id: str, payload: Dict[str, Any]) -> None:
+    global _overlay_sync_topology_fingerprint
     verified_raw = payload.get("verifiedPeers")
     active_raw = payload.get("activeNeighborHashes")
     leases_raw = payload.get("accountEndpointLeases")
     verified = verified_raw if isinstance(verified_raw, list) else []
     active = active_raw if isinstance(active_raw, list) else []
     leases = leases_raw if isinstance(leases_raw, list) else []
-    _set_verified_overlay_peers(verified, [str(h) for h in active], leases)
-    queued = _enqueue_scheduler_task(
-        "overlay-control",
-        "overlay-sync-maintenance",
-        _run_overlay_sync_maintenance,
-        "overlay_sync_state",
-        drop_oldest=True,
+    local_hex = _local_presence_hash_hex()
+    verified_hashes = tuple(
+        sorted(
+            {
+                str(peer.get("destinationHash") or "").strip().lower()
+                for peer in verified
+                if isinstance(peer, dict)
+                and isinstance(peer.get("lastSeen"), (int, float))
+                and _valid_presence_destination_hash_hex(
+                    str(peer.get("destinationHash") or "").strip().lower()
+                )
+                and str(peer.get("destinationHash") or "").strip().lower()
+                != local_hex
+            }
+        )
     )
+    active_hashes = tuple(
+        sorted(
+            {
+                str(peer_hash or "").strip().lower()
+                for peer_hash in active
+                if _valid_presence_destination_hash_hex(
+                    str(peer_hash or "").strip().lower()
+                )
+                and str(peer_hash or "").strip().lower() != local_hex
+            }
+        )
+    )
+    topology_fingerprint = (verified_hashes, active_hashes)
+    topology_changed = topology_fingerprint != _overlay_sync_topology_fingerprint
+    _set_verified_overlay_peers(
+        verified,
+        list(active_hashes),
+        leases,
+        reconcile_topology=topology_changed,
+    )
+    _overlay_sync_topology_fingerprint = topology_fingerprint
+    queued = False
+    if topology_changed:
+        queued = _enqueue_scheduler_task(
+            "overlay-control",
+            "overlay-sync-maintenance",
+            _run_overlay_sync_maintenance,
+            "overlay_sync_state",
+            drop_oldest=True,
+        )
     emit_resp(
         req_id,
         True,
-        payload={"maintenanceQueued": bool(queued)},
+        payload={
+            "maintenanceQueued": bool(queued),
+            "topologyChanged": topology_changed,
+        },
     )
 
 
@@ -21066,6 +21165,11 @@ def handle_stop(req_id: str) -> None:
     global _land_state_forwarding_plans
     global _land_state_auth_sessions
     global _land_state_forward_pending
+    global _overlay_sync_topology_fingerprint
+    # A later start can reuse this Python process in tests and controlled
+    # lifecycle recovery. Force its first overlay snapshot to reconcile even
+    # when Electron sends the same peer sets it used before the stop.
+    _overlay_sync_topology_fingerprint = None
     with _land_state_forwarding_lock:
         _land_state_forwarding_plans = {}
         _land_state_auth_sessions = {}
@@ -25251,6 +25355,25 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
             peer_delivered_all_frames = True
             for index in reliable_indices:
                 wire_bytes = encoded_frames[index]
+                digest_fingerprint = (
+                    message_digest_fingerprints[index]
+                    if index < len(message_digest_fingerprints)
+                    else None
+                )
+                dedupe_key: Optional[Tuple[str, str, str]] = None
+                if digest_fingerprint is not None:
+                    group_id, fingerprint = digest_fingerprint
+                    dedupe_key = (peer_hash, group_id, fingerprint)
+                    last_sent_at = _reticulum_chat_digest_fanout_recent.get(dedupe_key)
+                    if (
+                        last_sent_at is not None
+                        and now_mono - last_sent_at
+                        < _RETICULUM_CHAT_DIGEST_DEDUPE_TTL_SECONDS
+                    ):
+                        suppressed_duplicate_digests += 1
+                        if len(suppressed_digest_keys) < 12:
+                            suppressed_digest_keys.append(f"{peer_hash[:8]}:g={group_id}")
+                        continue
                 if not _send_wire_to_established_overlay_peer(
                     peer_hash,
                     wire_bytes,
@@ -25267,6 +25390,8 @@ def handle_fanout_reticulum_chat(req_id: str, payload: Dict[str, Any]) -> None:
                         f"peer_hash={peer_hash} message_type={message_type} "
                         "error=Packet send returned False"
                     )
+                elif dedupe_key is not None:
+                    _reticulum_chat_digest_fanout_recent[dedupe_key] = now_mono
             if peer_delivered_all_frames:
                 reliable_delivered_peer_hashes.append(peer_hash)
 

@@ -1208,6 +1208,65 @@ class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
             )
         )
 
+    def test_group_state_digest_dedup_ignores_refresh_time_but_keeps_providers(self):
+        digest = {
+            "t": "RCHAT",
+            "v": 3,
+            "k": "group_state_digest_v3",
+            "g": 73,
+            "o": "aa" * 16,
+            "d": {
+                "latest": {"id": "event-one", "ts": 123_456},
+                "eventHash": "11" * 32,
+                "generatedAt": 200_000,
+            },
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(digest)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {
+                    **digest,
+                    "r": "cc" * 16,
+                    "d": {**digest["d"], "generatedAt": 201_000},
+                }
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**digest, "o": "bb" * 16}
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**digest, "d": {**digest["d"], "eventHash": "22" * 32}}
+            )
+        )
+
+        direct_digest = {**digest, "g": 74}
+        direct_digest.pop("o", None)
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                direct_digest, "cc" * 16
+            )
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {
+                    **direct_digest,
+                    "d": {**direct_digest["d"], "generatedAt": 202_000},
+                },
+                "cc" * 16,
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                direct_digest, "dd" * 16
+            )
+        )
+
     def test_typing_dedup_ignores_origin_hops_and_ingress_sender(self):
         typing = {
             "t": "RCHAT",
@@ -7850,6 +7909,122 @@ class PresenceBridgeAccountEndpointLeaseTest(unittest.TestCase):
         self.assertEqual(
             self.bridge._resolve_verified_game_peer("Q-account"), direct
         )
+
+
+class PresenceBridgeOverlaySyncTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+
+    def tearDown(self):
+        self.bridge._shutdown.clear()
+
+    def lease(self, session_id, offset=0):
+        now_ms = int(time.time() * 1000)
+        return {
+            "address": "Q-account",
+            "destinationHash": "aa" * 16,
+            "sessionId": session_id,
+            "lastSeen": now_ms + offset,
+            "expiresAt": now_ms + 45_000 + offset,
+            "verification": "direct-bound",
+        }
+
+    def test_lease_refresh_does_not_repeat_unchanged_topology_maintenance(self):
+        responses = []
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ) as enqueue, mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda *args, **kwargs: responses.append((args, kwargs)),
+        ):
+            self.bridge.handle_overlay_sync_state(
+                "first",
+                {"accountEndpointLeases": [self.lease("session-a")]},
+            )
+            self.bridge.handle_overlay_sync_state(
+                "refresh",
+                {"accountEndpointLeases": [self.lease("session-b", 1)]},
+            )
+
+        enqueue.assert_called_once()
+        self.assertTrue(responses[0][1]["payload"]["topologyChanged"])
+        self.assertFalse(responses[1][1]["payload"]["topologyChanged"])
+        self.assertFalse(responses[1][1]["payload"]["maintenanceQueued"])
+        self.assertIn(
+            "session-b",
+            {
+                lease["session_id"]
+                for lease in self.bridge._account_endpoint_leases["Q-account"].values()
+            },
+        )
+
+    def test_a_real_topology_change_still_queues_immediate_maintenance(self):
+        peer_hash = "bb" * 16
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ) as enqueue, mock.patch.object(
+            self.bridge,
+            "emit_resp",
+        ), mock.patch.object(
+            self.bridge,
+            "ensure_known_peer_from_recall",
+            return_value=True,
+        ):
+            self.bridge.handle_overlay_sync_state("empty", {})
+            self.bridge.handle_overlay_sync_state(
+                "changed",
+                {
+                    "verifiedPeers": [
+                        {
+                            "destinationHash": peer_hash,
+                            "lastSeen": int(time.time() * 1000),
+                        }
+                    ],
+                    "activeNeighborHashes": [peer_hash],
+                },
+            )
+
+        self.assertEqual(enqueue.call_count, 2)
+
+    def test_stop_invalidates_topology_fingerprint_for_a_later_start(self):
+        peer_hash = "bb" * 16
+        payload = {
+            "verifiedPeers": [
+                {
+                    "destinationHash": peer_hash,
+                    "lastSeen": int(time.time() * 1000),
+                }
+            ],
+            "activeNeighborHashes": [peer_hash],
+        }
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ) as enqueue, mock.patch.object(
+            self.bridge,
+            "emit_resp",
+        ), mock.patch.object(
+            self.bridge,
+            "ensure_known_peer_from_recall",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_flush_overlay_good_outbound_cache",
+        ), mock.patch.object(
+            self.bridge,
+            "_rns_announce_on_auth_session_end",
+        ):
+            self.bridge.handle_overlay_sync_state("before-stop", payload)
+            self.bridge.handle_stop("stop")
+            self.bridge.handle_overlay_sync_state("after-stop", payload)
+
+        self.assertEqual(enqueue.call_count, 2)
 
 
 class PresenceBridgePinnedChatPeersTest(unittest.TestCase):

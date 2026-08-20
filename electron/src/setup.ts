@@ -3040,21 +3040,25 @@ async function syncReticulumOverlayStateToBridge(
     scheduleReticulumOverlayStateSyncRetry(manager, attempt, sequence);
     return;
   }
-  const verifiedPeers: ReticulumOverlayVerifiedPeer[] = manager
-    .getReticulumVerifiedTransportPeers()
-    .map((peer) => ({
-      destinationHash: peer.destinationHash,
-      lastSeen: peer.lastSeen,
-    }));
-  const accountEndpointLeases = manager.getReticulumAccountEndpointLeases();
-  const activeNeighborHashes = manager.getReticulumActiveNeighborHashes();
-  const overlayNeighborHashes =
-    activeNeighborHashes.length > 0
-      ? activeNeighborHashes
-      : verifiedPeers.map((peer) => peer.destinationHash);
   let syncOk = false;
+  // Snapshot getters may prune expired topology and synchronously emit a
+  // topology-change event. Mark the operation in flight before reading them so
+  // that re-entrant changes become one trailing refresh instead of recursively
+  // starting another full sync.
   reticulumOverlaySyncInFlight = true;
   try {
+    const verifiedPeers: ReticulumOverlayVerifiedPeer[] = manager
+      .getReticulumVerifiedTransportPeers()
+      .map((peer) => ({
+        destinationHash: peer.destinationHash,
+        lastSeen: peer.lastSeen,
+      }));
+    const accountEndpointLeases = manager.getReticulumAccountEndpointLeases();
+    const activeNeighborHashes = manager.getReticulumActiveNeighborHashes();
+    const overlayNeighborHashes =
+      activeNeighborHashes.length > 0
+        ? activeNeighborHashes
+        : verifiedPeers.map((peer) => peer.destinationHash);
     const ok = await bridge.syncOverlayState(
       verifiedPeers,
       overlayNeighborHashes,
@@ -3396,6 +3400,7 @@ export function attachPresenceListeners(
   if (!manager) return;
   loggerLog('[Presence] Attaching manager listeners.');
   let hasObservedUsableReticulumTopology = false;
+  let hasObservedAdmittedReticulumTopology = false;
   manager.on('presence-updated', broadcastPresenceUpdate);
   manager.on('reticulum-overlay-changed', (payload: unknown) => {
     const state = payload as {
@@ -3411,23 +3416,39 @@ export function attachPresenceListeners(
     const verified = typeof state?.verified === 'number' ? state.verified : 0;
     const hasUsableTopology =
       activeNeighbors > 0 || publishFanout > 0 || verified > 0;
+    const hasAdmittedTopology = activeNeighbors > 0 || verified > 0;
     const topologyChanged = state?.topologyChanged === true;
     const firstUsableTopology =
       hasUsableTopology && !hasObservedUsableReticulumTopology;
     const lostUsableTopology =
       !hasUsableTopology && hasObservedUsableReticulumTopology;
+    const firstAdmittedTopology =
+      hasAdmittedTopology && !hasObservedAdmittedReticulumTopology;
     // Candidate announce refreshes do not change anything sent to the bridge.
     // Actual route transitions are synchronized immediately; the maintenance
     // timer remains the recovery fallback for a missed or failed sync.
     if (topologyChanged || firstUsableTopology || lostUsableTopology) {
       void syncReticulumOverlayStateToBridge(manager);
     }
-    if (hasUsableTopology && (topologyChanged || firstUsableTopology)) {
+    // Candidates are sufficient to bootstrap dialing, but only an
+    // authenticated admitted overlay is allowed to trigger the one-time full
+    // subscription replay. The newly admitted peer also receives its targeted
+    // introduction through reticulum-peer-verified below.
+    if (firstAdmittedTopology) {
       scheduleReticulumChatSubscriptionReplay();
+    }
+    if (hasUsableTopology && (topologyChanged || firstUsableTopology)) {
       getReticulumChatManager()?.notifyOverlayHealthChanged(true);
     }
     hasObservedUsableReticulumTopology = hasUsableTopology;
+    hasObservedAdmittedReticulumTopology = hasAdmittedTopology;
   });
+  manager.on(
+    'reticulum-peer-verified',
+    ({ destinationHash }: { destinationHash: string }) => {
+      getReticulumChatManager()?.announceSubscriptionsToPeer(destinationHash);
+    }
+  );
   manager.on('reticulum-account-endpoints-changed', () => {
     void syncReticulumOverlayStateToBridge(manager);
   });

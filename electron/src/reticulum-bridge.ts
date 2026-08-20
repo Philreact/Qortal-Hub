@@ -1420,35 +1420,76 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   }
 
   subscribe(handlers: PresenceTransportHandlers): () => void {
-    const onReady = () => handlers.onReady?.();
-    const onDegraded = (reason?: string) => handlers.onDegraded?.(reason);
-    const onEnvelope = (envelope: PresenceEnvelope, route: PresenceRoute) =>
-      handlers.onEnvelope(envelope, route);
+    let active = true;
+    const deliveredAdmissions = new Set<string>();
+    const onReady = () => {
+      if (active) handlers.onReady?.();
+    };
+    const onDegraded = (reason?: string) => {
+      if (active) handlers.onDegraded?.(reason);
+    };
+    const onEnvelope = (envelope: PresenceEnvelope, route: PresenceRoute) => {
+      if (active) handlers.onEnvelope(envelope, route);
+    };
     const onCandidatePeerDiscovered = (payload: {
       peerHash: string;
       source?: string;
-    }) => handlers.onCandidatePeerDiscovered?.(payload);
+    }) => {
+      if (active) handlers.onCandidatePeerDiscovered?.(payload);
+    };
+    const onOverlayPeerAdmitted = (payload: {
+      peerHash: string;
+      source?: string;
+    }) => {
+      if (!active) return;
+      const peerHash = payload.peerHash.trim().toLowerCase();
+      if (!peerHash || deliveredAdmissions.has(peerHash)) return;
+      deliveredAdmissions.add(peerHash);
+      handlers.onOverlayPeerAdmitted?.({ ...payload, peerHash });
+    };
     const onOverlayLinkClosed = (payload: {
       peerHash: string;
       reason?: string;
       lastActivityAgeMs?: number | null;
-    }) => handlers.onOverlayLinkClosed?.(payload);
+    }) => {
+      if (!active) return;
+      deliveredAdmissions.delete(payload.peerHash.trim().toLowerCase());
+      handlers.onOverlayLinkClosed?.(payload);
+    };
 
     this.on('ready', onReady);
     this.on('degraded', onDegraded);
     this.on('presence-envelope', onEnvelope);
     this.on('candidate-peer-discovered', onCandidatePeerDiscovered);
+    this.on('overlay-peer-admitted', onOverlayPeerAdmitted);
     this.on('overlay-link-closed', onOverlayLinkClosed);
 
     if (this.state === 'ready') {
       queueMicrotask(onReady);
+      // The bridge can already have authenticated overlay links when a
+      // presence manager attaches after startup or recovery. Replay that
+      // current state so the one-time admission transition cannot be lost.
+      // The per-subscription set prevents a concurrent live event from being
+      // delivered twice.
+      queueMicrotask(() => {
+        if (!active) return;
+        for (const snapshot of this.overlayLinkSnapshots.values()) {
+          if (snapshot.overlayTransportAdmitted !== true) continue;
+          onOverlayPeerAdmitted({
+            peerHash: snapshot.peerPresenceHash,
+            source: 'bridge-snapshot',
+          });
+        }
+      });
     }
 
     return () => {
+      active = false;
       this.off('ready', onReady);
       this.off('degraded', onDegraded);
       this.off('presence-envelope', onEnvelope);
       this.off('candidate-peer-discovered', onCandidatePeerDiscovered);
+      this.off('overlay-peer-admitted', onOverlayPeerAdmitted);
       this.off('overlay-link-closed', onOverlayLinkClosed);
     };
   }
@@ -3496,6 +3537,20 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     return false;
   }
 
+  private hasAdmittedOverlaySnapshotForPeer(peerPresenceHash: string): boolean {
+    const peerKey = peerPresenceHash.trim().toLowerCase();
+    if (!peerKey) return false;
+    for (const snap of this.overlayLinkSnapshots.values()) {
+      if (
+        snap.overlayTransportAdmitted === true &&
+        snap.peerPresenceHash.trim().toLowerCase() === peerKey
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private ensureOverlayStalePruneTimer(): void {
     if (this.overlayStalePruneTimer) return;
     this.overlayStalePruneTimer = setInterval(() => {
@@ -5171,6 +5226,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         }
         const established = frame.payload?.established === true;
         if (established) {
+          const peerWasAlreadyAdmitted = peerPresenceHash
+            ? this.hasAdmittedOverlaySnapshotForPeer(peerPresenceHash)
+            : false;
           this.overlayEstablishedLinkIds.add(linkId);
           const existing = this.overlayLinkSnapshots.get(linkId);
           const lastRxAt =
@@ -5199,6 +5257,16 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
             lastRxAt,
             lastActivityAt,
           });
+          if (
+            overlayTransportAdmitted &&
+            peerPresenceHash &&
+            !peerWasAlreadyAdmitted
+          ) {
+            this.emitBridgeFrameEvent('overlay-peer-admitted', {
+              peerHash: peerPresenceHash,
+              source: reason || 'overlay-link-state',
+            });
+          }
         } else {
           this.overlayEstablishedLinkIds.delete(linkId);
           this.overlayLinkSnapshots.delete(linkId);

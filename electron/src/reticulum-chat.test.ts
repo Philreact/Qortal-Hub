@@ -11971,6 +11971,188 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('dedupes the same linked history page across alternate providers', async () => {
+    const providerA = 'c'.repeat(32);
+    const providerB = 'd'.repeat(32);
+    const accepts: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      ensurePeerIdentityKnown: async () => true,
+      acceptReticulumChatResourceDetailed: async (
+        payload: Record<string, unknown>
+      ) => {
+        accepts.push(payload);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+
+    await Promise.all([
+      (manager as any).requestLinkedHistoryPage(
+        providerA,
+        69,
+        '*',
+        { eventId: 'shared-page-cursor', feedTimestamp: 99_000 },
+        'before',
+        false,
+        'provider-a'
+      ),
+      (manager as any).requestLinkedHistoryPage(
+        providerB,
+        69,
+        '*',
+        { eventId: 'shared-page-cursor', feedTimestamp: 99_000 },
+        'before',
+        false,
+        'provider-b'
+      ),
+    ]);
+
+    expect(accepts).toHaveLength(1);
+    expect(accepts[0]).toEqual(
+      expect.objectContaining({ peerPresenceHash: providerA })
+    );
+    manager.close();
+  });
+
+  it('retries a deduped linked history page with an alternate provider after failure', async () => {
+    const providerA = 'c'.repeat(32);
+    const providerB = 'd'.repeat(32);
+    const accepts: Array<Record<string, unknown>> = [];
+    let releaseFirst!: () => void;
+    const firstPending = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      ensurePeerIdentityKnown: async () => true,
+      acceptReticulumChatResourceDetailed: async (
+        payload: Record<string, unknown>
+      ) => {
+        accepts.push(payload);
+        if (accepts.length === 1) {
+          await firstPending;
+          return {
+            ok: false as const,
+            reason: 'send-command-failed',
+            error: 'Packet send returned False',
+          };
+        }
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+
+    const firstRequest = (manager as any).requestLinkedHistoryPage(
+      providerA,
+      69,
+      '*',
+      { eventId: 'provider-fallback-cursor', feedTimestamp: 99_000 },
+      'before',
+      false,
+      'provider-a'
+    );
+    await vi.waitFor(() => expect(accepts).toHaveLength(1));
+    await (manager as any).requestLinkedHistoryPage(
+      providerB,
+      69,
+      '*',
+      { eventId: 'provider-fallback-cursor', feedTimestamp: 99_000 },
+      'before',
+      false,
+      'provider-b'
+    );
+    expect(accepts).toHaveLength(1);
+
+    releaseFirst();
+    await firstRequest;
+    await vi.waitFor(() => expect(accepts).toHaveLength(2));
+    expect(accepts.map((payload) => payload.peerPresenceHash)).toEqual([
+      providerA,
+      providerB,
+    ]);
+    manager.close();
+  });
+
+  it('rotates a deduped linked history page after an accepted transfer later fails', async () => {
+    const providerA = 'c'.repeat(32);
+    const providerB = 'd'.repeat(32);
+    const accepts: Array<Record<string, unknown>> = [];
+    const bridge = {
+      on: () => undefined,
+      off: () => undefined,
+      ensurePeerIdentityKnown: async () => true,
+      acceptReticulumChatResourceDetailed: async (
+        payload: Record<string, unknown>
+      ) => {
+        accepts.push(payload);
+        return { ok: true as const };
+      },
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+    };
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: bridge as any,
+      now: () => 100_000,
+      signLocalFields: createReticulumChatTestSigner(),
+      validateGroupMember: async () => true,
+    });
+    manager.setLocalGroupMemberships([69]);
+    manager.subscribeGroup(69);
+
+    await (manager as any).requestLinkedHistoryPage(
+      providerA,
+      69,
+      '*',
+      { eventId: 'late-provider-fallback-cursor', feedTimestamp: 99_000 },
+      'before',
+      false,
+      'provider-a'
+    );
+    await (manager as any).requestLinkedHistoryPage(
+      providerB,
+      69,
+      '*',
+      { eventId: 'late-provider-fallback-cursor', feedTimestamp: 99_000 },
+      'before',
+      false,
+      'provider-b'
+    );
+    expect(accepts).toHaveLength(1);
+
+    (manager as any).handleEventPageResourceFailure(
+      accepts[0].transferId,
+      'resource_request_timeout'
+    );
+    await vi.waitFor(() => expect(accepts).toHaveLength(2));
+    expect(accepts.map((payload) => payload.peerPresenceHash)).toEqual([
+      providerA,
+      providerB,
+    ]);
+    manager.close();
+  });
+
   it('opens the reusable history session before signing and dispatching auth', async () => {
     const providerHash = 'c'.repeat(32);
     const order: string[] = [];
@@ -12617,7 +12799,10 @@ describe('reticulum chat manager', () => {
         requesterPeerHash,
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitUntil(
+      () => authorizations.length === 1 && sentResources.length === 1,
+      { timeout: 1_000 }
+    );
 
     expect(rejections).toEqual([]);
     expect(authorizations).toEqual([
@@ -12816,10 +13001,9 @@ describe('reticulum chat manager', () => {
         },
       });
     }
-    await vi.waitUntil(
-      () => (manager as any).historyPageServeActive === 4,
-      { timeout: 1_000 }
-    );
+    await vi.waitUntil(() => (manager as any).historyPageServeActive === 4, {
+      timeout: 1_000,
+    });
     expect((manager as any).historyPageServeQueue).toHaveLength(1);
 
     resolveMembership?.(true);
@@ -13171,6 +13355,7 @@ describe('reticulum chat manager', () => {
     const fanout: Array<{
       messages: Record<string, unknown>[];
       excludes: string[];
+      options?: Record<string, unknown>;
     }> = [];
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -13179,9 +13364,10 @@ describe('reticulum chat manager', () => {
         off: () => undefined,
         fanoutReticulumChatDetailed: async (
           messages: Record<string, unknown>[],
-          excludes: string[] = []
+          excludes: string[] = [],
+          options?: Record<string, unknown>
         ) => {
-          fanout.push({ messages, excludes });
+          fanout.push({ messages, excludes, options });
           return { ok: true as const };
         },
       } as any,
@@ -13204,9 +13390,12 @@ describe('reticulum chat manager', () => {
             mode: 'summary',
             o: 'peer-a',
             h: 1,
+            q: expect.any(String),
+            fw: 4,
           }),
         ],
         excludes: expect.arrayContaining(['peer-a']),
+        options: expect.objectContaining({ maxPeerCount: 4 }),
       })
     );
     manager.close();
@@ -13240,6 +13429,7 @@ describe('reticulum chat manager', () => {
       mode: 'summary',
       o: 'origin-peer',
       h: 1,
+      fw: 8,
     };
 
     manager.handleWire(routedSubscription, 'relay-a');
@@ -13257,6 +13447,7 @@ describe('reticulum chat manager', () => {
             groups: [72],
             o: 'origin-peer',
             h: 2,
+            fw: 4,
           }),
         ],
       })
@@ -13264,7 +13455,7 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('propagates a better group subscription route and later renewals', async () => {
+  it('propagates better group subscription routes and dedupes legacy renewals', async () => {
     let now = 100_000;
     const fanout: Record<string, unknown>[] = [];
     const manager = new ReticulumChatManager({
@@ -13301,7 +13492,7 @@ describe('reticulum chat manager', () => {
     manager.handleWire(subscription(2), 'relay-c');
     await flushQueuedWork();
 
-    expect(fanout.map((wire) => wire.h)).toEqual([4, 2, 3]);
+    expect(fanout.map((wire) => wire.h)).toEqual([4, 2]);
     manager.close();
   });
 
@@ -16284,6 +16475,82 @@ describe('reticulum chat manager', () => {
     await oldApply;
     await vi.waitFor(() => expect(newConfigure).toHaveBeenCalledTimes(1));
 
+    manager.close();
+  });
+
+  it('clears digest and linked-history lifecycle state when the bridge is replaced', async () => {
+    const cancelResource = vi.fn().mockResolvedValue({ ok: true as const });
+    const bridgeShape = {
+      on: () => undefined,
+      off: () => undefined,
+      getState: () => 'stopped',
+      fanoutReticulumChatDetailed: async () => ({ ok: true as const }),
+      sendReticulumChatDetailed: async () => ({ ok: true as const }),
+      getLocalDestinationHash: () => 'a'.repeat(32),
+    };
+    const oldBridge = {
+      ...bridgeShape,
+      cancelReticulumResourceDetailed: cancelResource,
+    } as any;
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: oldBridge,
+      now: () => 100_000,
+    });
+    const timer = setTimeout(() => undefined, 60_000);
+    const pendingWire: ReticulumChatWire = {
+      t: 'RCHAT',
+      v: 3,
+      k: 'group_state_digest_v3',
+      g: 73,
+      d: { eventHash: 'f'.repeat(64) },
+    };
+    (manager as any).pendingDigestForwards.set('pending-digest', {
+      key: 'pending-digest',
+      groupId: 73,
+      nextHop: 'b'.repeat(32),
+      originPeerHash: 'c'.repeat(32),
+      wire: pendingWire,
+      timer,
+    });
+    (manager as any).forwardedDigestStateProviders.set('provider-state', {
+      origins: new Set(['c'.repeat(32)]),
+      expiresAt: 160_000,
+    });
+    (manager as any).recentInboundGroupDigests.set('inbound-state', 100_000);
+    (manager as any).forwardedGroupControlKeys.set(
+      'forward:group_state_digest_v3:73:test',
+      160_000
+    );
+    (manager as any).trackDirectHistoryPageRequest(
+      'peer-page-key',
+      'semantic-page-key',
+      {
+        transferId: 'bridge-swap-history',
+        groupId: 73,
+        channelId: '*',
+        direction: 'before',
+        pageHash: '',
+        sizeBytes: 1,
+        eventCount: 1,
+        sourcePeerHash: 'b'.repeat(32),
+      }
+    );
+
+    manager.setBridge({ ...bridgeShape } as any);
+
+    expect((manager as any).pendingDigestForwards.size).toBe(0);
+    expect((manager as any).forwardedDigestStateProviders.size).toBe(0);
+    expect((manager as any).recentInboundGroupDigests.size).toBe(0);
+    expect(
+      [...(manager as any).forwardedGroupControlKeys.keys()].some((key) =>
+        key.startsWith('forward:group_state_digest_v3:')
+      )
+    ).toBe(false);
+    expect((manager as any).directHistoryPageRequests.size).toBe(0);
+    expect(cancelResource).toHaveBeenCalledWith(
+      expect.objectContaining({ transferId: 'bridge-swap-history' })
+    );
     manager.close();
   });
 
@@ -23744,6 +24011,54 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('introduces subscriptions to one admitted peer without broadcasting group digests', async () => {
+    const direct: Array<{ peer: string; wire: Record<string, unknown> }> = [];
+    const fanout: Record<string, unknown>[] = [];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: {
+        on: () => undefined,
+        off: () => undefined,
+        sendReticulumChatDetailed: async (
+          peer: string,
+          wire: Record<string, unknown>
+        ) => {
+          direct.push({ peer, wire });
+          return { ok: true as const };
+        },
+        fanoutReticulumChatDetailed: async (
+          messages: Record<string, unknown>[]
+        ) => {
+          fanout.push(...messages);
+          return { ok: true as const };
+        },
+      } as any,
+      now: () => 80_000,
+    });
+    manager.setLocalGroupMemberships([56, 57]);
+    manager.subscribeGroup(56);
+    manager.subscribeGroup(57);
+    await flushQueuedWork();
+    direct.length = 0;
+    fanout.length = 0;
+
+    manager.announceSubscriptionsToPeer('Peer-New');
+    await flushQueuedWork();
+
+    expect(direct.map(({ peer }) => peer)).toEqual(['peer-new', 'peer-new']);
+    expect(direct.map(({ wire }) => wire.k)).toEqual(['hello_v3', 'group_sub']);
+    expect(direct[1].wire).toMatchObject({
+      groups: [56, 57],
+      mode: 'summary',
+      q: expect.any(String),
+    });
+    expect(direct.some(({ wire }) => wire.k === 'group_state_digest_v3')).toBe(
+      false
+    );
+    expect(fanout).toEqual([]);
+    manager.close();
+  });
+
   it('sends refreshed group digests through known interest routes', async () => {
     let now = 80_000;
     const fanout: Record<string, unknown>[] = [];
@@ -24488,14 +24803,16 @@ describe('reticulum chat manager', () => {
     (manager as any).processDigestRepairQueue();
     expect(
       processRepair.mock.calls.filter(([item]) => item.groupId === 59)
-    ).toHaveLength(8);
+    ).toHaveLength(1);
     expect(
       processRepair.mock.calls.filter(([item]) => item.groupId === 60)
     ).toHaveLength(1);
-    expect((manager as any).digestRepairQueue).toHaveLength(2);
+    expect((manager as any).digestRepairQueue).toHaveLength(9);
 
-    now += 1_000;
-    (manager as any).processDigestRepairQueue();
+    for (let second = 0; second < 9; second += 1) {
+      now += 1_000;
+      (manager as any).processDigestRepairQueue();
+    }
     expect(
       processRepair.mock.calls.filter(([item]) => item.groupId === 59)
     ).toHaveLength(10);
@@ -29575,7 +29892,7 @@ describe('reticulum chat manager', () => {
         requesterPeerHash,
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await vi.waitUntil(() => sentResources.length === 1, { timeout: 1_000 });
 
     expect(sentResources).toHaveLength(1);
     const page = JSON.parse(
