@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as nodeCrypto from 'crypto';
+import * as zlib from 'zlib';
 import nacl from 'tweetnacl';
 import {
   buildReticulumChatAuthorTreeSnapshot,
@@ -61,6 +62,10 @@ import {
   verifyReticulumLandCallV2Wire,
   type ReticulumChatManagerOptions,
 } from './reticulum-chat';
+import {
+  buildReticulumChatAuthorManifest,
+  serializeReticulumChatAuthorManifest,
+} from './reticulum-chat-author-manifest';
 import {
   base58Decode,
   base58Encode,
@@ -14404,16 +14409,23 @@ describe('reticulum chat manager', () => {
 
     intermediate.handleWire(wire, inboundPeer);
     intermediate.handleWire(wire, inboundPeer);
+    await new Promise((resolve) => setTimeout(resolve, 175));
     await flushQueuedWork();
-    expect(direct).toEqual([{ peer: nextHop, wire }]);
+    expect(direct).toEqual([
+      {
+        peer: nextHop,
+        wire: expect.objectContaining({ ...wire, o: 'q'.repeat(21) + 'g' }),
+      },
+    ]);
 
     // The old 30-second edge dedupe allowed an unchanged digest to circulate
     // indefinitely. Keep the established route but do not forward the same
     // payload over it again after that old window.
     now += 31_000;
     intermediate.handleWire(wire, inboundPeer);
+    await new Promise((resolve) => setTimeout(resolve, 175));
     await flushQueuedWork();
-    expect(direct).toEqual([{ peer: nextHop, wire }]);
+    expect(direct).toHaveLength(1);
 
     const lateOriginOnExistingHop = 'e'.repeat(32);
     (intermediate as any).groupInterestRoutes.set(
@@ -14427,11 +14439,9 @@ describe('reticulum chat manager', () => {
       }
     );
     intermediate.handleWire(wire, inboundPeer);
+    await new Promise((resolve) => setTimeout(resolve, 175));
     await flushQueuedWork();
-    expect(direct).toEqual([
-      { peer: nextHop, wire },
-      { peer: nextHop, wire },
-    ]);
+    expect(direct).toHaveLength(2);
 
     const lateNextHop = 'd'.repeat(32);
     (intermediate as any).groupInterestRoutes.set(`73:${lateNextHop}`, {
@@ -14442,12 +14452,10 @@ describe('reticulum chat manager', () => {
       expiresAt: now + 60_000,
     });
     intermediate.handleWire(wire, inboundPeer);
+    await new Promise((resolve) => setTimeout(resolve, 175));
     await flushQueuedWork();
-    expect(direct).toEqual([
-      { peer: nextHop, wire },
-      { peer: nextHop, wire },
-      { peer: lateNextHop, wire },
-    ]);
+    expect(direct).toHaveLength(3);
+    expect(direct[2]).toMatchObject({ peer: lateNextHop });
 
     const newerWire: ReticulumChatWire = {
       ...wire,
@@ -14460,7 +14468,9 @@ describe('reticulum chat manager', () => {
       fallbackFanout: false,
     });
     const sentBeforeEcho = direct.length;
-    intermediate.handleWire(newerWire, inboundPeer);
+    const echoedWire = direct[direct.length - 1]?.wire as ReticulumChatWire;
+    intermediate.handleWire(echoedWire, inboundPeer);
+    await new Promise((resolve) => setTimeout(resolve, 175));
     await flushQueuedWork();
     expect(direct).toHaveLength(sentBeforeEcho);
 
@@ -25499,7 +25509,7 @@ describe('reticulum chat manager', () => {
     remote.close();
   });
 
-  it('serves a retained author tree snapshot while newer events update the current root', async () => {
+  it('ignores legacy author tree traversal requests', async () => {
     const direct: ReticulumChatWire[] = [];
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),
@@ -25520,39 +25530,220 @@ describe('reticulum chat manager', () => {
     });
     manager.setLocalGroupMemberships([56]);
     manager.subscribeGroup(56);
-    const first = signedEvent({ groupId: 56, authorSeq: 1 });
-    expect((manager as any).db.insertEvent(first, true)).toBe(true);
-    (manager as any).clearAuthorTreeGroupState(56);
-    const oldDigest = (await (manager as any).buildGroupStateDigestWire(
-      56
-    )) as any;
-    const oldRoot = oldDigest.d.authorTreeRoot as string;
-    const second = signedEvent({ groupId: 56, authorSeq: 1 });
-    expect((manager as any).db.insertEvent(second, true)).toBe(true);
-    (manager as any).updateAuthorTreeCacheForEvent(second);
-    direct.length = 0;
-
     manager.handleWire(
       {
         t: 'RCHAT',
         v: 3,
         k: 'author_tree_req_v3',
         g: 56,
-        q: { r: oldRoot },
+        q: { r: 'a'.repeat(64) },
       },
       'peer-snapshot'
     );
     await flushQueuedWork();
 
-    expect(direct).toContainEqual(
-      expect.objectContaining({
-        k: 'author_tree_node_v3',
-        n: expect.objectContaining({ r: oldRoot, p: '' }),
-      })
+    expect(direct).toEqual([]);
+    manager.close();
+  });
+
+  it('verifies an author manifest root before recording dedicated range repairs', async () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => 200_000,
+    });
+    manager.setLocalGroupMemberships([56]);
+    manager.subscribeGroup(56);
+    const local = buildReticulumChatAuthorTreeSnapshot(56, []);
+    const remote = buildReticulumChatAuthorTreeSnapshot(56, [
+      {
+        authorAddress: 'QremoteManifestAuthor',
+        authorStreamId: TEST_AUTHOR_STREAM_ID,
+        maxSeq: 25,
+      },
+    ]);
+    const manifest = buildReticulumChatAuthorManifest(remote);
+    const compressed = zlib.gzipSync(
+      Buffer.from(serializeReticulumChatAuthorManifest(manifest), 'utf8')
     );
-    expect(direct.some((wire) => wire.k === 'author_tree_reset_v3')).toBe(
+    const receivePath = path.join(
+      os.tmpdir(),
+      `author-manifest-${nodeCrypto.randomBytes(8).toString('hex')}.gz`
+    );
+    fs.writeFileSync(receivePath, compressed);
+    const sessionKey = `56:${remote.root}`;
+    const transferId = 'author-manifest-test';
+    (manager as any).authorManifestSyncs.set(sessionKey, {
+      key: sessionKey,
+      groupId: 56,
+      remoteRoot: remote.root,
+      baseRoot: local.root,
+      baseHeads: [],
+      candidates: ['peer-manifest'],
+      attemptedPeers: new Set(['peer-manifest']),
+      status: 'active',
+      createdAt: 200_000,
+      expiresAt: 260_000,
+      retryAt: 0,
+      rounds: 0,
+      transferId,
+      activePeer: 'peer-manifest',
+    });
+    (manager as any).activeAuthorManifestSyncByGroup.set(56, sessionKey);
+    (manager as any).authorManifestTransfers.set(transferId, {
+      sessionKey,
+      groupId: 56,
+      remoteRoot: remote.root,
+      peerHash: 'peer-manifest',
+    });
+
+    manager.handleResourceEvent({
+      status: 'received',
+      transferId,
+      path: receivePath,
+      resourceType: 'reticulum_chat_event',
+      metadata: { logicalResourceType: 'reticulum_chat_author_manifest' },
+    } as any);
+    await vi.waitUntil(
+      () =>
+        (manager as any).db.getMissingRange(
+          56,
+          'QremoteManifestAuthor',
+          TEST_AUTHOR_STREAM_ID,
+          1,
+          25
+        ) != null,
+      { timeout: 1_000 }
+    );
+
+    expect(
+      (manager as any).db.getMissingRange(
+        56,
+        'QremoteManifestAuthor',
+        TEST_AUTHOR_STREAM_ID,
+        1,
+        25
+      )
+    ).toMatchObject({ preferredPeer: 'peer-manifest' });
+    expect(fs.existsSync(receivePath)).toBe(false);
+    manager.close();
+  });
+
+  it('discards a late author manifest resource after its coordinator retires', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => 200_000,
+    });
+    const receivePath = path.join(
+      os.tmpdir(),
+      `late-author-manifest-${nodeCrypto.randomBytes(8).toString('hex')}.gz`
+    );
+    fs.writeFileSync(receivePath, 'not-an-event');
+    const eventImporter = vi
+      .spyOn(manager as any, 'importReceivedEventResource')
+      .mockResolvedValue(undefined);
+    (manager as any).ignoreAuthorManifestTransfer('retired-manifest');
+
+    manager.handleResourceEvent({
+      status: 'received',
+      transferId: 'retired-manifest',
+      path: receivePath,
+      resourceType: 'reticulum_chat_event',
+      metadata: { logicalResourceType: 'reticulum_chat_author_manifest' },
+    } as any);
+
+    expect(eventImporter).not.toHaveBeenCalled();
+    expect(fs.existsSync(receivePath)).toBe(false);
+    manager.close();
+  });
+
+  it('retires author manifest work immediately when leaving its group', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => 200_000,
+    });
+    manager.setLocalGroupMemberships([56]);
+    manager.subscribeGroup(56);
+    const key = `56:${'a'.repeat(64)}`;
+    const timer = setTimeout(() => undefined, 60_000);
+    (manager as any).authorManifestSyncs.set(key, {
+      key,
+      groupId: 56,
+      remoteRoot: 'a'.repeat(64),
+      baseRoot: 'b'.repeat(64),
+      baseHeads: [],
+      candidates: ['peer-manifest'],
+      attemptedPeers: new Set(),
+      status: 'active',
+      createdAt: 200_000,
+      expiresAt: 260_000,
+      retryAt: 0,
+      rounds: 0,
+      transferId: 'retired-on-unsubscribe',
+    });
+    (manager as any).activeAuthorManifestSyncByGroup.set(56, key);
+    (manager as any).authorManifestTransfers.set('retired-on-unsubscribe', {
+      sessionKey: key,
+      groupId: 56,
+      remoteRoot: 'a'.repeat(64),
+      peerHash: 'peer-manifest',
+    });
+    (manager as any).authorManifestRetryTimers.set(key, timer);
+
+    manager.unsubscribeGroup(56);
+
+    expect((manager as any).authorManifestSyncs.has(key)).toBe(false);
+    expect((manager as any).activeAuthorManifestSyncByGroup.has(56)).toBe(
       false
     );
+    expect(
+      (manager as any).authorManifestTransfers.has('retired-on-unsubscribe')
+    ).toBe(false);
+    expect((manager as any).authorManifestRetryTimers.has(key)).toBe(false);
+    expect(
+      (manager as any).isIgnoredAuthorManifestTransfer('retired-on-unsubscribe')
+    ).toBe(true);
+    manager.close();
+  });
+
+  it('globally bounds concurrent background author manifest sessions', () => {
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      bridge: { on: () => undefined, off: () => undefined } as any,
+      now: () => 200_000,
+    });
+    const run = vi
+      .spyOn(manager as any, 'runAuthorManifestSync')
+      .mockResolvedValue(undefined);
+    for (const groupId of [56, 57, 58]) {
+      const key = `${groupId}:${String(groupId).padStart(64, '0')}`;
+      (manager as any).authorManifestSyncs.set(key, {
+        key,
+        groupId,
+        remoteRoot: String(groupId).padStart(64, '0'),
+        baseRoot: 'b'.repeat(64),
+        baseHeads: [],
+        candidates: [`peer-${groupId}`],
+        attemptedPeers: new Set(),
+        status: 'queued',
+        createdAt: 200_000 + groupId,
+        expiresAt: 260_000,
+        retryAt: 0,
+        rounds: 0,
+      });
+    }
+
+    (manager as any).startQueuedAuthorManifestSyncs();
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect((manager as any).activeAuthorManifestSyncByGroup.size).toBe(2);
+    expect(
+      [...(manager as any).authorManifestSyncs.values()].filter(
+        (session: any) => session.status === 'queued'
+      )
+    ).toHaveLength(1);
     manager.close();
   });
 
