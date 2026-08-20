@@ -26431,6 +26431,13 @@ export class ReticulumChatManager extends EventEmitter {
     event?: ReticulumChatEvent,
     options: { metadataChanged?: boolean; readStateChanged?: boolean } = {}
   ): void {
+    if (event) {
+      // Events can be discovered from another Hub instance sharing this DB,
+      // so invalidate this manager's local derived cache as well.
+      this.db.invalidateChatSummaryCache(groupId, event.channelId);
+    } else if (options.metadataChanged) {
+      this.db.invalidateChatSummaryCache(groupId);
+    }
     this.emit('summaryChanged', {
       groupId,
       eventId: event?.eventId,

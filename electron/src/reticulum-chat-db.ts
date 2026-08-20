@@ -101,6 +101,7 @@ function eventPassesAuthorExclusion(
 }
 
 const RETICULUM_CHAT_EXPIRY_PRUNE_INTERVAL_MS = 60 * 1000;
+const RETICULUM_CHAT_CHANNEL_SUMMARY_CACHE_MAX_ENTRIES = 4096;
 const RETICULUM_DM_EXPIRY_DAY_MS = 24 * 60 * 60 * 1000;
 export const RETICULUM_DM_DEFAULT_EXPIRY_MS = 30 * RETICULUM_DM_EXPIRY_DAY_MS;
 const RETICULUM_DM_ALLOWED_EXPIRY_MS = new Set([
@@ -358,6 +359,15 @@ export type ReticulumGroupChatSummary = {
   hasUnreadMention: boolean;
   updatedAt: number;
   channels: ReticulumChatSummary[];
+};
+
+type CachedReticulumChannelSummary = {
+  groupId: number;
+  channelId: string;
+  ownerAddress: string;
+  onlineSince: number;
+  validUntil: number;
+  summary: ReticulumChatSummary | null;
 };
 
 export type ReticulumChatReadTarget = {
@@ -1576,6 +1586,10 @@ export class ReticulumChatDatabase {
     }>
   >();
   private memoryReadWatermarks = new Map<string, number>();
+  private channelSummaryCache = new Map<
+    string,
+    CachedReticulumChannelSummary
+  >();
   private memoryRelayCache: Map<string, ReticulumChatRelayCacheEntry>;
   private generalChannelExpiryPolicyAppliedAt = 0;
   private lastExpiryPruneAt = 0;
@@ -1639,6 +1653,7 @@ export class ReticulumChatDatabase {
   private stmtDeleteMentionsForEvent: Statement;
   private stmtGetUnreadMentionRecords: Statement;
   private stmtGetUnreadReplyRecords: Statement;
+  private stmtGetNextMessageExpiry: Statement;
   private stmtMarkMentionsRead: Statement;
   private stmtMarkServed: Statement;
   private stmtTotalCacheBytes: Statement;
@@ -2246,6 +2261,15 @@ export class ReticulumChatDatabase {
         AND (reply.expires_at IS NULL OR reply.expires_at > ?)
         AND parent.deleted_at IS NULL
         AND (parent.expires_at IS NULL OR parent.expires_at > ?)
+    `);
+    this.stmtGetNextMessageExpiry = this.db.prepare(`
+      SELECT MIN(expires_at) AS expires_at
+      FROM reticulum_chat_events
+      WHERE group_id = ?
+        AND channel_id = ?
+        AND event_type IN ('message', 'attachment_manifest')
+        AND expires_at IS NOT NULL
+        AND expires_at > ?
     `);
     this.stmtMarkMentionsRead = this.db.prepare(`
       UPDATE reticulum_chat_mentions
@@ -2863,6 +2887,7 @@ export class ReticulumChatDatabase {
       ReticulumChatDatabase.activeSequenceLeaseOwners.delete(
         this.sequenceLeaseOwnerId
       );
+      this.channelSummaryCache.clear();
       this.db.close();
     }
   }
@@ -3219,6 +3244,12 @@ export class ReticulumChatDatabase {
         ignoredThrough,
         createdAt
       );
+    if (scopeType === 'group') {
+      const groupId = Number(normalizedScopeId);
+      if (Number.isInteger(groupId) && groupId > 0) {
+        this.invalidateChatSummaryCache(groupId, undefined, owner);
+      }
+    }
     return this.getSilence(owner, target, scopeType, normalizedScopeId);
   }
 
@@ -3248,6 +3279,12 @@ export class ReticulumChatDatabase {
         `
       )
       .run(clearedAt, clearedAt, owner, target, scopeType, normalizedScopeId);
+    if (scopeType === 'group') {
+      const groupId = Number(normalizedScopeId);
+      if (Number.isInteger(groupId) && groupId > 0) {
+        this.invalidateChatSummaryCache(groupId, undefined, owner);
+      }
+    }
     return this.getSilence(owner, target, scopeType, normalizedScopeId);
   }
 
@@ -4158,14 +4195,18 @@ export class ReticulumChatDatabase {
     const roots = this.db
       .prepare(
         `
-          SELECT root_event_id
+          SELECT root_event_id, group_id, channel_id
           FROM rchat_message_projection
           WHERE expires_at IS NOT NULL AND expires_at <= ?
           ORDER BY expires_at ASC, root_event_id ASC
           LIMIT ?
         `
       )
-      .all(now, batchLimit) as Array<{ root_event_id?: string }>;
+      .all(now, batchLimit) as Array<{
+      root_event_id?: string;
+      group_id?: number;
+      channel_id?: string;
+    }>;
     if (roots.length === 0) {
       this.lastExpiryPruneAt = now;
       return 0;
@@ -4244,6 +4285,11 @@ export class ReticulumChatDatabase {
       }
     });
     tx(rootIds);
+    for (const root of roots) {
+      const groupId = Number(root.group_id);
+      if (!Number.isInteger(groupId) || groupId <= 0) continue;
+      this.invalidateChatSummaryCache(groupId, root.channel_id);
+    }
     this.lastExpiryPruneAt = now;
     return rootIds.length;
   }
@@ -4703,6 +4749,7 @@ export class ReticulumChatDatabase {
     if (!applied) {
       return { resolutions: [], hasMore, pruned: 0 };
     }
+    this.invalidateChatSummaryCache(groupId, normalizedChannelId);
 
     const resolutionByRoot = new Map(
       resolutions.map((item) => [item.eventId, item] as const)
@@ -4881,6 +4928,7 @@ export class ReticulumChatDatabase {
       this.applyMessageProjectionEvent(event);
       this.refreshMessageProjectionIndexes(event);
       this.applyDeleteScrubForEvent(event);
+      this.invalidateChatSummaryCache(event.groupId, event.channelId);
     }
     if (!ownEvent) this.enforceRelayCacheLimit();
     return inserted;
@@ -4904,9 +4952,17 @@ export class ReticulumChatDatabase {
   }
 
   updatePrivilegedMentionStatus(eventId: string, status: 0 | 1): boolean {
-    return (
-      this.stmtUpdatePrivilegedMentionStatus.run(status, eventId).changes > 0
-    );
+    const changed =
+      this.stmtUpdatePrivilegedMentionStatus.run(status, eventId).changes > 0;
+    if (changed) {
+      const event = this.getEvent(eventId);
+      if (event) {
+        this.invalidateChatSummaryCache(event.groupId, event.channelId);
+      } else {
+        this.invalidateChatSummaryCache();
+      }
+    }
+    return changed;
   }
 
   getPendingPrivilegedMentionEvents(limit = 500): ReticulumChatEvent[] {
@@ -5798,6 +5854,7 @@ export class ReticulumChatDatabase {
     this.stmtDeleteMentionsForEvent.run(eventId);
     this.stmtDeleteEvent.run(eventId);
     if (!event) return;
+    this.invalidateChatSummaryCache(event.groupId, event.channelId);
     if (
       event.eventType === 'message' ||
       event.eventType === 'attachment_manifest'
@@ -6530,12 +6587,19 @@ export class ReticulumChatDatabase {
       }
     });
     tx();
+    this.invalidateChatSummaryCache(projection.group_id, projection.channel_id);
   }
 
   deleteMentionsForEvent(eventId: string): boolean {
     if (typeof eventId !== 'string' || !eventId) return false;
+    const event = this.getEvent(eventId);
     this.memoryMentions.delete(eventId);
     this.stmtDeleteMentionsForEvent.run(eventId);
+    if (event) {
+      this.invalidateChatSummaryCache(event.groupId, event.channelId);
+    } else {
+      this.invalidateChatSummaryCache();
+    }
     return true;
   }
 
@@ -10523,6 +10587,79 @@ export class ReticulumChatDatabase {
     return result.changes > 0;
   }
 
+  invalidateChatSummaryCache(
+    groupId?: number,
+    channelId?: string,
+    ownerAddress?: string
+  ): void {
+    const normalizedGroupId = Number(groupId);
+    const hasGroup =
+      Number.isInteger(normalizedGroupId) && normalizedGroupId > 0;
+    const normalizedChannelId =
+      channelId == null ? '' : normalizeReticulumChatChannelId(channelId);
+    const normalizedOwner = String(ownerAddress || '').trim();
+    if (!hasGroup && !normalizedChannelId && !normalizedOwner) {
+      this.channelSummaryCache.clear();
+      return;
+    }
+    for (const [key, cached] of this.channelSummaryCache) {
+      if (hasGroup && cached.groupId !== normalizedGroupId) continue;
+      if (normalizedChannelId && cached.channelId !== normalizedChannelId) {
+        continue;
+      }
+      if (normalizedOwner && cached.ownerAddress !== normalizedOwner) continue;
+      this.channelSummaryCache.delete(key);
+    }
+  }
+
+  private channelSummaryCacheKey(
+    groupId: number,
+    channelId: string,
+    ownerAddress: string,
+    onlineSince: number
+  ): string {
+    return JSON.stringify([
+      groupId,
+      channelId,
+      ownerAddress,
+      Math.max(0, Math.floor(onlineSince)),
+    ]);
+  }
+
+  private nextMessageExpiry(
+    groupId: number,
+    channelId: string,
+    now: number
+  ): number {
+    const row = this.stmtGetNextMessageExpiry.get(groupId, channelId, now) as
+      | { expires_at?: number | null }
+      | undefined;
+    const expiresAt = Number(row?.expires_at);
+    return Number.isFinite(expiresAt) && expiresAt > now
+      ? expiresAt
+      : Number.POSITIVE_INFINITY;
+  }
+
+  private rememberChannelSummary(
+    key: string,
+    cached: CachedReticulumChannelSummary
+  ): void {
+    if (this.channelSummaryCache.has(key)) {
+      this.channelSummaryCache.delete(key);
+    }
+    while (
+      this.channelSummaryCache.size >=
+      RETICULUM_CHAT_CHANNEL_SUMMARY_CACHE_MAX_ENTRIES
+    ) {
+      const oldestKey = this.channelSummaryCache.keys().next().value as
+        | string
+        | undefined;
+      if (!oldestKey) break;
+      this.channelSummaryCache.delete(oldestKey);
+    }
+    this.channelSummaryCache.set(key, cached);
+  }
+
   getChatSummaries(
     myAddress = '',
     onlineSince = 0
@@ -10541,6 +10678,13 @@ export class ReticulumChatDatabase {
             (record) => record.expiresAt == null || record.expiresAt > now
           )
           .map((record) => record.targetAddress)
+      );
+      const nextSilenceExpiry = silenceRecords.reduce(
+        (nextExpiry, record) =>
+          record.expiresAt != null && record.expiresAt > now
+            ? Math.min(nextExpiry, record.expiresAt)
+            : nextExpiry,
+        Number.POSITIVE_INFINITY
       );
       const ignoredThroughByAuthor = new Map<string, number>();
       for (const record of silenceRecords) {
@@ -10561,7 +10705,8 @@ export class ReticulumChatDatabase {
             myAddress,
             onlineSince,
             activeSilencedAuthors,
-            ignoredThroughByAuthor
+            ignoredThroughByAuthor,
+            nextSilenceExpiry
           )
         )
         .filter((summary): summary is ReticulumChatSummary => !!summary);
@@ -10925,6 +11070,58 @@ export class ReticulumChatDatabase {
   }
 
   private getChannelSummary(
+    groupId: number,
+    channelId: string,
+    myAddress = '',
+    onlineSince = 0,
+    activeSilencedAuthors: ReadonlySet<string> = new Set(),
+    ignoredThroughByAuthor: ReadonlyMap<string, number> = new Map(),
+    silenceValidUntil = Number.POSITIVE_INFINITY
+  ): ReticulumChatSummary | null {
+    const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
+    const normalizedOwner = String(myAddress || '').trim();
+    const normalizedOnlineSince = Math.max(0, Math.floor(onlineSince));
+    const key = this.channelSummaryCacheKey(
+      groupId,
+      normalizedChannelId,
+      normalizedOwner,
+      normalizedOnlineSince
+    );
+    const now = Date.now();
+    const cached = this.channelSummaryCache.get(key);
+    if (cached && cached.validUntil > now) {
+      // Refresh insertion order so the bounded cache evicts least-recently-used
+      // entries when accounts or memberships change over a long-running session.
+      this.channelSummaryCache.delete(key);
+      this.channelSummaryCache.set(key, cached);
+      return cached.summary;
+    }
+    if (cached) this.channelSummaryCache.delete(key);
+
+    const summary = this.computeChannelSummary(
+      groupId,
+      normalizedChannelId,
+      normalizedOwner,
+      normalizedOnlineSince,
+      activeSilencedAuthors,
+      ignoredThroughByAuthor
+    );
+    const validUntil = Math.min(
+      silenceValidUntil,
+      this.nextMessageExpiry(groupId, normalizedChannelId, now)
+    );
+    this.rememberChannelSummary(key, {
+      groupId,
+      channelId: normalizedChannelId,
+      ownerAddress: normalizedOwner,
+      onlineSince: normalizedOnlineSince,
+      validUntil,
+      summary,
+    });
+    return summary;
+  }
+
+  private computeChannelSummary(
     groupId: number,
     channelId: string,
     myAddress = '',
@@ -11297,6 +11494,9 @@ export class ReticulumChatDatabase {
           }
         }
       }
+    }
+    for (const { groupId, channelId } of normalizedTargets.values()) {
+      this.invalidateChatSummaryCache(groupId, channelId, address);
     }
     return normalizedTargets.size;
   }
@@ -14018,6 +14218,10 @@ export class ReticulumChatDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_expires
         ON reticulum_chat_events (expires_at);
+      CREATE INDEX IF NOT EXISTS idx_reticulum_chat_events_channel_next_expiry
+        ON reticulum_chat_events (group_id, channel_id, expires_at)
+        WHERE event_type IN ('message', 'attachment_manifest')
+          AND expires_at IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_rchat_message_projection_expires
         ON rchat_message_projection (expires_at);
       DROP INDEX IF EXISTS idx_reticulum_chat_events_pending_expiry;

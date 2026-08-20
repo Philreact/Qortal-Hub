@@ -1547,6 +1547,24 @@ class Statement {
       );
     }
     if (this.sql.includes('FROM reticulum_chat_events')) {
+      if (this.sql.includes('SELECT MIN(expires_at) AS expires_at')) {
+        const [groupId, channelId, now] = args;
+        const expiries = this.store.reticulumChatEvents
+          .filter(
+            (row) =>
+              row.group_id === groupId &&
+              row.channel_id === channelId &&
+              ['message', 'attachment_manifest'].includes(
+                String(row.event_type)
+              ) &&
+              row.expires_at != null &&
+              Number(row.expires_at) > Number(now)
+          )
+          .map((row) => Number(row.expires_at));
+        return {
+          expires_at: expiries.length > 0 ? Math.min(...expiries) : null,
+        };
+      }
       if (this.sql.includes('WHERE event_id = ?')) {
         const [eventId] = args;
         const row = this.store.reticulumChatEvents.find(

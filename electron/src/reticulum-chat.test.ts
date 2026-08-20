@@ -5009,6 +5009,126 @@ describe('reticulum chat database', () => {
     expect(db.getChatSummaries(accountA)[0]?.unreadCount).toBe(1);
   });
 
+  it('reuses unchanged channel summaries and recalculates only the changed channel', () => {
+    const db = new ReticulumChatDatabase(tempDbPath());
+    dbs.push(db);
+    const readerAddress = deriveAddressFromPublicKey(
+      base58Encode(nacl.sign.keyPair().publicKey)
+    );
+    const groupId = 265;
+    const baseTimestamp = Date.now() - 5_000;
+    const [generalEvent, otherEvent, nextGeneralEvent] = signedAuthorEvents([
+      {
+        eventId: 'summary-cache-general',
+        groupId,
+        channelId: 'general',
+        authorSeq: 1,
+        timestamp: baseTimestamp,
+      },
+      {
+        eventId: 'summary-cache-other',
+        groupId,
+        channelId: 'other',
+        authorSeq: 2,
+        timestamp: baseTimestamp + 1_000,
+      },
+      {
+        eventId: 'summary-cache-general-next',
+        groupId,
+        channelId: 'general',
+        authorSeq: 3,
+        timestamp: baseTimestamp + 2_000,
+      },
+    ]);
+    expect(db.insertEvent(generalEvent, false)).toBe(true);
+    expect(db.insertEvent(otherEvent, false)).toBe(true);
+
+    const computeSummary = vi.spyOn(db as any, 'computeChannelSummary');
+    const initial = db.getChatSummaries(readerAddress)[0];
+    expect(initial?.channels).toHaveLength(2);
+    const initialComputations = computeSummary.mock.calls.length;
+    expect(initialComputations).toBeGreaterThanOrEqual(2);
+
+    const unchanged = db.getChatSummaries(readerAddress)[0];
+    expect(unchanged).toEqual(initial);
+    expect(computeSummary).toHaveBeenCalledTimes(initialComputations);
+
+    expect(db.insertEvent(nextGeneralEvent, false)).toBe(true);
+    const updated = db.getChatSummaries(readerAddress)[0];
+    expect(computeSummary).toHaveBeenCalledTimes(initialComputations + 1);
+    expect(
+      updated?.channels.find((channel) => channel.channelId === 'general')
+        ?.lastEvent?.eventId
+    ).toBe(nextGeneralEvent.eventId);
+    expect(
+      updated?.channels.find((channel) => channel.channelId === 'other')
+        ?.lastEvent?.eventId
+    ).toBe(otherEvent.eventId);
+
+    db.markRead(groupId, 'general', nextGeneralEvent.timestamp, readerAddress);
+    const afterRead = db.getChatSummaries(readerAddress)[0];
+    expect(computeSummary).toHaveBeenCalledTimes(initialComputations + 2);
+    expect(
+      afterRead?.channels.find((channel) => channel.channelId === 'general')
+        ?.unreadCount
+    ).toBe(0);
+    expect(
+      afterRead?.channels.find((channel) => channel.channelId === 'other')
+        ?.unreadCount
+    ).toBe(1);
+  });
+
+  it('expires cached channel summaries at the next message expiry', () => {
+    vi.useFakeTimers();
+    try {
+      const now = 1_786_000_000_000;
+      vi.setSystemTime(now);
+      const db = new ReticulumChatDatabase(tempDbPath());
+      dbs.push(db);
+      const groupId = 266;
+      const channelId = 'expiring-summary';
+      db.upsertChannel({
+        groupId,
+        channelId,
+        name: channelId,
+        position: 2,
+        archived: false,
+        writeMode: 'members',
+        readMode: 'members',
+        expiryDurationMs: 60_000,
+        createdBy: 'Qadmin',
+        createdAt: now - 1_000,
+        updatedAt: now - 1_000,
+      });
+      const event = signedEvent({
+        eventId: 'summary-cache-expiring-message',
+        groupId,
+        channelId,
+        timestamp: now,
+      });
+      expect(db.insertEvent(event, true)).toBe(true);
+      expect(db.getEventExpiresAt(event.eventId)).toBe(now + 60_000);
+      const initialSummary = db
+        .getChatSummaries()
+        .find((summary) => summary.groupId === groupId);
+      expect(
+        initialSummary?.channels.some(
+          (channel) => channel.channelId === channelId
+        )
+      ).toBe(true);
+
+      vi.setSystemTime(now + 60_001);
+      expect(
+        db
+          .getChatSummaries()
+          .find((summary) => summary.groupId === groupId)
+          ?.channels.some((channel) => channel.channelId === channelId) ?? false
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('counts unread replies to local messages separately from ordinary unread messages', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
