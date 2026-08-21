@@ -942,6 +942,203 @@ _audio_data_plane_inbound_queue: "queue.Queue[Optional[Tuple[float, bytes]]]" = 
 _scheduler_queues: Dict[str, "queue.Queue[Optional[Tuple[float, str, Callable[..., Any], tuple, dict]]]"] = {}
 _scheduler_threads: list[threading.Thread] = []
 _scheduler_stats: Dict[str, Dict[str, Any]] = {}
+
+
+class _BoundedKeyedSendDispatcher:
+    """Run packet sends on reusable workers while serializing each destination."""
+
+    def __init__(
+        self,
+        name: str,
+        worker_count: int,
+        max_pending: int,
+        max_queue_wait_seconds: float,
+    ) -> None:
+        self.name = str(name)
+        self.worker_count = max(1, int(worker_count))
+        self.max_pending = max(self.worker_count, int(max_pending))
+        self.max_queue_wait_seconds = max(0.001, float(max_queue_wait_seconds))
+        self._lock = threading.Lock()
+        self._ready_keys: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._pending_by_key: Dict[str, "deque[Dict[str, Any]]"] = {}
+        self._active_keys: Set[str] = set()
+        self._scheduled_keys: Set[str] = set()
+        self._threads: List[threading.Thread] = []
+        self._pending_count = 0
+        self._accepting = False
+
+    def start(self) -> None:
+        with self._lock:
+            if self._accepting:
+                return
+            # Dispatchers are process-lifetime objects. Refuse to restart a
+            # stopped generation whose daemon workers may still be unwinding.
+            if self._threads:
+                return
+            self._accepting = True
+            for worker_index in range(self.worker_count):
+                thread = threading.Thread(
+                    target=self._worker_loop,
+                    name=f"reticulum-{self.name}-send-{worker_index}",
+                    daemon=True,
+                )
+                thread.start()
+                self._threads.append(thread)
+
+    def _schedule_key_locked(self, key: str) -> None:
+        if key in self._active_keys or key in self._scheduled_keys:
+            return
+        self._scheduled_keys.add(key)
+        self._ready_keys.put_nowait(key)
+
+    def submit_and_wait(
+        self,
+        key: str,
+        timeout_seconds: float,
+        fn: Callable[[], Any],
+    ) -> Tuple[str, Any, Optional[str]]:
+        self.start()
+        dispatch_key = str(key or "unknown")
+        done = threading.Event()
+        started = threading.Event()
+        job: Dict[str, Any] = {
+            "fn": fn,
+            "done": done,
+            "started_event": started,
+            "started": False,
+            "cancelled": False,
+            "status": "pending",
+            "value": None,
+            "error": None,
+        }
+        with self._lock:
+            if not self._accepting:
+                return "stopped", None, None
+            if self._pending_count >= self.max_pending:
+                return "queue_full", None, None
+            pending = self._pending_by_key.get(dispatch_key)
+            if pending is None:
+                pending = deque()
+                self._pending_by_key[dispatch_key] = pending
+            pending.append(job)
+            self._pending_count += 1
+            self._schedule_key_locked(dispatch_key)
+
+        # Queue pressure and a slow packet send are separate conditions. Give
+        # a job only a short, bounded period to acquire a worker, then give an
+        # acquired worker the full packet-send timeout. Otherwise time spent
+        # behind an earlier send could make a healthy send look timed out and
+        # unnecessarily degrade its route.
+        queue_wait_seconds = min(
+            max(0.001, float(timeout_seconds)),
+            self.max_queue_wait_seconds,
+        )
+        if not started.wait(queue_wait_seconds):
+            with self._lock:
+                if not job.get("started"):
+                    # A queued send that exceeded its caller deadline must
+                    # never run later and create an avoidable duplicate packet.
+                    job["cancelled"] = True
+                    job["status"] = "queue_timeout"
+                    return "queue_timeout", None, None
+
+        if done.wait(max(0.001, float(timeout_seconds))):
+            return (
+                str(job.get("status") or "failed"),
+                job.get("value"),
+                job.get("error"),
+            )
+
+        with self._lock:
+            if done.is_set():
+                return (
+                    str(job.get("status") or "failed"),
+                    job.get("value"),
+                    job.get("error"),
+                )
+            return "send_timeout", None, None
+
+    def _worker_loop(self) -> None:
+        while True:
+            key = self._ready_keys.get()
+            if key is None:
+                return
+            job: Optional[Dict[str, Any]] = None
+            with self._lock:
+                self._scheduled_keys.discard(key)
+                pending = self._pending_by_key.get(key)
+                while pending:
+                    candidate = pending.popleft()
+                    if candidate.get("cancelled") is True:
+                        self._pending_count = max(0, self._pending_count - 1)
+                        candidate["done"].set()
+                        continue
+                    job = candidate
+                    job["started"] = True
+                    self._active_keys.add(key)
+                    job["started_event"].set()
+                    break
+                if pending is not None and not pending:
+                    self._pending_by_key.pop(key, None)
+
+            if job is None:
+                continue
+
+            try:
+                job["value"] = job["fn"]()
+                job["status"] = "completed"
+            except Exception as exc:
+                job["error"] = str(exc)
+                job["status"] = "exception"
+            finally:
+                job["done"].set()
+                with self._lock:
+                    self._pending_count = max(0, self._pending_count - 1)
+                    self._active_keys.discard(key)
+                    if self._accepting and self._pending_by_key.get(key):
+                        self._schedule_key_locked(key)
+
+    def stop(self, timeout_seconds: float = 5.0) -> None:
+        with self._lock:
+            if not self._accepting and not self._threads:
+                return
+            self._accepting = False
+            for pending in self._pending_by_key.values():
+                for job in pending:
+                    if job.get("started") is not True:
+                        job["cancelled"] = True
+                        job["status"] = "stopped"
+                        job["started_event"].set()
+                        job["done"].set()
+                        self._pending_count = max(0, self._pending_count - 1)
+            self._pending_by_key.clear()
+            self._scheduled_keys.clear()
+            threads = list(self._threads)
+        for _thread in threads:
+            self._ready_keys.put_nowait(None)
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        for thread in threads:
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+
+_CONTROL_PACKET_SEND_WORKERS = 4
+_CONTROL_PACKET_SEND_MAX_PENDING = 256
+_CONTROL_PACKET_SEND_MAX_QUEUE_WAIT_SECONDS = 0.25
+_REALTIME_PACKET_SEND_WORKERS = 4
+_REALTIME_PACKET_SEND_MAX_PENDING = 128
+_REALTIME_PACKET_SEND_MAX_QUEUE_WAIT_SECONDS = 0.05
+_control_packet_send_dispatcher = _BoundedKeyedSendDispatcher(
+    "control-packet",
+    _CONTROL_PACKET_SEND_WORKERS,
+    _CONTROL_PACKET_SEND_MAX_PENDING,
+    _CONTROL_PACKET_SEND_MAX_QUEUE_WAIT_SECONDS,
+)
+_realtime_packet_send_dispatcher = _BoundedKeyedSendDispatcher(
+    "realtime-packet",
+    _REALTIME_PACKET_SEND_WORKERS,
+    _REALTIME_PACKET_SEND_MAX_PENDING,
+    _REALTIME_PACKET_SEND_MAX_QUEUE_WAIT_SECONDS,
+)
 _rns_overlay_callback_pending_keys: set[str] = set()
 _rns_packet_dispatcher_missing_logged = False
 _latest_land_state_lock = threading.Lock()
@@ -2007,6 +2204,21 @@ def _start_scheduler_workers() -> None:
         "[presence_bridge] target=reticulum-scheduler started "
         f"lanes={','.join(sorted(_SCHEDULER_QUEUE_MAX_BY_LANE.keys()))}"
     )
+
+
+def _start_packet_send_dispatchers() -> None:
+    _control_packet_send_dispatcher.start()
+    _realtime_packet_send_dispatcher.start()
+    log(
+        "[presence_bridge] target=reticulum-packet-send-dispatcher started "
+        f"control_workers={_CONTROL_PACKET_SEND_WORKERS} "
+        f"realtime_workers={_REALTIME_PACKET_SEND_WORKERS}"
+    )
+
+
+def _stop_packet_send_dispatchers() -> None:
+    _control_packet_send_dispatcher.stop()
+    _realtime_packet_send_dispatcher.stop()
 
 
 def _stop_scheduler_workers() -> None:
@@ -4782,6 +4994,7 @@ def _process_audio_batch(frames: list) -> None:
                 wire_bytes,
                 f"target=gcall-audio-data-plane packet_audio_send peer={peer_hash}",
                 timeout_seconds=_AUDIO_LINK_PACKET_SEND_TIMEOUT_SECONDS,
+                realtime=True,
             )
             if result is None:
                 _audio_packet_send_failures += 1
@@ -10164,6 +10377,19 @@ def _queue_overlay_packet(
     pending.append((traffic, bytes(wire_bytes)))
 
 
+def _packet_send_dispatch_key(target: Any, prefix: str) -> str:
+    raw_key = getattr(target, "link_id", None)
+    if raw_key is None:
+        raw_key = getattr(target, "hash", None)
+    if isinstance(raw_key, (bytes, bytearray)):
+        key = bytes(raw_key).hex()
+    elif raw_key is not None:
+        key = str(raw_key)
+    else:
+        key = str(id(target))
+    return f"{prefix}:{key}"
+
+
 def _send_packet_on_link(
     link,
     wire_bytes: bytes,
@@ -10187,21 +10413,29 @@ def _send_packet_on_link(
 
     try:
         packet = RNS.Packet(link, wire_bytes, create_receipt=False)
-        completed, result, error = _run_with_timeout(
-            f"link-packet-send-{str(id(link))[-8:]}",
+        status, result, error = _control_packet_send_dispatcher.submit_and_wait(
+            _packet_send_dispatch_key(link, "control-target"),
             _LINK_PACKET_SEND_TIMEOUT_SECONDS,
             packet.send,
         )
-        if not completed:
+        if status in {"queue_full", "queue_timeout", "stopped"}:
+            log(
+                f"[presence_bridge] {log_target} packet_send_deferred "
+                f"reason={status}"
+            )
+            return False
+        if status == "send_timeout":
             log(
                 f"[presence_bridge] {log_target} packet_send_timeout "
                 f"timeout_ms={int(_LINK_PACKET_SEND_TIMEOUT_SECONDS * 1000)}"
             )
             note_overlay_send_failure("packet_send_timeout")
             return False
-        if error:
+        if status == "exception" or error:
             log(f"[presence_bridge] {log_target} packet_send_exception err={error}")
             note_overlay_send_failure("packet_send_exception")
+            return False
+        if status != "completed":
             return False
         if result is False:
             log(f"[presence_bridge] {log_target} packet_send_false")
@@ -17809,37 +18043,26 @@ def _send_presence_wire_to_peer_bounded(
     traffic: str,
     envelope_id: str = "",
 ) -> Optional[bool]:
-    done = threading.Event()
-    result: Dict[str, Any] = {"ok": False}
-
-    def run() -> None:
-        try:
-            result["ok"] = _send_wire_to_established_overlay_peer(
-                peer_hash,
-                wire_bytes,
-                traffic,
-            )
-        except Exception as exc:
-            result["ok"] = False
-            result["error"] = str(exc)
-        finally:
-            done.set()
-
-    thread = threading.Thread(
-        target=run,
-        name=f"presence-send-{str(peer_hash or '')[:8]}",
-        daemon=True,
-    )
-    thread.start()
-    if not done.wait(_PRESENCE_PEER_SEND_TIMEOUT_SECONDS):
-        _mark_presence_peer_send_timeout(peer_hash, envelope_id)
-        return None
-    if result.get("error"):
+    started_at = time.monotonic()
+    try:
+        ok = _send_wire_to_established_overlay_peer(
+            peer_hash,
+            wire_bytes,
+            traffic,
+        )
+    except Exception as exc:
         verbose_presence_log(
             "[presence_bridge] target=presence-reticulum presence_peer_send_exception "
-            f"peer={peer_hash} envelope_id={envelope_id or 'n/a'} err={result.get('error')}"
+            f"peer={peer_hash} envelope_id={envelope_id or 'n/a'} err={exc}"
         )
-    return bool(result.get("ok"))
+        return False
+    if (
+        not ok
+        and time.monotonic() - started_at >= _PRESENCE_PEER_SEND_TIMEOUT_SECONDS
+    ):
+        _mark_presence_peer_send_timeout(peer_hash, envelope_id)
+        return None
+    return bool(ok)
 
 
 def _fanout_presence_wire_to_peer(
@@ -18719,23 +18942,41 @@ def _send_packet_to_destination_bounded(
     wire_bytes: bytes,
     log_target: str,
     timeout_seconds: float = _LINK_PACKET_SEND_TIMEOUT_SECONDS,
+    *,
+    realtime: bool = False,
 ) -> Tuple[Optional[bool], float]:
     packet = RNS.Packet(destination, wire_bytes, create_receipt=False)
     send_start = time.monotonic()
-    completed, result, error = _run_with_timeout(
-        f"destination-packet-send-{str(id(destination))[-8:]}",
+    dispatcher = (
+        _realtime_packet_send_dispatcher
+        if realtime
+        else _control_packet_send_dispatcher
+    )
+    status, result, error = dispatcher.submit_and_wait(
+        _packet_send_dispatch_key(
+            destination,
+            "realtime-target" if realtime else "control-target",
+        ),
         timeout_seconds,
         packet.send,
     )
     send_duration_ms = _note_rns_send_duration(send_start)
-    if not completed:
+    if status in {"queue_full", "queue_timeout", "stopped"}:
+        log(
+            f"[presence_bridge] {log_target} packet_send_deferred "
+            f"reason={status}"
+        )
+        return None, send_duration_ms
+    if status == "send_timeout":
         log(
             f"[presence_bridge] {log_target} packet_send_timeout "
             f"timeout_ms={int(timeout_seconds * 1000)}"
         )
         return None, send_duration_ms
-    if error:
+    if status == "exception" or error:
         log(f"[presence_bridge] {log_target} packet_send_exception err={error}")
+        return False, send_duration_ms
+    if status != "completed":
         return False, send_duration_ms
     return bool(result is not False), send_duration_ms
 
@@ -18784,13 +19025,19 @@ def _send_packet_on_audio_link_bounded(
             f"packet={_short_route(packet_hash_hex)}"
         )
     send_start = time.monotonic()
-    completed, result, error = _run_with_timeout(
-        f"audio-packet-send-{str(link_id or '')[:8]}",
+    status, result, error = _realtime_packet_send_dispatcher.submit_and_wait(
+        _packet_send_dispatch_key(link, "realtime-target"),
         _AUDIO_LINK_PACKET_SEND_TIMEOUT_SECONDS,
         packet.send,
     )
     send_duration_ms = _note_rns_send_duration(send_start)
-    if not completed:
+    if status in {"queue_full", "queue_timeout", "stopped"}:
+        log(
+            "[presence_bridge] target=reticulum-audio-link audio_media_send_deferred "
+            f"link={link_id} seq={seq} reason={status} duration_ms={send_duration_ms:.3f}"
+        )
+        return None, send_duration_ms
+    if status == "send_timeout":
         log(
             "[presence_bridge] target=reticulum-audio-link audio_media_send_timeout "
             f"link={link_id} seq={seq} duration_ms={send_duration_ms:.3f} "
@@ -18798,7 +19045,7 @@ def _send_packet_on_audio_link_bounded(
         )
         _mark_audio_link_send_timeout(link_id, reason)
         return None, send_duration_ms
-    if error:
+    if status == "exception" or error:
         log(
             "[presence_bridge] target=reticulum-audio-link audio_media_send_exception "
             f"link={link_id} seq={seq} duration_ms={send_duration_ms:.3f} "
@@ -18806,6 +19053,8 @@ def _send_packet_on_audio_link_bounded(
             f"err={error}"
         )
         raise RuntimeError(error)
+    if status != "completed":
+        return False, send_duration_ms
     if should_trace or result is False:
         log(
             "[presence_bridge] target=reticulum-audio-link audio_media_send_result "
@@ -18857,6 +19106,7 @@ def _send_audio_rtt_control(
             encoded["wire_bytes"],
             "target=reticulum-audio-link audio_rtt_control",
             timeout_seconds=_AUDIO_LINK_PACKET_SEND_TIMEOUT_SECONDS,
+            realtime=True,
         )
     if result is True:
         with _state_lock:
@@ -26914,6 +27164,7 @@ def main() -> None:
     # An inbound Link can arrive as soon as the destination is registered;
     # its callback must never fall back to synchronous execution just because
     # startup has not yet reached the stdin/RNS executor setup below.
+    _start_packet_send_dispatchers()
     _start_scheduler_workers()
 
     # Start owner monitoring before attaching to the shared Reticulum daemon.
@@ -26950,6 +27201,7 @@ def main() -> None:
     _notify_rns_work_available()
     rns_thread.join(timeout=60.0)
     _stop_scheduler_workers()
+    _stop_packet_send_dispatchers()
     try:
         _json_resp_queue.put(None, timeout=0.1)
     except queue.Full:

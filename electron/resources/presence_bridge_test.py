@@ -38,6 +38,255 @@ def load_bridge():
     return module
 
 
+class PresenceBridgePacketSendDispatcherTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.dispatchers = []
+
+    def tearDown(self):
+        for dispatcher in self.dispatchers:
+            dispatcher.stop(timeout_seconds=1.0)
+        self.bridge._shutdown.clear()
+
+    def dispatcher(self, workers=2, max_pending=16, max_queue_wait=0.05):
+        dispatcher = self.bridge._BoundedKeyedSendDispatcher(
+            "test",
+            workers,
+            max_pending,
+            max_queue_wait,
+        )
+        self.dispatchers.append(dispatcher)
+        return dispatcher
+
+    def test_reuses_bounded_workers_across_many_sends(self):
+        dispatcher = self.dispatcher(workers=2)
+        worker_names = set()
+
+        for _index in range(20):
+            status, value, error = dispatcher.submit_and_wait(
+                "same-link",
+                1.0,
+                lambda: worker_names.add(threading.current_thread().name) or True,
+            )
+            self.assertEqual((status, value, error), ("completed", True, None))
+
+        self.assertLessEqual(len(worker_names), 2)
+        self.assertEqual(len(dispatcher._threads), 2)
+
+    def test_serializes_sends_for_the_same_link(self):
+        dispatcher = self.dispatcher(workers=2)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        order = []
+
+        def first_send():
+            order.append("first-start")
+            first_started.set()
+            release_first.wait(1.0)
+            order.append("first-end")
+            return True
+
+        def second_send():
+            order.append("second")
+            return True
+
+        first_result = []
+        second_result = []
+        first_caller = threading.Thread(
+            target=lambda: first_result.append(
+                dispatcher.submit_and_wait("link-a", 1.0, first_send)
+            )
+        )
+        first_caller.start()
+        self.assertTrue(first_started.wait(0.5))
+        second_caller = threading.Thread(
+            target=lambda: second_result.append(
+                dispatcher.submit_and_wait("link-a", 1.0, second_send)
+            )
+        )
+        second_caller.start()
+        time.sleep(0.03)
+        self.assertEqual(order, ["first-start"])
+        release_first.set()
+        first_caller.join(1.0)
+        second_caller.join(1.0)
+
+        self.assertEqual(order, ["first-start", "first-end", "second"])
+        self.assertEqual(first_result[0][0], "completed")
+        self.assertEqual(second_result[0][0], "completed")
+
+    def test_stuck_link_does_not_block_another_link(self):
+        dispatcher = self.dispatcher(workers=2)
+        stuck_started = threading.Event()
+        release_stuck = threading.Event()
+
+        def stuck_send():
+            stuck_started.set()
+            release_stuck.wait(1.0)
+            return True
+
+        stuck_result = []
+        caller = threading.Thread(
+            target=lambda: stuck_result.append(
+                dispatcher.submit_and_wait("link-a", 0.5, stuck_send)
+            )
+        )
+        caller.start()
+        self.assertTrue(stuck_started.wait(0.5))
+
+        other = dispatcher.submit_and_wait("link-b", 0.2, lambda: "sent")
+        self.assertEqual(other, ("completed", "sent", None))
+        release_stuck.set()
+        caller.join(1.0)
+
+    def test_queued_timeout_never_sends_late(self):
+        dispatcher = self.dispatcher(workers=1)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_ran = threading.Event()
+
+        def first_send():
+            first_started.set()
+            release_first.wait(1.0)
+            return True
+
+        caller = threading.Thread(
+            target=lambda: dispatcher.submit_and_wait("link-a", 0.5, first_send)
+        )
+        caller.start()
+        self.assertTrue(first_started.wait(0.5))
+        status, _value, _error = dispatcher.submit_and_wait(
+            "link-a",
+            0.03,
+            lambda: second_ran.set(),
+        )
+        self.assertEqual(status, "queue_timeout")
+        release_first.set()
+        caller.join(1.0)
+        time.sleep(0.05)
+        self.assertFalse(second_ran.is_set())
+
+    def test_queue_wait_does_not_consume_send_execution_timeout(self):
+        dispatcher = self.dispatcher(
+            workers=1,
+            max_queue_wait=0.2,
+        )
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        def first_send():
+            first_started.set()
+            release_first.wait(1.0)
+            return True
+
+        first_caller = threading.Thread(
+            target=lambda: dispatcher.submit_and_wait("link-a", 0.5, first_send)
+        )
+        first_caller.start()
+        self.assertTrue(first_started.wait(0.5))
+
+        timer = threading.Timer(0.08, release_first.set)
+        timer.start()
+
+        def second_send():
+            time.sleep(0.08)
+            return "sent"
+
+        result = dispatcher.submit_and_wait("link-a", 0.1, second_send)
+        timer.cancel()
+        first_caller.join(1.0)
+        self.assertEqual(result, ("completed", "sent", None))
+
+    def test_queue_capacity_is_bounded(self):
+        dispatcher = self.dispatcher(workers=1, max_pending=1)
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocked_send():
+            started.set()
+            release.wait(1.0)
+            return True
+
+        caller = threading.Thread(
+            target=lambda: dispatcher.submit_and_wait("link-a", 0.5, blocked_send)
+        )
+        caller.start()
+        self.assertTrue(started.wait(0.5))
+        self.assertEqual(
+            dispatcher.submit_and_wait("link-b", 0.1, lambda: True)[0],
+            "queue_full",
+        )
+        release.set()
+        caller.join(1.0)
+
+    def test_stop_immediately_releases_a_queued_caller(self):
+        dispatcher = self.dispatcher(
+            workers=1,
+            max_queue_wait=1.0,
+        )
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        def blocked_send():
+            first_started.set()
+            release_first.wait(1.0)
+            return True
+
+        first_caller = threading.Thread(
+            target=lambda: dispatcher.submit_and_wait("link-a", 1.0, blocked_send)
+        )
+        first_caller.start()
+        self.assertTrue(first_started.wait(0.5))
+
+        second_result = []
+        second_caller = threading.Thread(
+            target=lambda: second_result.append(
+                dispatcher.submit_and_wait("link-a", 1.0, lambda: True)
+            )
+        )
+        second_caller.start()
+        time.sleep(0.02)
+        dispatcher.stop(timeout_seconds=0.01)
+        second_caller.join(0.2)
+
+        self.assertFalse(second_caller.is_alive())
+        self.assertEqual(second_result, [("stopped", None, None)])
+        release_first.set()
+        first_caller.join(1.0)
+
+    def test_local_queue_pressure_does_not_degrade_a_healthy_overlay_link(self):
+        link = mock.Mock()
+        link_id = "healthy-overlay"
+        peer_hash = "ab" * 16
+        state = {
+            "linkId": link_id,
+            "link": link,
+            "peerPresenceHash": peer_hash,
+            "manager_kind": "overlay",
+            "manager_state": self.bridge._LINK_STATE_ESTABLISHED,
+        }
+        self.bridge._overlay_links_by_id[link_id] = state
+        self.bridge._overlay_link_ids_by_object[id(link)] = link_id
+
+        with mock.patch.object(
+            self.bridge._control_packet_send_dispatcher,
+            "submit_and_wait",
+            return_value=("queue_full", None, None),
+        ), mock.patch.object(self.bridge.RNS, "Packet"), mock.patch.object(
+            self.bridge,
+            "log",
+        ):
+            self.assertFalse(
+                self.bridge._send_packet_on_link(link, b"packet", "test")
+            )
+
+        self.assertEqual(
+            state["manager_state"],
+            self.bridge._LINK_STATE_ESTABLISHED,
+        )
+        self.assertNotIn(peer_hash, self.bridge._overlay_peer_failures)
+
+
 class PresenceBridgeDeveloperLogFilterTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()
