@@ -168,6 +168,7 @@ declare global {
         communityStunContributionEnabled?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumTransportEnabled?: boolean;
         reticulumEnabled?: boolean;
         reticulumChatEnabled?: boolean;
         reticulumResourceLimitBytes?: number;
@@ -182,6 +183,7 @@ declare global {
         communityStunContributionEnabled?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumTransportEnabled?: boolean;
         reticulumEnabled?: boolean;
         reticulumChatEnabled?: boolean;
         reticulumResourceLimitBytes?: number;
@@ -195,6 +197,7 @@ declare global {
         communityStunContributionEnabled?: boolean;
         reticulumMeshUpnpEnabled?: boolean;
         reticulumManagedConfigEnabled?: boolean;
+        reticulumTransportEnabled?: boolean;
         reticulumEnabled?: boolean;
         reticulumChatEnabled?: boolean;
         reticulumResourceLimitBytes?: number;
@@ -205,6 +208,7 @@ declare global {
           disableAutoLockOnIdle?: boolean;
           reticulumEnabled?: boolean;
           reticulumManagedConfigEnabled?: boolean;
+          reticulumTransportEnabled?: boolean;
           reticulumChatEnabled?: boolean;
           communityStunContributionEnabled?: boolean;
         }) => void

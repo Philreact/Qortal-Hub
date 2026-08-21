@@ -77,7 +77,7 @@ const RETICULUM_CONTROL_BASE_PORT = 37429;
 const RETICULUM_CONFIG_FILENAME = 'config';
 const MANAGED_CONFIG_MARKER = '# Managed by Qortal Hub';
 const DEFAULT_CONFIG_SENTINEL = '# This is the default Reticulum config file.';
-const RETICULUM_AUTOCONNECT_DISCOVERED_INTERFACES = 8;
+const RETICULUM_AUTOCONNECT_DISCOVERED_INTERFACES = 5;
 const APP_SETTINGS_FILENAME = 'app-settings.json';
 const RETICULUM_SHARED_INSTANCE_NAME = 'qortal-hub-shared';
 const RETICULUM_SHARED_STATE_DIRNAME = 'qortal-shared';
@@ -339,6 +339,24 @@ function isManagedReticulumConfigEnabled(): boolean {
     return parsed.reticulumManagedConfigEnabled !== false;
   } catch {
     return true;
+  }
+}
+
+function isReticulumTransportEnabled(): boolean {
+  try {
+    const filePath = path.join(
+      getCanonicalQortalHubDataDir(),
+      APP_SETTINGS_FILENAME
+    );
+    if (!fs.existsSync(filePath)) {
+      return false;
+    }
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as {
+      reticulumTransportEnabled?: unknown;
+    };
+    return parsed.reticulumTransportEnabled === true;
+  } catch {
+    return false;
   }
 }
 
@@ -1969,7 +1987,11 @@ ${ifaceBody}
 /** Full managed config including mesh slice derived from reticulum-mesh-state.json */
 export function buildCurrentManagedReticulumConfig(): string {
   const state = loadReticulumMeshState();
-  const slice = meshConfigSliceFromState(state, []);
+  const slice = meshConfigSliceFromState(
+    state,
+    [],
+    isReticulumTransportEnabled()
+  );
   return buildManagedReticulumConfig(DEFAULT_RETICULUM_HUBS, slice);
 }
 
@@ -2036,7 +2058,11 @@ function ensureManagedReticulumConfig(): void {
   const id = ensureMeshNetworkIdentityIfNeeded();
   const passphrase = ensureMeshNetworkPassphraseIfNeeded();
   const state = loadReticulumMeshState();
-  const meshSlice = meshConfigSliceFromState(state, []);
+  const meshSlice = meshConfigSliceFromState(
+    state,
+    [],
+    isReticulumTransportEnabled()
+  );
   if (!id.ok) {
     loggerLog(`[Reticulum] Mesh identity: ${id.error ?? 'failed'}`);
   } else if (id.created) {

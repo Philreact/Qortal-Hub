@@ -1780,6 +1780,8 @@ export interface AppSettings {
   reticulumMeshUpnpEnabled?: boolean;
   /** When false, do not write/regenerate Qortal Hub's managed Reticulum config. */
   reticulumManagedConfigEnabled?: boolean;
+  /** Opt in to routing Reticulum traffic for other peers (default false). */
+  reticulumTransportEnabled?: boolean;
   /** Global Reticulum feature and process lifecycle switch (default true). */
   reticulumEnabled?: boolean;
   /** Reticulum-backed group chat transport. Default true; users may opt out. */
@@ -1797,6 +1799,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   communityStunContributionEnabled: true,
   reticulumMeshUpnpEnabled: true,
   reticulumManagedConfigEnabled: true,
+  reticulumTransportEnabled: false,
   reticulumEnabled: true,
   reticulumChatEnabled: true,
   reticulumResourceLimitBytes: RETICULUM_RESOURCE_DEFAULT_LIMIT_BYTES,
@@ -1837,6 +1840,7 @@ export async function readAppSettings(): Promise<AppSettings> {
         parsed.reticulumMeshUpnpEnabled === false ? false : true,
       reticulumManagedConfigEnabled:
         parsed.reticulumManagedConfigEnabled === false ? false : true,
+      reticulumTransportEnabled: parsed.reticulumTransportEnabled === true,
       reticulumEnabled: parsed.reticulumEnabled === false ? false : true,
       reticulumChatEnabled:
         parsed.reticulumChatEnabled === false ? false : true,

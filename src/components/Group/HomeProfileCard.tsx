@@ -285,6 +285,8 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const [closeAction, setCloseAction] = useState<CloseAction>('ask');
   const [reticulumManagedConfigEnabled, setReticulumManagedConfigEnabled] =
     useState(true);
+  const [reticulumTransportEnabled, setReticulumTransportEnabled] =
+    useState(false);
   const [reticulumEnabled, setReticulumEnabled] = useState(true);
   const [reticulumDisableConfirmOpen, setReticulumDisableConfirmOpen] =
     useState(false);
@@ -733,6 +735,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       setReticulumManagedConfigEnabled(
         settings?.reticulumManagedConfigEnabled === false ? false : true
       );
+      setReticulumTransportEnabled(
+        settings?.reticulumTransportEnabled === true
+      );
       setReticulumEnabled(settings?.reticulumEnabled === false ? false : true);
       setReticulumChatEnabled(
         settings?.reticulumChatEnabled === false ? false : true
@@ -777,6 +782,9 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       if (!enabled) setIsReticulumDetailsOpen(false);
       setReticulumManagedConfigEnabled(
         settings?.reticulumManagedConfigEnabled !== false
+      );
+      setReticulumTransportEnabled(
+        settings?.reticulumTransportEnabled === true
       );
       setReticulumChatEnabled(settings?.reticulumChatEnabled !== false);
       setCommunityStunContributionEnabled(
@@ -1123,6 +1131,32 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       setOpenSnack,
       td,
     ]
+  );
+
+  const handleToggleReticulumTransport = useCallback(
+    async (_event: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      const previous = reticulumTransportEnabled;
+      setReticulumTransportEnabled(checked);
+
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          reticulumTransportEnabled: checked,
+        });
+        setInfoSnack({
+          type: 'success',
+          message: t('group:dashboard.reticulum_transport_saved'),
+        });
+        setOpenSnack(true);
+      } catch {
+        setReticulumTransportEnabled(previous);
+        setInfoSnack({
+          type: 'error',
+          message: t('group:dashboard.reticulum_transport_update_error'),
+        });
+        setOpenSnack(true);
+      }
+    },
+    [reticulumTransportEnabled, setInfoSnack, setOpenSnack, t]
   );
 
   const updateReticulumEnabled = useCallback(
@@ -4543,6 +4577,55 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                             sx={settingsSwitchSx}
                           />
                         </Box>
+                      </Box>
+
+                      <Box
+                        sx={{
+                          alignItems: 'center',
+                          background: avatarModalSurfaceSoft,
+                          border: `1px solid ${avatarFieldBorder}`,
+                          borderRadius: '12px',
+                          display: 'flex',
+                          gap: 1.2,
+                          justifyContent: 'space-between',
+                          px: 1.35,
+                          py: 1.2,
+                        }}
+                      >
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography
+                            sx={{
+                              color: theme.palette.text.primary,
+                              fontSize: '0.82rem',
+                              fontWeight: 700,
+                              letterSpacing: '0.01em',
+                            }}
+                          >
+                            {t('group:dashboard.reticulum_transport_node')}
+                          </Typography>
+                          <Typography
+                            sx={{
+                              color: theme.palette.text.secondary,
+                              fontSize: '0.75rem',
+                              lineHeight: 1.45,
+                              mt: 0.4,
+                            }}
+                          >
+                            {reticulumManagedConfigEnabled
+                              ? t(
+                                  'group:dashboard.reticulum_transport_node_desc'
+                                )
+                              : t(
+                                  'group:dashboard.reticulum_transport_requires_managed_config'
+                                )}
+                          </Typography>
+                        </Box>
+                        <Switch
+                          checked={reticulumTransportEnabled}
+                          disabled={!reticulumManagedConfigEnabled}
+                          onChange={handleToggleReticulumTransport}
+                          sx={settingsSwitchSx}
+                        />
                       </Box>
 
                       <Box
