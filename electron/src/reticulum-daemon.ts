@@ -49,6 +49,7 @@ import {
   isReticulumRuntimeEnabled,
   subscribeToReticulumRuntimeState,
 } from './reticulum-runtime-state';
+import { withReticulumPythonDiagnostics } from './reticulum-python-diagnostics';
 
 /**
  * Reticulum hub mesh: listen on the mesh port with optional private-gateway discovery.
@@ -3172,11 +3173,15 @@ function startBundledReticulumDaemonLocked(): void {
   }
 
   try {
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...(plan.envExtra ?? {}),
-      QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
-    };
+    const env: NodeJS.ProcessEnv = withReticulumPythonDiagnostics(
+      {
+        ...process.env,
+        ...(plan.envExtra ?? {}),
+        QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
+      },
+      'rnsd',
+      getReticulumConfigDir()
+    );
     const launchArgs = plan.args.includes('--service')
       ? plan.args
       : [...plan.args, '--service'];

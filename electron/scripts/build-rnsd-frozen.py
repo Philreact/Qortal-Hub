@@ -277,6 +277,12 @@ def freeze_target(
         "--hidden-import",
         "qortalland_proximity",
         "--hidden-import",
+        "qortal_python_diagnostics",
+        "--paths",
+        str(electron_root / "resources"),
+        "--runtime-hook",
+        str(electron_root / "resources" / "qortal_python_diagnostics_hook.py"),
+        "--hidden-import",
         "cryptography.hazmat.backends.openssl.backend",
         entry_script,
     ]
@@ -300,15 +306,23 @@ def copy_runtime_sources(electron_root: Path, output_dir: Path) -> None:
     source_bridge = electron_root / "resources" / "presence_bridge.py"
     source_games = electron_root / "resources" / "qortalland_games.py"
     source_proximity = electron_root / "resources" / "qortalland_proximity.py"
+    source_diagnostics = electron_root / "resources" / "qortal_python_diagnostics.py"
+    source_sitecustomize = electron_root / "resources" / "sitecustomize.py"
     if not source_bridge.is_file():
         sys.exit(f"Missing tracked bridge source: {source_bridge}")
     if not source_games.is_file():
         sys.exit(f"Missing tracked game bridge source: {source_games}")
     if not source_proximity.is_file():
         sys.exit(f"Missing tracked proximity bridge source: {source_proximity}")
+    if not source_diagnostics.is_file():
+        sys.exit(f"Missing Python diagnostics source: {source_diagnostics}")
+    if not source_sitecustomize.is_file():
+        sys.exit(f"Missing Python diagnostics startup hook: {source_sitecustomize}")
     shutil.copy2(source_bridge, output_dir / "presence_bridge.py")
     shutil.copy2(source_games, output_dir / "qortalland_games.py")
     shutil.copy2(source_proximity, output_dir / "qortalland_proximity.py")
+    shutil.copy2(source_diagnostics, output_dir / "qortal_python_diagnostics.py")
+    shutil.copy2(source_sitecustomize, output_dir / "sitecustomize.py")
     print(f"Wrote {output_dir / 'presence_bridge.py'}")
     mesh_net = electron_root / "resources" / "mesh-network.identity"
     if not mesh_net.is_file():

@@ -23,6 +23,20 @@ import urllib.parse
 import uuid
 from typing import IO, Any, Callable, Dict, List, Optional, Set, Tuple
 
+if str(os.environ.get("QORTAL_PYTHON_DIAGNOSTICS", "")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}:
+    try:
+        from qortal_python_diagnostics import start_from_env as _start_python_diagnostics
+
+        _start_python_diagnostics("presence-bridge")
+    except Exception:
+        # Optional diagnostics must never prevent the bridge from starting.
+        pass
+
 import RNS
 from RNS.vendor import umsgpack
 
@@ -31,9 +45,9 @@ if _BRIDGE_RESOURCE_DIR not in sys.path:
     sys.path.insert(0, _BRIDGE_RESOURCE_DIR)
 from qortalland_games import QortalLandGameManager, _b58decode, _b58encode, derive_qortal_address
 
-APP_NAMESPACE = "qortal-hub-v3"
+APP_NAMESPACE = "qortal-hub-v4"
 PRESENCE_ASPECT = "presence"
-PRESENCE_VERSION = "v3"
+PRESENCE_VERSION = "v4"
 IDENTITY_FILENAME = "presence-bridge.identity"
 COMMUNITY_STUN_ASPECT = "community-stun"
 COMMUNITY_STUN_VERSION = "v1"

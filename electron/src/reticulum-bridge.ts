@@ -21,6 +21,7 @@ import {
   type ReticulumBridgeState,
   type ReticulumReachability,
 } from './reticulum-daemon';
+import { withReticulumPythonDiagnostics } from './reticulum-python-diagnostics';
 import {
   error as loggerError,
   log as loggerLog,
@@ -3713,34 +3714,40 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     this.gameTransportToken = randomBytes(32).toString('hex');
     this.gameTransportInstanceId = randomUUID();
     this.gameTransportUrl = null;
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...getReticulumSourceEnvExtra(),
-      ...(launch.envExtra ?? {}),
-      PYTHONUNBUFFERED: '1',
-      QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
-      QORTAL_FILTER_DEVELOPER_LOGS: reticulumDeveloperLogsFiltered ? '1' : '0',
-      QORTAL_RETICULUM_CONFIG_DIR: configDir,
-      // rnsd owns configDir/logfile. Each simultaneously supported app
-      // instance gets a separate bridge log so independent Python processes
-      // can never race while rotating the same file.
-      QORTAL_RNS_LOG_FILE: path.join(
-        configDir,
-        `logfile.bridge.${getReticulumInstanceIndex()}`
-      ),
-      // The bridge is detached on Unix so Electron can terminate its whole
-      // process group. Give it an explicit owner as well: if Electron is
-      // killed before its normal shutdown handler runs, the bridge must not
-      // survive as an orphan and keep loading the shared rnsd instance.
-      QORTAL_RETICULUM_OWNER_PID: String(process.pid),
-      QORTAL_RETICULUM_IDENTITY_PATH: identityPath,
-      QORTAL_LAND_GAMES_TOKEN: this.gameTransportToken,
-      QORTAL_LAND_GAMES_INSTANCE_ID: this.gameTransportInstanceId,
-      QORTAL_LAND_GAMES_DEV: app.isPackaged ? '0' : '1',
-      QORTAL_LAND_REALTIME_TOKEN: this.gameTransportToken,
-      QORTAL_LAND_REALTIME_INSTANCE_ID: this.gameTransportInstanceId,
-      QORTAL_LAND_REALTIME_DEV: app.isPackaged ? '0' : '1',
-    };
+    const env: NodeJS.ProcessEnv = withReticulumPythonDiagnostics(
+      {
+        ...process.env,
+        ...getReticulumSourceEnvExtra(),
+        ...(launch.envExtra ?? {}),
+        PYTHONUNBUFFERED: '1',
+        QORTAL_RNS_LINK_TRACE: process.env.QORTAL_RNS_LINK_TRACE ?? '0',
+        QORTAL_FILTER_DEVELOPER_LOGS: reticulumDeveloperLogsFiltered
+          ? '1'
+          : '0',
+        QORTAL_RETICULUM_CONFIG_DIR: configDir,
+        // rnsd owns configDir/logfile. Each simultaneously supported app
+        // instance gets a separate bridge log so independent Python processes
+        // can never race while rotating the same file.
+        QORTAL_RNS_LOG_FILE: path.join(
+          configDir,
+          `logfile.bridge.${getReticulumInstanceIndex()}`
+        ),
+        // The bridge is detached on Unix so Electron can terminate its whole
+        // process group. Give it an explicit owner as well: if Electron is
+        // killed before its normal shutdown handler runs, the bridge must not
+        // survive as an orphan and keep loading the shared rnsd instance.
+        QORTAL_RETICULUM_OWNER_PID: String(process.pid),
+        QORTAL_RETICULUM_IDENTITY_PATH: identityPath,
+        QORTAL_LAND_GAMES_TOKEN: this.gameTransportToken,
+        QORTAL_LAND_GAMES_INSTANCE_ID: this.gameTransportInstanceId,
+        QORTAL_LAND_GAMES_DEV: app.isPackaged ? '0' : '1',
+        QORTAL_LAND_REALTIME_TOKEN: this.gameTransportToken,
+        QORTAL_LAND_REALTIME_INSTANCE_ID: this.gameTransportInstanceId,
+        QORTAL_LAND_REALTIME_DEV: app.isPackaged ? '0' : '1',
+      },
+      'presence-bridge',
+      configDir
+    );
     loggerLog(
       `[ReticulumBridge] Launch env QORTAL_RNS_LINK_TRACE=${env.QORTAL_RNS_LINK_TRACE} QORTAL_RNS_LOCAL_TRACE=${env.QORTAL_RNS_LOCAL_TRACE ?? '0'} QORTAL_RNS_LOCAL_TRACE_FRAMES=${env.QORTAL_RNS_LOCAL_TRACE_FRAMES ?? '0'} PYTHONPATH=${env.PYTHONPATH ?? ''}`
     );
