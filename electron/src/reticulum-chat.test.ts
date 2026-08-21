@@ -27411,6 +27411,41 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
+  it('recreates private temporary storage and removes failed receive files', async () => {
+    const dbPath = tempDbPath();
+    const manager = new ReticulumChatManager({ dbPath });
+    const transferId = 'private-page-transfer';
+    await (manager as any).tempEventBlobSweepPromise;
+    const tempDir = path.join(path.dirname(dbPath), 'reticulum-chat-temp');
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    const providerPath = (manager as any).writeTempEventBlob(
+      transferId,
+      'private chat page'
+    );
+    const receivePath = (manager as any).tempEventBlobPath(
+      `${transferId}.page.recv`
+    );
+    fs.writeFileSync(receivePath, 'partial receive');
+    fs.writeFileSync(`${receivePath}.part`, 'partial receive');
+
+    expect(path.dirname(providerPath)).toBe(tempDir);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(path.dirname(providerPath)).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(providerPath).mode & 0o777).toBe(0o600);
+    }
+
+    manager.handleResourceEvent({
+      status: 'failed',
+      transferId,
+      resourceType: 'reticulum_chat_event',
+    });
+
+    expect(fs.existsSync(providerPath)).toBe(false);
+    expect(fs.existsSync(receivePath)).toBe(false);
+    expect(fs.existsSync(`${receivePath}.part`)).toBe(false);
+    manager.close();
+  });
+
   it('does not advertise another digest for a permanently oversized page offer', async () => {
     const manager = new ReticulumChatManager({
       dbPath: tempDbPath(),

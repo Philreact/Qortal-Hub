@@ -14537,11 +14537,20 @@ def _resource_file_path(resource) -> Optional[str]:
     return None
 
 
-def _move_file_to_save_path(source_path: str, save_path: str) -> None:
+def _move_file_to_save_path(
+    source_path: str, save_path: str, private_mode: bool = False
+) -> None:
     save_dir = os.path.dirname(save_path)
     os.makedirs(save_dir, exist_ok=True)
+    if private_mode and os.name != "nt":
+        os.chmod(save_dir, 0o700)
     try:
         os.replace(source_path, save_path)
+        if private_mode and os.name != "nt":
+            try:
+                os.chmod(save_path, 0o600)
+            except OSError:
+                pass
         return
     except OSError:
         pass
@@ -14554,6 +14563,11 @@ def _move_file_to_save_path(source_path: str, save_path: str) -> None:
         with open(source_path, "rb") as src, open(temp_path, "wb") as out:
             shutil.copyfileobj(src, out, 1024 * 1024)
         os.replace(temp_path, save_path)
+        if private_mode and os.name != "nt":
+            try:
+                os.chmod(save_path, 0o600)
+            except OSError:
+                pass
     except Exception:
         try:
             if os.path.isfile(temp_path):
@@ -23001,7 +23015,18 @@ def _resource_session_finish_followers(
         save_path = str(pending.get("savePath") or "")
         try:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            private_mode = (
+                str(pending.get("resourceType") or "").strip()
+                == _RETICULUM_CHAT_RESOURCE_TYPE
+            )
+            if private_mode and os.name != "nt":
+                os.chmod(os.path.dirname(save_path), 0o700)
             shutil.copyfile(source_path, save_path)
+            if private_mode and os.name != "nt":
+                try:
+                    os.chmod(save_path, 0o600)
+                except OSError:
+                    pass
             with _state_lock:
                 _qchat_file_remove_pending_receive(peer_hash, transfer_id)
             _qchat_file_emit(
@@ -23257,7 +23282,14 @@ def _resource_session_response_received(job: Dict[str, Any], receipt) -> None:
         if expected_hash and actual_hash.lower() != expected_hash:
             raise RuntimeError("Reticulum response hash mismatch")
         save_path = str(pending.get("savePath") or "")
-        _move_file_to_save_path(source_path, save_path)
+        _move_file_to_save_path(
+            source_path,
+            save_path,
+            private_mode=(
+                str(pending.get("resourceType") or "").strip()
+                == _RETICULUM_CHAT_RESOURCE_TYPE
+            ),
+        )
         peer_hash = str(pending.get("peerPresenceHash") or "").strip().lower()
         with _state_lock:
             _qchat_file_remove_pending_receive(peer_hash, transfer_id)

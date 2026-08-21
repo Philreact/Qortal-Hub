@@ -2512,8 +2512,8 @@ const RETICULUM_CHAT_RESOURCE_TTL_MS = 10 * 60 * 1000;
 // larger window are abandoned leftovers from a crashed or older Hub process.
 const RETICULUM_CHAT_TEMP_BLOB_STALE_MS = 30 * 60 * 1000;
 const RETICULUM_CHAT_TEMP_BLOB_SWEEP_MS = 60 * 1000;
-let reticulumChatTempBlobLastSweepAt = 0;
-let reticulumChatTempBlobSweepPromise: Promise<void> | null = null;
+const RETICULUM_CHAT_TEMP_BLOB_DIR_NAME = 'reticulum-chat-temp';
+const RETICULUM_CHAT_LEGACY_TEMP_BLOB_DIR_NAME = 'qortal-reticulum-chat-events';
 const RETICULUM_LAND_CHAT_RESOURCE_TTL_MS = 2 * 60 * 1000;
 const RETICULUM_LAND_CHAT_MAX_TEXT_BYTES = 1024;
 const RETICULUM_LAND_CHAT_MAX_BLOB_BYTES = 8 * 1024;
@@ -6924,6 +6924,7 @@ export class ReticulumChatManager extends EventEmitter {
   private readonly now: () => number;
   private readonly dbPath: string;
   private readonly localNotifyDir: string;
+  private readonly tempEventBlobDir: string;
   private readonly localNotifyDebounceMs: number;
   /** Ephemeral identifier that separates typing state from another installation. */
   private readonly runtimeTypingSessionId = nodeCrypto
@@ -7082,6 +7083,11 @@ export class ReticulumChatManager extends EventEmitter {
     { filePath: string; createdAt: number }
   >();
   private tempEventBlobTransferByPath = new Map<string, string>();
+  private tempEventBlobPaths = new Set<string>();
+  private tempEventBlobLastSweepAt = 0;
+  private tempEventBlobSweepPromise: Promise<void> | null = null;
+  private tempEventBlobDeferredSweepTimer: ReturnType<typeof setTimeout> | null =
+    null;
   private backgroundAuthorGapRepairTimer: ReturnType<typeof setTimeout> | null =
     null;
   private backgroundAuthorGapRepairDueAt = 0;
@@ -7726,6 +7732,11 @@ export class ReticulumChatManager extends EventEmitter {
       path.dirname(this.dbPath),
       'reticulum-chat-notify'
     );
+    this.tempEventBlobDir = path.join(
+      path.dirname(this.dbPath),
+      RETICULUM_CHAT_TEMP_BLOB_DIR_NAME
+    );
+    this.ensurePrivateTempEventBlobDir();
     this.localNotifyDebounceMs = Math.max(
       10,
       options.localNotifyDebounceMs ?? RETICULUM_CHAT_LOCAL_NOTIFY_DEBOUNCE_MS
@@ -7779,7 +7790,12 @@ export class ReticulumChatManager extends EventEmitter {
           : RETICULUM_CHAT_METADATA_PROJECTION_RETRY_MS
       );
     }
-    this.scheduleStaleTempEventBlobSweep();
+    this.scheduleStaleTempEventBlobSweep(true);
+    this.tempEventBlobDeferredSweepTimer = setTimeout(() => {
+      this.tempEventBlobDeferredSweepTimer = null;
+      if (!this.isClosed) this.scheduleStaleTempEventBlobSweep(true);
+    }, RETICULUM_CHAT_TEMP_BLOB_STALE_MS);
+    this.tempEventBlobDeferredSweepTimer.unref?.();
   }
 
   setBridge(bridge: ReticulumBridge | null): void {
@@ -8699,6 +8715,15 @@ export class ReticulumChatManager extends EventEmitter {
     this.liveEventResourceDiagnostics.clear();
     for (const transferId of [...this.tempEventBlobs.keys()]) {
       this.releaseTempEventBlob(transferId);
+    }
+    for (const filePath of [...this.tempEventBlobPaths]) {
+      this.safeUnlink(filePath);
+      this.safeUnlink(`${filePath}.part`);
+    }
+    this.tempEventBlobPaths.clear();
+    if (this.tempEventBlobDeferredSweepTimer) {
+      clearTimeout(this.tempEventBlobDeferredSweepTimer);
+      this.tempEventBlobDeferredSweepTimer = null;
     }
     this.outboundEventPageResources.clear();
     for (const resource of this.outboundCalendarResources.values()) {
@@ -41622,15 +41647,45 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private tempEventBlobPath(name: string): string {
-    const dir = path.join(app.getPath('temp'), 'qortal-reticulum-chat-events');
-    fs.mkdirSync(dir, { recursive: true });
-    return path.join(dir, path.basename(name));
+    // Preserve the old self-healing behavior if external cleanup removes the
+    // directory while Hub is running, while restoring private permissions if
+    // it was recreated with a broader umask.
+    this.ensurePrivateTempEventBlobDir();
+    this.scheduleStaleTempEventBlobSweep();
+    const filePath = path.join(this.tempEventBlobDir, path.basename(name));
+    this.tempEventBlobPaths.add(filePath);
+    return filePath;
+  }
+
+  private ensurePrivateTempEventBlobDir(): void {
+    fs.mkdirSync(this.tempEventBlobDir, { recursive: true, mode: 0o700 });
+    const stats = fs.lstatSync(this.tempEventBlobDir);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error('Reticulum Chat temporary path is not a directory');
+    }
+    if (process.platform !== 'win32') {
+      fs.chmodSync(this.tempEventBlobDir, 0o700);
+    }
+  }
+
+  private hardenTempEventBlob(filePath: string): void {
+    if (process.platform === 'win32') return;
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch {
+      // A terminal transfer callback may have removed the file concurrently.
+    }
   }
 
   private writeTempEventBlob(transferId: string, contents: string): string {
-    this.scheduleStaleTempEventBlobSweep();
     const filePath = this.tempEventBlobPath(`${transferId}.json`);
-    fs.writeFileSync(filePath, contents, 'utf8');
+    try {
+      fs.writeFileSync(filePath, contents, { encoding: 'utf8', mode: 0o600 });
+      this.hardenTempEventBlob(filePath);
+    } catch (error) {
+      this.safeUnlink(filePath);
+      throw error;
+    }
     const prior = this.tempEventBlobs.get(transferId);
     if (prior && prior.filePath !== filePath) {
       this.tempEventBlobTransferByPath.delete(prior.filePath);
@@ -41649,15 +41704,15 @@ export class ReticulumChatManager extends EventEmitter {
     contents: Buffer,
     suffix: string
   ): Promise<string> {
-    this.scheduleStaleTempEventBlobSweep();
     const safeSuffix = suffix.replace(/[^a-z0-9._-]/gi, '');
-    const dir = path.join(app.getPath('temp'), 'qortal-reticulum-chat-events');
-    await fs.promises.mkdir(dir, { recursive: true });
-    const filePath = path.join(
-      dir,
-      path.basename(`${transferId}${safeSuffix}`)
-    );
-    await fs.promises.writeFile(filePath, contents);
+    const filePath = this.tempEventBlobPath(`${transferId}${safeSuffix}`);
+    try {
+      await fs.promises.writeFile(filePath, contents, { mode: 0o600 });
+      this.hardenTempEventBlob(filePath);
+    } catch (error) {
+      this.safeUnlink(filePath);
+      throw error;
+    }
     const prior = this.tempEventBlobs.get(transferId);
     if (prior && prior.filePath !== filePath) {
       this.tempEventBlobTransferByPath.delete(prior.filePath);
@@ -41703,75 +41758,52 @@ export class ReticulumChatManager extends EventEmitter {
       this.tempEventBlobs.delete(transferId);
       this.tempEventBlobTransferByPath.delete(owned.filePath);
       this.safeUnlink(owned.filePath);
+      this.removeTempEventTransferFiles(transferId);
       return;
     }
     if (fallbackPath) this.safeUnlink(fallbackPath);
+    this.removeTempEventTransferFiles(transferId);
+  }
+
+  private removeTempEventTransferFiles(transferId: string): void {
+    const safeTransferId = transferId.trim();
+    if (!/^[A-Za-z0-9._:-]+$/.test(safeTransferId)) return;
+    for (const filePath of [...this.tempEventBlobPaths]) {
+      const name = path.basename(filePath);
+      if (
+        name !== safeTransferId &&
+        !name.startsWith(`${safeTransferId}.`) &&
+        !name.startsWith(`${safeTransferId}-`)
+      ) {
+        continue;
+      }
+      this.safeUnlink(filePath);
+      this.safeUnlink(`${filePath}.part`);
+    }
   }
 
   private scheduleStaleTempEventBlobSweep(force = false): void {
     const now = Date.now();
-    if (reticulumChatTempBlobSweepPromise) return;
+    if (this.tempEventBlobSweepPromise) return;
     if (
       !force &&
-      now - reticulumChatTempBlobLastSweepAt < RETICULUM_CHAT_TEMP_BLOB_SWEEP_MS
+      now - this.tempEventBlobLastSweepAt < RETICULUM_CHAT_TEMP_BLOB_SWEEP_MS
     ) {
       return;
     }
-    reticulumChatTempBlobLastSweepAt = now;
-    reticulumChatTempBlobSweepPromise = this.sweepStaleTempEventBlobs().finally(
+    this.tempEventBlobLastSweepAt = now;
+    this.tempEventBlobSweepPromise = this.sweepStaleTempEventBlobs().finally(
       () => {
-        reticulumChatTempBlobSweepPromise = null;
+        this.tempEventBlobSweepPromise = null;
       }
     );
   }
 
   private async sweepStaleTempEventBlobs(): Promise<void> {
     const now = Date.now();
-    const dir = path.join(app.getPath('temp'), 'qortal-reticulum-chat-events');
     try {
-      await fs.promises.mkdir(dir, { recursive: true });
-      const names = await fs.promises.readdir(dir);
-      const batchSize = 64;
-      for (let offset = 0; offset < names.length; offset += batchSize) {
-        const batch = names.slice(offset, offset + batchSize);
-        await Promise.all(
-          batch.map(async (name) => {
-            // Provider blobs end in .json and receive targets end in .recv. A
-            // transfer registration lives for at most ten minutes, so files
-            // unchanged for thirty minutes cannot still be in progress, even
-            // when another Hub instance shares the system temp folder.
-            if (
-              !name.endsWith('.json') &&
-              !name.endsWith('.recv') &&
-              !name.endsWith('.gz')
-            )
-              return;
-            const filePath = path.join(dir, name);
-            let stats: fs.Stats;
-            try {
-              stats = await fs.promises.stat(filePath);
-            } catch {
-              return;
-            }
-            if (
-              !stats.isFile() ||
-              now - stats.mtimeMs < RETICULUM_CHAT_TEMP_BLOB_STALE_MS
-            ) {
-              return;
-            }
-            const transferId = this.tempEventBlobTransferByPath.get(filePath);
-            if (transferId) {
-              this.tempEventBlobs.delete(transferId);
-              this.tempEventBlobTransferByPath.delete(filePath);
-            }
-            try {
-              await fs.promises.unlink(filePath);
-            } catch {
-              // A concurrent terminal event or another instance may win.
-            }
-          })
-        );
-      }
+      await this.sweepTempEventBlobDir(this.tempEventBlobDir, now, false);
+      await this.sweepLegacyTempEventBlobDir(now);
     } catch (error) {
       const errorCode =
         error && typeof error === 'object' && 'code' in error
@@ -41783,7 +41815,86 @@ export class ReticulumChatManager extends EventEmitter {
     }
   }
 
+  private async sweepTempEventBlobDir(
+    dir: string,
+    now: number,
+    legacy: boolean
+  ): Promise<void> {
+    const names = await fs.promises.readdir(dir);
+    const batchSize = 64;
+    for (let offset = 0; offset < names.length; offset += batchSize) {
+      const batch = names.slice(offset, offset + batchSize);
+      await Promise.all(
+        batch.map(async (name) => {
+          // A registration lives for at most ten minutes, so files unchanged
+          // for thirty minutes cannot still belong to an active transfer.
+          const filePath = path.join(dir, name);
+          let stats: fs.Stats;
+          try {
+            stats = await fs.promises.lstat(filePath);
+          } catch {
+            return;
+          }
+          if (!stats.isFile()) return;
+          if (
+            legacy &&
+            typeof process.getuid === 'function' &&
+            stats.uid !== process.getuid()
+          ) {
+            return;
+          }
+          if (process.platform !== 'win32') {
+            try {
+              await fs.promises.chmod(filePath, 0o600);
+            } catch {
+              return;
+            }
+          }
+          if (now - stats.mtimeMs < RETICULUM_CHAT_TEMP_BLOB_STALE_MS) {
+            return;
+          }
+          const transferId = this.tempEventBlobTransferByPath.get(filePath);
+          if (transferId) {
+            this.tempEventBlobs.delete(transferId);
+            this.tempEventBlobTransferByPath.delete(filePath);
+          }
+          try {
+            await fs.promises.unlink(filePath);
+            this.tempEventBlobPaths.delete(filePath);
+          } catch {
+            // A concurrent terminal event or another instance may win.
+          }
+        })
+      );
+    }
+  }
+
+  private async sweepLegacyTempEventBlobDir(now: number): Promise<void> {
+    const legacyDir = path.join(
+      app.getPath('temp'),
+      RETICULUM_CHAT_LEGACY_TEMP_BLOB_DIR_NAME
+    );
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.lstat(legacyDir);
+    } catch {
+      return;
+    }
+    if (!stats.isDirectory() || stats.isSymbolicLink()) return;
+    if (
+      typeof process.getuid === 'function' &&
+      stats.uid !== process.getuid()
+    ) {
+      return;
+    }
+    if (process.platform !== 'win32') {
+      await fs.promises.chmod(legacyDir, 0o700);
+    }
+    await this.sweepTempEventBlobDir(legacyDir, now, true);
+  }
+
   private safeUnlink(filePath: string): void {
+    this.tempEventBlobPaths.delete(filePath);
     const transferId = this.tempEventBlobTransferByPath.get(filePath);
     if (transferId) {
       this.tempEventBlobTransferByPath.delete(filePath);

@@ -5154,6 +5154,46 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             self.assertEqual(received[0].args[1]["transferId"], transfer_id)
             self.assertEqual(received[0].args[1]["payloadHash"], payload_hash)
 
+    def test_chat_event_response_recreates_a_private_destination(self):
+        contents = b"private chat history page"
+        payload_hash = self.bridge.hashlib.sha256(contents).hexdigest()
+        transfer_id = "private-chat-page"
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "source.bin"
+            save_path = Path(directory) / "private" / "received.bin"
+            source_path.write_bytes(contents)
+            receipt = FakeSessionReceipt()
+            receipt.response = open(source_path, "rb")
+            receipt.metadata = {
+                "transferId": transfer_id,
+                "size": len(contents),
+                "sha256": payload_hash,
+            }
+            pending = self.pending(transfer_id)
+            pending.update(
+                {
+                    "savePath": str(save_path),
+                    "size": len(contents),
+                    "sha256": payload_hash,
+                }
+            )
+            job = {
+                "transferId": transfer_id,
+                "pending": pending,
+                "created_at": time.time(),
+                "followers": [],
+            }
+            self.bridge._qchat_file_store_pending_receive(self.peer_hash, pending)
+
+            with mock.patch.object(self.bridge, "_qchat_file_emit"):
+                self.bridge._resource_session_response_received(job, receipt)
+
+            self.assertTrue(job["completed"])
+            self.assertEqual(save_path.read_bytes(), contents)
+            if os.name != "nt":
+                self.assertEqual(save_path.parent.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(save_path.stat().st_mode & 0o777, 0o600)
+
     def test_range_response_from_legacy_peer_uses_request_receipt_identity(self):
         contents = b"legacy range response"
         payload_hash = self.bridge.hashlib.sha256(contents).hexdigest()
