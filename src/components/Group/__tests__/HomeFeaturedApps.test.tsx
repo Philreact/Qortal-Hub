@@ -40,8 +40,27 @@ i18n.init({
   resources: {
     en: {
       group: {
-        'home.featured_apps': 'Featured Apps',
-        'home.open_app': 'Open',
+        dashboard: {
+          explore_all_q_apps: 'Explore All Q-Apps',
+          featured_q_apps: 'Featured Q-Apps',
+          featured_q_apps_subtitle:
+            'Launch trusted community apps directly from your dashboard.',
+          featured_q_chat_eyebrow: 'NATIVE',
+          featured_q_chat_keyword_connect: 'connect.',
+          featured_q_chat_keyword_freely: 'freely.',
+          featured_q_chat_keyword_talk: 'talk.',
+          featured_q_chat_subtitle:
+            'Your conversations, your groups, your network.\nPowered by Reticulum\nValidated on Qortal Blockchain',
+          featured_q_tube_eyebrow: 'Always on',
+          featured_q_tube_keyword_cat_videos: 'cat. videos.',
+          featured_q_tube_keyword_decentralized: 'decentralized.',
+          featured_q_tube_keyword_platform: 'platform.',
+          featured_q_tube_subtitle:
+            'Network-hosted video drops, weird clips, and creator rabbit holes.',
+          open_q_app: 'Open Q-App',
+          open_q_chat: 'Open Q-Chat',
+          reduce_motion: 'Reduce motion',
+        },
       },
     },
   },
@@ -56,9 +75,9 @@ const FEATURED_APP_NAMES = [
   'Q-Tube',
   'Quitter',
   'Q-Mail',
-  'Q-Blog',
-  'Q-Trade',
   'SubWire',
+  'Q-Trade',
+  'Q-Chat',
 ];
 
 const theme = createTheme({
@@ -100,6 +119,7 @@ describe('HomeFeaturedApps', () => {
     for (const appName of FEATURED_APP_NAMES) {
       expect(screen.getAllByText(appName).length).toBeGreaterThan(0);
     }
+    expect(screen.queryByText('Q-Blog')).not.toBeInTheDocument();
   });
 
   it('renders a clickable tile for each featured app', () => {
@@ -116,6 +136,20 @@ describe('HomeFeaturedApps', () => {
 
     expect(mockExecuteEvent).toHaveBeenCalledWith('addTab', {
       data: { service: 'APP', name: firstAppName },
+    });
+    expect(mockExecuteEvent).toHaveBeenCalledWith('open-apps-mode', {});
+  });
+
+  it('opens Q-Chat as a Hub-owned internal tab', () => {
+    renderComponent();
+    fireEvent.click(screen.getByRole('button', { name: 'Q-Chat' }));
+
+    expect(mockExecuteEvent).toHaveBeenCalledWith('addTab', {
+      data: {
+        internal: 'q-chat',
+        name: 'Q-Chat',
+        service: 'INTERNAL',
+      },
     });
     expect(mockExecuteEvent).toHaveBeenCalledWith('open-apps-mode', {});
   });
