@@ -265,7 +265,13 @@
     "fully_operational": "Täielikult töökorras",
     "group_activity_module": "Grupi tegevus",
     "group_activity_module_desc": "Kuva avalehel grupi tegevuse moodul. Lülita välja, et seda ei renderdataks.",
+    "help": "Abi",
+    "help_settings": "Abi",
+    "help_settings_description": "Käivita Hubi ja Q-Chati juhendatud tutvustus uuesti.",
     "hub": "Hub",
+    "hub_tutorial": "Hubi õpetus",
+    "hub_tutorial_description": "Korda Hubi, Q-Chati, gruppide, otsesõnumite ja Q-Appide juhendatud ringkäiku.",
+    "hub_tutorial_start_note": "Õpetus algab pärast seadete sulgemist ja Hubi avalehele naasmist.",
     "info_panel_node_comment": "// node_info",
     "info_panel_status": "olek",
     "loading_wallet_activity": "Rahakoti tegevust laaditakse...",
@@ -356,6 +362,7 @@
     "reduce_ui_animations_desc": "Lülita sisse, et vähendada liikumist kogu Hubis. Jäta välja tavapärase animeeritud liidese jaoks.",
     "reload": "Laadi uuesti",
     "reset_reticulum_default": "Lähtesta Hubi vaikeväärtusele",
+    "restart_hub_tutorial": "Käivita õpetus uuesti",
     "reticulum": "Reticulum",
     "reticulum_chat_update_error": "Reticulumi rühmavestlust ei õnnestunud praegu uuendada.",
     "reticulum_config_chars_count": "{{count}} märki",
@@ -468,6 +475,7 @@
     "join_group_heading": "Liitu grupiga",
     "load_more": "Laadi veel",
     "open_group": "Avatud grupp",
+    "pinned_group": "Kinnitatud grupp",
     "private_filter_active": "Aktiivsuse järjestus on saadaval ainult avatud gruppidele.",
     "private_filter_top": "Group Score on saadaval ainult avatud gruppidele.",
     "search_aria": "Otsi gruppe nime järgi",
@@ -625,12 +633,12 @@
   "home": {
     "address_copied": "Aadress kopeeritud lõikelauale",
     "confirming": "Kinnitamine",
-    "get_qorts_workspace_hint": "Avage oma esimesed 6 QORT-i, et lubada ülejäänud seadistus.",
-    "get_six_qorts": "Hangi oma 6 QORT",
-    "get_six_qorts_intro": "On 3 võimalust oma esimese 6 QORTi saamiseks:",
+    "get_qorts_workspace_hint": "Avage oma esimesed 2 QORT-i, et lubada ülejäänud seadistus.",
+    "get_six_qorts": "Hangi oma 2 QORT-i",
+    "get_six_qorts_intro": "Esimese 2 QORT-i saamiseks on 3 võimalust:",
     "get_six_qorts_way1": "Lõpeta juhend aadressil qortal.dev.",
     "get_six_qorts_way1_action": "Mine juhendisse",
-    "get_six_qorts_way2": "Küsi 6 QORTi Nextcloudi tugichatis.",
+    "get_six_qorts_way2": "Küsi Nextcloudi tugivestluses 2 QORT-i.",
     "get_six_qorts_way2_action": "Ava tugichatt",
     "get_six_qorts_way3": "Osta QORT Q-Trade'ist.",
     "get_six_qorts_way3_action": "Ava Q-Trade",
@@ -643,7 +651,7 @@
     "onboarding_transition_hard_part_done": "Hea töö. Kõige raskem osa on tehtud.",
     "onboarding_transition_one_more": "Suurepärane. Veel üks samm jäänud.",
     "open": "Ava",
-    "persistent_guide_get_qorts": "Alustame 6 QORT-iga. Valige ülemalt mõni võimalus.",
+    "persistent_guide_get_qorts": "Alustame 2 QORT-iga. Vali ülalt mõni võimalus.",
     "persistent_guide_load_avatar": "Viimaks lisage avatar.",
     "persistent_guide_register_name": "Järgmisena registreerige oma nimi.",
     "post_onboarding_workspace_ready": "Kõik valmis. Tööjaama saate üles ehitada ülal.",
@@ -800,6 +808,109 @@
     "try_again": "Proovi uuesti",
     "unencrypted": "Krüpteerimata",
     "verification_failed": "Kontrollimine ebaõnnestus"
+  },
+  "onboarding": {
+    "action": {
+      "back": "Tagasi",
+      "continue": "Jätka",
+      "continue_with_progress": "Jätka ({{current}}/{{total}})",
+      "got_it": "Selge",
+      "next": "Edasi",
+      "next_with_progress": "Edasi ({current}/{total})",
+      "skip": "Jäta õpetus vahele",
+      "skip_for_now": "Jäta praegu vahele",
+      "start_exploring": "Alusta avastamist",
+      "start_tour": "Alusta ringkäiku"
+    },
+    "back_to_hub": {
+      "copy": "Naase avalehele, et jätkata Qortali võimaluste avastamist.",
+      "title": "Tagasi Hubi"
+    },
+    "choose_channel": {
+      "copy": "Grupid korraldavad vestlused kanalitesse, et igal teemal oleks oma koht. Siit saad valida kanali.",
+      "title": "Vali kanal"
+    },
+    "direct_messages": {
+      "copy": "Saad teisele Qortali kasutajale ka privaatselt kirjutada. Vestluse alustamiseks ava otsesõnumid.",
+      "info": "Oma gruppidesse naasmiseks vajuta uuesti otsesõnumite nuppu.",
+      "title": "Otsesõnumid"
+    },
+    "enter_qortal_land": {
+      "copy": "Käivita Qortal Land Hubi avalehe juhtpaneelilt. Enne sisenemist pead olema vähemalt ühe Q-Chati grupi liige.",
+      "copy_group": "Igal grupil on oma <emphasis>QortalLandi</emphasis> ruum. Pärast grupiga liitumist saad sinna minna selle nupu kaudu või otse avalehe juhtpaneelilt.",
+      "copy_group_details": "QortalLand on varajases arengujärgus ja kasvav sotsiaalne maailm, kus grupiliikmed saavad kohtuda, suhelda ning mängida minimänge nagu male ja kabe. Uute funktsioonidega laienevad pidevalt selle ruumid, tegevused ja võimalused.",
+      "preview_alt": "QortalLandi salongi eelvaade",
+      "preview_open": "Ava QortalLandi eelvaade",
+      "title": "Sisene Qortal Landi"
+    },
+    "explore_qapps": {
+      "copy": "Sirvi kõiki saadaolevaid Q-Appe ja avasta, mida Qortalis veel luuakse.",
+      "title": "Avasta Q-Appe"
+    },
+    "featured_qapps": {
+      "copy": "See jaotis tutvustab mõnda kogukonna loodud <emphasis>Q-Appi</emphasis>, mis aitavad kujundada tänast Qortalit.",
+      "decentralization": "<emphasis>Q-Appid</emphasis> on QDN-is täielikult detsentraliseeritud ning nende andmed krüpteeritakse ja tükeldatakse salvestamisel ja edastamisel. Avalik Q-Appi sisu on teadlikult avalik, mitte otspunktkrüpteeringuga privaatne. Ükski keskne majutaja ega asutus ei saa seda kõigi jaoks tsenseerida või eemaldada; iga kasutaja juhib, millele tema sõlm ligi pääseb või mida blokeerib.",
+      "details": "<emphasis>Q-Appid</emphasis> on detsentraliseeritud rakendused, mida saab luua tuttavate veebitehnoloogiatega nagu HTML, CSS ja JavaScript. Igaüks saab rakenduse luua ning kasutada Qortali plokiahelat, API-sid ja võrdõigusvõrgu QDN-taristut idee avaldamiseks, jagamiseks, kasvatamiseks või rahaks tegemiseks kogu Qortali ökosüsteemis.",
+      "title": "Esiletõstetud Q-Appid"
+    },
+    "find_group": {
+      "copy": "Sirvi gruppe, millega saad liituda. Ametlik grupp <emphasis>Qortal Project</emphasis> on Top-edetabelis alati esimesena kinnitatud.",
+      "title": "Otsi gruppe"
+    },
+    "find_groups_location": {
+      "copy": "Kasuta seda otsingunuppu alati, kui soovid uusi gruppe leida ja nendega liituda.",
+      "title": "Leia gruppe"
+    },
+    "join_group": {
+      "copy": "Liitu grupiga, et pääseda selle vestlustesse ja kanalitesse. \"Qortal Project\" on hea koht alustamiseks.",
+      "copy_member": "Oled juba <emphasis>Qortal Projecti</emphasis> liige. See on Qortali ametlik kogukonnagrupp uudiste, toe, vestluste ja panustajatega suhtlemise jaoks.\n\nVaatame korraks ringi!",
+      "copy_preview": "<emphasis>Qortal Project</emphasis> on Qortali ametlik kogukonnagrupp uudiste, toe, vestluste ja panustajatega suhtlemise jaoks. Liitumiseks on vaja QORTi ja plokiahela kinnitust, seega jätkame liitumata juhendatud eelvaatega.",
+      "title": "Liitu grupiga",
+      "title_qortal_project": "Qortal Project"
+    },
+    "message_expiry": {
+      "copy": "Otsesõnumid aeguvad vaikimisi automaatselt ühe kuu pärast. Siin saad aegumisperioodi muuta.",
+      "info": "Vali aegumisaeg enne uute sõnumite saatmist. Muudatused ei rakendu varem saadetud sõnumitele.",
+      "title": "Sõnumite aegumine"
+    },
+    "open_qchat": {
+      "copy": "Q-Chat on koht, kus toimuvad Qortali vestlused. Alustamiseks ava see.",
+      "title": "Ava Q-Chat"
+    },
+    "preview": {
+      "badge": "Juhendatud eelvaade",
+      "category": {
+        "community": "Kogukond",
+        "official": "Ametlik",
+        "support": "Tugi"
+      },
+      "channel": {
+        "announcements": "Teadaanded",
+        "bug_reports": "Veateated",
+        "general_chat": "Üldvestlus",
+        "official_links": "Ametlikud lingid",
+        "qort_trading": "QORT-i kauplemine",
+        "qortal_land": "Qortal Land",
+        "qortal_marketing": "Qortali turundus",
+        "rules": "Reeglid",
+        "tasks_and_ideas": "Ülesanded ja ideed"
+      },
+      "notice": "Sa pole selle grupiga liitunud. Liitumine nõuab QORT-i ja kinnitust Qortali plokiahelas.",
+      "owner": "Omanik",
+      "qortino_message": "Tere tulemast! Grupid koondavad iga kogukonna kanalid, vestlused ja QortalLandi ala. See eelvaade laseb sul ringi vaadata ilma liitumise või QORT-i kulutamiseta."
+    },
+    "ready": {
+      "copy": "Need olid põhitõed. Avasta Qortal omas tempos ja vajadusel käivita ringkäik igal ajal uuesti.",
+      "title": "Oled valmis"
+    },
+    "skip_reminder": {
+      "copy": "Saad selle õpetuse igal ajal uuesti käivitada menüüst Seaded > Abi.",
+      "title": "Õpetus jäeti praegu vahele"
+    },
+    "welcome": {
+      "copy": "Avalehe juhtpaneel on sinu lähtepunkt Qortal Hubis.\n\nTeeme kiire ringkäigu põhitõdedes!",
+      "title": "Tere tulemast Qortal Hubi"
+    }
   },
   "subscription": {
     "actions_badge_one": "{{count}} toiming",

@@ -26,6 +26,10 @@ import qTradeLogo from '../../assets/Icons/q-trade-logo.webp';
 import BorderGlow from '../common/BorderGlow';
 import { getBlueTier1ButtonSx } from '../../styles/blueMaterial';
 import {
+  HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE,
+  HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT,
+} from '../Onboarding/hubOnboarding';
+import {
   dashboardPanelSx,
   handleDashboardPanelPointerLeave,
   handleDashboardPanelPointerMove,
@@ -145,6 +149,9 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   const [expandedPreviewApp, setExpandedPreviewApp] =
     useState<PreviewAppName | null>(null);
   const [autoPreviewActive, setAutoPreviewActive] = useState(false);
+  const [onboardingPreviewLocked, setOnboardingPreviewLocked] = useState(() =>
+    document.body.hasAttribute(HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE)
+  );
   const [isCalmMode, setIsCalmMode] = useState(() => {
     try {
       return (
@@ -229,6 +236,34 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   });
 
   useEffect(() => {
+    const syncOnboardingPreviewLock = () => {
+      setOnboardingPreviewLocked(
+        document.body.hasAttribute(
+          HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE
+        )
+      );
+    };
+    window.addEventListener(
+      HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT,
+      syncOnboardingPreviewLock
+    );
+    syncOnboardingPreviewLock();
+    return () =>
+      window.removeEventListener(
+        HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT,
+        syncOnboardingPreviewLock
+      );
+  }, []);
+
+  useEffect(() => {
+    if (onboardingPreviewLocked) {
+      setAutoPreviewActive(false);
+      setExpandedPreviewApp(Q_CHAT_APP_NAME);
+      return () => {
+        clearInitialPreviewTimers();
+      };
+    }
+
     if (isCalmMode) {
       setAutoPreviewActive(false);
       setExpandedPreviewApp(null);
@@ -253,6 +288,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
 
     if (!shouldRunInitialPreview) {
       setAutoPreviewActive(false);
+      setExpandedPreviewApp(null);
       return () => {
         if (previewExpandTimerRef.current)
           clearTimeout(previewExpandTimerRef.current);
@@ -290,7 +326,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
         clearTimeout(previewCollapseTimerRef.current);
       clearInitialPreviewTimers();
     };
-  }, [clearInitialPreviewTimers, isCalmMode]);
+  }, [clearInitialPreviewTimers, isCalmMode, onboardingPreviewLocked]);
 
   const clearPirateTimers = () => {
     if (previewExpandTimerRef.current) {
@@ -318,14 +354,15 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
       // Ignore storage failures and keep the preference local-only.
     }
 
-    if (isCalmMode) {
+    if (isCalmMode && !onboardingPreviewLocked) {
       clearPirateTimers();
       stopInitialPreview();
       setExpandedPreviewApp(null);
     }
-  }, [isCalmMode]);
+  }, [isCalmMode, onboardingPreviewLocked]);
 
   const schedulePreviewExpand = (appName: PreviewAppName) => {
+    if (onboardingPreviewLocked) return;
     if (isCalmMode) return;
     if (autoPreviewActive) {
       stopInitialPreview();
@@ -347,6 +384,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   };
 
   const schedulePreviewCollapse = () => {
+    if (onboardingPreviewLocked) return;
     if (isCalmMode) return;
     if (autoPreviewActive) return;
     if (previewExpandTimerRef.current) {
@@ -362,6 +400,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
 
   return (
     <Box
+      data-tour="hub-featured-qapps"
       ref={assignPanelNode}
       sx={{
         ...dashboardPanelSx(theme, 'base'),
@@ -532,11 +571,15 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
               )
             )}
           </Box>
-          {!isCalmMode ? (
+          {!isCalmMode || onboardingPreviewLocked ? (
             <FeaturedExpandedPreview
-              appName={expandedPreviewApp}
+              appName={
+                onboardingPreviewLocked
+                  ? Q_CHAT_APP_NAME
+                  : expandedPreviewApp
+              }
               theme={theme}
-              visible={!!expandedPreviewApp}
+              visible={onboardingPreviewLocked || !!expandedPreviewApp}
               teaserMode={
                 autoPreviewActive && expandedPreviewApp === Q_CHAT_APP_NAME
               }
@@ -592,6 +635,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
             }}
           />
           <ButtonBase
+            data-tour="hub-explore-qapps"
             disableRipple
             onClick={openAppsLibrary}
             sx={{
@@ -835,6 +879,7 @@ const AppTile = ({
 
   const tileButton = (
     <ButtonBase
+      data-tour={isQChat ? 'hub-featured-qchat' : undefined}
       disableRipple
       onClick={() => openFeaturedApp(appName)}
       onMouseEnter={
@@ -1410,6 +1455,11 @@ const FeaturedExpandedPreview = ({
             {t(`group:dashboard.${previewConfig.subtitleKey}`)}
           </Typography>
           <Button
+            data-tour={
+              visible && isQChatPreview
+                ? 'hub-featured-qchat-open'
+                : undefined
+            }
             onClick={() => openFeaturedApp(resolvedAppName)}
             variant="contained"
             sx={{

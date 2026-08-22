@@ -265,7 +265,13 @@
     "fully_operational": "Completamente operativo",
     "group_activity_module": "Attività del gruppo",
     "group_activity_module_desc": "Mostra il modulo Attività del gruppo nella Home. Disattivalo per non renderizzarlo.",
+    "help": "Aiuto",
+    "help_settings": "Aiuto",
+    "help_settings_description": "Riavvia l'introduzione guidata a Hub e Q-Chat.",
     "hub": "Hub",
+    "hub_tutorial": "Tutorial di Hub",
+    "hub_tutorial_description": "Ripeti la visita guidata di Hub, Q-Chat, gruppi, messaggi diretti e Q-Apps.",
+    "hub_tutorial_start_note": "Il tutorial inizierà dopo la chiusura delle Impostazioni e il ritorno alla pagina principale di Hub.",
     "info_panel_node_comment": "// info_nodo",
     "info_panel_status": "stato",
     "loading_wallet_activity": "Caricamento attività wallet...",
@@ -356,6 +362,7 @@
     "reduce_ui_animations_desc": "Attiva per ridurre il movimento nell’Hub. Lascia spento per l’interfaccia animata normale.",
     "reload": "Ricarica",
     "reset_reticulum_default": "Ripristina predefinito Hub",
+    "restart_hub_tutorial": "Riavvia tutorial",
     "reticulum": "Reticulum",
     "reticulum_chat_update_error": "Non è stato possibile aggiornare la chat di gruppo Reticulum in questo momento.",
     "reticulum_config_chars_count": "{{count}} caratteri",
@@ -468,6 +475,7 @@
     "join_group_heading": "Unisciti al gruppo",
     "load_more": "Carica altro",
     "open_group": "Gruppo aperto",
+    "pinned_group": "Gruppo fissato",
     "private_filter_active": "La classifica per attività è disponibile solo per i gruppi aperti.",
     "private_filter_top": "I Group Score sono disponibili solo per i gruppi aperti.",
     "search_aria": "Cerca gruppi per nome",
@@ -625,12 +633,12 @@
   "home": {
     "address_copied": "Indirizzo copiato negli appunti",
     "confirming": "Conferma",
-    "get_qorts_workspace_hint": "Sblocca i primi 6 QORT per attivare il resto della configurazione.",
-    "get_six_qorts": "Ottieni i tuoi 6 QORT",
-    "get_six_qorts_intro": "Ci sono 3 modi per ottenere i tuoi primi 6 QORT:",
+    "get_qorts_workspace_hint": "Sblocca i primi 2 QORT per attivare il resto della configurazione.",
+    "get_six_qorts": "Ottieni i tuoi 2 QORT",
+    "get_six_qorts_intro": "Ci sono 3 modi per ottenere i tuoi primi 2 QORT:",
     "get_six_qorts_way1": "Completa le istruzioni su qortal.dev.",
     "get_six_qorts_way1_action": "Vai alle istruzioni",
-    "get_six_qorts_way2": "Richiedi 6 QORT nella chat di supporto Nextcloud.",
+    "get_six_qorts_way2": "Richiedi 2 QORT nella chat di supporto Nextcloud.",
     "get_six_qorts_way2_action": "Apri chat di supporto",
     "get_six_qorts_way3": "Acquista QORT con Q-Trade.",
     "get_six_qorts_way3_action": "Apri Q-Trade",
@@ -643,7 +651,7 @@
     "onboarding_transition_hard_part_done": "Ottimo lavoro. La parte più dura è fatta.",
     "onboarding_transition_one_more": "Grande. Ne manca ancora una.",
     "open": "Apri",
-    "persistent_guide_get_qorts": "Iniziamo con 6 QORT. Scegli un’opzione sopra.",
+    "persistent_guide_get_qorts": "Iniziamo con 2 QORT. Scegli un’opzione sopra.",
     "persistent_guide_load_avatar": "Infine carica il tuo avatar.",
     "persistent_guide_register_name": "Poi registra il tuo nome.",
     "post_onboarding_workspace_ready": "Tutto pronto. Puoi iniziare a costruire lo workspace sopra.",
@@ -800,6 +808,109 @@
     "try_again": "Riprova",
     "unencrypted": "Non cifrato",
     "verification_failed": "Verifica non riuscita"
+  },
+  "onboarding": {
+    "action": {
+      "back": "Indietro",
+      "continue": "Continua",
+      "continue_with_progress": "Continua ({{current}} di {{total}})",
+      "got_it": "Ho capito",
+      "next": "Avanti",
+      "next_with_progress": "Avanti ({current} di {total})",
+      "skip": "Salta il tutorial",
+      "skip_for_now": "Salta per ora",
+      "start_exploring": "Inizia a esplorare",
+      "start_tour": "Inizia il tour"
+    },
+    "back_to_hub": {
+      "copy": "Torna alla pagina iniziale per continuare a esplorare ciò che Qortal offre.",
+      "title": "Torna a Hub"
+    },
+    "choose_channel": {
+      "copy": "I gruppi organizzano le conversazioni in canali, così ogni argomento ha il proprio spazio. Qui puoi scegliere un canale.",
+      "title": "Scegli un canale"
+    },
+    "direct_messages": {
+      "copy": "Puoi anche scrivere privatamente a un altro utente Qortal. Apri i messaggi diretti per iniziare una conversazione.",
+      "info": "Premi di nuovo Messaggi diretti per tornare ai tuoi Gruppi.",
+      "title": "Messaggi diretti"
+    },
+    "enter_qortal_land": {
+      "copy": "Avvia Qortal Land dalla Dashboard principale di Hub. Devi essere membro di almeno un gruppo Q-Chat prima di poter entrare.",
+      "copy_group": "Ogni gruppo ha il proprio spazio <emphasis>QortalLand</emphasis>. Puoi accedervi da questo comando dopo esserti unito al gruppo oppure direttamente dalla Dashboard principale.",
+      "copy_group_details": "QortalLand è un mondo sociale ancora agli inizi e in continua crescita, dove i membri del gruppo possono incontrarsi, interagire e giocare a minigiochi come Scacchi e Dama. I suoi spazi, le attività e le possibilità continueranno ad ampliarsi con l'arrivo di nuove funzioni.",
+      "preview_alt": "Anteprima della lounge QortalLand",
+      "preview_open": "Apri l’anteprima di QortalLand",
+      "title": "Entra in Qortal Land"
+    },
+    "explore_qapps": {
+      "copy": "Sfoglia tutte le Q-Apps disponibili e scopri cos'altro viene realizzato su Qortal.",
+      "title": "Esplora le Q-Apps"
+    },
+    "featured_qapps": {
+      "copy": "Questa sezione presenta alcune <emphasis>Q-App</emphasis> create dalla comunità che contribuiscono a rendere Qortal ciò che è oggi.",
+      "decentralization": "Le <emphasis>Q-App</emphasis> sono completamente decentralizzate su QDN, con dati cifrati e suddivisi durante l’archiviazione e il trasferimento. I contenuti pubblici delle Q-App sono intenzionalmente pubblici, non privati con crittografia end-to-end. Non esiste un host o un’autorità centrale che possa censurarli o rimuoverli per tutti; ogni utente controlla ciò a cui accede o che blocca il proprio nodo.",
+      "details": "Le <emphasis>Q-App</emphasis> sono applicazioni decentralizzate create con tecnologie web comuni come HTML, CSS e JavaScript. Chiunque può crearne una e usare la blockchain, le API e l'infrastruttura QDN peer-to-peer di Qortal per pubblicare, condividere, far crescere o monetizzare un'idea nell'ecosistema Qortal.",
+      "title": "Q-Apps in primo piano"
+    },
+    "find_group": {
+      "copy": "Esplora i gruppi a cui puoi unirti. Il gruppo ufficiale <emphasis>Qortal Project</emphasis> è sempre fissato al primo posto nella classifica Top.",
+      "title": "Cerca gruppi"
+    },
+    "find_groups_location": {
+      "copy": "Usa questo pulsante di ricerca ogni volta che vuoi trovare nuovi gruppi e unirti a loro.",
+      "title": "Trova gruppi"
+    },
+    "join_group": {
+      "copy": "Unisciti a un gruppo per accedere alle sue conversazioni e ai suoi canali. \"Qortal Project\" è un ottimo punto di partenza.",
+      "copy_member": "Sei già membro di <emphasis>Qortal Project</emphasis>, il gruppo ufficiale della comunità Qortal per notizie, assistenza, conversazioni e contatti con i collaboratori.\n\nDiamo una rapida occhiata!",
+      "copy_preview": "<emphasis>Qortal Project</emphasis> è il gruppo ufficiale della comunità Qortal per notizie, assistenza, conversazioni e contatti con i collaboratori. L'adesione richiede QORT e una conferma sulla blockchain, quindi continueremo con un'anteprima guidata senza unirci.",
+      "title": "Unisciti a un gruppo",
+      "title_qortal_project": "Qortal Project"
+    },
+    "message_expiry": {
+      "copy": "Per impostazione predefinita, i messaggi diretti scadono automaticamente dopo un mese. Puoi cambiare qui il periodo di scadenza.",
+      "info": "Scegli il periodo di scadenza prima di inviare nuovi messaggi. Le modifiche non si applicano ai messaggi inviati in precedenza.",
+      "title": "Scadenza dei messaggi"
+    },
+    "open_qchat": {
+      "copy": "Q-Chat è il luogo delle conversazioni su Qortal. Aprilo per iniziare.",
+      "title": "Apri Q-Chat"
+    },
+    "preview": {
+      "badge": "Anteprima guidata",
+      "category": {
+        "community": "Comunità",
+        "official": "Ufficiale",
+        "support": "Assistenza"
+      },
+      "channel": {
+        "announcements": "Annunci",
+        "bug_reports": "Segnalazioni di bug",
+        "general_chat": "Chat generale",
+        "official_links": "Link ufficiali",
+        "qort_trading": "Trading QORT",
+        "qortal_land": "Qortal Land",
+        "qortal_marketing": "Marketing Qortal",
+        "rules": "Regole",
+        "tasks_and_ideas": "Attività e idee"
+      },
+      "notice": "Non hai aderito a questo gruppo. L'adesione richiede QORT e la conferma sulla blockchain Qortal.",
+      "owner": "Proprietario",
+      "qortino_message": "Benvenuto! I gruppi riuniscono i canali, le conversazioni e lo spazio QortalLand di ogni comunità. Questa anteprima ti consente di esplorarli senza unirti o spendere QORT."
+    },
+    "ready": {
+      "copy": "Queste sono le basi. Esplora Qortal al tuo ritmo e riavvia questo tour ogni volta che ne hai bisogno.",
+      "title": "Sei pronto"
+    },
+    "skip_reminder": {
+      "copy": "Puoi riavviare questo tutorial in qualsiasi momento da Impostazioni > Aiuto.",
+      "title": "Tutorial saltato per ora"
+    },
+    "welcome": {
+      "copy": "La Dashboard principale è il tuo punto di partenza in Qortal Hub.\n\nFacciamo un rapido tour delle funzioni essenziali!",
+      "title": "Benvenuto in Qortal Hub"
+    }
   },
   "subscription": {
     "actions_badge_one": "{{count}} azione",

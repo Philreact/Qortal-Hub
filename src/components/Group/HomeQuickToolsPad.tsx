@@ -384,6 +384,11 @@ export const HomeQuickToolsPad = ({
             title={item.label}
           >
             <ButtonBase
+              data-tour={
+                item.key === 'qortal-land'
+                  ? 'hub-dashboard-qortal-land'
+                  : undefined
+              }
               draggable={item.draggable}
               onClick={(event) => item.onAction(event)}
               onDragStart={item.onDragStart}

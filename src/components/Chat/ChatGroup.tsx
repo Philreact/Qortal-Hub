@@ -220,7 +220,9 @@ type ReticulumGroupChannel = {
 type ReticulumGroupChannelWriteMode = 'members' | 'admins';
 type ReticulumGroupChannelReadMode = 'members' | 'admins';
 type ReticulumGroupChannelAccessMode =
-  'regular' | 'admin_write' | 'admin_private';
+  | 'regular'
+  | 'admin_write'
+  | 'admin_private';
 
 type ReticulumSearchResult = {
   event: {
@@ -8781,6 +8783,7 @@ export const ChatGroup = ({
       >
         {reticulumChatEnabled && (
           <Box
+            data-tour="hub-channel-list"
             onContextMenu={openReticulumChannelAreaContextMenu}
             sx={{
               backgroundColor: theme.palette.background.surface,
@@ -8803,6 +8806,18 @@ export const ChatGroup = ({
               },
             }}
           >
+            <Box
+              aria-hidden
+              data-tour="hub-onboarding-channel"
+              sx={{
+                height: 30,
+                left: 16,
+                pointerEvents: 'none',
+                position: 'absolute',
+                right: 16,
+                top: 84,
+              }}
+            />
             <Box
               aria-label={t('group:chat_group.resize_channel_list')}
               onPointerDown={handleReticulumChannelSidebarResizeStart}
@@ -9462,10 +9477,12 @@ export const ChatGroup = ({
                 }}
               >
                 {typeof onQortalLandClick === 'function' && (
-                  <ReticulumModePill
-                    target="qortal_land"
-                    onClick={onQortalLandClick}
-                  />
+                  <Box data-tour="hub-group-qortal-land">
+                    <ReticulumModePill
+                      target="qortal_land"
+                      onClick={onQortalLandClick}
+                    />
+                  </Box>
                 )}
                 <Box
                   aria-hidden

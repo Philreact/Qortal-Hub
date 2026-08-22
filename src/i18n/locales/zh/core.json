@@ -801,7 +801,7 @@
     "reaction_onboarding_route": "新手引导已打开。我会准备好下一步。",
     "reaction_panel_cleared": "面板已清空。",
     "reaction_q_trade_open": "Q-Trade 已打开。如果你在那里获得 QORT，我会带你继续。",
-    "reaction_support_chat": "支持聊天已打开。索取 6 QORT，我会安排第二步。",
+    "reaction_support_chat": "支持聊天已打开。申请 2 个 QORT，我会准备第二步。",
     "reaction_track_rotation": "{{title}} 正在播放列表中。",
     "runtime_qortino_body": "上方的工作区仍然安全。请刷新 Hub；若持续出现，我们会从这里追踪具体的崩溃。",
     "runtime_qortino_title": "QORTINO 遇到运行时问题。",
