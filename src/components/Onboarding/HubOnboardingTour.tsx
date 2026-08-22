@@ -24,6 +24,7 @@ import {
   getHubOnboardingDashboardStepLayout,
   getHubOnboardingSurface,
   HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY,
+  HUB_ONBOARDING_FEATURED_QAPPS_WIDTH_PROPERTY,
   HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE,
   HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT,
   HUB_ONBOARDING_RESTART_EVENT,
@@ -115,6 +116,17 @@ const resetHubOnboardingViewport = () => {
     target.scrollLeft = 0;
     target.scrollTop = 0;
   });
+};
+
+const syncFeaturedQAppsTooltipWidth = () => {
+  const featuredApps = findVisibleTarget(selectors.featuredApps);
+  if (!featuredApps) return;
+
+  const width = Math.round(featuredApps.getBoundingClientRect().width);
+  document.documentElement.style.setProperty(
+    HUB_ONBOARDING_FEATURED_QAPPS_WIDTH_PROPERTY,
+    `${width}px`
+  );
 };
 
 type TourCopyProps = {
@@ -615,6 +627,7 @@ export function HubOnboardingTour({
             () => findVisibleTarget(selectors.featuredApps),
             1000
           );
+          syncFeaturedQAppsTooltipWidth();
           await waitForLayout();
         },
         content: (

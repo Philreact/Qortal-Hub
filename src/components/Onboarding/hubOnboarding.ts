@@ -5,8 +5,9 @@ export const HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE =
 export const HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT =
   'hub-onboarding-qchat-preview-lock';
 export const HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY = '(max-height: 900px)';
-export const HUB_ONBOARDING_FEATURED_QAPPS_WIDTH =
-  'min(620px, calc(100vw - 32px))';
+export const HUB_ONBOARDING_FEATURED_QAPPS_WIDTH_PROPERTY =
+  '--hub-onboarding-featured-qapps-width';
+export const HUB_ONBOARDING_FEATURED_QAPPS_WIDTH = `min(var(${HUB_ONBOARDING_FEATURED_QAPPS_WIDTH_PROPERTY}, 760px), calc(100vw - 32px))`;
 
 export type HubOnboardingStatus = 'completed' | 'pending' | 'skipped';
 export type HubOnboardingDirection = 'backward' | 'forward';
