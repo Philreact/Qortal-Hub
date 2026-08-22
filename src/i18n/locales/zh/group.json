@@ -271,6 +271,7 @@
     "hub": "Hub",
     "hub_tutorial": "Hub教程",
     "hub_tutorial_description": "再次查看Hub、Q-Chat、群组、私信和Q-Apps引导教程。",
+    "hub_tutorial_desktop_only": "仅限桌面端使用",
     "hub_tutorial_start_note": "关闭设置并返回Hub主页后，教程将会开始。",
     "info_panel_node_comment": "// node_info",
     "info_panel_status": "状态",

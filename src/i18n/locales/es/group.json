@@ -271,6 +271,7 @@
     "hub": "Hub",
     "hub_tutorial": "Tutorial de Hub",
     "hub_tutorial_description": "Repite la visita guiada por Hub, Q-Chat, grupos, mensajes directos y Q-Apps.",
+    "hub_tutorial_desktop_only": "Solo disponible en escritorio",
     "hub_tutorial_start_note": "El tutorial comenzará cuando cierres Ajustes y vuelvas a la página principal de Hub.",
     "info_panel_node_comment": "// info_nodo",
     "info_panel_status": "estado",

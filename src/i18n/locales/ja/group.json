@@ -271,6 +271,7 @@
     "hub": "Hub",
     "hub_tutorial": "Hubチュートリアル",
     "hub_tutorial_description": "Hub、Q-Chat、グループ、ダイレクトメッセージ、Q-Appsのガイドツアーをもう一度確認します。",
+    "hub_tutorial_desktop_only": "デスクトップ版でのみ利用できます",
     "hub_tutorial_start_note": "設定を閉じてHubのメインページに戻ると、チュートリアルが始まります。",
     "info_panel_node_comment": "// node_info",
     "info_panel_status": "ステータス",

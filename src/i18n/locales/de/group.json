@@ -271,6 +271,7 @@
     "hub": "Hub",
     "hub_tutorial": "Hub-Tutorial",
     "hub_tutorial_description": "Wiederhole die Tour durch Hub, Q-Chat, Gruppen, Direktnachrichten und Q-Apps.",
+    "hub_tutorial_desktop_only": "Nur auf dem Desktop verfügbar",
     "hub_tutorial_start_note": "Das Tutorial beginnt, nachdem die Einstellungen geschlossen wurden und du zur Hub-Startseite zurückkehrst.",
     "info_panel_node_comment": "// knoten_info",
     "info_panel_status": "Status",

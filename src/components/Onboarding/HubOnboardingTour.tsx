@@ -32,6 +32,7 @@ import {
 } from './hubOnboarding';
 import { executeEvent } from '../../utils/events';
 import qortalLandLoungePreview from '../../assets/onboarding/qortalland-lounge-preview.webp';
+import { HOME_WIDE_DASHBOARD_MIN_WIDTH_PX } from '../Group/HomeDesktop/homeDesktopConstants';
 
 type HubOnboardingTourProps = {
   closeGroupDiscovery: () => void;
@@ -118,6 +119,7 @@ const resetHubOnboardingViewport = () => {
 
 type TourCopyProps = {
   infoKey?: string;
+  mergeSecondaryAndTertiary?: boolean;
   primaryKey: string;
   secondaryKey?: string;
   tertiaryKey?: string;
@@ -125,6 +127,7 @@ type TourCopyProps = {
 
 function TourCopy({
   infoKey,
+  mergeSecondaryAndTertiary = false,
   primaryKey,
   secondaryKey,
   tertiaryKey,
@@ -162,9 +165,12 @@ function TourCopy({
           }}
         >
           {translatedCopy(secondaryKey)}
+          {mergeSecondaryAndTertiary && tertiaryKey ? (
+            <> {translatedCopy(tertiaryKey)}</>
+          ) : null}
         </Typography>
       )}
-      {tertiaryKey && (
+      {tertiaryKey && !mergeSecondaryAndTertiary && (
         <Typography
           component="div"
           sx={{
@@ -222,6 +228,9 @@ export function HubOnboardingTour({
   const compactDashboardTour = useMediaQuery(
     HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY
   );
+  const onboardingDesktopAvailable = useMediaQuery(
+    theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)
+  );
   const continueWithProgressLabel = t(
     'group:onboarding.action.continue_with_progress',
     { current: '{current}', total: '{total}' }
@@ -254,6 +263,7 @@ export function HubOnboardingTour({
   }, [run, stepIndex]);
 
   const startWhenHomeIsReady = useCallback(() => {
+    if (!onboardingDesktopAvailable) return false;
     if (!document.querySelector(selectors.homePage)) return false;
     setStepIndex(0);
     stepIndexRef.current = 0;
@@ -261,7 +271,7 @@ export function HubOnboardingTour({
     setPending(false);
     writeHubOnboardingStatus('pending');
     return true;
-  }, []);
+  }, [onboardingDesktopAvailable]);
 
   useEffect(() => {
     if (!pending) return;
@@ -273,6 +283,18 @@ export function HubOnboardingTour({
     observer.observe(document.body, { childList: true, subtree: true });
     return () => observer.disconnect();
   }, [pending, startWhenHomeIsReady]);
+
+  useEffect(() => {
+    if (onboardingDesktopAvailable || !run) return;
+
+    setQortalLandPreviewOpen(false);
+    setRun(false);
+    setStepIndex(0);
+    stepIndexRef.current = 0;
+    setPending(true);
+    closeGroupDiscovery();
+    closeQChatPreview();
+  }, [closeGroupDiscovery, closeQChatPreview, onboardingDesktopAvailable, run]);
 
   useEffect(() => {
     const restart = () => {
@@ -597,6 +619,7 @@ export function HubOnboardingTour({
         },
         content: (
           <TourCopy
+            mergeSecondaryAndTertiary
             primaryKey="group:onboarding.featured_qapps.copy"
             secondaryKey="group:onboarding.featured_qapps.details"
             tertiaryKey="group:onboarding.featured_qapps.decentralization"

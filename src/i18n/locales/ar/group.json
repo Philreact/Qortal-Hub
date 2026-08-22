@@ -271,6 +271,7 @@
     "hub": "Hub",
     "hub_tutorial": "دليل Hub",
     "hub_tutorial_description": "أعد الجولة الإرشادية لمراجعة Hub وQ-Chat والمجموعات والرسائل المباشرة وQ-Apps.",
+    "hub_tutorial_desktop_only": "متاح على سطح المكتب فقط",
     "hub_tutorial_start_note": "سيبدأ الدليل بعد إغلاق الإعدادات والعودة إلى صفحة Hub الرئيسية.",
     "info_panel_node_comment": "// node_info",
     "info_panel_status": "الحالة",

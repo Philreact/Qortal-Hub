@@ -3,7 +3,7 @@ import {
   getAdjacentHubOnboardingStep,
   getHubOnboardingDashboardStepLayout,
   getHubOnboardingSurface,
-  HUB_ONBOARDING_FEATURED_QAPPS_COMPACT_WIDTH,
+  HUB_ONBOARDING_FEATURED_QAPPS_WIDTH,
   HUB_ONBOARDING_RESTART_EVENT,
   HUB_ONBOARDING_STORAGE_KEY,
   readHubOnboardingStatus,
@@ -16,6 +16,9 @@ describe('getHubOnboardingDashboardStepLayout', () => {
     expect(getHubOnboardingDashboardStepLayout('open-qchat', false)).toEqual(
       {}
     );
+    expect(
+      getHubOnboardingDashboardStepLayout('featured-qapps', false)
+    ).toEqual({ width: HUB_ONBOARDING_FEATURED_QAPPS_WIDTH });
   });
 
   it('keeps compact dashboard steps fixed without scrolling', () => {
@@ -27,7 +30,7 @@ describe('getHubOnboardingDashboardStepLayout', () => {
       {
         placement: 'bottom',
         skipScroll: true,
-        width: HUB_ONBOARDING_FEATURED_QAPPS_COMPACT_WIDTH,
+        width: HUB_ONBOARDING_FEATURED_QAPPS_WIDTH,
       }
     );
     expect(getHubOnboardingDashboardStepLayout('explore-qapps', true)).toEqual({

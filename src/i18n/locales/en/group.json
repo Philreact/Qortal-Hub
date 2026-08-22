@@ -271,6 +271,7 @@
     "hub": "Hub",
     "hub_tutorial": "Hub Tutorial",
     "hub_tutorial_description": "Take the guided tour again to revisit Hub, Q-Chat, groups, Direct Messages, and Q-Apps.",
+    "hub_tutorial_desktop_only": "Only available on Desktop",
     "hub_tutorial_start_note": "The tutorial will begin after Settings closes and you return to the Hub main page.",
     "info_panel_node_comment": "// node_info",
     "info_panel_status": "status",
@@ -849,8 +850,8 @@
     },
     "featured_qapps": {
       "copy": "This section features a few community-made <emphasis>Q-Apps</emphasis> that help make Qortal what it is today.",
-      "decentralization": "<emphasis>Q-Apps</emphasis> are fully decentralized across QDN, with data encrypted and chunked in storage and transit. Public Q-App content is intentionally public, not end-to-end private. There is no central host or authority that can censor or remove it for everyone; each user controls what their own node accesses or blocks.",
-      "details": "<emphasis>Q-Apps</emphasis> are decentralized apps built with familiar web technologies such as HTML, CSS, and JavaScript. Anyone can create one and use Qortal's blockchain, APIs, and peer-to-peer QDN infrastructure to publish, share, grow, or monetize an idea across the Qortal ecosystem.",
+      "decentralization": "",
+      "details": "<emphasis>Q-Apps</emphasis> are decentralized apps anyone can build with HTML, CSS, and JavaScript, using Qortal's blockchain, APIs, and peer-to-peer QDN to publish, share, grow, or monetize ideas. QDN encrypts and chunks data in storage and transit, with no central host able to censor or remove an app for everyone. Public Q-App content remains public rather than end-to-end private, and each user controls what their node accesses or blocks.",
       "title": "Featured Q-Apps"
     },
     "find_group": {

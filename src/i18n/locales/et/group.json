@@ -271,6 +271,7 @@
     "hub": "Hub",
     "hub_tutorial": "Hubi õpetus",
     "hub_tutorial_description": "Korda Hubi, Q-Chati, gruppide, otsesõnumite ja Q-Appide juhendatud ringkäiku.",
+    "hub_tutorial_desktop_only": "Saadaval ainult töölaual",
     "hub_tutorial_start_note": "Õpetus algab pärast seadete sulgemist ja Hubi avalehele naasmist.",
     "info_panel_node_comment": "// node_info",
     "info_panel_status": "olek",

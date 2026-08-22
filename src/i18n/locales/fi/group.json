@@ -271,6 +271,7 @@
     "hub": "Hub",
     "hub_tutorial": "Hub-opastus",
     "hub_tutorial_description": "Kertaa Hubin, Q-Chatin, ryhmien, yksityisviestien ja Q-Appien opastettu kierros.",
+    "hub_tutorial_desktop_only": "Saatavilla vain työpöytäversiossa",
     "hub_tutorial_start_note": "Opastus alkaa, kun Asetukset suljetaan ja palaat Hubin pääsivulle.",
     "info_panel_node_comment": "// node_info",
     "info_panel_status": "tila",

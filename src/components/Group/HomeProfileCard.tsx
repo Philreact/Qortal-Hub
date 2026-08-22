@@ -24,6 +24,7 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -98,6 +99,7 @@ import {
   HOME_DASHBOARD_MODULE_VISIBILITY_CHANGE_EVENT,
   HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY,
   HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY,
+  HOME_WIDE_DASHBOARD_MIN_WIDTH_PX,
 } from './HomeDesktop/homeDesktopConstants';
 import {
   AUTO_LOCK_TIMEOUT_OPTIONS,
@@ -209,6 +211,9 @@ const formatReticulumConnectedDuration = (
 export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const { t } = useTranslation(['core', 'group']);
   const theme = useTheme();
+  const hubTutorialAvailable = useMediaQuery(
+    theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)
+  );
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const userInfo = useAtomValue(userInfoAtom);
   const rawWallet = useAtomValue(rawWalletAtom);
@@ -891,9 +896,10 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   }, [isChangeNameLoading]);
 
   const handleRestartHubTutorial = useCallback(() => {
+    if (!hubTutorialAvailable) return;
     requestHubOnboardingRestart();
     closeAccountSettingsModal();
-  }, [closeAccountSettingsModal]);
+  }, [closeAccountSettingsModal, hubTutorialAvailable]);
 
   const openAccountSettingsModal = useCallback(
     (event: MouseEvent<HTMLElement>) => {
@@ -4472,9 +4478,19 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       py: 1.4,
                     }}
                   >
-                    <Box sx={{ alignItems: 'flex-start', display: 'flex', gap: 1.1 }}>
+                    <Box
+                      sx={{
+                        alignItems: 'flex-start',
+                        display: 'flex',
+                        gap: 1.1,
+                      }}
+                    >
                       <HelpOutlineRoundedIcon
-                        sx={{ color: theme.palette.primary.light, fontSize: 22, mt: 0.1 }}
+                        sx={{
+                          color: theme.palette.primary.light,
+                          fontSize: 22,
+                          mt: 0.1,
+                        }}
                       />
                       <Box sx={{ minWidth: 0 }}>
                         <Typography
@@ -4514,13 +4530,28 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         'The tutorial will begin after Settings closes and you return to the Hub main page.'
                       )}
                     </Typography>
-                    <Button
-                      onClick={handleRestartHubTutorial}
-                      sx={{ alignSelf: 'flex-start', mt: 0.35 }}
-                      variant="contained"
+                    <Tooltip
+                      placement="top"
+                      title={
+                        hubTutorialAvailable
+                          ? ''
+                          : td(
+                              'hub_tutorial_desktop_only',
+                              'Only available on Desktop'
+                            )
+                      }
                     >
-                      {td('restart_hub_tutorial', 'Restart Tutorial')}
-                    </Button>
+                      <Box component="span" sx={{ alignSelf: 'flex-start' }}>
+                        <Button
+                          disabled={!hubTutorialAvailable}
+                          onClick={handleRestartHubTutorial}
+                          sx={{ mt: 0.35 }}
+                          variant="contained"
+                        >
+                          {td('restart_hub_tutorial', 'Restart Tutorial')}
+                        </Button>
+                      </Box>
+                    </Tooltip>
                   </Box>
                 </Box>
               ) : null}

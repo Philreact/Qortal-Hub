@@ -271,6 +271,7 @@
     "hub": "Hub",
     "hub_tutorial": "Обучение Hub",
     "hub_tutorial_description": "Повторите экскурсию по Hub, Q-Chat, группам, личным сообщениям и Q-Apps.",
+    "hub_tutorial_desktop_only": "Доступно только на компьютере",
     "hub_tutorial_start_note": "Обучение начнётся после закрытия настроек и возвращения на главную страницу Hub.",
     "info_panel_node_comment": "// node_info",
     "info_panel_status": "статус",
