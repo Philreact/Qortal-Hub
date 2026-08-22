@@ -4564,28 +4564,34 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         'The tutorial will begin after Settings closes and you return to the Hub main page.'
                       )}
                     </Typography>
-                    <Tooltip
-                      placement="top"
-                      title={
-                        hubTutorialAvailable
-                          ? ''
-                          : td(
-                              'hub_tutorial_desktop_only',
-                              'Only available on Desktop'
-                            )
-                      }
+                    <Button
+                      disabled={!hubTutorialAvailable}
+                      onClick={handleRestartHubTutorial}
+                      sx={{ justifySelf: 'start', mt: 0.35 }}
+                      variant="contained"
                     >
-                      <Box component="span" sx={{ alignSelf: 'flex-start' }}>
-                        <Button
-                          disabled={!hubTutorialAvailable}
-                          onClick={handleRestartHubTutorial}
-                          sx={{ mt: 0.35 }}
-                          variant="contained"
+                      {td('restart_hub_tutorial', 'Restart Tutorial')}
+                    </Button>
+                    {!hubTutorialAvailable ? (
+                      <Box
+                        sx={{
+                          alignItems: 'center',
+                          color: alpha(theme.palette.text.secondary, 0.88),
+                          display: 'flex',
+                          gap: 0.65,
+                        }}
+                      >
+                        <InfoOutlinedIcon sx={{ fontSize: 14 }} />
+                        <Typography
+                          sx={{ fontSize: '0.72rem', lineHeight: 1.4 }}
                         >
-                          {td('restart_hub_tutorial', 'Restart Tutorial')}
-                        </Button>
+                          {td(
+                            'hub_tutorial_desktop_only',
+                            'Only available on Desktop'
+                          )}
+                        </Typography>
                       </Box>
-                    </Tooltip>
+                    ) : null}
                   </Box>
                 </Box>
               ) : null}

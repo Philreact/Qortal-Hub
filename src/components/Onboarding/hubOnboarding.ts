@@ -1,9 +1,9 @@
 export const HUB_ONBOARDING_STORAGE_KEY = 'hub-onboarding-v1-status';
 export const HUB_ONBOARDING_RESTART_EVENT = 'hub-onboarding-restart';
-export const HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE =
-  'data-hub-onboarding-qchat-preview-locked';
-export const HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT =
-  'hub-onboarding-qchat-preview-lock';
+export const HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE =
+  'data-hub-onboarding-qchat-card-locked';
+export const HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT =
+  'hub-onboarding-qchat-card-lock';
 export const HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY = '(max-height: 900px)';
 export const HUB_ONBOARDING_FEATURED_QAPPS_WIDTH_PROPERTY =
   '--hub-onboarding-featured-qapps-width';
@@ -16,6 +16,34 @@ export type HubOnboardingDashboardStep =
   | 'explore-qapps'
   | 'featured-qapps'
   | 'open-qchat';
+
+type HubOnboardingViewportClamp = {
+  height: number;
+  padding?: number;
+  viewportHeight: number;
+  viewportWidth: number;
+  width: number;
+  x: number;
+  y: number;
+};
+
+export const clampHubOnboardingTooltipToViewport = ({
+  height,
+  padding = 16,
+  viewportHeight,
+  viewportWidth,
+  width,
+  x,
+  y,
+}: HubOnboardingViewportClamp) => {
+  const maximumX = Math.max(padding, viewportWidth - width - padding);
+  const maximumY = Math.max(padding, viewportHeight - height - padding);
+
+  return {
+    x: Math.min(Math.max(x, padding), maximumX),
+    y: Math.min(Math.max(y, padding), maximumY),
+  };
+};
 
 export const getHubOnboardingDashboardStepLayout = (
   step: HubOnboardingDashboardStep,

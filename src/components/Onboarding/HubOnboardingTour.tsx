@@ -20,13 +20,14 @@ import {
   type Step,
 } from 'react-joyride';
 import {
+  clampHubOnboardingTooltipToViewport,
   getAdjacentHubOnboardingStep,
   getHubOnboardingDashboardStepLayout,
   getHubOnboardingSurface,
   HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY,
   HUB_ONBOARDING_FEATURED_QAPPS_WIDTH_PROPERTY,
-  HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE,
-  HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT,
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE,
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
   HUB_ONBOARDING_RESTART_EVENT,
   readHubOnboardingStatus,
   writeHubOnboardingStatus,
@@ -57,7 +58,7 @@ const selectors = {
   homePage: '[data-tour="hub-home-page"]',
   qortalProjectAction: '[data-tour="hub-qortal-project-action"]',
   qortalLandGroup: '[data-tour="hub-group-qortal-land"]',
-  qChatOpenButton: '[data-tour="hub-featured-qchat-open"]',
+  qChatCard: '[data-tour="hub-featured-qchat"]',
   qortalLandDashboard: '[data-tour="hub-dashboard-qortal-land"]',
   topHome: '[data-tour="hub-top-home"]',
 } as const;
@@ -144,6 +145,18 @@ function TourCopy({
   secondaryKey,
   tertiaryKey,
 }: TourCopyProps) {
+  const { i18n } = useTranslation();
+  const hasCopy = (key: string) => {
+    const [namespace, resourceKey] = key.split(':');
+    const languages = i18n.languages.length
+      ? i18n.languages
+      : [i18n.resolvedLanguage ?? i18n.language];
+
+    return languages.some((language) => {
+      const resource = i18n.getResource(language, namespace, resourceKey);
+      return typeof resource === 'string' && resource.trim().length > 0;
+    });
+  };
   const translatedCopy = (key: string) => (
     <Trans
       i18nKey={key}
@@ -166,7 +179,7 @@ function TourCopy({
       >
         {translatedCopy(primaryKey)}
       </Typography>
-      {secondaryKey && (
+      {secondaryKey && hasCopy(secondaryKey) && (
         <Typography
           component="div"
           sx={{
@@ -177,12 +190,12 @@ function TourCopy({
           }}
         >
           {translatedCopy(secondaryKey)}
-          {mergeSecondaryAndTertiary && tertiaryKey ? (
+          {mergeSecondaryAndTertiary && tertiaryKey && hasCopy(tertiaryKey) ? (
             <> {translatedCopy(tertiaryKey)}</>
           ) : null}
         </Typography>
       )}
-      {tertiaryKey && !mergeSecondaryAndTertiary && (
+      {tertiaryKey && !mergeSecondaryAndTertiary && hasCopy(tertiaryKey) && (
         <Typography
           component="div"
           sx={{
@@ -350,22 +363,18 @@ export function HubOnboardingTour({
   );
 
   useEffect(() => {
-    const lockPreview = run && stepIndex === 1;
+    const lockQChatCard = run && stepIndex === 1;
     document.body.toggleAttribute(
-      HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE,
-      lockPreview
+      HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE,
+      lockQChatCard
     );
-    window.dispatchEvent(
-      new CustomEvent(HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT)
-    );
+    window.dispatchEvent(new CustomEvent(HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT));
 
     return () => {
-      if (lockPreview) {
-        document.body.removeAttribute(
-          HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE
-        );
+      if (lockQChatCard) {
+        document.body.removeAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE);
         window.dispatchEvent(
-          new CustomEvent(HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT)
+          new CustomEvent(HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT)
         );
       }
     };
@@ -400,15 +409,14 @@ export function HubOnboardingTour({
           );
           resetHubOnboardingViewport();
           await waitForTarget(
-            () =>
-              document.querySelector<HTMLElement>(selectors.qChatOpenButton),
+            () => document.querySelector<HTMLElement>(selectors.qChatCard),
             4000
           );
         },
         blockTargetInteraction: true,
         content: t('group:onboarding.open_qchat.copy'),
         id: 'open-qchat',
-        target: () => visibleTargetOrBody(selectors.qChatOpenButton),
+        target: () => visibleTargetOrBody(selectors.qChatCard),
         title: t('group:onboarding.open_qchat.title'),
       },
       {
@@ -639,7 +647,31 @@ export function HubOnboardingTour({
           />
         ),
         blockTargetInteraction: true,
+        floatingOptions: {
+          middleware: [
+            {
+              fn: ({ rects, x, y }) =>
+                clampHubOnboardingTooltipToViewport({
+                  height: rects.floating.height,
+                  viewportHeight: window.innerHeight,
+                  viewportWidth: window.innerWidth,
+                  width: rects.floating.width,
+                  x,
+                  y,
+                }),
+              name: 'hub-onboarding-viewport-clamp',
+            },
+          ],
+          shiftOptions: { crossAxis: true, padding: 16 },
+          strategy: 'fixed',
+        },
         id: 'featured-qapps',
+        styles: {
+          tooltip: {
+            maxHeight: 'calc(100vh - 32px)',
+            overflowY: 'auto',
+          },
+        },
         target: () => visibleTargetOrBody(selectors.featuredApps),
         title: t('group:onboarding.featured_qapps.title'),
       },

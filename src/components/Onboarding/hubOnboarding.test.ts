@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  clampHubOnboardingTooltipToViewport,
   getAdjacentHubOnboardingStep,
   getHubOnboardingDashboardStepLayout,
   getHubOnboardingSurface,
@@ -10,6 +11,32 @@ import {
   requestHubOnboardingRestart,
   writeHubOnboardingStatus,
 } from './hubOnboarding';
+
+describe('clampHubOnboardingTooltipToViewport', () => {
+  it('keeps a tooltip inside every viewport edge', () => {
+    expect(
+      clampHubOnboardingTooltipToViewport({
+        height: 300,
+        viewportHeight: 700,
+        viewportWidth: 1000,
+        width: 600,
+        x: 500,
+        y: 550,
+      })
+    ).toEqual({ x: 384, y: 384 });
+
+    expect(
+      clampHubOnboardingTooltipToViewport({
+        height: 300,
+        viewportHeight: 700,
+        viewportWidth: 1000,
+        width: 600,
+        x: -40,
+        y: -25,
+      })
+    ).toEqual({ x: 16, y: 16 });
+  });
+});
 
 describe('getHubOnboardingDashboardStepLayout', () => {
   it('preserves the default layout on taller screens', () => {
