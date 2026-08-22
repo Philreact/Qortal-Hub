@@ -100,10 +100,19 @@ const waitForTarget = (
 const visibleTargetOrBody = (target: string) =>
   findVisibleTarget(target) ?? document.body;
 
-const resetHomeDashboardScroll = () => {
-  document.querySelector<HTMLElement>(selectors.homePage)?.scrollTo({
-    behavior: 'auto',
-    top: 0,
+const resetHubOnboardingViewport = () => {
+  const scrollingElement = document.scrollingElement as HTMLElement | null;
+  const scrollTargets = [
+    scrollingElement,
+    document.documentElement,
+    document.body,
+    document.querySelector<HTMLElement>(selectors.homePage),
+  ].filter((target): target is HTMLElement => Boolean(target));
+
+  window.scrollTo({ behavior: 'auto', left: 0, top: 0 });
+  scrollTargets.forEach((target) => {
+    target.scrollLeft = 0;
+    target.scrollTop = 0;
   });
 };
 
@@ -231,6 +240,19 @@ export function HubOnboardingTour({
     stepIndexRef.current = stepIndex;
   }, [stepIndex]);
 
+  useEffect(() => {
+    if (!run) return;
+
+    resetHubOnboardingViewport();
+    const frame = window.requestAnimationFrame(resetHubOnboardingViewport);
+    const settleTimer = window.setTimeout(resetHubOnboardingViewport, 250);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+    };
+  }, [run, stepIndex]);
+
   const startWhenHomeIsReady = useCallback(() => {
     if (!document.querySelector(selectors.homePage)) return false;
     setStepIndex(0);
@@ -267,6 +289,7 @@ export function HubOnboardingTour({
 
   const prepareStepSurface = useCallback(
     (nextIndex: number) => {
+      resetHubOnboardingViewport();
       const surface = getHubOnboardingSurface(nextIndex);
 
       if (surface === 'home') {
@@ -341,7 +364,7 @@ export function HubOnboardingTour({
             () => document.querySelector<HTMLElement>(selectors.homePage),
             4000
           );
-          if (compactDashboardTour) resetHomeDashboardScroll();
+          resetHubOnboardingViewport();
           await waitForTarget(
             () =>
               document.querySelector<HTMLElement>(selectors.qChatOpenButton),
@@ -565,7 +588,7 @@ export function HubOnboardingTour({
             () => document.querySelector<HTMLElement>(selectors.featuredApps),
             4000
           );
-          if (compactDashboardTour) resetHomeDashboardScroll();
+          resetHubOnboardingViewport();
           await waitForTarget(
             () => findVisibleTarget(selectors.featuredApps),
             1000
@@ -595,7 +618,7 @@ export function HubOnboardingTour({
             () => document.querySelector<HTMLElement>(selectors.exploreApps),
             4000
           );
-          if (compactDashboardTour) resetHomeDashboardScroll();
+          resetHubOnboardingViewport();
           await waitForTarget(
             () => findVisibleTarget(selectors.exploreApps),
             1000
@@ -704,6 +727,7 @@ export function HubOnboardingTour({
           primaryColor: theme.palette.primary.main,
           showProgress: true,
           skipBeacon: true,
+          skipScroll: true,
           spotlightPadding: 8,
           spotlightRadius: 12,
           targetWaitTimeout: 2500,

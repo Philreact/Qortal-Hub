@@ -4,7 +4,9 @@ export const HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE =
   'data-hub-onboarding-qchat-preview-locked';
 export const HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT =
   'hub-onboarding-qchat-preview-lock';
-export const HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY = '(max-height: 820px)';
+export const HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY = '(max-height: 900px)';
+export const HUB_ONBOARDING_FEATURED_QAPPS_COMPACT_WIDTH =
+  'min(720px, calc(100vw - 32px))';
 
 export type HubOnboardingStatus = 'completed' | 'pending' | 'skipped';
 export type HubOnboardingDirection = 'backward' | 'forward';
@@ -22,8 +24,11 @@ export const getHubOnboardingDashboardStepLayout = (
 
   return {
     placement:
-      step === 'featured-qapps' ? ('right' as const) : ('top' as const),
+      step === 'featured-qapps' ? ('bottom' as const) : ('top' as const),
     skipScroll: true,
+    ...(step === 'featured-qapps'
+      ? { width: HUB_ONBOARDING_FEATURED_QAPPS_COMPACT_WIDTH }
+      : {}),
   };
 };
 

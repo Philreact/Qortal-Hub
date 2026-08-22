@@ -3,6 +3,7 @@ import {
   getAdjacentHubOnboardingStep,
   getHubOnboardingDashboardStepLayout,
   getHubOnboardingSurface,
+  HUB_ONBOARDING_FEATURED_QAPPS_COMPACT_WIDTH,
   HUB_ONBOARDING_RESTART_EVENT,
   HUB_ONBOARDING_STORAGE_KEY,
   readHubOnboardingStatus,
@@ -23,7 +24,11 @@ describe('getHubOnboardingDashboardStepLayout', () => {
       skipScroll: true,
     });
     expect(getHubOnboardingDashboardStepLayout('featured-qapps', true)).toEqual(
-      { placement: 'right', skipScroll: true }
+      {
+        placement: 'bottom',
+        skipScroll: true,
+        width: HUB_ONBOARDING_FEATURED_QAPPS_COMPACT_WIDTH,
+      }
     );
     expect(getHubOnboardingDashboardStepLayout('explore-qapps', true)).toEqual({
       placement: 'top',
