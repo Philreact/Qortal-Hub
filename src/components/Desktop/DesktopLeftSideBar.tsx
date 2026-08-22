@@ -524,27 +524,31 @@ export const DesktopSideBar = ({
                 width: '100%',
               }}
             >
-              <SidebarItem
-                active={desktopViewMode === 'home'}
-                label={t('core:home', { postProcess: 'capitalizeFirstChar' })}
-                onClick={() => runSidebarAction(goToHome)}
-              >
-                <Box
-                  sx={{
-                    alignItems: 'center',
-                    color:
-                      desktopViewMode === 'home'
-                        ? theme.palette.text.primary
-                        : theme.palette.text.secondary,
-                    display: 'flex',
-                    height: `${ICON_WRAP_SIZE_PX}px`,
-                    justifyContent: 'center',
-                    width: `${ICON_WRAP_SIZE_PX}px`,
-                  }}
+              <Box data-tour="hub-home">
+                <SidebarItem
+                  active={desktopViewMode === 'home'}
+                  label={t('core:home', {
+                    postProcess: 'capitalizeFirstChar',
+                  })}
+                  onClick={() => runSidebarAction(goToHome)}
                 >
-                  <HomeIcon height={26} width={26} color="currentColor" />
-                </Box>
-              </SidebarItem>
+                  <Box
+                    sx={{
+                      alignItems: 'center',
+                      color:
+                        desktopViewMode === 'home'
+                          ? theme.palette.text.primary
+                          : theme.palette.text.secondary,
+                      display: 'flex',
+                      height: `${ICON_WRAP_SIZE_PX}px`,
+                      justifyContent: 'center',
+                      width: `${ICON_WRAP_SIZE_PX}px`,
+                    }}
+                  >
+                    <HomeIcon height={26} width={26} color="currentColor" />
+                  </Box>
+                </SidebarItem>
+              </Box>
 
               <SidebarItem
                 active={isApps && !isQChatActive}

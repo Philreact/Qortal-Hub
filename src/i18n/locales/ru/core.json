@@ -803,7 +803,7 @@
     "reaction_onboarding_route": "Онбординг открыт. Я подготовлю следующий шаг.",
     "reaction_panel_cleared": "Панель очищена.",
     "reaction_q_trade_open": "Q-Trade открыт. Если получите там QORT, я проведу вас дальше.",
-    "reaction_support_chat": "Чат поддержки открыт. Попросите 6 QORT, и я подготовлю второй шаг.",
+    "reaction_support_chat": "Чат поддержки открыт. Запросите 2 QORT, и я подготовлю второй шаг.",
     "reaction_track_rotation": "{{title}} в ротации.",
     "runtime_qortino_body": "Рабочая область выше в порядке. Обновите Хаб; если это повторится, мы отследим точную ошибку отсюда.",
     "runtime_qortino_title": "В QORTINO произошёл сбой во время работы.",

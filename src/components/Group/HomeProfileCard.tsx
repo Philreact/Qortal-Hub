@@ -24,6 +24,7 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
@@ -35,6 +36,7 @@ import CodeRoundedIcon from '@mui/icons-material/CodeRounded';
 import CloseIcon from '@mui/icons-material/Close';
 import ErrorIcon from '@mui/icons-material/Error';
 import FolderOpenRoundedIcon from '@mui/icons-material/FolderOpenRounded';
+import HelpOutlineRoundedIcon from '@mui/icons-material/HelpOutlineRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
@@ -97,6 +99,7 @@ import {
   HOME_DASHBOARD_MODULE_VISIBILITY_CHANGE_EVENT,
   HOME_GROUP_ACTIVITY_VISIBLE_STORAGE_KEY,
   HOME_QUITTER_FEED_VISIBLE_STORAGE_KEY,
+  HOME_WIDE_DASHBOARD_MIN_WIDTH_PX,
 } from './HomeDesktop/homeDesktopConstants';
 import {
   AUTO_LOCK_TIMEOUT_OPTIONS,
@@ -105,6 +108,7 @@ import {
   resolveAutoLockTimeoutMinutes,
   type AutoLockTimeoutMinutes,
 } from '../../lib/autoLock';
+import { requestHubOnboardingRestart } from '../Onboarding/hubOnboarding';
 
 type HomeProfileCardProps = {
   onOpenReceive?: (anchorEl: HTMLElement) => void;
@@ -115,6 +119,7 @@ type CloseAction = 'ask' | 'minimizeToTray' | 'quit';
 type AccountSettingsTab =
   | 'blocked'
   | 'developer'
+  | 'help'
   | 'modules'
   | 'profile'
   | 'reticulum'
@@ -206,6 +211,9 @@ const formatReticulumConnectedDuration = (
 export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const { t } = useTranslation(['core', 'group']);
   const theme = useTheme();
+  const hubTutorialAvailable = useMediaQuery(
+    theme.breakpoints.up(HOME_WIDE_DASHBOARD_MIN_WIDTH_PX)
+  );
   const { show } = useContext(QORTAL_APP_CONTEXT);
   const userInfo = useAtomValue(userInfoAtom);
   const rawWallet = useAtomValue(rawWalletAtom);
@@ -474,6 +482,16 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
         key: 'modules' as const,
         label: td('modules', 'Modules'),
         title: td('modules_settings', 'Modules Settings'),
+      },
+      {
+        description: td(
+          'help_settings_description',
+          'Restart the guided introduction to Hub and Q-Chat.'
+        ),
+        icon: HelpOutlineRoundedIcon,
+        key: 'help' as const,
+        label: td('help', 'Help'),
+        title: td('help_settings', 'Help'),
       },
       {
         description: td(
@@ -884,6 +902,12 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
     setPrivateKeyError(null);
     setRevealedPrivateKey('');
   }, [isChangeNameLoading]);
+
+  const handleRestartHubTutorial = useCallback(() => {
+    if (!hubTutorialAvailable) return;
+    requestHubOnboardingRestart();
+    closeAccountSettingsModal();
+  }, [closeAccountSettingsModal, hubTutorialAvailable]);
 
   const openAccountSettingsModal = useCallback(
     (event: MouseEvent<HTMLElement>) => {
@@ -4471,6 +4495,97 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         sx={settingsSwitchSx}
                       />
                     </Box>
+                  </Box>
+                </Box>
+              ) : null}
+
+              {activeSettingsTab === 'help' ? (
+                <Box sx={{ display: 'grid', gap: 1.4 }}>
+                  <Box
+                    sx={{
+                      background: avatarModalSurfaceSoft,
+                      border: `1px solid ${avatarFieldBorder}`,
+                      borderRadius: '12px',
+                      display: 'grid',
+                      gap: 1.15,
+                      px: 1.45,
+                      py: 1.4,
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        alignItems: 'flex-start',
+                        display: 'flex',
+                        gap: 1.1,
+                      }}
+                    >
+                      <HelpOutlineRoundedIcon
+                        sx={{
+                          color: theme.palette.primary.light,
+                          fontSize: 22,
+                          mt: 0.1,
+                        }}
+                      />
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.86rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.005em',
+                          }}
+                        >
+                          {td('hub_tutorial', 'Hub Tutorial')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.76rem',
+                            lineHeight: 1.55,
+                            mt: 0.45,
+                          }}
+                        >
+                          {td(
+                            'hub_tutorial_description',
+                            'Take the guided tour again to revisit Hub, Q-Chat, groups, Direct Messages, and Q-Apps.'
+                          )}
+                        </Typography>
+                      </Box>
+                    </Box>
+                    <Typography
+                      sx={{
+                        color: alpha(theme.palette.text.secondary, 0.88),
+                        fontSize: '0.72rem',
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {td(
+                        'hub_tutorial_start_note',
+                        'The tutorial will begin after Settings closes and you return to the Hub main page.'
+                      )}
+                    </Typography>
+                    <Tooltip
+                      placement="top"
+                      title={
+                        hubTutorialAvailable
+                          ? ''
+                          : td(
+                              'hub_tutorial_desktop_only',
+                              'Only available on Desktop'
+                            )
+                      }
+                    >
+                      <Box component="span" sx={{ alignSelf: 'flex-start' }}>
+                        <Button
+                          disabled={!hubTutorialAvailable}
+                          onClick={handleRestartHubTutorial}
+                          sx={{ mt: 0.35 }}
+                          variant="contained"
+                        >
+                          {td('restart_hub_tutorial', 'Restart Tutorial')}
+                        </Button>
+                      </Box>
+                    </Tooltip>
                   </Box>
                 </Box>
               ) : null}

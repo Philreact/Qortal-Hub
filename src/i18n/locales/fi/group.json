@@ -265,7 +265,14 @@
     "fully_operational": "Täysin toiminnassa",
     "group_activity_module": "Ryhmän toiminta",
     "group_activity_module_desc": "Näytä Ryhmän toiminta -moduuli etusivulla. Poista käytöstä, jotta sitä ei renderöidä.",
+    "help": "Ohje",
+    "help_settings": "Ohje",
+    "help_settings_description": "Käynnistä Hubin ja Q-Chatin opastettu esittely uudelleen.",
     "hub": "Hub",
+    "hub_tutorial": "Hub-opastus",
+    "hub_tutorial_description": "Kertaa Hubin, Q-Chatin, ryhmien, yksityisviestien ja Q-Appien opastettu kierros.",
+    "hub_tutorial_desktop_only": "Saatavilla vain työpöytäversiossa",
+    "hub_tutorial_start_note": "Opastus alkaa, kun Asetukset suljetaan ja palaat Hubin pääsivulle.",
     "info_panel_node_comment": "// node_info",
     "info_panel_status": "tila",
     "loading_wallet_activity": "Ladataan lompakon toimintaa...",
@@ -356,6 +363,7 @@
     "reduce_ui_animations_desc": "Vähennä liikettä Hubissa. Jätä pois päältä tavallista animoitua käyttöliittymää varten.",
     "reload": "Lataa uudelleen",
     "reset_reticulum_default": "Palauta Hubin oletukseen",
+    "restart_hub_tutorial": "Käynnistä opastus uudelleen",
     "reticulum": "Reticulum",
     "reticulum_chat_update_error": "Reticulum-ryhmäkeskustelua ei voitu päivittää juuri nyt.",
     "reticulum_config_chars_count": "{{count}} merkkiä",
@@ -473,6 +481,7 @@
     "join_group_heading": "Liity ryhmään",
     "load_more": "Lataa lisää",
     "open_group": "Avoin ryhmä",
+    "pinned_group": "Kiinnitetty ryhmä",
     "private_filter_active": "Aktiivisuusjärjestys on käytettävissä vain avoimille ryhmille.",
     "private_filter_top": "Group Score on käytettävissä vain avoimille ryhmille.",
     "search_aria": "Hae ryhmiä nimellä",
@@ -630,12 +639,12 @@
   "home": {
     "address_copied": "Osoite kopioitu leikepöydälle",
     "confirming": "Vahvistetaan",
-    "get_qorts_workspace_hint": "Avaa ensimmäiset 6 QORT aktivoidaksesi loput määrityksestä.",
-    "get_six_qorts": "Hanki 6 QORT",
-    "get_six_qorts_intro": "On 3 tapaa saada ensimmäiset 6 QORT:",
+    "get_qorts_workspace_hint": "Avaa ensimmäiset 2 QORTia aktivoidaksesi loput määrityksestä.",
+    "get_six_qorts": "Hanki 2 QORTia",
+    "get_six_qorts_intro": "Ensimmäiset 2 QORTia voi saada 3 tavalla:",
     "get_six_qorts_way1": "Suorita ohjeet osoitteessa qortal.dev.",
     "get_six_qorts_way1_action": "Siirry ohjeisiin",
-    "get_six_qorts_way2": "Pyydä 6 QORT Nextcloud-tukichatissa.",
+    "get_six_qorts_way2": "Pyydä 2 QORTia Nextcloud-tukichatissa.",
     "get_six_qorts_way2_action": "Avaa tukichatti",
     "get_six_qorts_way3": "Osta QORT Q-Tradesta.",
     "get_six_qorts_way3_action": "Avaa Q-Trade",
@@ -648,7 +657,7 @@
     "onboarding_transition_hard_part_done": "Hyvää työtä vaikein osa on käsitelty.",
     "onboarding_transition_one_more": "Hienosti vielä yksi vaihe.",
     "open": "Avaa",
-    "persistent_guide_get_qorts": "Aloitetaan kuudesta QORT valitse yhteys ylhäältä.",
+    "persistent_guide_get_qorts": "Aloitetaan 2 QORTista. Valitse jokin yllä olevista vaihtoehdoista.",
     "persistent_guide_load_avatar": "Vielä lisää avatarisi.",
     "persistent_guide_register_name": "Seuraavaksi rekisteröi nimesi.",
     "post_onboarding_workspace_ready": "Valmista. Voit alkaa rakentaa työtilaa yläpuolella.",
@@ -805,6 +814,109 @@
     "try_again": "Yritä uudelleen",
     "unencrypted": "Salaamaton",
     "verification_failed": "Vahvistus epäonnistui"
+  },
+  "onboarding": {
+    "action": {
+      "back": "Takaisin",
+      "continue": "Jatka",
+      "continue_with_progress": "Jatka ({{current}}/{{total}})",
+      "got_it": "Selvä",
+      "next": "Seuraava",
+      "next_with_progress": "Seuraava ({current}/{total})",
+      "skip": "Ohita opastus",
+      "skip_for_now": "Ohita toistaiseksi",
+      "start_exploring": "Aloita tutkiminen",
+      "start_tour": "Aloita kierros"
+    },
+    "back_to_hub": {
+      "copy": "Palaa Kotiin jatkamaan Qortalin tarjonnan tutkimista.",
+      "title": "Takaisin Hubiin"
+    },
+    "choose_channel": {
+      "copy": "Ryhmissä keskustelut järjestetään kanaviin, jotta jokaisella aiheella on oma paikkansa. Tästä voit valita kanavan.",
+      "title": "Valitse kanava"
+    },
+    "direct_messages": {
+      "copy": "Voit myös lähettää yksityisviestin toiselle Qortal-käyttäjälle. Aloita keskustelu avaamalla yksityisviestit.",
+      "info": "Palaa ryhmiisi painamalla Yksityisviestit-painiketta uudelleen.",
+      "title": "Yksityisviestit"
+    },
+    "enter_qortal_land": {
+      "copy": "Käynnistä Qortal Land Hubin aloitusnäkymästä. Sinun on oltava vähintään yhden Q-Chat-ryhmän jäsen ennen kuin voit siirtyä sinne.",
+      "copy_group": "Jokaisella ryhmällä on oma <emphasis>QortalLand</emphasis>-tilansa. Voit siirtyä sinne ryhmään liittymisen jälkeen tästä painikkeesta tai suoraan aloitusnäkymästä.",
+      "copy_group_details": "QortalLand on varhaisessa vaiheessa oleva ja kasvava sosiaalinen maailma, jossa ryhmän jäsenet voivat tavata, olla vuorovaikutuksessa ja pelata minipelejä, kuten shakkia ja tammea. Sen tilat, tekeminen ja mahdollisuudet laajenevat uusien ominaisuuksien myötä.",
+      "preview_alt": "QortalLand-loungen esikatselu",
+      "preview_open": "Avaa QortalLand-esikatselu",
+      "title": "Siirry Qortal Landiin"
+    },
+    "explore_qapps": {
+      "copy": "Selaa kaikkia saatavilla olevia Q-Appeja ja löydä lisää Qortalissa rakennettavaa.",
+      "title": "Tutki Q-Appeja"
+    },
+    "featured_qapps": {
+      "copy": "Tässä osiossa esitellään muutamia yhteisön tekemiä <emphasis>Q-App-sovelluksia</emphasis>, jotka tekevät Qortalista sen, mitä se on tänään.",
+      "decentralization": "<emphasis>Q-Appit</emphasis> ovat täysin hajautettuja QDN:ssä, ja niiden tiedot salataan ja pilkotaan tallennuksen ja siirron aikana. Julkinen Q-App-sisältö on tarkoituksella julkista, ei päästä päähän yksityistä. Mikään keskitetty palvelin tai taho ei voi sensuroida tai poistaa sitä kaikilta; jokainen käyttäjä hallitsee, mitä oma solmu käyttää tai estää.",
+      "details": "<emphasis>Q-Appit</emphasis> ovat hajautettuja sovelluksia, jotka rakennetaan tutuilla verkkotekniikoilla, kuten HTML:llä, CSS:llä ja JavaScriptillä. Kuka tahansa voi luoda sellaisen ja hyödyntää Qortalin lohkoketjua, ohjelmointirajapintoja sekä vertaisverkon QDN-infrastruktuuria idean julkaisemiseen, jakamiseen, kasvattamiseen tai kaupallistamiseen Qortalin ekosysteemissä.",
+      "title": "Esitellyt Q-Appit"
+    },
+    "find_group": {
+      "copy": "Selaa ryhmiä, joihin voit liittyä. Virallinen <emphasis>Qortal Project</emphasis> -ryhmä on aina kiinnitetty Top-listan ensimmäiseksi.",
+      "title": "Etsi ryhmiä"
+    },
+    "find_groups_location": {
+      "copy": "Tällä hakupainikkeella voit milloin tahansa etsiä uusia ryhmiä ja liittyä niihin.",
+      "title": "Löydä ryhmiä"
+    },
+    "join_group": {
+      "copy": "Liity ryhmään käyttääksesi sen keskusteluja ja kanavia. \"Qortal Project\" on hyvä aloituspaikka.",
+      "copy_member": "Olet jo <emphasis>Qortal Projectin</emphasis> jäsen. Se on Qortalin virallinen yhteisöryhmä uutisille, tuelle, keskustelulle ja yhteydenpitoon tekijöiden kanssa.\n\nKatsotaan nopeasti ympärillemme!",
+      "copy_preview": "<emphasis>Qortal Project</emphasis> on Qortalin virallinen yhteisöryhmä uutisille, tuelle, keskustelulle ja yhteydenpitoon tekijöiden kanssa. Liittyminen vaatii QORTia ja lohkoketjuvahvistuksen, joten jatkamme liittymättä opastetulla esikatselulla.",
+      "title": "Liity ryhmään",
+      "title_qortal_project": "Qortal Project"
+    },
+    "message_expiry": {
+      "copy": "Yksityisviestit vanhenevat oletuksena automaattisesti kuukauden kuluttua. Voit muuttaa vanhenemisaikaa tästä.",
+      "info": "Valitse vanhenemisaika ennen uusien viestien lähettämistä. Muutokset eivät koske aiemmin lähetettyjä viestejä.",
+      "title": "Viestien vanheneminen"
+    },
+    "open_qchat": {
+      "copy": "Q-Chatissa käydään Qortalin keskustelut. Aloita avaamalla se.",
+      "title": "Avaa Q-Chat"
+    },
+    "preview": {
+      "badge": "Opastettu esikatselu",
+      "category": {
+        "community": "Yhteisö",
+        "official": "Virallinen",
+        "support": "Tuki"
+      },
+      "channel": {
+        "announcements": "Ilmoitukset",
+        "bug_reports": "Virheraportit",
+        "general_chat": "Yleinen keskustelu",
+        "official_links": "Viralliset linkit",
+        "qort_trading": "QORT-kaupankäynti",
+        "qortal_land": "Qortal Land",
+        "qortal_marketing": "Qortal-markkinointi",
+        "rules": "Säännöt",
+        "tasks_and_ideas": "Tehtävät ja ideat"
+      },
+      "notice": "Et ole liittynyt tähän ryhmään. Liittyminen vaatii QORTia ja vahvistuksen Qortalin lohkoketjussa.",
+      "owner": "Omistaja",
+      "qortino_message": "Tervetuloa! Ryhmät kokoavat yhteisön kanavat, keskustelut ja QortalLand-tilan yhteen. Tässä esikatselussa voit tutustua niihin liittymättä tai kuluttamatta QORTia."
+    },
+    "ready": {
+      "copy": "Siinä olivat perusteet. Tutki Qortalia omaan tahtiisi ja käynnistä kierros tarvittaessa uudelleen.",
+      "title": "Olet valmis"
+    },
+    "skip_reminder": {
+      "copy": "Voit käynnistää tämän opastuksen uudelleen milloin tahansa kohdasta Asetukset > Ohje.",
+      "title": "Opastus ohitettiin toistaiseksi"
+    },
+    "welcome": {
+      "copy": "Aloitusnäkymä on lähtöpisteesi Qortal Hubissa.\n\nTehdään nopea kierros perusasioihin!",
+      "title": "Tervetuloa Qortal Hubiin"
+    }
   },
   "subscription": {
     "actions_badge_one": "{{count}} toimenpide",

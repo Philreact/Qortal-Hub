@@ -575,6 +575,7 @@ export const HomeDesktop = ({
       {desktopViewMode !== 'home' ? <QortinoMusicPlaybackController /> : null}
       <Activity mode={desktopViewMode === 'home' ? 'visible' : 'hidden'}>
         <motion.div
+          data-tour="hub-home-page"
           key="home"
           initial={{ opacity: 0, scale: 1 }}
           animate={{ opacity: 1, scale: 1 }}
