@@ -851,7 +851,7 @@
     "featured_qapps": {
       "copy": "This section features a few community-made <emphasis>Q-Apps</emphasis> that help make Qortal what it is today.",
       "decentralization": "",
-      "details": "<emphasis>Q-Apps</emphasis> are decentralized apps anyone can build with HTML, CSS, and JavaScript, using Qortal's blockchain, APIs, and peer-to-peer QDN to publish, share, grow, or monetize ideas. QDN encrypts and chunks data in storage and transit, with no central host able to censor or remove an app for everyone. Public Q-App content remains public rather than end-to-end private, and each user controls what their node accesses or blocks.",
+      "details": "<emphasis>Q-Apps</emphasis> are decentralized apps anyone can build with HTML, CSS, and JavaScript, using Qortal's blockchain, APIs, and peer-to-peer QDN to publish, share, grow, or monetize ideas. QDN encrypts and chunks data during storage and transit, with no central host able to censor or remove an app network-wide. Each user controls what their own node accesses or blocks.",
       "title": "Featured Q-Apps"
     },
     "find_group": {
