@@ -2611,6 +2611,9 @@ const RETICULUM_CHAT_AUTHOR_GAP_ROUTE_BACKOFF_MS = [
 const RETICULUM_CHAT_AUTHOR_GAP_ROUTE_BACKOFF_RESET_MS = 10 * 60_000;
 const RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS = 6 * 60 * 60_000;
 const RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_PEERS = 3;
+const RETICULUM_CHAT_AUTHOR_GAP_KNOWN_UNAVAILABLE_RECHECK_MS =
+  7 * 24 * 60 * 60_000;
+const RETICULUM_CHAT_AUTHOR_GAP_KNOWN_UNAVAILABLE_MIN_ATTEMPTS = 12;
 const RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_TTL_MS = 10 * 60_000;
 const RETICULUM_CHAT_HISTORY_PAGE_NO_PROGRESS_MAX = 4096;
 const RETICULUM_CHAT_DIGEST_REPAIR_NO_PROGRESS_TTL_MS =
@@ -8897,6 +8900,15 @@ export class ReticulumChatManager extends EventEmitter {
     );
     const normalizedMemberships =
       this.normalizeLocalGroupMemberships(memberships);
+    const groupsWithExpandedHistoryAccess = membershipsWereInitialized
+      ? normalizedMemberships
+          .filter(
+            ({ groupId, isAdmin }) =>
+              !previousGroupIds.has(groupId) ||
+              (!previousAdminGroupIds.has(groupId) && isAdmin)
+          )
+          .map(({ groupId }) => groupId)
+      : [];
     const nextGroupIds = normalizedMemberships.map(({ groupId }) => groupId);
     const groupsRequiringInitialization = normalizedMemberships
       .filter(
@@ -8955,6 +8967,15 @@ export class ReticulumChatManager extends EventEmitter {
     );
     this.localGroupIds = new Set(nextGroupIds);
     this.localGroupMembershipsInitialized = true;
+    let wokeKnownUnavailableRanges = false;
+    for (const groupId of groupsWithExpandedHistoryAccess) {
+      wokeKnownUnavailableRanges =
+        this.db.wakeKnownUnavailableRangesForGroup(groupId, this.now()) > 0 ||
+        wokeKnownUnavailableRanges;
+    }
+    if (wokeKnownUnavailableRanges) {
+      this.scheduleBackgroundAuthorGapRepair(1);
+    }
     for (const groupId of previousGroupIds) {
       if (!this.localGroupIds.has(groupId)) {
         this.reconcileCalendarCoverReferencesForGroup(groupId, false);
@@ -23489,6 +23510,45 @@ export class ReticulumChatManager extends EventEmitter {
     // provider quorum so one stale or dishonest provider cannot suppress
     // readable history for the requester.
     const shouldQuarantine = unavailablePeerCount >= quarantineThreshold;
+    const unavailablePeers = eligiblePeers.filter((candidate) =>
+      this.db.hasMissingRangePeerUnavailable(
+        groupId,
+        normalized.a,
+        normalized.s,
+        normalized.from,
+        normalized.to,
+        candidate,
+        this.now() - RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS
+      )
+    );
+    const persistedRange = this.db.getMissingRange(
+      groupId,
+      normalized.a,
+      normalized.s,
+      normalized.from,
+      normalized.to
+    );
+    // A durable marker requires independent explicit denials and an already
+    // well-tried range. Route failures and timeouts never qualify. This keeps
+    // one stale or hostile provider from suppressing valid history while
+    // allowing genuinely unavailable legacy holes to leave the hot loop.
+    const shouldMarkKnownUnavailable =
+      unavailablePeers.length >= RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_PEERS &&
+      (persistedRange?.attempts ?? 0) >=
+        RETICULUM_CHAT_AUTHOR_GAP_KNOWN_UNAVAILABLE_MIN_ATTEMPTS;
+    const knownUnavailableMarker = shouldMarkKnownUnavailable
+      ? this.db.markMissingRangeKnownUnavailable(
+          groupId,
+          normalized.a,
+          normalized.s,
+          normalized.from,
+          normalized.to,
+          unavailablePeers,
+          this.now(),
+          this.now() + RETICULUM_CHAT_AUTHOR_GAP_KNOWN_UNAVAILABLE_RECHECK_MS
+        )
+      : null;
+    const didMarkKnownUnavailable = knownUnavailableMarker != null;
     const replacement = shouldQuarantine
       ? ''
       : this.selectAuthorGapRepairPeer(groupId, normalized, peer);
@@ -23502,9 +23562,11 @@ export class ReticulumChatManager extends EventEmitter {
       replacement
         ? this.now()
         : this.now() +
-            (shouldQuarantine
-              ? RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS
-              : RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_TTL_MS),
+            (didMarkKnownUnavailable
+              ? RETICULUM_CHAT_AUTHOR_GAP_KNOWN_UNAVAILABLE_RECHECK_MS
+              : shouldQuarantine
+                ? RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS
+                : RETICULUM_CHAT_AUTHOR_GAP_NO_PROGRESS_TTL_MS),
       shouldQuarantine ? undefined : peer
     );
     loggerLog(
@@ -23513,6 +23575,11 @@ export class ReticulumChatManager extends EventEmitter {
     if (shouldQuarantine) {
       loggerLog(
         `[ReticulumChat] author_gap_quarantined group=${groupId} author=${normalized.a} from=${normalized.from} to=${normalized.to} unavailable_peers=${unavailablePeerCount} retry_ms=${RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS}`
+      );
+    }
+    if (didMarkKnownUnavailable) {
+      loggerLog(
+        `[ReticulumChat] author_gap_known_unavailable group=${groupId} author=${normalized.a} from=${normalized.from} to=${normalized.to} unavailable_peers=${unavailablePeers.length} attempts=${persistedRange?.attempts ?? 0} recheck_ms=${RETICULUM_CHAT_AUTHOR_GAP_KNOWN_UNAVAILABLE_RECHECK_MS}`
       );
     }
   }
@@ -23814,6 +23881,27 @@ export class ReticulumChatManager extends EventEmitter {
       to: toSeq,
     });
     for (const range of ranges) {
+      const normalizedPeer = this.normalizeResourcePeerHash(peerHash);
+      const knownUnavailable = this.db.getMissingRangeKnownUnavailable(
+        event.groupId,
+        range.a,
+        range.s,
+        range.from,
+        range.to
+      );
+      if (
+        knownUnavailable &&
+        normalizedPeer &&
+        !knownUnavailable.peerHashes.includes(normalizedPeer)
+      ) {
+        this.db.clearMissingRangeKnownUnavailable(
+          event.groupId,
+          range.a,
+          range.s,
+          range.from,
+          range.to
+        );
+      }
       this.db.upsertMissingRange(
         event.groupId,
         range.a,
@@ -24557,6 +24645,40 @@ export class ReticulumChatManager extends EventEmitter {
         normalized,
         peer
       );
+      const knownUnavailable = this.db.getMissingRangeKnownUnavailable(
+        groupId,
+        normalized.a,
+        normalized.s,
+        normalized.from,
+        normalized.to
+      );
+      const isNewProviderForKnownUnavailable = Boolean(
+        knownUnavailable &&
+        eligiblePeers.includes(peer) &&
+        !knownUnavailable.peerHashes.includes(peer) &&
+        peer
+      );
+      if (isNewProviderForKnownUnavailable) {
+        // A newly attributable provider is new evidence. Wake the range once
+        // instead of waiting for the periodic long recheck. The provider must
+        // still pass the normal authenticated range request and event checks.
+        this.db.clearMissingRangeKnownUnavailable(
+          groupId,
+          normalized.a,
+          normalized.s,
+          normalized.from,
+          normalized.to
+        );
+        this.db.rescheduleMissingRange(
+          groupId,
+          normalized.a,
+          normalized.s,
+          normalized.from,
+          normalized.to,
+          peer,
+          this.now()
+        );
+      }
       const eligiblePeerCount = eligiblePeers.length;
       const quarantineThreshold = Math.min(
         RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_PEERS,
@@ -24582,7 +24704,7 @@ export class ReticulumChatManager extends EventEmitter {
           peer,
           this.now() - RETICULUM_CHAT_AUTHOR_GAP_QUARANTINE_MS
         );
-      if (newlyObservedPeer) {
+      if (newlyObservedPeer || isNewProviderForKnownUnavailable) {
         this.db.rescheduleMissingRange(
           groupId,
           normalized.a,
@@ -24594,7 +24716,10 @@ export class ReticulumChatManager extends EventEmitter {
         );
       }
       const scheduledPeer =
-        existing && existing.nextAttemptAt > 0 && !newlyObservedPeer
+        existing &&
+        existing.nextAttemptAt > 0 &&
+        !newlyObservedPeer &&
+        !isNewProviderForKnownUnavailable
           ? existing.preferredPeer
           : peer;
       this.db.scheduleMissingRange(
@@ -24604,9 +24729,14 @@ export class ReticulumChatManager extends EventEmitter {
         normalized.from,
         normalized.to,
         scheduledPeer,
-        existing && existing.nextAttemptAt > 0 && !newlyObservedPeer
+        existing &&
+          existing.nextAttemptAt > 0 &&
+          !newlyObservedPeer &&
+          !isNewProviderForKnownUnavailable
           ? existing.nextAttemptAt
-          : nextAttemptAt
+          : isNewProviderForKnownUnavailable
+            ? this.now()
+            : nextAttemptAt
       );
       recorded += 1;
     }
@@ -26980,6 +27110,10 @@ export class ReticulumChatManager extends EventEmitter {
       );
       return 'skipped';
     }
+    const previousChannel = this.db.getChannel(
+      channel.groupId,
+      channel.channelId
+    );
     const revision = this.metadataEntityRevision(event, payload, channel);
     if (!revision) return 'skipped';
     const currentRecord = this.db.getMetadataEntityRevisionRecord(
@@ -27011,6 +27145,18 @@ export class ReticulumChatManager extends EventEmitter {
     }
     if (changed) {
       this.invalidateGroupDigestSnapshot(event.groupId);
+      if (
+        (!previousChannel ||
+          previousChannel.readMode ===
+            RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS) &&
+        channel.readMode !== RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS &&
+        this.db.wakeKnownUnavailableRangesForGroup(
+          event.groupId,
+          this.now()
+        ) > 0
+      ) {
+        this.scheduleBackgroundAuthorGapRepair(1);
+      }
     }
     this.db.upsertMetadataEntityRevision(event.groupId, revision, {
       source: 'event',
@@ -27358,6 +27504,7 @@ export class ReticulumChatManager extends EventEmitter {
   ): Promise<ReticulumChatMetadataProjectionResult> {
     const normalizedChannelId = normalizeReticulumChatChannelId(channelId);
     if (!normalizedChannelId) return 'skipped';
+    const previousChannel = this.db.getChannel(groupId, normalizedChannelId);
     const events = this.db.getChannelMetadataEventsForChannel(
       groupId,
       normalizedChannelId
@@ -27455,7 +27602,18 @@ export class ReticulumChatManager extends EventEmitter {
       source: 'event',
     });
     completeProjectedEvents();
-    if (changed) this.invalidateGroupDigestSnapshot(groupId);
+    if (changed) {
+      this.invalidateGroupDigestSnapshot(groupId);
+      if (
+        (!previousChannel ||
+          previousChannel.readMode ===
+            RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS) &&
+        channel.readMode !== RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS &&
+        this.db.wakeKnownUnavailableRangesForGroup(groupId, this.now()) > 0
+      ) {
+        this.scheduleBackgroundAuthorGapRepair(1);
+      }
+    }
     this.invalidateStateHeadsCache(groupId);
     this.emitSummaryChanged(groupId, undefined, { metadataChanged: true });
     loggerLog(

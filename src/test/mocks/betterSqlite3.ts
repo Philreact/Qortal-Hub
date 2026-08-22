@@ -18,6 +18,7 @@ type MockStore = {
   reticulumChatAuthorStreams: Map<string, string>;
   reticulumChatAuthorSequenceLeases: ReticulumChatRow[];
   reticulumChatMissingRangePeerObservations: ReticulumChatRow[];
+  reticulumChatKnownUnavailableRanges: ReticulumChatRow[];
   reticulumChatSilences: ReticulumChatRow[];
   reticulumPublicGroupActivity: ReticulumChatRow[];
   reticulumCalendarMutations: ReticulumChatRow[];
@@ -60,6 +61,12 @@ class Statement {
           cid,
           name,
         })
+      );
+    }
+    if (this.sql.includes('FROM rchat_known_unavailable_ranges')) {
+      const [groupId] = args;
+      return this.store.reticulumChatKnownUnavailableRanges.filter(
+        (row) => row.group_id === groupId
       );
     }
     if (
@@ -1184,6 +1191,17 @@ class Statement {
       );
       return newest ? { observed_at: newest.observed_at } : undefined;
     }
+    if (this.sql.includes('FROM rchat_known_unavailable_ranges')) {
+      const [groupId, authorAddress, authorStreamId, fromSeq, toSeq] = args;
+      return this.store.reticulumChatKnownUnavailableRanges.find(
+        (row) =>
+          row.group_id === groupId &&
+          row.author_address === authorAddress &&
+          row.author_stream_id === authorStreamId &&
+          row.from_seq === fromSeq &&
+          row.to_seq === toSeq
+      );
+    }
     if (
       this.sql.includes('FROM rchat_silences') &&
       !this.sql.includes('FROM rchat_dm_events')
@@ -2180,6 +2198,70 @@ class Statement {
           observed_at: observedAt,
         });
       return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (
+      this.sql.includes('UPDATE rchat_missing_stream_ranges') &&
+      this.sql.includes('SET next_attempt_at = MAX(next_attempt_at')
+    ) {
+      // Missing ranges are maintained by the database class's in-memory
+      // mirror in this lightweight test double. Report the persisted row as
+      // present so marker creation follows the real SQLite transaction path.
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('INSERT INTO rchat_known_unavailable_ranges')) {
+      const row = { ...(args[0] ?? {}) };
+      const existing = this.store.reticulumChatKnownUnavailableRanges.find(
+        (candidate) =>
+          candidate.group_id === row.group_id &&
+          candidate.author_address === row.author_address &&
+          candidate.author_stream_id === row.author_stream_id &&
+          candidate.from_seq === row.from_seq &&
+          candidate.to_seq === row.to_seq
+      );
+      if (existing) Object.assign(existing, row);
+      else this.store.reticulumChatKnownUnavailableRanges.push(row);
+      return { changes: 1, lastInsertRowid: 0 };
+    }
+    if (this.sql.includes('DELETE FROM rchat_known_unavailable_ranges')) {
+      if (this.sql.includes('rowid NOT IN')) {
+        const limit = Math.max(1, Number(args[0]) || 1);
+        this.store.reticulumChatKnownUnavailableRanges =
+          this.store.reticulumChatKnownUnavailableRanges
+            .sort(
+              (left, right) =>
+                Number(right.confirmed_at) - Number(left.confirmed_at)
+            )
+            .slice(0, limit);
+        return { changes: 0, lastInsertRowid: 0 };
+      }
+      if (!this.sql.includes('author_address')) {
+        const [groupId] = args;
+        const before = this.store.reticulumChatKnownUnavailableRanges.length;
+        this.store.reticulumChatKnownUnavailableRanges =
+          this.store.reticulumChatKnownUnavailableRanges.filter(
+            (row) => row.group_id !== groupId
+          );
+        return {
+          changes:
+            before - this.store.reticulumChatKnownUnavailableRanges.length,
+          lastInsertRowid: 0,
+        };
+      }
+      const [groupId, authorAddress, authorStreamId, toSeq, fromSeq] = args;
+      const before = this.store.reticulumChatKnownUnavailableRanges.length;
+      this.store.reticulumChatKnownUnavailableRanges =
+        this.store.reticulumChatKnownUnavailableRanges.filter(
+          (row) =>
+            row.group_id !== groupId ||
+            row.author_address !== authorAddress ||
+            row.author_stream_id !== authorStreamId ||
+            row.from_seq > toSeq ||
+            row.to_seq < fromSeq
+        );
+      return {
+        changes: before - this.store.reticulumChatKnownUnavailableRanges.length,
+        lastInsertRowid: 0,
+      };
     }
     if (
       this.sql.includes('DELETE FROM rchat_missing_range_peer_observations')
@@ -3502,6 +3584,7 @@ class MockDatabase {
       reticulumChatAuthorStreams: new Map(),
       reticulumChatAuthorSequenceLeases: [],
       reticulumChatMissingRangePeerObservations: [],
+      reticulumChatKnownUnavailableRanges: [],
       reticulumChatSilences: [],
       reticulumPublicGroupActivity: [],
       reticulumCalendarMutations: [],

@@ -3032,6 +3032,143 @@ describe('reticulum chat database', () => {
     ).toBe(1);
   });
 
+  it('clears a durable unavailable marker when the valid event arrives later', () => {
+    const dbPath = tempDbPath();
+    const db = new ReticulumChatDatabase(dbPath);
+    dbs.push(db);
+    const event = signedEvent({
+      eventId: 'known-unavailable-late-event',
+      groupId: 12,
+      authorSeq: 7,
+      timestamp: 20_000,
+    });
+    db.ensureMissingRange(
+      event.groupId,
+      event.authorAddress,
+      event.authorStreamId,
+      event.authorSeq,
+      event.authorSeq,
+      'a'.repeat(32)
+    );
+    const recheckAt = 30_000 + 7 * 24 * 60 * 60_000;
+    db.markMissingRangeKnownUnavailable(
+      event.groupId,
+      event.authorAddress,
+      event.authorStreamId,
+      event.authorSeq,
+      event.authorSeq,
+      ['a'.repeat(32), 'b'.repeat(32), 'c'.repeat(32)],
+      30_000,
+      recheckAt
+    );
+    db.upsertMissingRange(
+      event.groupId,
+      event.authorAddress,
+      event.authorStreamId,
+      event.authorSeq,
+      event.authorSeq,
+      'd'.repeat(32),
+      31_000
+    );
+    db.rescheduleMissingRange(
+      event.groupId,
+      event.authorAddress,
+      event.authorStreamId,
+      event.authorSeq,
+      event.authorSeq,
+      'e'.repeat(32),
+      32_000
+    );
+    db.scheduleMissingRange(
+      event.groupId,
+      event.authorAddress,
+      event.authorStreamId,
+      event.authorSeq,
+      event.authorSeq,
+      'f'.repeat(32),
+      33_000
+    );
+    db.deferMissingRange(
+      event.groupId,
+      event.authorAddress,
+      event.authorStreamId,
+      event.authorSeq,
+      event.authorSeq,
+      '0'.repeat(32),
+      34_000,
+      2
+    );
+    expect(
+      db.getMissingRange(
+        event.groupId,
+        event.authorAddress,
+        event.authorStreamId,
+        event.authorSeq,
+        event.authorSeq
+      )
+    ).toMatchObject({
+      preferredPeer: 'a'.repeat(32),
+      nextAttemptAt: recheckAt,
+    });
+
+    expect(
+      db.getMissingRangeKnownUnavailable(
+        event.groupId,
+        event.authorAddress,
+        event.authorStreamId,
+        event.authorSeq,
+        event.authorSeq
+      )
+    ).toMatchObject({
+      peerHashes: ['a'.repeat(32), 'b'.repeat(32), 'c'.repeat(32)],
+    });
+
+    db.close();
+    const reopened = new ReticulumChatDatabase(dbPath);
+    dbs.push(reopened);
+    expect(
+      reopened.getMissingRangeKnownUnavailable(
+        event.groupId,
+        event.authorAddress,
+        event.authorStreamId,
+        event.authorSeq,
+        event.authorSeq
+      )
+    ).not.toBeNull();
+    // The lightweight SQLite test double keeps the durable marker but does
+    // not hydrate persisted missing-range rows into a reopened instance.
+    // Re-registering the same gap also verifies that doing so cannot shorten
+    // the durable pause before the valid event arrives.
+    reopened.ensureMissingRange(
+      event.groupId,
+      event.authorAddress,
+      event.authorStreamId,
+      event.authorSeq,
+      event.authorSeq,
+      'd'.repeat(32)
+    );
+
+    expect(reopened.insertEvent(event, false)).toBe(true);
+    expect(
+      reopened.getMissingRangeKnownUnavailable(
+        event.groupId,
+        event.authorAddress,
+        event.authorStreamId,
+        event.authorSeq,
+        event.authorSeq
+      )
+    ).toBeNull();
+    expect(
+      reopened.getMissingRange(
+        event.groupId,
+        event.authorAddress,
+        event.authorStreamId,
+        event.authorSeq,
+        event.authorSeq
+      )
+    ).toBeNull();
+  });
+
   it('does not rescan an unchanged missing range on every retry update', () => {
     const db = new ReticulumChatDatabase(tempDbPath());
     dbs.push(db);
@@ -3314,6 +3451,118 @@ describe('reticulum chat database', () => {
     expect(db.getMissingRange(716, range.a, range.s, 4, 8)).toMatchObject({
       preferredPeer: secondPeer,
       nextAttemptAt: 100_000 + 6 * 60 * 60_000,
+    });
+    manager.close();
+  });
+
+  it('parks well-tried unavailable ranges until a new provider appears', () => {
+    let now = 100_000;
+    const peers = ['a'.repeat(32), 'b'.repeat(32), 'c'.repeat(32)];
+    const manager = new ReticulumChatManager({
+      dbPath: tempDbPath(),
+      now: () => now,
+      getVerifiedReticulumPeers: () =>
+        peers.map((destinationHash, index) => ({
+          destinationHash,
+          address: `QProvider${index}`,
+          lastSeen: now - index,
+        })),
+      getAccountEndpointLeases: () => [],
+    });
+    manager.setLocalGroupMemberships([716]);
+    manager.subscribeGroup(716);
+    for (const peer of peers) {
+      (manager as any).notePeerSubscription(peer, 716, true);
+    }
+    const range = {
+      a: 'QDurablyMissingAuthor',
+      s: TEST_AUTHOR_STREAM_ID,
+      from: 40,
+      to: 40,
+    };
+    const db = (manager as any).db as ReticulumChatDatabase;
+    db.ensureMissingRange(716, range.a, range.s, 40, 40, peers[0]);
+    db.deferMissingRange(716, range.a, range.s, 40, 40, peers[0], now, 12);
+
+    for (const peer of peers) {
+      (manager as any).handleAuthorRangeUnavailable(
+        716,
+        peer,
+        range,
+        'no_history_events'
+      );
+    }
+
+    const marker = db.getMissingRangeKnownUnavailable(
+      716,
+      range.a,
+      range.s,
+      40,
+      40
+    );
+    expect(marker).toMatchObject({ peerHashes: peers });
+    const parkedRange = db.getMissingRange(716, range.a, range.s, 40, 40);
+    expect(parkedRange).toMatchObject({
+      nextAttemptAt: now + 7 * 24 * 60 * 60_000,
+    });
+
+    now += 1;
+    (manager as any).recordAuthorGapRanges(
+      716,
+      peers[0],
+      [range],
+      'same-provider-repeat'
+    );
+    expect(
+      db.getMissingRangeKnownUnavailable(716, range.a, range.s, 40, 40)
+    ).not.toBeNull();
+    expect(db.getMissingRange(716, range.a, range.s, 40, 40)).toMatchObject({
+      preferredPeer: parkedRange?.preferredPeer,
+      nextAttemptAt: 100_000 + 7 * 24 * 60 * 60_000,
+    });
+
+    const newPeer = 'd'.repeat(32);
+    peers.push(newPeer);
+    (manager as any).notePeerSubscription(newPeer, 716, true);
+    now += 1;
+    (manager as any).recordAuthorGapRanges(
+      716,
+      newPeer,
+      [range],
+      'new-provider'
+    );
+
+    expect(
+      db.getMissingRangeKnownUnavailable(716, range.a, range.s, 40, 40)
+    ).toBeNull();
+    expect(db.getMissingRange(716, range.a, range.s, 40, 40)).toMatchObject({
+      preferredPeer: newPeer,
+      nextAttemptAt: now,
+    });
+
+    const accessRecheckAt = now + 7 * 24 * 60 * 60_000;
+    db.markMissingRangeKnownUnavailable(
+      716,
+      range.a,
+      range.s,
+      40,
+      40,
+      peers.slice(0, 3),
+      now,
+      accessRecheckAt
+    );
+    manager.setLocalGroupMemberships([
+      {
+        groupId: 716,
+        isAdmin: true,
+        adminStatusAuthoritative: true,
+      },
+    ]);
+    expect(
+      db.getMissingRangeKnownUnavailable(716, range.a, range.s, 40, 40)
+    ).toBeNull();
+    expect(db.getMissingRange(716, range.a, range.s, 40, 40)).toMatchObject({
+      nextAttemptAt: now,
     });
     manager.close();
   });

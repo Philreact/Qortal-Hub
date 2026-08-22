@@ -531,6 +531,17 @@ export type ReticulumChatMissingRangeState = {
   nextAttemptAt: number;
 };
 
+export type ReticulumChatKnownUnavailableRange = {
+  groupId: number;
+  authorAddress: string;
+  authorStreamId: string;
+  fromSeq: number;
+  toSeq: number;
+  confirmedAt: number;
+  recheckAt: number;
+  peerHashes: string[];
+};
+
 export type ReticulumChatMetadataSnapshotRecord = {
   groupId: number;
   snapshotId: string;
@@ -1705,6 +1716,14 @@ export class ReticulumChatDatabase {
   private stmtCountMissingRangePeerUnavailable: Statement;
   private stmtGetMissingRangePeerUnavailable: Statement;
   private stmtClearMissingRangePeerUnavailable: Statement;
+  private stmtUpsertKnownUnavailableRange: Statement;
+  private stmtParkKnownUnavailableRange: Statement;
+  private stmtGetKnownUnavailableRange: Statement;
+  private stmtGetKnownUnavailableRangesForGroup: Statement;
+  private stmtWakeKnownUnavailableRangesForGroup: Statement;
+  private stmtClearKnownUnavailableRange: Statement;
+  private stmtClearKnownUnavailableRangesForGroup: Statement;
+  private stmtPruneKnownUnavailableRanges: Statement;
   private stmtDeleteMissingRange: Statement;
   private stmtInsertMissingRangeRaw: Statement;
   private stmtGetRejectedEventMarker: Statement;
@@ -2511,8 +2530,28 @@ export class ReticulumChatDatabase {
       VALUES
         (@group_id, @author_address, @author_stream_id, @from_seq, @to_seq, @preferred_peer, 0, @next_attempt_at)
       ON CONFLICT(group_id, author_address, author_stream_id, from_seq, to_seq) DO UPDATE SET
-        preferred_peer = excluded.preferred_peer,
-        next_attempt_at = MIN(rchat_missing_stream_ranges.next_attempt_at, excluded.next_attempt_at)
+        preferred_peer = CASE
+          WHEN EXISTS (
+            SELECT 1 FROM rchat_known_unavailable_ranges unavailable
+            WHERE unavailable.group_id = excluded.group_id
+              AND unavailable.author_address = excluded.author_address
+              AND unavailable.author_stream_id = excluded.author_stream_id
+              AND unavailable.from_seq = excluded.from_seq
+              AND unavailable.to_seq = excluded.to_seq
+          ) THEN rchat_missing_stream_ranges.preferred_peer
+          ELSE excluded.preferred_peer
+        END,
+        next_attempt_at = CASE
+          WHEN EXISTS (
+            SELECT 1 FROM rchat_known_unavailable_ranges unavailable
+            WHERE unavailable.group_id = excluded.group_id
+              AND unavailable.author_address = excluded.author_address
+              AND unavailable.author_stream_id = excluded.author_stream_id
+              AND unavailable.from_seq = excluded.from_seq
+              AND unavailable.to_seq = excluded.to_seq
+          ) THEN MAX(rchat_missing_stream_ranges.next_attempt_at, excluded.next_attempt_at)
+          ELSE MIN(rchat_missing_stream_ranges.next_attempt_at, excluded.next_attempt_at)
+        END
     `);
     this.stmtEnsureMissingRange = this.db.prepare(`
       INSERT OR IGNORE INTO rchat_missing_stream_ranges
@@ -2658,6 +2697,72 @@ export class ReticulumChatDatabase {
       DELETE FROM rchat_missing_range_peer_observations
       WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
         AND from_seq <= ? AND to_seq >= ?
+    `);
+    this.stmtUpsertKnownUnavailableRange = this.db.prepare(`
+      INSERT INTO rchat_known_unavailable_ranges
+        (group_id, author_address, author_stream_id, from_seq, to_seq,
+         confirmed_at, recheck_at, peer_hashes_json)
+      VALUES
+        (@group_id, @author_address, @author_stream_id, @from_seq, @to_seq,
+         @confirmed_at, @recheck_at, @peer_hashes_json)
+      ON CONFLICT(group_id, author_address, author_stream_id, from_seq, to_seq)
+      DO UPDATE SET
+        confirmed_at = excluded.confirmed_at,
+        recheck_at = excluded.recheck_at,
+        peer_hashes_json = excluded.peer_hashes_json
+    `);
+    this.stmtParkKnownUnavailableRange = this.db.prepare(`
+      UPDATE rchat_missing_stream_ranges
+      SET next_attempt_at = MAX(next_attempt_at, @recheck_at)
+      WHERE group_id = @group_id
+        AND author_address = @author_address
+        AND author_stream_id = @author_stream_id
+        AND from_seq = @from_seq
+        AND to_seq = @to_seq
+    `);
+    this.stmtGetKnownUnavailableRange = this.db.prepare(`
+      SELECT group_id, author_address, author_stream_id, from_seq, to_seq,
+             confirmed_at, recheck_at, peer_hashes_json
+      FROM rchat_known_unavailable_ranges
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+        AND from_seq = ? AND to_seq = ?
+      LIMIT 1
+    `);
+    this.stmtGetKnownUnavailableRangesForGroup = this.db.prepare(`
+      SELECT group_id, author_address, author_stream_id, from_seq, to_seq,
+             confirmed_at, recheck_at, peer_hashes_json
+      FROM rchat_known_unavailable_ranges
+      WHERE group_id = ?
+    `);
+    this.stmtWakeKnownUnavailableRangesForGroup = this.db.prepare(`
+      UPDATE rchat_missing_stream_ranges
+      SET next_attempt_at = MIN(next_attempt_at, @next_attempt_at)
+      WHERE group_id = @group_id
+        AND EXISTS (
+          SELECT 1 FROM rchat_known_unavailable_ranges unavailable
+          WHERE unavailable.group_id = rchat_missing_stream_ranges.group_id
+            AND unavailable.author_address = rchat_missing_stream_ranges.author_address
+            AND unavailable.author_stream_id = rchat_missing_stream_ranges.author_stream_id
+            AND unavailable.from_seq = rchat_missing_stream_ranges.from_seq
+            AND unavailable.to_seq = rchat_missing_stream_ranges.to_seq
+        )
+    `);
+    this.stmtClearKnownUnavailableRange = this.db.prepare(`
+      DELETE FROM rchat_known_unavailable_ranges
+      WHERE group_id = ? AND author_address = ? AND author_stream_id = ?
+        AND from_seq <= ? AND to_seq >= ?
+    `);
+    this.stmtClearKnownUnavailableRangesForGroup = this.db.prepare(`
+      DELETE FROM rchat_known_unavailable_ranges
+      WHERE group_id = ?
+    `);
+    this.stmtPruneKnownUnavailableRanges = this.db.prepare(`
+      DELETE FROM rchat_known_unavailable_ranges
+      WHERE rowid NOT IN (
+        SELECT rowid FROM rchat_known_unavailable_ranges
+        ORDER BY confirmed_at DESC, rowid DESC
+        LIMIT ?
+      )
     `);
     this.stmtDeleteMissingRange = this.db.prepare(`
       DELETE FROM rchat_missing_stream_ranges
@@ -8554,6 +8659,13 @@ export class ReticulumChatDatabase {
     if (!Number.isInteger(groupId) || groupId <= 0 || !author) return;
     const key = this.missingRangeKey(groupId, author, stream, from, to);
     const alreadyTracked = this.memoryMissingRanges.has(key);
+    const knownUnavailable = this.getMissingRangeKnownUnavailable(
+      groupId,
+      author,
+      stream,
+      from,
+      to
+    );
     this.stmtUpsertMissingRange.run({
       group_id: groupId,
       author_address: author,
@@ -8570,13 +8682,21 @@ export class ReticulumChatDatabase {
       authorStreamId: stream,
       fromSeq: from,
       toSeq: to,
-      preferredPeer: peer || existing?.preferredPeer || '',
+      preferredPeer: knownUnavailable
+        ? existing?.preferredPeer || peer
+        : peer || existing?.preferredPeer || '',
       attempts: existing?.attempts ?? 0,
       nextAttemptAt: existing
-        ? Math.min(
-            existing.nextAttemptAt,
-            Math.max(0, Math.floor(nextAttemptAt))
-          )
+        ? knownUnavailable
+          ? Math.max(
+              existing.nextAttemptAt,
+              knownUnavailable.recheckAt,
+              Math.max(0, Math.floor(nextAttemptAt))
+            )
+          : Math.min(
+              existing.nextAttemptAt,
+              Math.max(0, Math.floor(nextAttemptAt))
+            )
         : Math.max(0, Math.floor(nextAttemptAt)),
     });
     if (!alreadyTracked) {
@@ -8655,8 +8775,21 @@ export class ReticulumChatDatabase {
       toSeq
     );
     if (!current) return null;
-    const peer = preferredPeer.trim().toLowerCase() || current.preferredPeer;
-    const next = Math.max(current.nextAttemptAt, Math.floor(nextAttemptAt));
+    const knownUnavailable = this.getMissingRangeKnownUnavailable(
+      current.groupId,
+      current.authorAddress,
+      current.authorStreamId,
+      current.fromSeq,
+      current.toSeq
+    );
+    const peer = knownUnavailable
+      ? current.preferredPeer
+      : preferredPeer.trim().toLowerCase() || current.preferredPeer;
+    const next = Math.max(
+      current.nextAttemptAt,
+      knownUnavailable?.recheckAt ?? 0,
+      Math.floor(nextAttemptAt)
+    );
     this.stmtUpdateMissingRangeBackoff.run({
       group_id: current.groupId,
       author_address: current.authorAddress,
@@ -8703,8 +8836,20 @@ export class ReticulumChatDatabase {
       toSeq
     );
     if (!current) return null;
-    const peer = preferredPeer.trim().toLowerCase() || current.preferredPeer;
-    const next = Math.max(0, Math.floor(nextAttemptAt));
+    const knownUnavailable = this.getMissingRangeKnownUnavailable(
+      current.groupId,
+      current.authorAddress,
+      current.authorStreamId,
+      current.fromSeq,
+      current.toSeq
+    );
+    const peer = knownUnavailable
+      ? current.preferredPeer
+      : preferredPeer.trim().toLowerCase() || current.preferredPeer;
+    const next = Math.max(
+      knownUnavailable?.recheckAt ?? 0,
+      Math.max(0, Math.floor(nextAttemptAt))
+    );
     const expectedPeer =
       typeof expectedPreferredPeer === 'string'
         ? expectedPreferredPeer.trim().toLowerCase()
@@ -8918,6 +9063,188 @@ export class ReticulumChatDatabase {
     );
   }
 
+  markMissingRangeKnownUnavailable(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number,
+    peerHashes: string[],
+    confirmedAt: number,
+    recheckAt: number,
+    maxRecords = 4_096
+  ): ReticulumChatKnownUnavailableRange | null {
+    const author = String(authorAddress || '').trim();
+    const stream = normalizeReticulumChatAuthorStreamId(authorStreamId);
+    const from = Math.max(1, Math.floor(fromSeq));
+    const to = Math.max(from, Math.floor(toSeq));
+    const peers = [
+      ...new Set(peerHashes.map((peer) => peer.trim().toLowerCase())),
+    ]
+      .filter(Boolean)
+      .sort()
+      .slice(0, 64);
+    if (
+      !Number.isInteger(groupId) ||
+      groupId <= 0 ||
+      !author ||
+      peers.length === 0
+    )
+      return null;
+    const confirmed = Math.max(0, Math.floor(confirmedAt));
+    const recheck = Math.max(confirmed, Math.floor(recheckAt));
+    const params = {
+      group_id: groupId,
+      author_address: author,
+      author_stream_id: stream,
+      from_seq: from,
+      to_seq: to,
+      confirmed_at: confirmed,
+      recheck_at: recheck,
+      peer_hashes_json: JSON.stringify(peers),
+    };
+    const persist = this.db.transaction(() => {
+      const parked = this.stmtParkKnownUnavailableRange.run(params);
+      if (parked.changes === 0) return false;
+      this.stmtUpsertKnownUnavailableRange.run(params);
+      this.stmtPruneKnownUnavailableRanges.run(
+        Math.max(1, Math.floor(maxRecords))
+      );
+      return true;
+    });
+    if (!persist()) return null;
+    const key = this.missingRangeKey(groupId, author, stream, from, to);
+    const memoryRange = this.memoryMissingRanges.get(key);
+    if (memoryRange) {
+      this.memoryMissingRanges.set(key, {
+        ...memoryRange,
+        nextAttemptAt: Math.max(memoryRange.nextAttemptAt, recheck),
+      });
+    }
+    return {
+      groupId,
+      authorAddress: author,
+      authorStreamId: stream,
+      fromSeq: from,
+      toSeq: to,
+      confirmedAt: confirmed,
+      recheckAt: recheck,
+      peerHashes: peers,
+    };
+  }
+
+  getMissingRangeKnownUnavailable(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number
+  ): ReticulumChatKnownUnavailableRange | null {
+    const row = this.stmtGetKnownUnavailableRange.get(
+      groupId,
+      String(authorAddress || '').trim(),
+      normalizeReticulumChatAuthorStreamId(authorStreamId),
+      Math.max(1, Math.floor(fromSeq)),
+      Math.max(Math.max(1, Math.floor(fromSeq)), Math.floor(toSeq))
+    ) as
+      | {
+          group_id: number;
+          author_address: string;
+          author_stream_id: string;
+          from_seq: number;
+          to_seq: number;
+          confirmed_at: number;
+          recheck_at: number;
+          peer_hashes_json: string;
+        }
+      | undefined;
+    if (!row) return null;
+    let peerHashes: string[] = [];
+    try {
+      const parsed = JSON.parse(row.peer_hashes_json);
+      if (Array.isArray(parsed)) {
+        peerHashes = parsed
+          .map((peer) =>
+            String(peer || '')
+              .trim()
+              .toLowerCase()
+          )
+          .filter(Boolean);
+      }
+    } catch {
+      peerHashes = [];
+    }
+    return {
+      groupId: row.group_id,
+      authorAddress: row.author_address,
+      authorStreamId: normalizeReticulumChatAuthorStreamId(
+        row.author_stream_id
+      ),
+      fromSeq: row.from_seq,
+      toSeq: row.to_seq,
+      confirmedAt: row.confirmed_at,
+      recheckAt: row.recheck_at,
+      peerHashes,
+    };
+  }
+
+  clearMissingRangeKnownUnavailable(
+    groupId: number,
+    authorAddress: string,
+    authorStreamId: string | undefined,
+    fromSeq: number,
+    toSeq: number
+  ): void {
+    this.stmtClearKnownUnavailableRange.run(
+      groupId,
+      String(authorAddress || '').trim(),
+      normalizeReticulumChatAuthorStreamId(authorStreamId),
+      Math.max(1, Math.floor(toSeq)),
+      Math.max(1, Math.floor(fromSeq))
+    );
+  }
+
+  wakeKnownUnavailableRangesForGroup(
+    groupId: number,
+    nextAttemptAt = Date.now()
+  ): number {
+    if (!Number.isInteger(groupId) || groupId <= 0) return 0;
+    const markerRows = this.stmtGetKnownUnavailableRangesForGroup.all(
+      groupId
+    ) as Array<{
+      author_address: string;
+      author_stream_id: string;
+      from_seq: number;
+      to_seq: number;
+    }>;
+    if (markerRows.length === 0) return 0;
+    const next = Math.max(0, Math.floor(nextAttemptAt));
+    const wake = this.db.transaction(() => {
+      this.stmtWakeKnownUnavailableRangesForGroup.run({
+        group_id: groupId,
+        next_attempt_at: next,
+      });
+      this.stmtClearKnownUnavailableRangesForGroup.run(groupId);
+    });
+    wake();
+    for (const row of markerRows) {
+      const key = this.missingRangeKey(
+        groupId,
+        row.author_address,
+        row.author_stream_id,
+        row.from_seq,
+        row.to_seq
+      );
+      const range = this.memoryMissingRanges.get(key);
+      if (!range) continue;
+      this.memoryMissingRanges.set(key, {
+        ...range,
+        nextAttemptAt: Math.min(range.nextAttemptAt, next),
+      });
+    }
+    return markerRows.length;
+  }
+
   getMissingRange(
     groupId: number,
     authorAddress: string,
@@ -9028,6 +9355,16 @@ export class ReticulumChatDatabase {
       toSeq
     );
     if (!current) return null;
+    const knownUnavailable = this.getMissingRangeKnownUnavailable(
+      current.groupId,
+      current.authorAddress,
+      current.authorStreamId,
+      current.fromSeq,
+      current.toSeq
+    );
+    const peer = knownUnavailable
+      ? current.preferredPeer
+      : preferredPeer.trim().toLowerCase() || current.preferredPeer;
     const nextAttempts = Math.max(
       Math.max(0, Math.floor(current.attempts || 0)),
       Math.max(1, Math.floor(attempts || 1))
@@ -9038,19 +9375,23 @@ export class ReticulumChatDatabase {
       author_stream_id: current.authorStreamId,
       from_seq: current.fromSeq,
       to_seq: current.toSeq,
-      preferred_peer: preferredPeer.trim().toLowerCase() || null,
+      preferred_peer: peer || null,
       attempts: nextAttempts,
       next_attempt_at: Math.max(
         Math.floor(nextAttemptAt),
+        knownUnavailable?.recheckAt ?? 0,
         current.nextAttemptAt
       ),
     });
     const updated = {
       ...current,
-      preferredPeer:
-        preferredPeer.trim().toLowerCase() || current.preferredPeer,
+      preferredPeer: peer,
       attempts: nextAttempts,
-      nextAttemptAt: Math.max(Math.floor(nextAttemptAt), current.nextAttemptAt),
+      nextAttemptAt: Math.max(
+        Math.floor(nextAttemptAt),
+        knownUnavailable?.recheckAt ?? 0,
+        current.nextAttemptAt
+      ),
     };
     this.memoryMissingRanges.set(
       this.missingRangeKey(
@@ -9110,6 +9451,16 @@ export class ReticulumChatDatabase {
       ),
     ]);
     if (rows.length === 0) return;
+    // Durable markers are created only for persisted missing ranges. Avoid a
+    // marker lookup/delete on the normal event-insert hot path, while still
+    // ensuring a valid late event immediately overrides unavailable evidence.
+    this.clearMissingRangeKnownUnavailable(
+      event.groupId,
+      event.authorAddress,
+      event.authorStreamId,
+      event.authorSeq,
+      event.authorSeq
+    );
     this.clearMissingRangePeerUnavailable(
       event.groupId,
       event.authorAddress,
@@ -9217,6 +9568,13 @@ export class ReticulumChatDatabase {
           const presentSeqs = presentSeqsForRow(row);
           if (presentSeqs.size === 0) continue;
           this.clearMissingRangePeerUnavailable(
+            groupId,
+            authorAddress,
+            authorStreamId,
+            fromSeq,
+            toSeq
+          );
+          this.clearMissingRangeKnownUnavailable(
             groupId,
             authorAddress,
             authorStreamId,
@@ -12904,6 +13262,10 @@ export class ReticulumChatDatabase {
         run: () => this.initAuthorGapPeerObservationSchema(),
       },
       {
+        name: 'author-gap-known-unavailable',
+        run: () => this.initAuthorGapKnownUnavailableSchema(),
+      },
+      {
         name: 'rejected-event-author-sequence',
         run: () => this.migrateRejectedEventAuthorSequenceSchema(),
       },
@@ -13742,6 +14104,24 @@ export class ReticulumChatDatabase {
     `);
   }
 
+  private initAuthorGapKnownUnavailableSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS rchat_known_unavailable_ranges (
+        group_id INTEGER NOT NULL,
+        author_address TEXT NOT NULL,
+        author_stream_id TEXT NOT NULL,
+        from_seq INTEGER NOT NULL,
+        to_seq INTEGER NOT NULL,
+        confirmed_at INTEGER NOT NULL,
+        recheck_at INTEGER NOT NULL,
+        peer_hashes_json TEXT NOT NULL,
+        PRIMARY KEY (group_id, author_address, author_stream_id, from_seq, to_seq)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rchat_known_unavailable_recheck
+        ON rchat_known_unavailable_ranges (recheck_at, group_id);
+    `);
+  }
+
   private migrateAuthorGapPeerRetryBackoff(): void {
     const migrationName = 'author-gap-peer-retry-backoff-v1';
     const appliedAt = Date.now();
@@ -13995,6 +14375,19 @@ export class ReticulumChatDatabase {
           'rejected_at',
           'next_revalidate_at',
           'revalidation_attempts',
+        ],
+      },
+      {
+        table: 'rchat_known_unavailable_ranges',
+        columns: [
+          'group_id',
+          'author_address',
+          'author_stream_id',
+          'from_seq',
+          'to_seq',
+          'confirmed_at',
+          'recheck_at',
+          'peer_hashes_json',
         ],
       },
       {
