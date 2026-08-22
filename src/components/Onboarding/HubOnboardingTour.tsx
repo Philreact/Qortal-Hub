@@ -20,6 +20,7 @@ import {
   type Step,
 } from 'react-joyride';
 import {
+  clampHubOnboardingTooltipToViewport,
   getAdjacentHubOnboardingStep,
   getHubOnboardingDashboardStepLayout,
   getHubOnboardingSurface,
@@ -144,6 +145,18 @@ function TourCopy({
   secondaryKey,
   tertiaryKey,
 }: TourCopyProps) {
+  const { i18n } = useTranslation();
+  const hasCopy = (key: string) => {
+    const [namespace, resourceKey] = key.split(':');
+    const languages = i18n.languages.length
+      ? i18n.languages
+      : [i18n.resolvedLanguage ?? i18n.language];
+
+    return languages.some((language) => {
+      const resource = i18n.getResource(language, namespace, resourceKey);
+      return typeof resource === 'string' && resource.trim().length > 0;
+    });
+  };
   const translatedCopy = (key: string) => (
     <Trans
       i18nKey={key}
@@ -166,7 +179,7 @@ function TourCopy({
       >
         {translatedCopy(primaryKey)}
       </Typography>
-      {secondaryKey && (
+      {secondaryKey && hasCopy(secondaryKey) && (
         <Typography
           component="div"
           sx={{
@@ -177,12 +190,12 @@ function TourCopy({
           }}
         >
           {translatedCopy(secondaryKey)}
-          {mergeSecondaryAndTertiary && tertiaryKey ? (
+          {mergeSecondaryAndTertiary && tertiaryKey && hasCopy(tertiaryKey) ? (
             <> {translatedCopy(tertiaryKey)}</>
           ) : null}
         </Typography>
       )}
-      {tertiaryKey && !mergeSecondaryAndTertiary && (
+      {tertiaryKey && !mergeSecondaryAndTertiary && hasCopy(tertiaryKey) && (
         <Typography
           component="div"
           sx={{
@@ -639,7 +652,31 @@ export function HubOnboardingTour({
           />
         ),
         blockTargetInteraction: true,
+        floatingOptions: {
+          middleware: [
+            {
+              fn: ({ rects, x, y }) =>
+                clampHubOnboardingTooltipToViewport({
+                  height: rects.floating.height,
+                  viewportHeight: window.innerHeight,
+                  viewportWidth: window.innerWidth,
+                  width: rects.floating.width,
+                  x,
+                  y,
+                }),
+              name: 'hub-onboarding-viewport-clamp',
+            },
+          ],
+          shiftOptions: { crossAxis: true, padding: 16 },
+          strategy: 'fixed',
+        },
         id: 'featured-qapps',
+        styles: {
+          tooltip: {
+            maxHeight: 'calc(100vh - 32px)',
+            overflowY: 'auto',
+          },
+        },
         target: () => visibleTargetOrBody(selectors.featuredApps),
         title: t('group:onboarding.featured_qapps.title'),
       },

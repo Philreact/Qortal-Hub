@@ -17,6 +17,34 @@ export type HubOnboardingDashboardStep =
   | 'featured-qapps'
   | 'open-qchat';
 
+type HubOnboardingViewportClamp = {
+  height: number;
+  padding?: number;
+  viewportHeight: number;
+  viewportWidth: number;
+  width: number;
+  x: number;
+  y: number;
+};
+
+export const clampHubOnboardingTooltipToViewport = ({
+  height,
+  padding = 16,
+  viewportHeight,
+  viewportWidth,
+  width,
+  x,
+  y,
+}: HubOnboardingViewportClamp) => {
+  const maximumX = Math.max(padding, viewportWidth - width - padding);
+  const maximumY = Math.max(padding, viewportHeight - height - padding);
+
+  return {
+    x: Math.min(Math.max(x, padding), maximumX),
+    y: Math.min(Math.max(y, padding), maximumY),
+  };
+};
+
 export const getHubOnboardingDashboardStepLayout = (
   step: HubOnboardingDashboardStep,
   compact: boolean
