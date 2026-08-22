@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getAdjacentHubOnboardingStep,
+  getHubOnboardingDashboardStepLayout,
   getHubOnboardingSurface,
   HUB_ONBOARDING_RESTART_EVENT,
   HUB_ONBOARDING_STORAGE_KEY,
@@ -8,6 +9,28 @@ import {
   requestHubOnboardingRestart,
   writeHubOnboardingStatus,
 } from './hubOnboarding';
+
+describe('getHubOnboardingDashboardStepLayout', () => {
+  it('preserves the default layout on taller screens', () => {
+    expect(getHubOnboardingDashboardStepLayout('open-qchat', false)).toEqual(
+      {}
+    );
+  });
+
+  it('keeps compact dashboard steps fixed without scrolling', () => {
+    expect(getHubOnboardingDashboardStepLayout('open-qchat', true)).toEqual({
+      placement: 'top',
+      skipScroll: true,
+    });
+    expect(getHubOnboardingDashboardStepLayout('featured-qapps', true)).toEqual(
+      { placement: 'right', skipScroll: true }
+    );
+    expect(getHubOnboardingDashboardStepLayout('explore-qapps', true)).toEqual({
+      placement: 'top',
+      skipScroll: true,
+    });
+  });
+});
 
 describe('getHubOnboardingSurface', () => {
   it('restores the correct application surface in both tour directions', () => {

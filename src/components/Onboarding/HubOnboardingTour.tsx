@@ -6,6 +6,7 @@ import {
   Dialog,
   Typography,
   alpha,
+  useMediaQuery,
   useTheme,
 } from '@mui/material';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -20,7 +21,9 @@ import {
 } from 'react-joyride';
 import {
   getAdjacentHubOnboardingStep,
+  getHubOnboardingDashboardStepLayout,
   getHubOnboardingSurface,
+  HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY,
   HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE,
   HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT,
   HUB_ONBOARDING_RESTART_EVENT,
@@ -96,6 +99,13 @@ const waitForTarget = (
 
 const visibleTargetOrBody = (target: string) =>
   findVisibleTarget(target) ?? document.body;
+
+const resetHomeDashboardScroll = () => {
+  document.querySelector<HTMLElement>(selectors.homePage)?.scrollTo({
+    behavior: 'auto',
+    top: 0,
+  });
+};
 
 type TourCopyProps = {
   infoKey?: string;
@@ -200,6 +210,9 @@ export function HubOnboardingTour({
 }: HubOnboardingTourProps) {
   const { t } = useTranslation(['group']);
   const theme = useTheme();
+  const compactDashboardTour = useMediaQuery(
+    HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY
+  );
   const continueWithProgressLabel = t(
     'group:onboarding.action.continue_with_progress',
     { current: '{current}', total: '{total}' }
@@ -317,9 +330,18 @@ export function HubOnboardingTour({
         title: t('group:onboarding.welcome.title'),
       },
       {
+        ...getHubOnboardingDashboardStepLayout(
+          'open-qchat',
+          compactDashboardTour
+        ),
         before: async () => {
           closeGroupDiscovery();
           navigateHome();
+          await waitForTarget(
+            () => document.querySelector<HTMLElement>(selectors.homePage),
+            4000
+          );
+          if (compactDashboardTour) resetHomeDashboardScroll();
           await waitForTarget(
             () =>
               document.querySelector<HTMLElement>(selectors.qChatOpenButton),
@@ -533,8 +555,21 @@ export function HubOnboardingTour({
         title: t('group:onboarding.back_to_hub.title'),
       },
       {
+        ...getHubOnboardingDashboardStepLayout(
+          'featured-qapps',
+          compactDashboardTour
+        ),
         before: async () => {
           navigateHome();
+          await waitForTarget(
+            () => document.querySelector<HTMLElement>(selectors.featuredApps),
+            4000
+          );
+          if (compactDashboardTour) resetHomeDashboardScroll();
+          await waitForTarget(
+            () => findVisibleTarget(selectors.featuredApps),
+            1000
+          );
           await waitForLayout();
         },
         content: (
@@ -550,8 +585,21 @@ export function HubOnboardingTour({
         title: t('group:onboarding.featured_qapps.title'),
       },
       {
+        ...getHubOnboardingDashboardStepLayout(
+          'explore-qapps',
+          compactDashboardTour
+        ),
         before: async () => {
           navigateHome();
+          await waitForTarget(
+            () => document.querySelector<HTMLElement>(selectors.exploreApps),
+            4000
+          );
+          if (compactDashboardTour) resetHomeDashboardScroll();
+          await waitForTarget(
+            () => findVisibleTarget(selectors.exploreApps),
+            1000
+          );
           await waitForLayout();
         },
         content: t('group:onboarding.explore_qapps.copy'),
@@ -581,6 +629,7 @@ export function HubOnboardingTour({
     [
       closeGroupDiscovery,
       closeQChatPreview,
+      compactDashboardTour,
       continueWithProgressLabel,
       navigateHome,
       navigateQChat,

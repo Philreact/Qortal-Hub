@@ -4,10 +4,28 @@ export const HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE =
   'data-hub-onboarding-qchat-preview-locked';
 export const HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT =
   'hub-onboarding-qchat-preview-lock';
+export const HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY = '(max-height: 820px)';
 
 export type HubOnboardingStatus = 'completed' | 'pending' | 'skipped';
 export type HubOnboardingDirection = 'backward' | 'forward';
 export type HubOnboardingSurface = 'apps' | 'home' | 'qchat' | 'qchat-directs';
+export type HubOnboardingDashboardStep =
+  | 'explore-qapps'
+  | 'featured-qapps'
+  | 'open-qchat';
+
+export const getHubOnboardingDashboardStepLayout = (
+  step: HubOnboardingDashboardStep,
+  compact: boolean
+) => {
+  if (!compact) return {};
+
+  return {
+    placement:
+      step === 'featured-qapps' ? ('right' as const) : ('top' as const),
+    skipScroll: true,
+  };
+};
 
 export const getHubOnboardingSurface = (
   stepIndex: number
