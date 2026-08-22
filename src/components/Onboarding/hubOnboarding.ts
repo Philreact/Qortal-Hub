@@ -1,9 +1,9 @@
 export const HUB_ONBOARDING_STORAGE_KEY = 'hub-onboarding-v1-status';
 export const HUB_ONBOARDING_RESTART_EVENT = 'hub-onboarding-restart';
-export const HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE =
-  'data-hub-onboarding-qchat-preview-locked';
-export const HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT =
-  'hub-onboarding-qchat-preview-lock';
+export const HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE =
+  'data-hub-onboarding-qchat-card-locked';
+export const HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT =
+  'hub-onboarding-qchat-card-lock';
 export const HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY = '(max-height: 900px)';
 export const HUB_ONBOARDING_FEATURED_QAPPS_WIDTH_PROPERTY =
   '--hub-onboarding-featured-qapps-width';

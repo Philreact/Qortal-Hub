@@ -26,8 +26,8 @@ import qTradeLogo from '../../assets/Icons/q-trade-logo.webp';
 import BorderGlow from '../common/BorderGlow';
 import { getBlueTier1ButtonSx } from '../../styles/blueMaterial';
 import {
-  HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE,
-  HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT,
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE,
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
 } from '../Onboarding/hubOnboarding';
 import {
   dashboardPanelSx,
@@ -149,8 +149,8 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   const [expandedPreviewApp, setExpandedPreviewApp] =
     useState<PreviewAppName | null>(null);
   const [autoPreviewActive, setAutoPreviewActive] = useState(false);
-  const [onboardingPreviewLocked, setOnboardingPreviewLocked] = useState(() =>
-    document.body.hasAttribute(HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE)
+  const [onboardingCardLocked, setOnboardingCardLocked] = useState(() =>
+    document.body.hasAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE)
   );
   const [isCalmMode, setIsCalmMode] = useState(() => {
     try {
@@ -236,34 +236,24 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   });
 
   useEffect(() => {
-    const syncOnboardingPreviewLock = () => {
-      setOnboardingPreviewLocked(
-        document.body.hasAttribute(
-          HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE
-        )
+    const syncOnboardingCardLock = () => {
+      setOnboardingCardLocked(
+        document.body.hasAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE)
       );
     };
     window.addEventListener(
-      HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT,
-      syncOnboardingPreviewLock
+      HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
+      syncOnboardingCardLock
     );
-    syncOnboardingPreviewLock();
+    syncOnboardingCardLock();
     return () =>
       window.removeEventListener(
-        HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT,
-        syncOnboardingPreviewLock
+        HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
+        syncOnboardingCardLock
       );
   }, []);
 
   useEffect(() => {
-    if (onboardingPreviewLocked) {
-      setAutoPreviewActive(false);
-      setExpandedPreviewApp(Q_CHAT_APP_NAME);
-      return () => {
-        clearInitialPreviewTimers();
-      };
-    }
-
     if (isCalmMode) {
       setAutoPreviewActive(false);
       setExpandedPreviewApp(null);
@@ -288,7 +278,6 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
 
     if (!shouldRunInitialPreview) {
       setAutoPreviewActive(false);
-      setExpandedPreviewApp(null);
       return () => {
         if (previewExpandTimerRef.current)
           clearTimeout(previewExpandTimerRef.current);
@@ -326,7 +315,23 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
         clearTimeout(previewCollapseTimerRef.current);
       clearInitialPreviewTimers();
     };
-  }, [clearInitialPreviewTimers, isCalmMode, onboardingPreviewLocked]);
+  }, [clearInitialPreviewTimers, isCalmMode]);
+
+  useEffect(() => {
+    if (!onboardingCardLocked) return;
+
+    if (previewExpandTimerRef.current) {
+      clearTimeout(previewExpandTimerRef.current);
+      previewExpandTimerRef.current = null;
+    }
+    if (previewCollapseTimerRef.current) {
+      clearTimeout(previewCollapseTimerRef.current);
+      previewCollapseTimerRef.current = null;
+    }
+    clearInitialPreviewTimers();
+    setAutoPreviewActive(false);
+    setExpandedPreviewApp(null);
+  }, [clearInitialPreviewTimers, onboardingCardLocked]);
 
   const clearPirateTimers = () => {
     if (previewExpandTimerRef.current) {
@@ -354,15 +359,15 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
       // Ignore storage failures and keep the preference local-only.
     }
 
-    if (isCalmMode && !onboardingPreviewLocked) {
+    if (isCalmMode) {
       clearPirateTimers();
       stopInitialPreview();
       setExpandedPreviewApp(null);
     }
-  }, [isCalmMode, onboardingPreviewLocked]);
+  }, [isCalmMode]);
 
   const schedulePreviewExpand = (appName: PreviewAppName) => {
-    if (onboardingPreviewLocked) return;
+    if (onboardingCardLocked) return;
     if (isCalmMode) return;
     if (autoPreviewActive) {
       stopInitialPreview();
@@ -384,7 +389,7 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
   };
 
   const schedulePreviewCollapse = () => {
-    if (onboardingPreviewLocked) return;
+    if (onboardingCardLocked) return;
     if (isCalmMode) return;
     if (autoPreviewActive) return;
     if (previewExpandTimerRef.current) {
@@ -571,15 +576,11 @@ export const HomeFeaturedApps = ({ panelBoxRef = undefined }) => {
               )
             )}
           </Box>
-          {!isCalmMode || onboardingPreviewLocked ? (
+          {!isCalmMode ? (
             <FeaturedExpandedPreview
-              appName={
-                onboardingPreviewLocked
-                  ? Q_CHAT_APP_NAME
-                  : expandedPreviewApp
-              }
+              appName={expandedPreviewApp}
               theme={theme}
-              visible={onboardingPreviewLocked || !!expandedPreviewApp}
+              visible={!!expandedPreviewApp}
               teaserMode={
                 autoPreviewActive && expandedPreviewApp === Q_CHAT_APP_NAME
               }
@@ -1263,6 +1264,7 @@ const FeaturedExpandedPreview = ({
 
   return (
     <Box
+      aria-hidden={!visible}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       sx={{
@@ -1456,9 +1458,7 @@ const FeaturedExpandedPreview = ({
           </Typography>
           <Button
             data-tour={
-              visible && isQChatPreview
-                ? 'hub-featured-qchat-open'
-                : undefined
+              visible && isQChatPreview ? 'hub-featured-qchat-open' : undefined
             }
             onClick={() => openFeaturedApp(resolvedAppName)}
             variant="contained"

@@ -69,10 +69,13 @@ i18n.init({
 
 // --- Component ---
 
-import { HomeFeaturedApps } from '../HomeFeaturedApps';
 import {
-  HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE,
-  HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT,
+  FEATURED_PREVIEW_EXPAND_DELAY_MS,
+  HomeFeaturedApps,
+} from '../HomeFeaturedApps';
+import {
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE,
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
 } from '../../Onboarding/hubOnboarding';
 
 const FEATURED_APP_NAMES = [
@@ -109,9 +112,7 @@ describe('HomeFeaturedApps', () => {
     vi.clearAllMocks();
     window.localStorage.clear();
     window.sessionStorage.clear();
-    document.body.removeAttribute(
-      HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE
-    );
+    document.body.removeAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE);
   });
 
   afterEach(() => {
@@ -163,39 +164,61 @@ describe('HomeFeaturedApps', () => {
     expect(mockExecuteEvent).toHaveBeenCalledWith('open-apps-mode', {});
   });
 
-  it('keeps the onboarding Q-Chat preview open until the tour unlocks it', () => {
+  it('keeps Q-Chat collapsed and restores hover expansion after the tour unlocks it', () => {
     vi.useFakeTimers();
-    document.body.setAttribute(
-      HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE,
-      ''
-    );
+    window.sessionStorage.setItem('dashboard-featured-qchat-preview-seen', '1');
+    document.body.setAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE, '');
     renderComponent();
 
-    const openQChatButton = screen.getByRole('button', {
-      name: 'Open Q-Chat',
-    });
-    expect(openQChatButton).toHaveAttribute(
-      'data-tour',
-      'hub-featured-qchat-open'
-    );
-
-    fireEvent.mouseLeave(openQChatButton.closest('[data-tour]') ?? openQChatButton);
+    const qChatCard = screen.getByRole('button', { name: 'Q-Chat' });
+    fireEvent.mouseEnter(qChatCard);
     act(() => {
       vi.advanceTimersByTime(1000);
     });
-    expect(openQChatButton).toHaveAttribute(
-      'data-tour',
-      'hub-featured-qchat-open'
-    );
+    expect(
+      screen.queryByRole('button', { name: 'Open Q-Chat' })
+    ).not.toBeInTheDocument();
 
-    document.body.removeAttribute(
-      HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE
-    );
+    document.body.removeAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE);
     act(() => {
       window.dispatchEvent(
-        new CustomEvent(HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT)
+        new CustomEvent(HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT)
       );
     });
+
+    fireEvent.mouseEnter(qChatCard);
+    act(() => {
+      vi.advanceTimersByTime(FEATURED_PREVIEW_EXPAND_DELAY_MS + 1);
+    });
+    expect(
+      screen.getByRole('button', { name: 'Open Q-Chat' })
+    ).toBeInTheDocument();
+  });
+
+  it('expands both animated cards during normal hover', () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem('dashboard-featured-qchat-preview-seen', '1');
+    renderComponent();
+
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Q-Chat' }));
+    act(() => {
+      vi.advanceTimersByTime(FEATURED_PREVIEW_EXPAND_DELAY_MS + 1);
+    });
+    expect(
+      screen.getByRole('button', { name: 'Open Q-Chat' })
+    ).toBeInTheDocument();
+
+    fireEvent.mouseLeave(screen.getByRole('button', { name: 'Open Q-Chat' }));
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Q-Tube' }));
+    act(() => {
+      vi.advanceTimersByTime(FEATURED_PREVIEW_EXPAND_DELAY_MS + 1);
+    });
+    expect(
+      screen.getByRole('button', { name: 'Open Q-App' })
+    ).toBeInTheDocument();
   });
 
   it('opens the app library from the footer CTA', () => {

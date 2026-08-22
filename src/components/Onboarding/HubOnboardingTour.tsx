@@ -26,8 +26,8 @@ import {
   getHubOnboardingSurface,
   HUB_ONBOARDING_COMPACT_VIEWPORT_QUERY,
   HUB_ONBOARDING_FEATURED_QAPPS_WIDTH_PROPERTY,
-  HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE,
-  HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT,
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE,
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
   HUB_ONBOARDING_RESTART_EVENT,
   readHubOnboardingStatus,
   writeHubOnboardingStatus,
@@ -58,7 +58,7 @@ const selectors = {
   homePage: '[data-tour="hub-home-page"]',
   qortalProjectAction: '[data-tour="hub-qortal-project-action"]',
   qortalLandGroup: '[data-tour="hub-group-qortal-land"]',
-  qChatOpenButton: '[data-tour="hub-featured-qchat-open"]',
+  qChatCard: '[data-tour="hub-featured-qchat"]',
   qortalLandDashboard: '[data-tour="hub-dashboard-qortal-land"]',
   topHome: '[data-tour="hub-top-home"]',
 } as const;
@@ -363,22 +363,18 @@ export function HubOnboardingTour({
   );
 
   useEffect(() => {
-    const lockPreview = run && stepIndex === 1;
+    const lockQChatCard = run && stepIndex === 1;
     document.body.toggleAttribute(
-      HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE,
-      lockPreview
+      HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE,
+      lockQChatCard
     );
-    window.dispatchEvent(
-      new CustomEvent(HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT)
-    );
+    window.dispatchEvent(new CustomEvent(HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT));
 
     return () => {
-      if (lockPreview) {
-        document.body.removeAttribute(
-          HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_ATTRIBUTE
-        );
+      if (lockQChatCard) {
+        document.body.removeAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE);
         window.dispatchEvent(
-          new CustomEvent(HUB_ONBOARDING_QCHAT_PREVIEW_LOCK_EVENT)
+          new CustomEvent(HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT)
         );
       }
     };
@@ -413,15 +409,14 @@ export function HubOnboardingTour({
           );
           resetHubOnboardingViewport();
           await waitForTarget(
-            () =>
-              document.querySelector<HTMLElement>(selectors.qChatOpenButton),
+            () => document.querySelector<HTMLElement>(selectors.qChatCard),
             4000
           );
         },
         blockTargetInteraction: true,
         content: t('group:onboarding.open_qchat.copy'),
         id: 'open-qchat',
-        target: () => visibleTargetOrBody(selectors.qChatOpenButton),
+        target: () => visibleTargetOrBody(selectors.qChatCard),
         title: t('group:onboarding.open_qchat.title'),
       },
       {
