@@ -801,7 +801,7 @@
     "reaction_onboarding_route": "オンボーディングを開きました。次のステップを準備しておきます。",
     "reaction_panel_cleared": "パネルをクリアしました。",
     "reaction_q_trade_open": "Q-Trade が開きました。そこで QORT を入手したら次に進みます。",
-    "reaction_support_chat": "サポートチャットが開いています。6 QORT をリクエストすれば、ステップ 2 を準備します。",
+    "reaction_support_chat": "サポートチャットを開きました。2 QORTを依頼してください。次のステップを準備します。",
     "reaction_track_rotation": "{{title}} を再生中です。",
     "runtime_qortino_body": "上のワークスペースベイは無事です。ハブを再読み込みし、繰り返す場合はここからクラッシュを追跡します。",
     "runtime_qortino_title": "QORTINO で実行時の問題が発生しました。",

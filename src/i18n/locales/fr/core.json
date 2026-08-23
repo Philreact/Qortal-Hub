@@ -801,7 +801,7 @@
     "reaction_onboarding_route": "Parcours d’accueil ouvert. Je garde l’étape suivante au chaud.",
     "reaction_panel_cleared": "Panneau effacé.",
     "reaction_q_trade_open": "Q-Trade est ouvert. Si vous prenez des QORT là, on avance ensemble.",
-    "reaction_support_chat": "Chat support ouvert. Demandez les 6 QORT et j’enchaîne avec l’étape deux.",
+    "reaction_support_chat": "Le chat d’assistance est ouvert. Demandez les 2 QORT et je préparerai la deuxième étape.",
     "reaction_track_rotation": "{{title}} est en rotation.",
     "runtime_qortino_body": "La zone workspace au-dessus est toujours sûre. Rafraîchissez le Hub ; si ça persiste, nous tracerons le plantage depuis ici.",
     "runtime_qortino_title": "QORTINO a rencontré un problème d’exécution.",

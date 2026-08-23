@@ -178,6 +178,15 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
         viaDestinationHash: 'b'.repeat(32),
       },
     ]);
+    expect(accepted.getReticulumAccountEndpointLeases()).toEqual([
+      expect.objectContaining({
+        address,
+        destinationHash,
+        sessionId,
+        verification: 'relayed-bound',
+      }),
+    ]);
+    expect(accepted.getReticulumVerifiedTransportPeers()).toEqual([]);
 
     const changed = new PresenceManager();
     (changed as any).verifyPool = { verify: vi.fn(async () => true) };
@@ -455,7 +464,7 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual(neighbors1);
   });
 
-  it('admits a fanned-out presence origin as verified Qortal overlay traffic', () => {
+  it('keeps relayed presence routes out of persistent overlay candidates', () => {
     const manager = new PresenceManager();
     const now = Date.now();
     const envelope = {
@@ -486,35 +495,54 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     ).toBe(true);
 
     expect(manager.isAddressOnline('Q-forwarded')).toBe(true);
-    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([
-      {
-        destinationHash: 'forwarder-hash',
-        lastSeen: now,
-      },
-    ]);
-    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
-      'forwarder-hash',
-    ]);
+    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([]);
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([]);
+    expect(manager.getReticulumActiveNeighborHashes()).toEqual([]);
   });
 
-  it('verifies an overlay peer from non-presence Qortal traffic without relatching', () => {
+  it('does not turn ordinary feature traffic into an overlay candidate', () => {
     const manager = new PresenceManager();
+
+    manager.markReticulumOverlayPeerVerified(
+      'feature-peer-hash',
+      'reticulum_chat',
+      Date.now()
+    );
+
+    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([]);
+    expect(manager.getReticulumActiveNeighborHashes()).toEqual([]);
+  });
+
+  it('requires authenticated admission before non-presence traffic becomes an overlay neighbor', () => {
+    const manager = new PresenceManager();
+    const now = Date.now();
     const verifiedEvents: unknown[] = [];
     manager.on('reticulum-peer-verified', (event) =>
       verifiedEvents.push(event)
     );
 
-    manager.noteReticulumCandidateDiscovered('origin-hash', 'announce', 1_000);
+    manager.noteReticulumCandidateDiscovered('origin-hash', 'announce', now);
     manager.markReticulumOverlayPeerVerified(
       'origin-hash',
       'group_signal',
-      2_000
+      now + 1
+    );
+
+    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([]);
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([]);
+    expect(manager.getReticulumActiveNeighborHashes()).toEqual(['origin-hash']);
+    expect(verifiedEvents).toHaveLength(0);
+
+    manager.noteReticulumOverlayPeerAdmitted(
+      'origin-hash',
+      'overlay_hello',
+      now + 2
     );
 
     expect(manager.getReticulumVerifiedTransportPeers()).toEqual([
       {
         destinationHash: 'origin-hash',
-        lastSeen: 2_000,
+        lastSeen: now + 2,
       },
     ]);
     expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
@@ -525,13 +553,13 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     manager.markReticulumOverlayPeerVerified(
       'origin-hash',
       'call_signal',
-      3_000
+      now + 3
     );
 
     expect(manager.getReticulumVerifiedTransportPeers()).toEqual([
       {
         destinationHash: 'origin-hash',
-        lastSeen: 3_000,
+        lastSeen: now + 3,
       },
     ]);
     expect(verifiedEvents).toHaveLength(1);
@@ -549,7 +577,11 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     );
     const now = Date.now();
 
-    manager.markReticulumOverlayPeerVerified('origin-hash', 'call_signal', now);
+    manager.noteReticulumOverlayPeerAdmitted(
+      'origin-hash',
+      'overlay_hello',
+      now
+    );
     expect(overlayChanges).toHaveLength(1);
 
     expect(
@@ -623,6 +655,11 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
         timestamp
       );
 
+    manager.noteReticulumOverlayPeerAdmitted(
+      destinationHash,
+      'overlay_hello',
+      now - 1
+    );
     expect(apply('Q-account-a', sessionA, 'PRESENCE_HEARTBEAT', now)).toBe(
       true
     );
@@ -648,7 +685,7 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     ]);
   });
 
-  it('allows a fanned-out presence proof to verify an announce-backed candidate', () => {
+  it('keeps a fanned-out presence proof as an announce-backed candidate', () => {
     const manager = new PresenceManager();
     const now = Date.now();
     manager.noteReticulumCandidateDiscovered('origin-hash', 'announce', now);
@@ -679,15 +716,9 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
       )
     ).toBe(true);
 
-    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([
-      {
-        destinationHash: 'forwarder-hash',
-        lastSeen: now + 1,
-      },
-    ]);
-    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([
-      'forwarder-hash',
-    ]);
+    expect(manager.getReticulumVerifiedTransportPeers()).toEqual([]);
+    expect(manager.getReticulumVerifiedNeighborHashes()).toEqual([]);
+    expect(manager.getReticulumActiveNeighborHashes()).toEqual(['origin-hash']);
   });
 
   it('keeps delayed but valid Reticulum heartbeats alive from local receive time', () => {
@@ -994,7 +1025,7 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     vi.useRealTimers();
   });
 
-  it('clears close cooldown as soon as the peer is directly re-verified', () => {
+  it('clears close cooldown only after authenticated overlay re-admission', () => {
     const manager = new PresenceManager();
     const hashes = promoteVerifiedPeers(
       manager,
@@ -1005,7 +1036,11 @@ describe('PresenceManager Reticulum overlay mesh slots', () => {
     vi.setSystemTime(9_999);
     manager.noteReticulumOverlayLinkClosed(hashes[0], 'closed');
     vi.setSystemTime(10_100);
-    (manager as any).promoteVerifiedReticulumPeer(hashes[0], 10_100);
+    manager.markReticulumOverlayPeerVerified(hashes[0], 'group_signal', 10_050);
+    expect(manager.getReticulumVerifiedNeighborHashes()).not.toContain(
+      hashes[0]
+    );
+    manager.noteReticulumOverlayPeerAdmitted(hashes[0], 'overlay_pong', 10_100);
     vi.setSystemTime(10_100 + RETICULUM_VERIFIED_PEER_LINK_CLOSE_GRACE_MS + 1);
 
     expect(

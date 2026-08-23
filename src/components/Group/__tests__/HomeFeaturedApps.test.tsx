@@ -40,8 +40,27 @@ i18n.init({
   resources: {
     en: {
       group: {
-        'home.featured_apps': 'Featured Apps',
-        'home.open_app': 'Open',
+        dashboard: {
+          explore_all_q_apps: 'Explore All Q-Apps',
+          featured_q_apps: 'Featured Q-Apps',
+          featured_q_apps_subtitle:
+            'Launch trusted community apps directly from your dashboard.',
+          featured_q_chat_eyebrow: 'NATIVE',
+          featured_q_chat_keyword_connect: 'connect.',
+          featured_q_chat_keyword_freely: 'freely.',
+          featured_q_chat_keyword_talk: 'talk.',
+          featured_q_chat_subtitle:
+            'Your conversations, your groups, your network.\nPowered by Reticulum\nValidated on Qortal Blockchain',
+          featured_q_tube_eyebrow: 'Always on',
+          featured_q_tube_keyword_cat_videos: 'cat. videos.',
+          featured_q_tube_keyword_decentralized: 'decentralized.',
+          featured_q_tube_keyword_platform: 'platform.',
+          featured_q_tube_subtitle:
+            'Network-hosted video drops, weird clips, and creator rabbit holes.',
+          open_q_app: 'Open Q-App',
+          open_q_chat: 'Open Q-Chat',
+          reduce_motion: 'Reduce motion',
+        },
       },
     },
   },
@@ -50,15 +69,22 @@ i18n.init({
 
 // --- Component ---
 
-import { HomeFeaturedApps } from '../HomeFeaturedApps';
+import {
+  FEATURED_PREVIEW_EXPAND_DELAY_MS,
+  HomeFeaturedApps,
+} from '../HomeFeaturedApps';
+import {
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE,
+  HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT,
+} from '../../Onboarding/hubOnboarding';
 
 const FEATURED_APP_NAMES = [
   'Q-Tube',
   'Quitter',
   'Q-Mail',
-  'Q-Blog',
-  'Q-Trade',
   'SubWire',
+  'Q-Trade',
+  'Q-Chat',
 ];
 
 const theme = createTheme({
@@ -84,6 +110,9 @@ const renderComponent = (props = {}) =>
 describe('HomeFeaturedApps', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    document.body.removeAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE);
   });
 
   afterEach(() => {
@@ -100,6 +129,7 @@ describe('HomeFeaturedApps', () => {
     for (const appName of FEATURED_APP_NAMES) {
       expect(screen.getAllByText(appName).length).toBeGreaterThan(0);
     }
+    expect(screen.queryByText('Q-Blog')).not.toBeInTheDocument();
   });
 
   it('renders a clickable tile for each featured app', () => {
@@ -118,6 +148,77 @@ describe('HomeFeaturedApps', () => {
       data: { service: 'APP', name: firstAppName },
     });
     expect(mockExecuteEvent).toHaveBeenCalledWith('open-apps-mode', {});
+  });
+
+  it('opens Q-Chat as a Hub-owned internal tab', () => {
+    renderComponent();
+    fireEvent.click(screen.getByRole('button', { name: 'Q-Chat' }));
+
+    expect(mockExecuteEvent).toHaveBeenCalledWith('addTab', {
+      data: {
+        internal: 'q-chat',
+        name: 'Q-Chat',
+        service: 'INTERNAL',
+      },
+    });
+    expect(mockExecuteEvent).toHaveBeenCalledWith('open-apps-mode', {});
+  });
+
+  it('keeps Q-Chat collapsed and restores hover expansion after the tour unlocks it', () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem('dashboard-featured-qchat-preview-seen', '1');
+    document.body.setAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE, '');
+    renderComponent();
+
+    const qChatCard = screen.getByRole('button', { name: 'Q-Chat' });
+    fireEvent.mouseEnter(qChatCard);
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(
+      screen.queryByRole('button', { name: 'Open Q-Chat' })
+    ).not.toBeInTheDocument();
+
+    document.body.removeAttribute(HUB_ONBOARDING_QCHAT_CARD_LOCK_ATTRIBUTE);
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(HUB_ONBOARDING_QCHAT_CARD_LOCK_EVENT)
+      );
+    });
+
+    fireEvent.mouseEnter(qChatCard);
+    act(() => {
+      vi.advanceTimersByTime(FEATURED_PREVIEW_EXPAND_DELAY_MS + 1);
+    });
+    expect(
+      screen.getByRole('button', { name: 'Open Q-Chat' })
+    ).toBeInTheDocument();
+  });
+
+  it('expands both animated cards during normal hover', () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem('dashboard-featured-qchat-preview-seen', '1');
+    renderComponent();
+
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Q-Chat' }));
+    act(() => {
+      vi.advanceTimersByTime(FEATURED_PREVIEW_EXPAND_DELAY_MS + 1);
+    });
+    expect(
+      screen.getByRole('button', { name: 'Open Q-Chat' })
+    ).toBeInTheDocument();
+
+    fireEvent.mouseLeave(screen.getByRole('button', { name: 'Open Q-Chat' }));
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    fireEvent.mouseEnter(screen.getByRole('button', { name: 'Q-Tube' }));
+    act(() => {
+      vi.advanceTimersByTime(FEATURED_PREVIEW_EXPAND_DELAY_MS + 1);
+    });
+    expect(
+      screen.getByRole('button', { name: 'Open Q-App' })
+    ).toBeInTheDocument();
   });
 
   it('opens the app library from the footer CTA', () => {

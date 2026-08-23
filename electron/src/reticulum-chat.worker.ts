@@ -101,6 +101,13 @@ export type ReticulumChatWorkerTask =
       signedBytes: Uint8Array;
       signature: Uint8Array;
       publicKey: Uint8Array;
+    }
+  | {
+      id: number;
+      kind: 'verify_control_signature';
+      signedBytes: Uint8Array;
+      signature: Uint8Array;
+      publicKey: Uint8Array;
     };
 
 export type ReticulumChatWorkerTaskInput =
@@ -117,6 +124,10 @@ export type ReticulumChatWorkerTaskInput =
   | Omit<
       Extract<ReticulumChatWorkerTask, { kind: 'verify_land_state_signature' }>,
       'id'
+    >
+  | Omit<
+      Extract<ReticulumChatWorkerTask, { kind: 'verify_control_signature' }>,
+      'id'
     >;
 
 export type ReticulumChatPreparedResourceKind = Exclude<
@@ -125,6 +136,7 @@ export type ReticulumChatPreparedResourceKind = Exclude<
   | 'build_author_tree'
   | 'build_group_digest_state'
   | 'verify_land_state_signature'
+  | 'verify_control_signature'
 >;
 
 export type ReticulumChatWorkerPreparedResourceResult = {
@@ -167,6 +179,13 @@ export type ReticulumChatWorkerResult =
       id: number;
       ok: true;
       kind: 'verify_land_state_signature';
+      valid: boolean;
+      prepMs: number;
+    }
+  | {
+      id: number;
+      ok: true;
+      kind: 'verify_control_signature';
       valid: boolean;
       prepMs: number;
     }
@@ -677,6 +696,38 @@ function verifyLandStateSignature(
   }
 }
 
+function verifyControlSignature(
+  task: Extract<ReticulumChatWorkerTask, { kind: 'verify_control_signature' }>
+): ReticulumChatWorkerResult {
+  // The cryptographic operation is identical to Land state verification. It
+  // has a separate task kind so control traffic can use an independent,
+  // bounded worker pool and cannot consume Land's realtime verification
+  // reserve.
+  const result = verifyLandStateSignature({
+    ...task,
+    kind: 'verify_land_state_signature',
+  });
+  if (!result.ok || result.kind !== 'verify_land_state_signature') {
+    return {
+      id: task.id,
+      ok: false,
+      kind: task.kind,
+      error:
+        !result.ok && 'error' in result
+          ? result.error
+          : 'unexpected-verification-result',
+      prepMs: result.prepMs,
+    };
+  }
+  return {
+    id: task.id,
+    ok: true,
+    kind: task.kind,
+    valid: result.valid,
+    prepMs: result.prepMs,
+  };
+}
+
 parentPort?.on('message', (task: ReticulumChatWorkerTask) => {
   if (!task || typeof task.id !== 'number') return;
   if (task.kind === 'compute_digest_hash') {
@@ -712,6 +763,10 @@ parentPort?.on('message', (task: ReticulumChatWorkerTask) => {
   }
   if (task.kind === 'verify_land_state_signature') {
     parentPort?.postMessage(verifyLandStateSignature(task));
+    return;
+  }
+  if (task.kind === 'verify_control_signature') {
+    parentPort?.postMessage(verifyControlSignature(task));
     return;
   }
   parentPort?.postMessage(prepareResource(task));

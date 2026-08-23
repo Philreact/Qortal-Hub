@@ -801,7 +801,7 @@
     "reaction_onboarding_route": "Onboarding route open. I'll keep the next step warm.",
     "reaction_panel_cleared": "Panel cleared.",
     "reaction_q_trade_open": "Q-Trade is up. If you grab QORT there, I'll take you forward.",
-    "reaction_support_chat": "Support chat is open. Ask for the 6 QORT and I'll queue step two.",
+    "reaction_support_chat": "Support chat is open. Ask for the 2 QORT and I'll queue step two.",
     "reaction_track_rotation": "{{title}} is in rotation.",
     "runtime_qortino_body": "The workspace bay above is still safe. Refresh the Hub and if this keeps happening we will trace the exact crash from here.",
     "runtime_qortino_title": "QORTINO hit a runtime snag.",

@@ -1226,9 +1226,13 @@ describe('ReticulumBridge group audio support', () => {
     const bridge = new ReticulumBridge();
     const internal = bridge as any;
     const seen: unknown[] = [];
+    const admitted: unknown[] = [];
 
     bridge.on('overlay-link-state', (payload) => {
       seen.push(payload);
+    });
+    bridge.on('overlay-peer-admitted', (payload) => {
+      admitted.push(payload);
     });
 
     internal.handleFrame({
@@ -1257,6 +1261,12 @@ describe('ReticulumBridge group audio support', () => {
         connectedAt: expect.any(Number),
         lastRxAt: expect.any(Number),
         lastActivityAt: expect.any(Number),
+      },
+    ]);
+    expect(admitted).toEqual([
+      {
+        peerHash: 'peer-hash',
+        source: 'established',
       },
     ]);
 
@@ -1297,6 +1307,38 @@ describe('ReticulumBridge group audio support', () => {
         closedByReticulum: false,
       },
     ]);
+  });
+
+  it('replays an already admitted overlay peer to a late presence subscriber', async () => {
+    const bridge = new ReticulumBridge();
+    const internal = bridge as any;
+    internal.state = 'ready';
+    internal.handleFrame({
+      type: 'event',
+      event: 'overlay_link_state',
+      payload: {
+        linkId: 'overlay-existing',
+        peerPresenceHash: 'PEER-EXISTING',
+        incoming: true,
+        established: true,
+        reason: 'overlay_hello',
+        overlayTransportAdmitted: true,
+      },
+    });
+
+    const onOverlayPeerAdmitted = vi.fn();
+    const unsubscribe = bridge.subscribe({
+      onEnvelope: () => undefined,
+      onOverlayPeerAdmitted,
+    });
+    await Promise.resolve();
+
+    expect(onOverlayPeerAdmitted).toHaveBeenCalledTimes(1);
+    expect(onOverlayPeerAdmitted).toHaveBeenCalledWith({
+      peerHash: 'peer-existing',
+      source: 'bridge-snapshot',
+    });
+    unsubscribe();
   });
 
   it('reports outbound and inbound overlay counts from the RX idle window, not health window', () => {

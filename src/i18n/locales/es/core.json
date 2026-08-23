@@ -801,7 +801,7 @@
     "reaction_onboarding_route": "Ruta de onboarding abierta. Dejo el siguiente paso listo.",
     "reaction_panel_cleared": "Panel vaciado.",
     "reaction_q_trade_open": "Q-Trade está abierto. Si consigues QORT ahí, seguimos adelante.",
-    "reaction_support_chat": "Chat de soporte abierto. Pide los 6 QORT y encolaré el paso dos.",
+    "reaction_support_chat": "El chat de soporte está abierto. Pide los 2 QORT y prepararé el segundo paso.",
     "reaction_track_rotation": "{{title}} está en rotación.",
     "runtime_qortino_body": "El área de trabajo de arriba sigue a salvo. Actualiza el Hub; si persiste, rastrearemos el fallo desde aquí.",
     "runtime_qortino_title": "QORTINO tuvo un problema de ejecución.",
