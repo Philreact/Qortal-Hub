@@ -15,6 +15,7 @@ import {
   TextField,
   Tooltip,
   Typography,
+  alpha,
   useTheme,
 } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
@@ -36,6 +37,7 @@ import EmojiEventsRoundedIcon from '@mui/icons-material/EmojiEventsRounded';
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
 import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded';
+import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
 import { useTranslation } from 'react-i18next';
 import { useAtom } from 'jotai';
 import { memberGroupsAtom, txListAtom, userInfoAtom } from '../../atoms/global';
@@ -45,6 +47,11 @@ import {
   useReticulumGroupScoreSnapshot,
 } from './reticulumGroupScore';
 import { GroupScoreBadge } from './ReticulumGroupLevel';
+import {
+  comparePinnedTopGroups,
+  isPinnedTopGroup,
+  isQortalProjectGroup,
+} from './findGroupsPinned';
 
 const GROUP_ROW_HEIGHT = 82;
 const FIND_GROUPS_PAGE_SIZE = 10;
@@ -202,6 +209,7 @@ export const AddGroupList = ({
         const bScore = scoreFor(b);
         if (sortMode === 'top') {
           return (
+            comparePinnedTopGroups(a, b) ||
             compareOptionalScore(aScore, bScore, 'score') ||
             compareOptionalScore(aScore, bScore, 'activityScore') ||
             compareMembers(a, b) ||
@@ -565,6 +573,7 @@ export const AddGroupList = ({
     const joinedGroup = isJoinedGroup(group?.groupId);
     const pendingGroup = isPendingGroup(group?.groupId);
     const joiningGroup = joiningGroupId === String(group?.groupId);
+    const pinnedGroup = isPinnedTopGroup(sortMode, group);
     const membershipUnavailable = joinedGroup || pendingGroup;
     const groupScore = openGroup
       ? groupScoreSnapshot.groups[String(group?.groupId)]
@@ -579,7 +588,13 @@ export const AddGroupList = ({
       <div key={key} style={style}>
         <ListItem
           disablePadding
-          sx={{ borderBottom: '1px solid rgba(255,255,255,0.065)', px: 0 }}
+          sx={{
+            backgroundColor: pinnedGroup
+              ? alpha(theme.palette.primary.main, 0.1)
+              : 'transparent',
+            borderBottom: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
+            px: 0,
+          }}
         >
           <ListItemButton
             onClick={() => handleGroupClick(group)}
@@ -681,6 +696,18 @@ export const AddGroupList = ({
                     />
                   )}
                 </Tooltip>
+                {pinnedGroup && (
+                  <Tooltip title={t('group:find_groups.pinned_group')}>
+                    <PushPinRoundedIcon
+                      aria-label={t('group:find_groups.pinned_group')}
+                      sx={{
+                        color: 'primary.light',
+                        flexShrink: 0,
+                        fontSize: 15,
+                      }}
+                    />
+                  </Tooltip>
+                )}
               </Box>
               {group?.description && (
                 <Tooltip
@@ -760,6 +787,13 @@ export const AddGroupList = ({
               </Typography>
             </Box>
             <ButtonBase
+              data-tour={
+                isQortalProjectGroup(group)
+                  ? 'hub-qortal-project-action'
+                  : !joinedGroup && !pendingGroup
+                    ? 'hub-join-group'
+                    : undefined
+              }
               aria-label={t('group:find_groups.card_action_aria', {
                 action: joinedGroup
                   ? t('group:find_groups.action_open')
@@ -1259,6 +1293,11 @@ export const AddGroupList = ({
                 </Typography>
               ) : null}
               <LoadingButton
+                data-tour={
+                  !isSelectedGroupJoined && !isSelectedGroupPending
+                    ? 'hub-join-group'
+                    : undefined
+                }
                 aria-label={t('group:find_groups.card_action_aria', {
                   action: isSelectedGroupOpen
                     ? t('group:find_groups.action_join')
@@ -1355,6 +1394,7 @@ export const AddGroupList = ({
         >
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1 }}>
             <TextField
+              data-tour="hub-group-search"
               inputProps={{ 'aria-label': t('group:find_groups.search_aria') }}
               placeholder={t('group:find_groups.search_placeholder')}
               variant="outlined"
