@@ -38,6 +38,7 @@ import FolderOpenRoundedIcon from '@mui/icons-material/FolderOpenRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import SettingsSuggestRoundedIcon from '@mui/icons-material/SettingsSuggestRounded';
 import PersonIcon from '@mui/icons-material/Person';
 import QrCode2RoundedIcon from '@mui/icons-material/QrCode2Rounded';
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded';
@@ -113,6 +114,7 @@ type HomeProfileCardProps = {
 type NameAvailability = 'available' | 'loading' | 'not-available' | 'null';
 type CloseAction = 'ask' | 'minimizeToTray' | 'quit';
 type AccountSettingsTab =
+  | 'behavior'
   | 'blocked'
   | 'developer'
   | 'modules'
@@ -456,12 +458,22 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
       {
         description: td(
           'system_settings_description',
-          'Control notifications, motion, and pinned Q-App backup preferences.'
+          'Control notifications, window behavior, and pinned Q-App backup preferences.'
         ),
         icon: TuneRoundedIcon,
         key: 'system' as const,
         label: td('system', 'System'),
         title: td('system_settings', 'System Settings'),
+      },
+      {
+        description: td(
+          'behavior_settings_description',
+          'Enable or Disable optional features'
+        ),
+        icon: SettingsSuggestRoundedIcon,
+        key: 'behavior' as const,
+        label: td('behavior', 'Behavior'),
+        title: td('behavior_settings', 'Behavior Settings'),
       },
       {
         description: td(
@@ -3736,58 +3748,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       <>
                         <Box
                           sx={{
-                            alignItems: 'center',
-                            display: 'flex',
-                            gap: 1.2,
-                            justifyContent: 'space-between',
-                            px: 1.35,
-                            py: 1.2,
-                          }}
-                        >
-                          <Box sx={{ minWidth: 0 }}>
-                            <Typography
-                              sx={{
-                                color: theme.palette.text.primary,
-                                fontSize: '0.82rem',
-                                fontWeight: 700,
-                                letterSpacing: '0.01em',
-                              }}
-                            >
-                              {td(
-                                'reticulum_group_chat',
-                                'Reticulum group chat'
-                              )}
-                            </Typography>
-                            <Typography
-                              sx={{
-                                color: theme.palette.text.secondary,
-                                fontSize: '0.75rem',
-                                lineHeight: 1.45,
-                                mt: 0.4,
-                              }}
-                            >
-                              {td(
-                                'reticulum_group_chat_desc',
-                                'Use the experimental Reticulum transport for group chat messages when available.'
-                              )}
-                            </Typography>
-                          </Box>
-                          <Switch
-                            checked={reticulumChatEnabled}
-                            onChange={handleToggleReticulumChat}
-                            sx={settingsSwitchSx}
-                          />
-                        </Box>
-
-                        <Box
-                          sx={{
-                            borderTop: `1px solid ${avatarSectionDivider}`,
-                            mx: 1.35,
-                          }}
-                        />
-
-                        <Box
-                          sx={{
                             alignItems: { sm: 'center' },
                             display: 'flex',
                             flexDirection: { xs: 'column', sm: 'row' },
@@ -3986,86 +3946,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                             letterSpacing: '0.01em',
                           }}
                         >
-                          {td('idle_auto_lock', 'Auto-Lock When Idle')}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '0.75rem',
-                            lineHeight: 1.45,
-                            mt: 0.4,
-                          }}
-                        >
-                          {td(
-                            'idle_auto_lock_desc',
-                            'Choose how long the Hub waits before locking while you are inactive.'
-                          )}
-                        </Typography>
-                      </Box>
-                      <Select
-                        size="small"
-                        value={autoLockTimeoutMinutes}
-                        onChange={(event) =>
-                          void handleAutoLockTimeoutChange(
-                            normalizeAutoLockTimeoutMinutes(event.target.value)
-                          )
-                        }
-                        sx={{
-                          borderRadius: '10px',
-                          flexShrink: 0,
-                          fontSize: '0.82rem',
-                          minWidth: 122,
-                          '& .MuiSelect-select': { py: 0.85 },
-                        }}
-                      >
-                        {AUTO_LOCK_TIMEOUT_OPTIONS.map((minutes) => (
-                          <MenuItem key={minutes} value={minutes}>
-                            {minutes === 0
-                              ? td('idle_auto_lock_disabled', 'Disabled')
-                              : minutes < 60
-                                ? td(
-                                    'idle_auto_lock_minutes',
-                                    '{{count}} min',
-                                    {
-                                      count: minutes,
-                                    }
-                                  )
-                                : td(
-                                    'idle_auto_lock_hours',
-                                    minutes === 60 ? '1 hour' : '3 hours',
-                                    { count: minutes / 60 }
-                                  )}
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </Box>
-
-                    <Box
-                      sx={{
-                        borderTop: `1px solid ${avatarSectionDivider}`,
-                        mx: 1.35,
-                      }}
-                    />
-
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        gap: 1.2,
-                        justifyContent: 'space-between',
-                        px: 1.35,
-                        py: 1.2,
-                      }}
-                    >
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.01em',
-                          }}
-                        >
                           {td(
                             'reduce_app_notifications',
                             'Reduce App Notifications'
@@ -4188,6 +4068,166 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                             letterSpacing: '0.01em',
                           }}
                         >
+                          {td('pinned_qapp_backup', 'Pinned Q-App backup')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'pinned_qapp_backup_desc',
+                            'Save your pinned Q-Apps to encrypted QDN settings so the same layout can follow you across devices.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Tooltip title={td('manage_backup', 'Manage backup')}>
+                        <Box component="span" sx={{ flexShrink: 0 }}>
+                          <Save
+                            isDesktop
+                            disableWidth={false}
+                            myName={userInfo?.name}
+                            toolbarModule
+                            buttonSx={{
+                              alignItems: 'center',
+                              backgroundColor: avatarModalSurfaceSoft,
+                              border: `1px solid ${avatarFieldBorder}`,
+                              borderRadius: '10px',
+                              display: 'inline-flex',
+                              height: 38,
+                              justifyContent: 'center',
+                              width: 42,
+                              '&:hover': {
+                                backgroundColor: alpha(
+                                  theme.palette.primary.main,
+                                  isDarkMode ? 0.12 : 0.08
+                                ),
+                                borderColor: alpha(
+                                  theme.palette.primary.main,
+                                  0.32
+                                ),
+                              },
+                            }}
+                          />
+                        </Box>
+                      </Tooltip>
+                    </Box>
+                  </Box>
+                </Box>
+              ) : null}
+
+              {activeSettingsTab === 'behavior' ? (
+                <Box sx={{ display: 'grid', gap: 1.4 }}>
+                  <Box
+                    sx={{
+                      background: avatarModalSurfaceSoft,
+                      border: `1px solid ${avatarFieldBorder}`,
+                      borderRadius: '12px',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('idle_auto_lock', 'Auto-Lock When Idle')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'idle_auto_lock_desc',
+                            'Choose how long the Hub waits before locking while you are inactive.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Select
+                        size="small"
+                        value={autoLockTimeoutMinutes}
+                        onChange={(event) =>
+                          void handleAutoLockTimeoutChange(
+                            normalizeAutoLockTimeoutMinutes(event.target.value)
+                          )
+                        }
+                        sx={{
+                          borderRadius: '10px',
+                          flexShrink: 0,
+                          fontSize: '0.82rem',
+                          minWidth: 122,
+                          '& .MuiSelect-select': { py: 0.85 },
+                        }}
+                      >
+                        {AUTO_LOCK_TIMEOUT_OPTIONS.map((minutes) => (
+                          <MenuItem key={minutes} value={minutes}>
+                            {minutes === 0
+                              ? td('idle_auto_lock_disabled', 'Disabled')
+                              : minutes < 60
+                                ? td(
+                                    'idle_auto_lock_minutes',
+                                    '{{count}} min',
+                                    {
+                                      count: minutes,
+                                    }
+                                  )
+                                : td(
+                                    'idle_auto_lock_hours',
+                                    minutes === 60 ? '1 hour' : '3 hours',
+                                    { count: minutes / 60 }
+                                  )}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </Box>
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
                           {td('disable_startup_sound', 'Disable Startup Sound')}
                         </Typography>
                         <Typography
@@ -4258,80 +4298,6 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                         onChange={handleToggleUiAnimations}
                         sx={settingsSwitchSx}
                       />
-                    </Box>
-
-                    <Box
-                      sx={{
-                        borderTop: `1px solid ${avatarSectionDivider}`,
-                        mx: 1.35,
-                      }}
-                    />
-
-                    <Box
-                      sx={{
-                        alignItems: 'center',
-                        display: 'flex',
-                        gap: 1.2,
-                        justifyContent: 'space-between',
-                        px: 1.35,
-                        py: 1.2,
-                      }}
-                    >
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.primary,
-                            fontSize: '0.82rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.01em',
-                          }}
-                        >
-                          {td('pinned_qapp_backup', 'Pinned Q-App backup')}
-                        </Typography>
-                        <Typography
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            fontSize: '0.75rem',
-                            lineHeight: 1.45,
-                            mt: 0.4,
-                          }}
-                        >
-                          {td(
-                            'pinned_qapp_backup_desc',
-                            'Save your pinned Q-Apps to encrypted QDN settings so the same layout can follow you across devices.'
-                          )}
-                        </Typography>
-                      </Box>
-                      <Tooltip title={td('manage_backup', 'Manage backup')}>
-                        <Box component="span" sx={{ flexShrink: 0 }}>
-                          <Save
-                            isDesktop
-                            disableWidth={false}
-                            myName={userInfo?.name}
-                            toolbarModule
-                            buttonSx={{
-                              alignItems: 'center',
-                              backgroundColor: avatarModalSurfaceSoft,
-                              border: `1px solid ${avatarFieldBorder}`,
-                              borderRadius: '10px',
-                              display: 'inline-flex',
-                              height: 38,
-                              justifyContent: 'center',
-                              width: 42,
-                              '&:hover': {
-                                backgroundColor: alpha(
-                                  theme.palette.primary.main,
-                                  isDarkMode ? 0.12 : 0.08
-                                ),
-                                borderColor: alpha(
-                                  theme.palette.primary.main,
-                                  0.32
-                                ),
-                              },
-                            }}
-                          />
-                        </Box>
-                      </Tooltip>
                     </Box>
                   </Box>
                 </Box>
@@ -4491,6 +4457,60 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
 
                   {reticulumEnabled ? (
                     <>
+                      <Box
+                        sx={{
+                          background: avatarModalSurfaceSoft,
+                          border: `1px solid ${avatarFieldBorder}`,
+                          borderRadius: '12px',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            alignItems: 'center',
+                            display: 'flex',
+                            gap: 1.2,
+                            justifyContent: 'space-between',
+                            px: 1.35,
+                            py: 1.2,
+                          }}
+                        >
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.primary,
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                letterSpacing: '0.01em',
+                              }}
+                            >
+                              {td(
+                                'reticulum_group_chat',
+                                'Reticulum group chat'
+                              )}
+                            </Typography>
+                            <Typography
+                              sx={{
+                                color: theme.palette.text.secondary,
+                                fontSize: '0.75rem',
+                                lineHeight: 1.45,
+                                mt: 0.4,
+                              }}
+                            >
+                              {td(
+                                'reticulum_group_chat_desc',
+                                'Use the experimental Reticulum transport for group chat messages when available.'
+                              )}
+                            </Typography>
+                          </Box>
+                          <Switch
+                            checked={reticulumChatEnabled}
+                            onChange={handleToggleReticulumChat}
+                            sx={settingsSwitchSx}
+                          />
+                        </Box>
+                      </Box>
+
                       <Box
                         sx={{
                           background: avatarModalSurfaceSoft,
