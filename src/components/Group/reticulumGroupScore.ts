@@ -247,6 +247,7 @@ export const refreshReticulumGroupScores = async (
       const capturedAt = Date.now() + networkOffsetMs;
       const slot = Math.floor(capturedAt / GROUP_SCORE_SLOT_MS);
       const publicGroups = balances.filter(isPublicGroup);
+      const privateGroups = balances.filter((g: any) => !isPublicGroup(g));
       const holdings = Object.fromEntries(
         balances.flatMap((group: any) => {
           const groupId = Number(group?.groupId);
@@ -292,11 +293,12 @@ export const refreshReticulumGroupScores = async (
       ].map(Number));
 
       const publicIds = new Set(publicGroupIds.map(String));
+      const allGroupIds = new Set(balances.map((g: any) => String(g?.groupId)));
       const preservingCurrentSlot = currentSnapshot.slot === slot;
       const nextGroups: Record<string, ReticulumGroupScoreBreakdown> = {};
       for (const [groupId, previous] of Object.entries(currentSnapshot.groups)) {
         if (
-          publicIds.has(groupId) &&
+          allGroupIds.has(groupId) &&
           capturedAt - Number(previous?.capturedAt || 0) <=
             GROUP_SCORE_MAX_STALE_MS
         ) {
@@ -335,10 +337,43 @@ export const refreshReticulumGroupScores = async (
         });
         if (breakdown) nextGroups[groupKey] = breakdown;
       }
+      // Private groups: calculate score without activity data
+      for (const group of privateGroups) {
+        const groupId = Number(group?.groupId);
+        if (!Number.isInteger(groupId) || groupId <= 0) continue;
+        const groupKey = String(groupId);
+        const previous = nextGroups[groupKey];
+        if (preservingCurrentSlot && previous) continue;
+        const activity: ReticulumGroupActivityMetrics = {
+          activeAuthors7d: 0,
+          confidence: 0,
+          messages24h: 0,
+          messages7d: 0,
+          observedAt: capturedAt,
+        };
+        const created = Number(
+          group?.created ?? group?.creationTimestamp ?? group?.createdAt
+        );
+        const memberCount = Math.max(0, Number(group?.memberCount) || 0);
+        const balance = Math.max(0, Number(group?.balance) || 0);
+        const breakdown = calculateReticulumGroupScore({
+          activity,
+          activityObserved: false,
+          balance,
+          capturedAt,
+          created,
+          groupId,
+          memberCount,
+        });
+        if (breakdown) nextGroups[groupKey] = breakdown;
+      }
 
+      const privateGroupIds = privateGroups
+        .map((group: any) => String(group?.groupId))
+        .filter((id: string) => id);
       const nextSnapshot: ReticulumGroupScoreSnapshot = {
         capturedAt,
-        evaluatedGroupIds: [...publicIds],
+        evaluatedGroupIds: [...publicIds, ...privateGroupIds],
         groups: nextGroups,
         holdings,
         networkOffsetMs,

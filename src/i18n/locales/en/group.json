@@ -450,6 +450,7 @@
     "copied": "Copied",
     "copy_owner_address": "Copy owner address",
     "encrypted_group": "Reticulum Encrypted Group",
+    "filter_all": "All",
     "filter_open": "Open",
     "filter_private": "Private",
     "join_error": "Unable to join this group. Please try again.",
