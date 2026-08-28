@@ -43,6 +43,7 @@ export function resolveReticulumChatWorkerPath(): string {
 
 type PendingEntry = {
   task: ReticulumChatWorkerTask;
+  worker: Worker;
   resolve: (result: ReticulumChatWorkerResult | null) => void;
 };
 
@@ -125,9 +126,10 @@ export class ReticulumChatWorkerPool {
     return new Promise((resolve) => {
       const id = ++this.jobId;
       const fullTask = { ...task, id } as unknown as ReticulumChatWorkerTask;
-      this.pending.set(id, { task: fullTask, resolve });
+      const worker = this.pickWorker();
+      this.pending.set(id, { task: fullTask, worker, resolve });
       try {
-        this.pickWorker().postMessage(fullTask);
+        worker.postMessage(fullTask);
       } catch (err) {
         this.pending.delete(id);
         this.fallbackCount += 1;
@@ -203,11 +205,17 @@ export class ReticulumChatWorkerPool {
         `[ReticulumChatWorker:${this.label}] Worker exited abnormally code=${code}`
       );
     }
-    if (this.workers.length === 0 && this.pending.size > 0) {
-      const entries = [...this.pending.values()];
-      this.pending.clear();
-      this.fallbackCount += entries.length;
-      for (const entry of entries) entry.resolve(null);
+    // Resolve only work assigned to the worker that exited. With a pool of
+    // multiple workers, leaving those entries pending until every worker dies
+    // would hang their callers indefinitely even though the rest of the pool
+    // remains healthy.
+    const abandoned = [...this.pending.entries()].filter(
+      ([, entry]) => entry.worker === worker
+    );
+    this.fallbackCount += abandoned.length;
+    for (const [id, entry] of abandoned) {
+      this.pending.delete(id);
+      entry.resolve(null);
     }
     if (
       !this.stopping &&

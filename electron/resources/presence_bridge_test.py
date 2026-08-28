@@ -38,6 +38,255 @@ def load_bridge():
     return module
 
 
+class PresenceBridgePacketSendDispatcherTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.dispatchers = []
+
+    def tearDown(self):
+        for dispatcher in self.dispatchers:
+            dispatcher.stop(timeout_seconds=1.0)
+        self.bridge._shutdown.clear()
+
+    def dispatcher(self, workers=2, max_pending=16, max_queue_wait=0.05):
+        dispatcher = self.bridge._BoundedKeyedSendDispatcher(
+            "test",
+            workers,
+            max_pending,
+            max_queue_wait,
+        )
+        self.dispatchers.append(dispatcher)
+        return dispatcher
+
+    def test_reuses_bounded_workers_across_many_sends(self):
+        dispatcher = self.dispatcher(workers=2)
+        worker_names = set()
+
+        for _index in range(20):
+            status, value, error = dispatcher.submit_and_wait(
+                "same-link",
+                1.0,
+                lambda: worker_names.add(threading.current_thread().name) or True,
+            )
+            self.assertEqual((status, value, error), ("completed", True, None))
+
+        self.assertLessEqual(len(worker_names), 2)
+        self.assertEqual(len(dispatcher._threads), 2)
+
+    def test_serializes_sends_for_the_same_link(self):
+        dispatcher = self.dispatcher(workers=2)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        order = []
+
+        def first_send():
+            order.append("first-start")
+            first_started.set()
+            release_first.wait(1.0)
+            order.append("first-end")
+            return True
+
+        def second_send():
+            order.append("second")
+            return True
+
+        first_result = []
+        second_result = []
+        first_caller = threading.Thread(
+            target=lambda: first_result.append(
+                dispatcher.submit_and_wait("link-a", 1.0, first_send)
+            )
+        )
+        first_caller.start()
+        self.assertTrue(first_started.wait(0.5))
+        second_caller = threading.Thread(
+            target=lambda: second_result.append(
+                dispatcher.submit_and_wait("link-a", 1.0, second_send)
+            )
+        )
+        second_caller.start()
+        time.sleep(0.03)
+        self.assertEqual(order, ["first-start"])
+        release_first.set()
+        first_caller.join(1.0)
+        second_caller.join(1.0)
+
+        self.assertEqual(order, ["first-start", "first-end", "second"])
+        self.assertEqual(first_result[0][0], "completed")
+        self.assertEqual(second_result[0][0], "completed")
+
+    def test_stuck_link_does_not_block_another_link(self):
+        dispatcher = self.dispatcher(workers=2)
+        stuck_started = threading.Event()
+        release_stuck = threading.Event()
+
+        def stuck_send():
+            stuck_started.set()
+            release_stuck.wait(1.0)
+            return True
+
+        stuck_result = []
+        caller = threading.Thread(
+            target=lambda: stuck_result.append(
+                dispatcher.submit_and_wait("link-a", 0.5, stuck_send)
+            )
+        )
+        caller.start()
+        self.assertTrue(stuck_started.wait(0.5))
+
+        other = dispatcher.submit_and_wait("link-b", 0.2, lambda: "sent")
+        self.assertEqual(other, ("completed", "sent", None))
+        release_stuck.set()
+        caller.join(1.0)
+
+    def test_queued_timeout_never_sends_late(self):
+        dispatcher = self.dispatcher(workers=1)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_ran = threading.Event()
+
+        def first_send():
+            first_started.set()
+            release_first.wait(1.0)
+            return True
+
+        caller = threading.Thread(
+            target=lambda: dispatcher.submit_and_wait("link-a", 0.5, first_send)
+        )
+        caller.start()
+        self.assertTrue(first_started.wait(0.5))
+        status, _value, _error = dispatcher.submit_and_wait(
+            "link-a",
+            0.03,
+            lambda: second_ran.set(),
+        )
+        self.assertEqual(status, "queue_timeout")
+        release_first.set()
+        caller.join(1.0)
+        time.sleep(0.05)
+        self.assertFalse(second_ran.is_set())
+
+    def test_queue_wait_does_not_consume_send_execution_timeout(self):
+        dispatcher = self.dispatcher(
+            workers=1,
+            max_queue_wait=0.2,
+        )
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        def first_send():
+            first_started.set()
+            release_first.wait(1.0)
+            return True
+
+        first_caller = threading.Thread(
+            target=lambda: dispatcher.submit_and_wait("link-a", 0.5, first_send)
+        )
+        first_caller.start()
+        self.assertTrue(first_started.wait(0.5))
+
+        timer = threading.Timer(0.08, release_first.set)
+        timer.start()
+
+        def second_send():
+            time.sleep(0.08)
+            return "sent"
+
+        result = dispatcher.submit_and_wait("link-a", 0.1, second_send)
+        timer.cancel()
+        first_caller.join(1.0)
+        self.assertEqual(result, ("completed", "sent", None))
+
+    def test_queue_capacity_is_bounded(self):
+        dispatcher = self.dispatcher(workers=1, max_pending=1)
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocked_send():
+            started.set()
+            release.wait(1.0)
+            return True
+
+        caller = threading.Thread(
+            target=lambda: dispatcher.submit_and_wait("link-a", 0.5, blocked_send)
+        )
+        caller.start()
+        self.assertTrue(started.wait(0.5))
+        self.assertEqual(
+            dispatcher.submit_and_wait("link-b", 0.1, lambda: True)[0],
+            "queue_full",
+        )
+        release.set()
+        caller.join(1.0)
+
+    def test_stop_immediately_releases_a_queued_caller(self):
+        dispatcher = self.dispatcher(
+            workers=1,
+            max_queue_wait=1.0,
+        )
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        def blocked_send():
+            first_started.set()
+            release_first.wait(1.0)
+            return True
+
+        first_caller = threading.Thread(
+            target=lambda: dispatcher.submit_and_wait("link-a", 1.0, blocked_send)
+        )
+        first_caller.start()
+        self.assertTrue(first_started.wait(0.5))
+
+        second_result = []
+        second_caller = threading.Thread(
+            target=lambda: second_result.append(
+                dispatcher.submit_and_wait("link-a", 1.0, lambda: True)
+            )
+        )
+        second_caller.start()
+        time.sleep(0.02)
+        dispatcher.stop(timeout_seconds=0.01)
+        second_caller.join(0.2)
+
+        self.assertFalse(second_caller.is_alive())
+        self.assertEqual(second_result, [("stopped", None, None)])
+        release_first.set()
+        first_caller.join(1.0)
+
+    def test_local_queue_pressure_does_not_degrade_a_healthy_overlay_link(self):
+        link = mock.Mock()
+        link_id = "healthy-overlay"
+        peer_hash = "ab" * 16
+        state = {
+            "linkId": link_id,
+            "link": link,
+            "peerPresenceHash": peer_hash,
+            "manager_kind": "overlay",
+            "manager_state": self.bridge._LINK_STATE_ESTABLISHED,
+        }
+        self.bridge._overlay_links_by_id[link_id] = state
+        self.bridge._overlay_link_ids_by_object[id(link)] = link_id
+
+        with mock.patch.object(
+            self.bridge._control_packet_send_dispatcher,
+            "submit_and_wait",
+            return_value=("queue_full", None, None),
+        ), mock.patch.object(self.bridge.RNS, "Packet"), mock.patch.object(
+            self.bridge,
+            "log",
+        ):
+            self.assertFalse(
+                self.bridge._send_packet_on_link(link, b"packet", "test")
+            )
+
+        self.assertEqual(
+            state["manager_state"],
+            self.bridge._LINK_STATE_ESTABLISHED,
+        )
+        self.assertNotIn(peer_hash, self.bridge._overlay_peer_failures)
+
+
 class PresenceBridgeDeveloperLogFilterTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()
@@ -585,7 +834,7 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
             time.time(),
         )
 
-    def test_recent_direct_activity_still_clears_a_new_failure(self):
+    def test_direct_link_activity_does_not_clear_overlay_admission_failure(self):
         peer_hash = self.destination_hash.hex()
         now = time.time()
         self.bridge._note_peer_direct_activity(
@@ -606,11 +855,105 @@ class ReticulumPathVisibilityTest(unittest.TestCase):
             now=now + 0.1,
         )
 
-        self.assertNotIn(peer_hash, self.bridge._overlay_peer_failures)
+        self.assertIn(peer_hash, self.bridge._overlay_peer_failures)
         self.assertEqual(
             self.bridge._peer_lifecycle[peer_hash]["last_direct_rx_at"],
             now + 0.1,
         )
+
+    def test_authenticated_overlay_activity_clears_both_failure_domains(self):
+        peer_hash = self.destination_hash.hex()
+        self.bridge._overlay_peer_failures[peer_hash] = {
+            "count": 2,
+            "last_reason": "destination_closed",
+        }
+        self.bridge._peer_lifecycle[peer_hash] = {
+            "unestablished_link_failures": 3,
+            "last_unestablished_link_failure_reason": "timeout",
+        }
+
+        self.bridge._note_overlay_peer_alive(peer_hash, "authenticated_hello")
+
+        self.assertNotIn(peer_hash, self.bridge._overlay_peer_failures)
+        self.assertNotIn(
+            "unestablished_link_failures",
+            self.bridge._peer_lifecycle[peer_hash],
+        )
+
+    def test_expired_overlay_backoff_keeps_count_for_the_next_failure(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._overlay_peer_failures[peer_hash] = {
+            "count": 1,
+            "last_reason": "destination_closed",
+            "last_failure_at": now - 20.0,
+            "suppress_until": now - 1.0,
+        }
+
+        self.assertFalse(self.bridge._overlay_peer_is_suppressed(peer_hash))
+        self.assertIn(peer_hash, self.bridge._overlay_peer_failures)
+        self.bridge._note_overlay_peer_failure(peer_hash, "destination_closed")
+
+        state = self.bridge._overlay_peer_failures[peer_hash]
+        self.assertEqual(state["count"], 2)
+        self.assertGreater(state["suppress_until"], time.time() + 20.0)
+
+    def test_long_idle_overlay_failure_record_is_reset(self):
+        peer_hash = self.destination_hash.hex()
+        now = time.time()
+        self.bridge._overlay_peer_failures[peer_hash] = {
+            "count": 8,
+            "last_reason": "destination_closed",
+            "last_failure_at": now
+            - self.bridge._OVERLAY_LINK_FAILURE_RESET_SECONDS
+            - 1.0,
+            "suppress_until": now - 1.0,
+        }
+
+        self.assertFalse(self.bridge._overlay_peer_is_suppressed(peer_hash))
+        self.assertNotIn(peer_hash, self.bridge._overlay_peer_failures)
+
+    def test_successful_admitted_overlay_send_clears_failure_backoff(self):
+        peer_hash = self.destination_hash.hex()
+        link_id = "admitted-overlay"
+        link = mock.Mock()
+        state = {
+            "link": link,
+            "peerPresenceHash": peer_hash,
+            "established": True,
+            "overlay_transport_admitted": True,
+        }
+        self.bridge._overlay_links_by_id[link_id] = state
+        self.bridge._overlay_link_ids_by_object[id(link)] = link_id
+        self.bridge._active_overlay_link_id_by_peer_hash[peer_hash] = link_id
+        self.bridge._overlay_peer_failures[peer_hash] = {
+            "count": 3,
+            "last_reason": "packet_send_timeout",
+            "last_failure_at": time.time(),
+            "suppress_until": time.time() + 60.0,
+        }
+
+        with mock.patch.object(
+            self.bridge,
+            "_overlay_link_is_fanout_usable",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_overlay_link_is_current",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_send_packet_on_link",
+            return_value=True,
+        ), mock.patch.object(self.bridge, "emit_overlay_link_state"):
+            sent = self.bridge._send_wire_to_established_overlay_peer(
+                peer_hash,
+                b"authenticated-control",
+                "test",
+            )
+
+        self.assertTrue(sent)
+        self.assertNotIn(peer_hash, self.bridge._overlay_peer_failures)
 
     def test_unproven_cached_overlay_path_is_nudged_once(self):
         peer_hash = self.destination_hash.hex()
@@ -1074,6 +1417,152 @@ class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()
 
+    def test_obsolete_control_is_discarded_before_ipc(self):
+        with mock.patch.object(
+            self.bridge,
+            "ensure_known_peer_from_recall",
+        ) as recall, mock.patch.object(self.bridge, "emit_event") as emit:
+            accepted = self.bridge._emit_call_bridge_message(
+                {
+                    "t": "RCHAT",
+                    "k": "author_tree_req_v3",
+                    "r": "aa" * 16,
+                },
+                "bb" * 16,
+                "overlay-link",
+            )
+
+        self.assertTrue(accepted)
+        recall.assert_not_called()
+        emit.assert_not_called()
+
+    def test_invalid_chat_kind_is_discarded_before_identity_or_ipc_work(self):
+        with mock.patch.object(
+            self.bridge,
+            "ensure_known_peer_from_recall",
+        ) as recall, mock.patch.object(self.bridge, "emit_event") as emit:
+            accepted = self.bridge._emit_call_bridge_message(
+                {
+                    "t": "RCHAT",
+                    "k": "x" * 65,
+                    "r": "aa" * 16,
+                },
+                "bb" * 16,
+                "overlay-link",
+            )
+
+        self.assertTrue(accepted)
+        recall.assert_not_called()
+        emit.assert_not_called()
+
+    def test_chat_ingress_diagnostics_are_aggregated_and_filterable(self):
+        message = {
+            "t": "RCHAT",
+            "k": "typing",
+            "g": 73,
+            "c": "general",
+            "a": "Qsender",
+            "ts": 123_456,
+            "active": True,
+        }
+        with mock.patch.object(self.bridge, "emit_event"), mock.patch.object(
+            self.bridge, "log"
+        ) as log, mock.patch.object(
+            self.bridge.time,
+            "monotonic",
+            side_effect=[10.0, 10.0, 10.0, 21.0, 21.0, 21.0],
+        ):
+            self.bridge._developer_logs_filtered = False
+            self.assertTrue(self.bridge._emit_call_bridge_message(message))
+            self.assertTrue(
+                self.bridge._emit_call_bridge_message({**message, "ts": 123_457})
+            )
+
+        log.assert_called_once()
+        summary = log.call_args.args[0]
+        self.assertIn("target=reticulum-chat-inbound-summary", summary)
+        self.assertIn("messages=2", summary)
+        self.assertIn("typing:2", summary)
+
+    def test_overlay_callback_dispatch_coalesces_queued_exact_duplicates(self):
+        queued = []
+
+        def capture(*args, **kwargs):
+            queued.append((args, kwargs))
+            return True
+
+        callback = mock.Mock()
+        packet = mock.Mock()
+        packet.link = mock.Mock(link_id=b"same-link")
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            side_effect=capture,
+        ):
+            self.bridge._dispatch_bounded_rns_packet_callback(
+                "overlay", "same-link", callback, b"same-wire", packet
+            )
+            self.bridge._dispatch_bounded_rns_packet_callback(
+                "overlay", "same-link", callback, b"same-wire", packet
+            )
+
+        self.assertEqual(len(queued), 1)
+        task_args = queued[0][0]
+        task_args[2](*task_args[3:])
+        callback.assert_called_once_with(b"same-wire", packet)
+        self.assertEqual(self.bridge._rns_overlay_callback_pending_keys, set())
+
+    def test_land_call_control_dispatch_never_uses_media_eviction(self):
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ) as enqueue:
+            self.bridge._dispatch_bounded_rns_packet_callback(
+                "land-call",
+                "land-link",
+                mock.Mock(),
+                b"call-control",
+                mock.Mock(),
+            )
+
+        self.assertTrue(enqueue.call_args.args[0].startswith("rns-overlay-callback-"))
+        self.assertFalse(enqueue.call_args.kwargs["drop_oldest"])
+
+    def test_queued_classifier_packet_uses_the_new_permanent_handler(self):
+        queued = []
+
+        def capture(*args, **kwargs):
+            queued.append((args, kwargs))
+            return True
+
+        permanent_callback = mock.Mock()
+        link = mock.Mock()
+        packet = mock.Mock(link=link)
+
+        def classify_first(message, received_packet):
+            self.assertEqual(message, b"hello")
+            self.assertIs(received_packet, packet)
+            link.callbacks.packet = permanent_callback
+
+        link.callbacks.packet = classify_first
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            side_effect=capture,
+        ):
+            self.bridge._dispatch_bounded_rns_packet_callback(
+                "classify", "new-link", classify_first, b"hello", packet
+            )
+            self.bridge._dispatch_bounded_rns_packet_callback(
+                "classify", "new-link", classify_first, b"next", packet
+            )
+
+        self.assertEqual(len(queued), 2)
+        for task_args, _task_kwargs in queued:
+            task_args[2](*task_args[3:])
+        permanent_callback.assert_called_once_with(b"next", packet)
+
     def test_identity_request_dedup_ignores_route_fields(self):
         request = {
             "t": "RCHAT",
@@ -1205,6 +1694,104 @@ class PresenceBridgeReticulumChatInboundDedupTest(unittest.TestCase):
         self.assertFalse(
             self.bridge._should_drop_duplicate_reticulum_chat_inbound(
                 {**subscription, "h": 1, "r": "cc" * 16}
+            )
+        )
+
+    def test_group_state_digest_dedup_ignores_refresh_time_but_keeps_providers(self):
+        digest = {
+            "t": "RCHAT",
+            "v": 3,
+            "k": "group_state_digest_v3",
+            "g": 73,
+            "o": "aa" * 16,
+            "d": {
+                "latest": {"id": "event-one", "ts": 123_456},
+                "eventHash": "11" * 32,
+                "generatedAt": 200_000,
+            },
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(digest)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {
+                    **digest,
+                    "r": "cc" * 16,
+                    "d": {**digest["d"], "generatedAt": 201_000},
+                }
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**digest, "o": "bb" * 16}
+            )
+        )
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**digest, "d": {**digest["d"], "eventHash": "22" * 32}}
+            )
+        )
+
+        direct_digest = {**digest, "g": 74}
+        direct_digest.pop("o", None)
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                direct_digest, "cc" * 16
+            )
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {
+                    **direct_digest,
+                    "d": {**direct_digest["d"], "generatedAt": 202_000},
+                },
+                "cc" * 16,
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                direct_digest, "dd" * 16
+            )
+        )
+
+    def test_event_notice_burst_dedup_ignores_overlay_route_fields(self):
+        notice = {
+            "id": "event-one",
+            "sp": "aa" * 16,
+            "a": "Qauthor",
+            "pk": "public-key",
+            "ts": 123_456,
+            "z": 321,
+            "sig": "signed-notice",
+        }
+        wire = {
+            "t": "RCHAT",
+            "v": 3,
+            "k": "event_notice_v3",
+            "g": 73,
+            "n": notice,
+            "r": "bb" * 16,
+        }
+
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(wire)
+        )
+        self.assertTrue(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**wire, "r": "cc" * 16, "o": "dd" * 16, "h": 4}
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**wire, "n": {**notice, "id": "event-two"}}
+            )
+        )
+        self.assertFalse(
+            self.bridge._should_drop_duplicate_reticulum_chat_inbound(
+                {**wire, "g": 74}
             )
         )
 
@@ -4567,6 +5154,46 @@ class PresenceBridgeReusableResourceSessionTest(unittest.TestCase):
             self.assertEqual(received[0].args[1]["transferId"], transfer_id)
             self.assertEqual(received[0].args[1]["payloadHash"], payload_hash)
 
+    def test_chat_event_response_recreates_a_private_destination(self):
+        contents = b"private chat history page"
+        payload_hash = self.bridge.hashlib.sha256(contents).hexdigest()
+        transfer_id = "private-chat-page"
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "source.bin"
+            save_path = Path(directory) / "private" / "received.bin"
+            source_path.write_bytes(contents)
+            receipt = FakeSessionReceipt()
+            receipt.response = open(source_path, "rb")
+            receipt.metadata = {
+                "transferId": transfer_id,
+                "size": len(contents),
+                "sha256": payload_hash,
+            }
+            pending = self.pending(transfer_id)
+            pending.update(
+                {
+                    "savePath": str(save_path),
+                    "size": len(contents),
+                    "sha256": payload_hash,
+                }
+            )
+            job = {
+                "transferId": transfer_id,
+                "pending": pending,
+                "created_at": time.time(),
+                "followers": [],
+            }
+            self.bridge._qchat_file_store_pending_receive(self.peer_hash, pending)
+
+            with mock.patch.object(self.bridge, "_qchat_file_emit"):
+                self.bridge._resource_session_response_received(job, receipt)
+
+            self.assertTrue(job["completed"])
+            self.assertEqual(save_path.read_bytes(), contents)
+            if os.name != "nt":
+                self.assertEqual(save_path.parent.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(save_path.stat().st_mode & 0o777, 0o600)
+
     def test_range_response_from_legacy_peer_uses_request_receipt_identity(self):
         contents = b"legacy range response"
         payload_hash = self.bridge.hashlib.sha256(contents).hexdigest()
@@ -7850,6 +8477,263 @@ class PresenceBridgeAccountEndpointLeaseTest(unittest.TestCase):
         self.assertEqual(
             self.bridge._resolve_verified_game_peer("Q-account"), direct
         )
+
+
+class PresenceBridgeOverlaySyncTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+
+    def tearDown(self):
+        self.bridge._shutdown.clear()
+
+    def lease(self, session_id, offset=0):
+        now_ms = int(time.time() * 1000)
+        return {
+            "address": "Q-account",
+            "destinationHash": "aa" * 16,
+            "sessionId": session_id,
+            "lastSeen": now_ms + offset,
+            "expiresAt": now_ms + 45_000 + offset,
+            "verification": "direct-bound",
+        }
+
+    def test_lease_refresh_does_not_repeat_unchanged_topology_maintenance(self):
+        responses = []
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ) as enqueue, mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda *args, **kwargs: responses.append((args, kwargs)),
+        ):
+            self.bridge.handle_overlay_sync_state(
+                "first",
+                {"accountEndpointLeases": [self.lease("session-a")]},
+            )
+            self.bridge.handle_overlay_sync_state(
+                "refresh",
+                {"accountEndpointLeases": [self.lease("session-b", 1)]},
+            )
+
+        enqueue.assert_called_once()
+        self.assertTrue(responses[0][1]["payload"]["topologyChanged"])
+        self.assertFalse(responses[1][1]["payload"]["topologyChanged"])
+        self.assertFalse(responses[1][1]["payload"]["maintenanceQueued"])
+        self.assertIn(
+            "session-b",
+            {
+                lease["session_id"]
+                for lease in self.bridge._account_endpoint_leases["Q-account"].values()
+            },
+        )
+
+    def test_a_real_topology_change_still_queues_immediate_maintenance(self):
+        peer_hash = "bb" * 16
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ) as enqueue, mock.patch.object(
+            self.bridge,
+            "emit_resp",
+        ), mock.patch.object(
+            self.bridge,
+            "ensure_known_peer_from_recall",
+            return_value=True,
+        ):
+            self.bridge.handle_overlay_sync_state("empty", {})
+            self.bridge.handle_overlay_sync_state(
+                "changed",
+                {
+                    "verifiedPeers": [
+                        {
+                            "destinationHash": peer_hash,
+                            "lastSeen": int(time.time() * 1000),
+                        }
+                    ],
+                    "activeNeighborHashes": [peer_hash],
+                },
+            )
+
+        self.assertEqual(enqueue.call_count, 2)
+
+    def test_repeated_maintenance_runs_are_coalesced(self):
+        fake_timer = mock.Mock()
+        fake_timer.daemon = False
+        self.bridge._overlay_sync_last_started_at = 0.0
+        self.bridge._overlay_sync_running = False
+        self.bridge._overlay_sync_deferred_timer = None
+        with mock.patch.object(
+            self.bridge, "_sync_overlay_links"
+        ) as sync_links, mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ), mock.patch.object(
+            self.bridge.threading, "Timer", return_value=fake_timer
+        ) as timer_factory:
+            self.bridge._run_overlay_sync_maintenance("first")
+            self.bridge._run_overlay_sync_maintenance("second")
+
+        sync_links.assert_called_once()
+        timer_factory.assert_called_once()
+        fake_timer.start.assert_called_once()
+        self.bridge._overlay_sync_deferred_timer = None
+        self.bridge._overlay_sync_deferred_deadline_at = 0.0
+        self.bridge._overlay_sync_pending_reason = ""
+
+    def test_budget_continuation_preempts_an_ordinary_deferred_sync(self):
+        ordinary_timer = mock.Mock()
+        urgent_timer = mock.Mock()
+        self.bridge._overlay_sync_last_started_at = 0.0
+        self.bridge._overlay_sync_running = False
+        self.bridge._overlay_sync_deferred_timer = None
+        self.bridge._overlay_sync_deferred_deadline_at = 0.0
+        with mock.patch.object(
+            self.bridge, "_sync_overlay_links"
+        ) as sync_links, mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ) as enqueue, mock.patch.object(
+            self.bridge.threading,
+            "Timer",
+            side_effect=[ordinary_timer, urgent_timer],
+        ) as timer_factory:
+            self.bridge._run_overlay_sync_maintenance("first")
+            self.bridge._run_overlay_sync_maintenance("ordinary-change")
+            self.bridge._run_overlay_sync_maintenance("overlay_sync_continuation")
+            # A later ordinary update must not replace or downgrade the urgent
+            # continuation that now owns the earliest deadline.
+            self.bridge._run_overlay_sync_maintenance("later-ordinary-change")
+
+            self.assertEqual(timer_factory.call_count, 2)
+            ordinary_timer.cancel.assert_called_once()
+            urgent_timer.start.assert_called_once()
+            self.assertIs(self.bridge._overlay_sync_deferred_timer, urgent_timer)
+            self.assertEqual(
+                self.bridge._overlay_sync_pending_reason,
+                "overlay_sync_continuation",
+            )
+
+            urgent_callback = timer_factory.call_args_list[1].args[1]
+            urgent_callback()
+
+        sync_links.assert_called_once()
+        coalesced_tasks = [
+            call
+            for call in enqueue.call_args_list
+            if len(call.args) > 1
+            and call.args[1] == "overlay-sync-maintenance-coalesced"
+        ]
+        self.assertEqual(len(coalesced_tasks), 1)
+        self.assertEqual(coalesced_tasks[0].args[3], "overlay_sync_continuation")
+        self.assertIsNone(self.bridge._overlay_sync_deferred_timer)
+        self.assertEqual(self.bridge._overlay_sync_deferred_deadline_at, 0.0)
+
+    def test_admitted_heartbeat_refreshes_liveness_without_readmission(self):
+        peer_hash = "bb" * 16
+        link_id = "established-link"
+        state = {
+            "incoming": False,
+            "established": True,
+            "overlay_transport_admitted": True,
+            "overlay_transport_admitted_at": 123.0,
+            "peerPresenceHash": peer_hash,
+            "pending_packets": [],
+        }
+        self.bridge._overlay_links_by_id[link_id] = state
+        self.bridge._active_overlay_link_id_by_peer_hash[peer_hash] = link_id
+
+        with mock.patch.object(
+            self.bridge, "_register_active_overlay_for_peer"
+        ) as register, mock.patch.object(
+            self.bridge, "_mark_overlay_peer_admitted_neighbor"
+        ) as refresh_neighbor, mock.patch.object(
+            self.bridge, "_note_peer_direct_activity"
+        ) as direct_activity, mock.patch.object(
+            self.bridge, "_note_overlay_peer_alive"
+        ) as peer_alive, mock.patch.object(
+            self.bridge, "_flush_overlay_link_pending"
+        ) as flush_pending:
+            admitted = self.bridge._admit_overlay_peer_from_transport(
+                peer_hash,
+                link_id,
+                state,
+                "overlay_ping",
+            )
+
+        self.assertTrue(admitted)
+        register.assert_not_called()
+        refresh_neighbor.assert_called_once()
+        direct_activity.assert_called_once()
+        peer_alive.assert_called_once()
+        flush_pending.assert_not_called()
+        self.assertEqual(state["overlay_transport_admitted_at"], 123.0)
+
+    def test_refresh_during_maintenance_waits_without_timer_spin(self):
+        self.bridge._overlay_sync_last_started_at = 0.0
+        self.bridge._overlay_sync_running = False
+        self.bridge._overlay_sync_deferred_timer = None
+
+        def request_another_refresh():
+            self.bridge._run_overlay_sync_maintenance("during-run")
+
+        with mock.patch.object(
+            self.bridge,
+            "_sync_overlay_links",
+            side_effect=request_another_refresh,
+        ), mock.patch.object(
+            self.bridge, "_enqueue_scheduler_task", return_value=True
+        ) as enqueue, mock.patch.object(
+            self.bridge.threading, "Timer"
+        ) as timer_factory:
+            self.bridge._run_overlay_sync_maintenance("first")
+
+        timer_factory.assert_not_called()
+        coalesced_tasks = [
+            call
+            for call in enqueue.call_args_list
+            if len(call.args) > 1
+            and call.args[1] == "overlay-sync-maintenance-coalesced"
+        ]
+        self.assertEqual(len(coalesced_tasks), 1)
+        self.assertEqual(coalesced_tasks[0].args[3], "during-run")
+        self.assertFalse(self.bridge._overlay_sync_running)
+        self.assertEqual(self.bridge._overlay_sync_pending_reason, "")
+
+    def test_stop_invalidates_topology_fingerprint_for_a_later_start(self):
+        peer_hash = "bb" * 16
+        payload = {
+            "verifiedPeers": [
+                {
+                    "destinationHash": peer_hash,
+                    "lastSeen": int(time.time() * 1000),
+                }
+            ],
+            "activeNeighborHashes": [peer_hash],
+        }
+        with mock.patch.object(
+            self.bridge,
+            "_enqueue_scheduler_task",
+            return_value=True,
+        ) as enqueue, mock.patch.object(
+            self.bridge,
+            "emit_resp",
+        ), mock.patch.object(
+            self.bridge,
+            "ensure_known_peer_from_recall",
+            return_value=True,
+        ), mock.patch.object(
+            self.bridge,
+            "_flush_overlay_good_outbound_cache",
+        ), mock.patch.object(
+            self.bridge,
+            "_rns_announce_on_auth_session_end",
+        ):
+            self.bridge.handle_overlay_sync_state("before-stop", payload)
+            self.bridge.handle_stop("stop")
+            self.bridge.handle_overlay_sync_state("after-stop", payload)
+
+        self.assertEqual(enqueue.call_count, 2)
 
 
 class PresenceBridgePinnedChatPeersTest(unittest.TestCase):

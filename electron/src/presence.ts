@@ -196,6 +196,10 @@ export interface PresenceTransportHandlers {
     peerHash: string;
     source?: string;
   }) => void;
+  onOverlayPeerAdmitted?: (payload: {
+    peerHash: string;
+    source?: string;
+  }) => void;
   onOverlayLinkClosed?: (payload: {
     peerHash: string;
     reason?: string;
@@ -1156,21 +1160,14 @@ export class PresenceManager extends EventEmitter {
     if (route.kind === 'reticulum') {
       if (route.viaDestinationHash) {
         // The relay is the transport peer that directly authenticated on this
-        // link. The signed origin is useful as a dial candidate and endpoint
-        // lease, but must not be promoted to a verified transport peer until
-        // it authenticates directly.
+        // link. The signed origin is retained as an account endpoint lease,
+        // but neither endpoint is allowed to enter persistent overlay topology
+        // until the bridge reports authenticated overlay admission.
         this.markReticulumOverlayPeerVerified(
           route.viaDestinationHash,
           'presence-relay-transport',
           now
         );
-        if (reticulumRouteBindingVerified) {
-          this.noteReticulumCandidateDiscovered(
-            route.destinationHash,
-            'presence-relayed-bound',
-            now
-          );
-        }
       } else {
         this.markReticulumOverlayPeerVerified(
           route.destinationHash,
@@ -1684,9 +1681,11 @@ export class PresenceManager extends EventEmitter {
   }
 
   /**
-   * Marks a Reticulum destination as a verified Qortal overlay participant after
-   * any accepted Qortal overlay protocol traffic. Verification is latched by
-   * destination hash; later accepted traffic only refreshes liveness metadata.
+   * Records activity from accepted Qortal protocol traffic for an already
+   * admitted overlay peer. Application traffic proves that an endpoint was
+   * reachable for that feature; it does not prove that the endpoint should be
+   * added to persistent overlay topology. Genuine candidates arrive through
+   * the bridge's candidate-peer-discovered event instead.
    */
   markReticulumOverlayPeerVerified(
     destinationHash: string,
@@ -1696,7 +1695,30 @@ export class PresenceManager extends EventEmitter {
     const hash = destinationHash.trim().toLowerCase();
     if (!hash) return;
     if (this.isSelfReticulumHash(hash)) return;
-    this.promoteVerifiedReticulumPeer(hash, now, source);
+    const existing = this.verifiedReticulumPeers.get(hash);
+    if (!existing) {
+      // Route/session tracking is handled independently by the accepted
+      // presence envelope and the feature's dedicated-link machinery. Do not
+      // let ordinary traffic reshape the persistent overlay mesh.
+      return;
+    }
+    // Refresh liveness without cancelling a close cooldown. Otherwise an old
+    // or short-lived peer can repeatedly close its Link, send one packet and
+    // immediately re-enter the overlay fanout set.
+    this.verifiedReticulumPeers.set(hash, {
+      ...existing,
+      lastSeen: now,
+    });
+  }
+
+  noteReticulumOverlayPeerAdmitted(
+    destinationHash: string,
+    source: string = 'overlay-link-admitted',
+    now: number = Date.now()
+  ): void {
+    const hash = destinationHash.trim().toLowerCase();
+    if (!hash || this.isSelfReticulumHash(hash)) return;
+    this.promoteVerifiedReticulumPeer(hash, now, source, true);
   }
 
   /** Returns the most-recently-seen active status for an address, or null. */
@@ -1954,16 +1976,12 @@ export class PresenceManager extends EventEmitter {
     });
   }
 
-  /**
-   * Marks a Reticulum sender as a verified Qortal overlay peer after valid signed
-   * presence. Latches once per destination hash: further envelopes on the same link do
-   * not re-run mesh recompute or bridge sync. Link failures remove a peer from active
-   * fanout but keep this verified record available for later fresh traffic.
-   */
+  /** Admits or refreshes an authenticated persistent overlay neighbour. */
   private promoteVerifiedReticulumPeer(
     destinationHash: string,
     now: number,
-    source: string = 'presence'
+    source: string = 'presence',
+    admitted = false
   ): void {
     const hash = destinationHash.trim().toLowerCase();
     if (!hash) return;
@@ -1972,11 +1990,11 @@ export class PresenceManager extends EventEmitter {
     const existing = this.verifiedReticulumPeers.get(hash);
     if (existing) {
       const wasClosed = existing.linkClosedAt !== null;
-      const canClearClosedState =
-        !wasClosed ||
-        source !== 'presence-relayed' ||
-        (existing.linkCooldownUntil !== null &&
-          now >= existing.linkCooldownUntil);
+      // Only the bridge's authenticated overlay admission can restore a
+      // closed neighbour. An application packet (or the passage of time)
+      // proves route reachability, not that the persistent overlay Link is
+      // healthy again.
+      const canClearClosedState = !wasClosed || admitted;
       this.verifiedReticulumPeers.set(hash, {
         destinationHash: hash,
         lastSeen: now,
@@ -1992,6 +2010,11 @@ export class PresenceManager extends EventEmitter {
       }
       if (wasClosed && canClearClosedState) {
         this.emitReticulumOverlayChanged(true);
+        this.emit('reticulum-peer-verified', {
+          destinationHash: hash,
+          lastSeen: now,
+          source,
+        });
       }
       return;
     }
@@ -2252,6 +2275,12 @@ function subscribePresenceTransport(
     },
     onCandidatePeerDiscovered: ({ peerHash, source }) => {
       manager.noteReticulumCandidateDiscovered(
+        peerHash,
+        source ?? transport.kind
+      );
+    },
+    onOverlayPeerAdmitted: ({ peerHash, source }) => {
+      manager.noteReticulumOverlayPeerAdmitted(
         peerHash,
         source ?? transport.kind
       );

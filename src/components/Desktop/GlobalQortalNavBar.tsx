@@ -1295,6 +1295,7 @@ export function GlobalQortalNavBar({
               slotProps={tooltipSlotProps}
             >
               <ButtonBase
+                data-tour="hub-top-home"
                 disableRipple
                 onClick={() => {
                   if (isHomeMode) {

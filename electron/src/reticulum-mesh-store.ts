@@ -218,7 +218,7 @@ export type ReticulumMeshConfigSlice = {
   networkIdentityPath: string;
   /** Shared IFAC/passphrase for the private `qortal-hub` mesh segment. */
   networkPassphrase: string | null;
-  /** `[reticulum] enable_transport`: on whenever mesh listen is enabled (hub + RNS transport; bridge shows transport=on when RNS exposes transport_id). */
+  /** `[reticulum] enable_transport`: explicit global opt-in, independent of inbound mesh listening. */
   enableTransport: boolean;
   /** Public address for mesh gateway discovery (`reachable_on`); null if unknown. */
   reachableOn: string | null;
@@ -240,7 +240,8 @@ export function sortMeshOutboundHostsForEmission(
 
 export function meshConfigSliceFromState(
   state: ReticulumMeshState,
-  selectedHosts: Array<{ host: string; port: number }>
+  selectedHosts: Array<{ host: string; port: number }>,
+  transportEnabled = false
 ): ReticulumMeshConfigSlice {
   const sorted = sortMeshOutboundHostsForEmission(selectedHosts);
   const identityPath = getMeshNetworkIdentityPath();
@@ -262,11 +263,11 @@ export function meshConfigSliceFromState(
       port: p.port,
     })),
     meshDiscoveryClient: true,
-    autoconnectDiscoveredMax: 8,
+    autoconnectDiscoveredMax: 5,
     meshPrivateGateway,
     networkIdentityPath: identityPath,
     networkPassphrase,
-    enableTransport: state.meshListenEnabled === true,
+    enableTransport: transportEnabled === true,
     reachableOn,
   };
 }

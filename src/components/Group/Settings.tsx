@@ -174,6 +174,8 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
   const appSettingsRevisionRef = useRef(0);
   const [reticulumManagedConfigEnabled, setReticulumManagedConfigEnabled] =
     useState(true);
+  const [reticulumTransportEnabled, setReticulumTransportEnabled] =
+    useState(false);
   const [platform, setPlatform] = useState<string>('');
   const [reticulumStatus, setReticulumStatus] =
     useState<ReticulumStatus | null>(null);
@@ -264,6 +266,7 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
     setReticulumManagedConfigEnabled(
       settings?.reticulumManagedConfigEnabled === false ? false : true
     );
+    setReticulumTransportEnabled(settings?.reticulumTransportEnabled === true);
     if (typeof window.electronAPI?.getPlatform === 'function') {
       const p = await window.electronAPI.getPlatform();
       setPlatform(p || '');
@@ -281,6 +284,9 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
         setReticulumEnabled(settings?.reticulumEnabled !== false);
         setReticulumManagedConfigEnabled(
           settings?.reticulumManagedConfigEnabled !== false
+        );
+        setReticulumTransportEnabled(
+          settings?.reticulumTransportEnabled === true
         );
       }),
     []
@@ -464,6 +470,32 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
       }
     },
     [reticulumManagedConfigEnabled, setInfoSnackCustom, setOpenSnackGlobal]
+  );
+
+  const handleReticulumTransportChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const enabled = event.target.checked;
+      const previous = reticulumTransportEnabled;
+      setReticulumTransportEnabled(enabled);
+      try {
+        await window.electronAPI?.setAppSettings?.({
+          reticulumTransportEnabled: enabled,
+        });
+        setInfoSnackCustom({
+          type: 'success',
+          message: t('group:dashboard.reticulum_transport_saved'),
+        });
+        setOpenSnackGlobal(true);
+      } catch {
+        setReticulumTransportEnabled(previous);
+        setInfoSnackCustom({
+          type: 'error',
+          message: t('group:dashboard.reticulum_transport_update_error'),
+        });
+        setOpenSnackGlobal(true);
+      }
+    },
+    [reticulumTransportEnabled, setInfoSnackCustom, setOpenSnackGlobal, t]
   );
 
   return (
@@ -690,6 +722,36 @@ export const Settings = ({ open, setOpen, rawWallet }) => {
                       <LocalNodeSwitch
                         checked={reticulumManagedConfigEnabled}
                         onChange={handleReticulumManagedConfigChange}
+                      />
+                    </Box>
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: 2,
+                        px: 2,
+                        py: 1.25,
+                        borderBottom: 1,
+                        borderColor: 'divider',
+                      }}
+                    >
+                      <Box>
+                        <Typography variant="body2" color="text.secondary">
+                          {t('group:dashboard.reticulum_transport_node')}
+                        </Typography>
+                        <Typography variant="caption" color="text.disabled">
+                          {reticulumManagedConfigEnabled
+                            ? t('group:dashboard.reticulum_transport_node_desc')
+                            : t(
+                                'group:dashboard.reticulum_transport_requires_managed_config'
+                              )}
+                        </Typography>
+                      </Box>
+                      <LocalNodeSwitch
+                        checked={reticulumTransportEnabled}
+                        disabled={!reticulumManagedConfigEnabled}
+                        onChange={handleReticulumTransportChange}
                       />
                     </Box>
                     <Box

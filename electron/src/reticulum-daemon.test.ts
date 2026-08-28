@@ -148,7 +148,7 @@ describe('reticulum-daemon managed config', () => {
     expect(config).not.toContain('[[Default Interface]]');
     expect(config).not.toContain('type = AutoInterface');
     expect(config).toContain('discover_interfaces = Yes');
-    expect(config).toContain('autoconnect_discovered_interfaces = 8');
+    expect(config).toContain('autoconnect_discovered_interfaces = 5');
     expect(config).toMatch(/\nrpc_key = [0-9a-f]{64}\n/);
 
     for (const hub of DEFAULT_RETICULUM_HUBS) {
@@ -245,7 +245,7 @@ describe('reticulum-daemon managed config', () => {
       config.indexOf('[logging]')
     );
     expect(reticulumBlock).toContain('discover_interfaces = Yes');
-    expect(reticulumBlock).toContain('autoconnect_discovered_interfaces = 8');
+    expect(reticulumBlock).toContain('autoconnect_discovered_interfaces = 5');
     expect(config).toContain('[[Qortal Hub Mesh Listen]]');
     const meshListenType =
       process.platform === 'linux' ? 'BackboneInterface' : 'TCPServerInterface';
@@ -358,6 +358,26 @@ describe('reticulum-daemon managed config', () => {
       .update(body, 'utf8')
       .digest('hex');
     expect(fp).toBe(expected);
+  });
+
+  it('keeps transport off by default in the generated managed config', () => {
+    expect(buildCurrentManagedReticulumConfig()).toContain(
+      'enable_transport = False'
+    );
+  });
+
+  it('enables transport in the generated config after explicit opt-in', () => {
+    const settingsPath = getTestAppSettingsPath();
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ reticulumTransportEnabled: true }),
+      'utf8'
+    );
+
+    expect(buildCurrentManagedReticulumConfig()).toContain(
+      'enable_transport = True'
+    );
   });
 
   it('does not write managed config when disabled in app settings', () => {

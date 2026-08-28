@@ -252,10 +252,27 @@
     "explore_all_q_apps": "استكشف كل تطبيقات Q",
     "featured_q_apps": "تطبيقات Q مميزة",
     "featured_q_apps_subtitle": "شغّل تطبيقات موثوقة من المجتمع مباشرة من لوحة التحكم.",
+    "featured_q_chat_eyebrow": "NATIVE",
+    "featured_q_chat_keyword_connect": "تواصل.",
+    "featured_q_chat_keyword_freely": "بحرية.",
+    "featured_q_chat_keyword_talk": "تحدث.",
+    "featured_q_chat_subtitle": "محادثاتك، مجموعاتك، شبكتك.\nمدعوم بواسطة Reticulum\nموثّق على سلسلة كتل Qortal",
+    "featured_q_tube_eyebrow": "متاح دائمًا",
+    "featured_q_tube_keyword_cat_videos": "فيديوهات قطط.",
+    "featured_q_tube_keyword_decentralized": "لامركزي.",
+    "featured_q_tube_keyword_platform": "منصة.",
+    "featured_q_tube_subtitle": "مقاطع فيديو مستضافة على الشبكة، ولقطات غريبة، ورحلات ممتعة بين محتوى المبدعين.",
     "fully_operational": "يعمل بالكامل",
     "group_activity_module": "نشاط المجموعة",
     "group_activity_module_desc": "اعرض وحدة نشاط المجموعة في الصفحة الرئيسية. أوقفها لمنع عرضها.",
+    "help": "المساعدة",
+    "help_settings": "المساعدة",
+    "help_settings_description": "أعد تشغيل المقدمة الإرشادية إلى Hub وQ-Chat.",
     "hub": "Hub",
+    "hub_tutorial": "دليل Hub",
+    "hub_tutorial_description": "أعد الجولة الإرشادية لمراجعة Hub وQ-Chat والمجموعات والرسائل المباشرة وQ-Apps.",
+    "hub_tutorial_desktop_only": "متاح على سطح المكتب فقط",
+    "hub_tutorial_start_note": "سيبدأ الدليل بعد إغلاق الإعدادات والعودة إلى صفحة Hub الرئيسية.",
     "info_panel_node_comment": "// node_info",
     "info_panel_status": "الحالة",
     "loading_wallet_activity": "جارٍ تحميل نشاط المحفظة...",
@@ -306,6 +323,8 @@
     "open_account_settings_aria": "فتح إعدادات الحساب",
     "open_in_q_apps": "افتح في Q-Apps",
     "open_in_q_chat": "افتح في Q-Chat",
+    "open_q_app": "فتح Q-App",
+    "open_q_chat": "فتح Q-Chat",
     "open_the": "افتح",
     "peers": "الأقران",
     "pinned_qapp_backup": "نسخ احتياطي للـ Q-App المثبّتة",
@@ -344,6 +363,7 @@
     "reduce_ui_animations_desc": "فعّل لتقليل الحركة في Hub. اتركه معطلاً للواجهة المتحركة الافتراضية.",
     "reload": "إعادة التحميل",
     "reset_reticulum_default": "إعادة الضبط إلى افتراضي Hub",
+    "restart_hub_tutorial": "إعادة تشغيل الدليل",
     "reticulum": "Reticulum",
     "reticulum_chat_update_error": "تعذّر تحديث دردشة مجموعة Reticulum الآن.",
     "reticulum_config_chars_count": "{{count}} حرف",
@@ -365,6 +385,11 @@
     "reticulum_group_chat_desc": "استخدم نقل Reticulum التجريبي لرسائل دردشة المجموعة عند توفره.",
     "reticulum_settings": "إعدادات Reticulum",
     "reticulum_settings_description": "تحكّم في تفضيلات إعداد شبكة Reticulum.",
+    "reticulum_transport_node": "نقل مجتمعي",
+    "reticulum_transport_node_desc": "ساعد في تمرير حركة Reticulum للمستخدمين الآخرين. يعمل هذا باستخدام UPnP أو منفذ Reticulum تمت إعادة توجيهه يدوياً. أعد تشغيل Qortal Hub بعد تغييره.",
+    "reticulum_transport_requires_managed_config": "فعّل إعداد Reticulum المُدار للتحكم في هذا الخيار.",
+    "reticulum_transport_saved": "تم حفظ إعداد النقل. أعد تشغيل Qortal Hub لتطبيقه.",
+    "reticulum_transport_update_error": "تعذر تحديث إعداد نقل Reticulum.",
     "reveal_reticulum_config": "الكشف في مستكشف الملفات",
     "save": "حفظ",
     "security": "الأمان",
@@ -456,6 +481,7 @@
     "join_group_heading": "الانضمام إلى المجموعة",
     "load_more": "تحميل المزيد",
     "open_group": "مجموعة مفتوحة",
+    "pinned_group": "مجموعة مثبتة",
     "private_filter_active": "ترتيب النشاط متاح للمجموعات المفتوحة فقط.",
     "private_filter_top": "‏Group Score متاح للمجموعات المفتوحة فقط.",
     "search_aria": "البحث عن المجموعات بالاسم",
@@ -613,12 +639,12 @@
   "home": {
     "address_copied": "تم نسخ العنوان إلى الحافظة",
     "confirming": "جارٍ التأكيد",
-    "get_qorts_workspace_hint": "حرِّر أول ‎٦‎ QORT لديك لتفعيل باقي الإعداد.",
-    "get_six_qorts": "احصل على 6 QORT",
-    "get_six_qorts_intro": "هناك 3 طرق للحصول على أول 6 QORT:",
+    "get_qorts_workspace_hint": "حرِّر أول 2 QORT لديك لتفعيل باقي الإعداد.",
+    "get_six_qorts": "احصل على 2 QORT",
+    "get_six_qorts_intro": "هناك 3 طرق للحصول على أول 2 QORT:",
     "get_six_qorts_way1": "أكمل تعليمات البدء على qortal.dev.",
     "get_six_qorts_way1_action": "الذهاب للتعليمات",
-    "get_six_qorts_way2": "اطلب 6 QORT في دردشة دعم Nextcloud.",
+    "get_six_qorts_way2": "اطلب 2 QORT في دردشة دعم Nextcloud.",
     "get_six_qorts_way2_action": "فتح دردشة الدعم",
     "get_six_qorts_way3": "اشترِ QORT باستخدام Q-Trade.",
     "get_six_qorts_way3_action": "فتح Q-Trade",
@@ -631,7 +657,7 @@
     "onboarding_transition_hard_part_done": "أحسنت. أنهيت الجزء الأصعب.",
     "onboarding_transition_one_more": "رائع. بقي خطوة واحدة.",
     "open": "فتح",
-    "persistent_guide_get_qorts": "لنبدأ بـ‎٦‎ QORT. اختر أي خيار أعلاه.",
+    "persistent_guide_get_qorts": "لنبدأ بـ2 QORT. اختر أي خيار أعلاه.",
     "persistent_guide_load_avatar": "وأخيرًا أضف صورة رمزية.",
     "persistent_guide_register_name": "بعد ذلك سجِّل اسمك.",
     "post_onboarding_workspace_ready": "تمّ كل شيء. يمكنك البدء ببناء مساحة العمل أعلاه.",
@@ -788,6 +814,109 @@
     "try_again": "حاول مرة أخرى",
     "unencrypted": "غير مشفّر",
     "verification_failed": "فشل التحقق"
+  },
+  "onboarding": {
+    "action": {
+      "back": "رجوع",
+      "continue": "متابعة",
+      "continue_with_progress": "متابعة ({{current}} من {{total}})",
+      "got_it": "فهمت",
+      "next": "التالي",
+      "next_with_progress": "التالي ({current} من {total})",
+      "skip": "تخطي البرنامج التعليمي",
+      "skip_for_now": "تخطي الآن",
+      "start_exploring": "ابدأ الاستكشاف",
+      "start_tour": "ابدأ الجولة"
+    },
+    "back_to_hub": {
+      "copy": "عُد إلى الصفحة الرئيسية لمواصلة استكشاف ما يقدمه Qortal.",
+      "title": "العودة إلى Hub"
+    },
+    "choose_channel": {
+      "copy": "تنظم المجموعات المحادثات في قنوات، ليكون لكل موضوع مكانه الخاص. من هنا يمكنك اختيار قناة.",
+      "title": "اختر قناة"
+    },
+    "direct_messages": {
+      "copy": "يمكنك أيضًا مراسلة مستخدم Qortal آخر بشكل خاص. افتح الرسائل المباشرة لبدء محادثة.",
+      "info": "اضغط على الرسائل المباشرة مرة أخرى للعودة إلى مجموعاتك.",
+      "title": "الرسائل المباشرة"
+    },
+    "enter_qortal_land": {
+      "copy": "شغّل Qortal Land من لوحة Hub الرئيسية. يجب أن تكون عضوًا في مجموعة Q-Chat واحدة على الأقل قبل أن تتمكن من الدخول.",
+      "copy_group": "لكل مجموعة مساحة <emphasis>QortalLand</emphasis> خاصة بها. يمكنك دخولها من هذا الزر بعد الانضمام إلى المجموعة، أو مباشرة من لوحة التحكم الرئيسية.",
+      "copy_group_details": "QortalLand عالم اجتماعي تفاعلي لا يزال في مراحله المبكرة وينمو باستمرار، حيث يمكن لأعضاء المجموعة اللقاء والتفاعل ولعب ألعاب مصغرة مثل الشطرنج والداما. وستتوسع مساحاته وأنشطته وإمكاناته مع وصول ميزات جديدة.",
+      "preview_alt": "معاينة صالة QortalLand",
+      "preview_open": "افتح معاينة QortalLand",
+      "title": "الدخول إلى Qortal Land"
+    },
+    "explore_qapps": {
+      "copy": "تصفح جميع Q-Apps المتاحة واكتشف المزيد مما يُبنى على Qortal.",
+      "title": "استكشف Q-Apps"
+    },
+    "featured_qapps": {
+      "copy": "يعرض هذا القسم مجموعة مختارة من <emphasis>Q-Apps</emphasis> التي أنشأها المجتمع وتساهم في جعل Qortal ما هو عليه اليوم.",
+      "decentralization": "تعمل <emphasis>Q-Apps</emphasis> بصورة لامركزية بالكامل عبر QDN، حيث تُشفّر البيانات وتُقسّم أثناء التخزين والنقل. محتوى Q-App العام متاح للعامة عن قصد وليس خاصًا بتشفير من طرف إلى طرف. لا يوجد مضيف أو جهة مركزية تستطيع فرض الرقابة عليه أو إزالته للجميع؛ ويتحكم كل مستخدم فيما تصل إليه عقدته أو تحظره.",
+      "details": "<emphasis>Q-Apps</emphasis> تطبيقات لامركزية تُبنى بتقنيات ويب مألوفة مثل HTML وCSS وJavaScript. يمكن لأي شخص إنشاء تطبيق والاستفادة من بلوكتشين Qortal وواجهات API وبنية QDN النظير إلى النظير لنشر فكرة ومشاركتها وتنميتها أو تحقيق دخل منها في منظومة Qortal.",
+      "title": "Q-Apps المميزة"
+    },
+    "find_group": {
+      "copy": "تصفح المجموعات التي يمكنك الانضمام إليها. مجموعة <emphasis>Qortal Project</emphasis> الرسمية مثبتة دائمًا في أول تصنيف Top.",
+      "title": "البحث عن مجموعات"
+    },
+    "find_groups_location": {
+      "copy": "استخدم زر البحث هذا كلما أردت العثور على مجموعات جديدة والانضمام إليها.",
+      "title": "العثور على مجموعات"
+    },
+    "join_group": {
+      "copy": "انضم إلى مجموعة للوصول إلى محادثاتها وقنواتها. تُعد \"Qortal Project\" مكانًا رائعًا للبدء.",
+      "copy_member": "أنت عضو بالفعل في <emphasis>Qortal Project</emphasis>، مجموعة مجتمع Qortal الرسمية للأخبار والدعم والنقاش والتواصل مع المساهمين.\n\nلنلقِ نظرة سريعة على المجموعة!",
+      "copy_preview": "<emphasis>Qortal Project</emphasis> هي مجموعة مجتمع Qortal الرسمية للأخبار والدعم والنقاش والتواصل مع المساهمين. يتطلب الانضمام QORT وتأكيدًا على البلوكتشين، لذلك سنواصل بمعاينة إرشادية من دون انضمام.",
+      "title": "الانضمام إلى مجموعة",
+      "title_qortal_project": "Qortal Project"
+    },
+    "message_expiry": {
+      "copy": "تنتهي صلاحية الرسائل المباشرة تلقائيًا بعد شهر واحد افتراضيًا. يمكنك تغيير مدة الصلاحية هنا.",
+      "info": "اختر مدة الانتهاء قبل إرسال الرسائل الجديدة. لا تنطبق التغييرات على الرسائل التي أُرسلت سابقًا.",
+      "title": "انتهاء صلاحية الرسائل"
+    },
+    "open_qchat": {
+      "copy": "Q-Chat هو المكان الذي تجري فيه المحادثات عبر Qortal. افتحه للبدء.",
+      "title": "افتح Q-Chat"
+    },
+    "preview": {
+      "badge": "معاينة إرشادية",
+      "category": {
+        "community": "المجتمع",
+        "official": "رسمي",
+        "support": "الدعم"
+      },
+      "channel": {
+        "announcements": "الإعلانات",
+        "bug_reports": "تقارير الأخطاء",
+        "general_chat": "الدردشة العامة",
+        "official_links": "الروابط الرسمية",
+        "qort_trading": "تداول QORT",
+        "qortal_land": "Qortal Land",
+        "qortal_marketing": "تسويق Qortal",
+        "rules": "القواعد",
+        "tasks_and_ideas": "المهام والأفكار"
+      },
+      "notice": "لم تنضم إلى هذه المجموعة. يتطلب الانضمام QORT وتأكيدًا على بلوكشين Qortal.",
+      "owner": "المالك",
+      "qortino_message": "مرحبًا! تجمع المجموعات قنوات كل مجتمع ومحادثاته ومساحة QortalLand الخاصة به. تتيح لك هذه المعاينة استكشافها من دون انضمام أو إنفاق QORT."
+    },
+    "ready": {
+      "copy": "هذه هي الأساسيات. استكشف Qortal بالسرعة التي تناسبك، ويمكنك إعادة تشغيل هذه الجولة في أي وقت عند الحاجة.",
+      "title": "أنت جاهز"
+    },
+    "skip_reminder": {
+      "copy": "يمكنك إعادة تشغيل هذا الدليل في أي وقت من الإعدادات > المساعدة.",
+      "title": "تم تخطي الدليل الآن"
+    },
+    "welcome": {
+      "copy": "لوحة التحكم الرئيسية هي نقطة انطلاقك في Qortal Hub.\n\nلنأخذ جولة سريعة في الأساسيات!",
+      "title": "مرحبًا بك في Qortal Hub"
+    }
   },
   "subscription": {
     "actions_badge_one": "{{count}} إجراء",

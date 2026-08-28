@@ -91,10 +91,10 @@ describe('meshConfigSliceFromState', () => {
     const state = baseState({ meshListenEnabled: false });
     const s = meshConfigSliceFromState(state, []);
     expect(s.meshDiscoveryClient).toBe(true);
-    expect(s.autoconnectDiscoveredMax).toBe(8);
+    expect(s.autoconnectDiscoveredMax).toBe(5);
   });
 
-  it('enables transport when mesh listen on (private gateway, reachable unknown)', () => {
+it('enables opted-in transport when mesh listen is on', () => {
     const existsSpy = vi
       .spyOn(fs, 'existsSync')
       .mockImplementation((p: fs.PathLike) => {
@@ -117,7 +117,7 @@ describe('meshConfigSliceFromState', () => {
       });
     try {
       const state = baseState({ meshListenEnabled: true });
-      const s = meshConfigSliceFromState(state, []);
+      const s = meshConfigSliceFromState(state, [], true);
       expect(s.meshPrivateGateway).toBe(true);
       expect(s.networkPassphrase).toBe('qortal-hub-community-mesh-v1');
       expect(s.reachableOn).toBeNull();
@@ -128,11 +128,11 @@ describe('meshConfigSliceFromState', () => {
     }
   });
 
-  it('enables transport when mesh listen on without gateway identity (plain mesh listen)', () => {
+  it('keeps transport independent from gateway identity', () => {
     const spy = vi.spyOn(fs, 'existsSync').mockReturnValue(false);
     try {
       const state = baseState({ meshListenEnabled: true });
-      const s = meshConfigSliceFromState(state, []);
+      const s = meshConfigSliceFromState(state, [], true);
       expect(s.meshPrivateGateway).toBe(false);
       expect(s.enableTransport).toBe(true);
     } finally {
@@ -152,7 +152,7 @@ describe('meshConfigSliceFromState', () => {
     });
     try {
       const state = baseState({ meshListenEnabled: true });
-      const s = meshConfigSliceFromState(state, []);
+      const s = meshConfigSliceFromState(state, [], true);
       expect(s.meshPrivateGateway).toBe(false);
       expect(s.networkPassphrase).toBeNull();
       expect(s.enableTransport).toBe(true);
@@ -162,10 +162,16 @@ describe('meshConfigSliceFromState', () => {
     }
   });
 
-  it('disables transport when mesh listen is off', () => {
-    const state = baseState({ meshListenEnabled: false });
+  it('keeps transport disabled by default even when mesh listen is on', () => {
+    const state = baseState({ meshListenEnabled: true });
     const s = meshConfigSliceFromState(state, []);
     expect(s.enableTransport).toBe(false);
+  });
+
+  it('allows opted-in transport independently of mesh listening', () => {
+    const state = baseState({ meshListenEnabled: false });
+    const s = meshConfigSliceFromState(state, [], true);
+    expect(s.enableTransport).toBe(true);
   });
 });
 
