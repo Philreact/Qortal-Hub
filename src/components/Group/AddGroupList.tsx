@@ -660,6 +660,7 @@ export const AddGroupList = ({
                         color: '#3f8cff',
                         flexShrink: 0,
                         fontSize: 15,
+                        verticalAlign: 'text-top',
                       }}
                     />
                   ) : (
@@ -669,6 +670,7 @@ export const AddGroupList = ({
                         color: '#dc2626',
                         flexShrink: 0,
                         fontSize: 15,
+                        verticalAlign: 'text-top',
                       }}
                     />
                   )}
@@ -775,17 +777,12 @@ export const AddGroupList = ({
               sx={{
                 background: membershipUnavailable
                   ? theme.palette.action.selected
-                  : openGroup
-                    ? 'linear-gradient(180deg, #3f8cff 0%, #2f6fd8 100%)'
-                    : 'linear-gradient(180deg, #dc2626 0%, #b91c1c 100%)',
-                border: `1px solid ${membershipUnavailable ? theme.palette.divider : openGroup ? '#5ea2ff' : '#ef4444'}`,
+                  : 'linear-gradient(180deg, #3f8cff 0%, #2f6fd8 100%)',
+                border: `1px solid ${membershipUnavailable ? theme.palette.divider : '#5ea2ff'}`,
                 borderRadius: '8px',
-                boxShadow:
-                  openGroup && !joinedGroup
-                    ? '0 3px 10px rgba(47,111,216,0.22), inset 0 1px 0 rgba(255,255,255,0.12)'
-                    : !joinedGroup && !openGroup
-                      ? '0 3px 10px rgba(185,28,28,0.22), inset 0 1px 0 rgba(255,255,255,0.12)'
-                      : 'none',
+                boxShadow: !joinedGroup
+                  ? '0 3px 10px rgba(47,111,216,0.22), inset 0 1px 0 rgba(255,255,255,0.12)'
+                  : 'none',
                 color: membershipUnavailable
                   ? 'text.secondary'
                   : openGroup
@@ -803,20 +800,12 @@ export const AddGroupList = ({
                 '&:hover': {
                   background: membershipUnavailable
                     ? theme.palette.action.selected
-                    : openGroup
-                      ? 'linear-gradient(180deg, #4b96ff 0%, #3779e8 100%)'
-                      : 'linear-gradient(180deg, #ef4444 0%, #dc2626 100%)',
-                  borderColor:
-                    openGroup && !membershipUnavailable ? '#78b1ff' : !membershipUnavailable && !openGroup ? '#f87171' : undefined,
-                  color: membershipUnavailable
-                    ? 'text.secondary'
-                    : openGroup
-                      ? '#ffffff'
-                      : '#ffffff',
+                    : 'linear-gradient(180deg, #4b96ff 0%, #3779e8 100%)',
+                  borderColor: !membershipUnavailable ? '#78b1ff' : undefined,
+                  color: membershipUnavailable ? 'text.secondary' : '#ffffff',
                 },
                 '&:active': {
-                  background:
-                    openGroup && !membershipUnavailable ? '#2b63c5' : !membershipUnavailable && !openGroup ? '#b91c1c' : undefined,
+                  background: !membershipUnavailable ? '#2b63c5' : undefined,
                   boxShadow: 'none',
                 },
                 '&:focus-visible': {
@@ -826,9 +815,7 @@ export const AddGroupList = ({
                 '&.Mui-disabled': {
                   color: membershipUnavailable
                     ? theme.palette.text.secondary
-                    : openGroup
-                      ? '#ffffff'
-                      : '#ffffff',
+                    : '#ffffff',
                   cursor: pendingGroup ? 'not-allowed' : undefined,
                   opacity: membershipUnavailable ? 0.72 : 0.5,
                 },
@@ -958,10 +945,24 @@ export const AddGroupList = ({
               >
                 {isSelectedGroupOpen ? (
                   <PublicRoundedIcon
-                    sx={{ flexShrink: 0, fontSize: 17, mr: 1, color: '#3f8cff' }}
+                    sx={{
+                      flexShrink: 0,
+                      fontSize: 17,
+                      mr: 1,
+                      color: '#3f8cff',
+                      verticalAlign: 'text-top',
+                    }}
                   />
                 ) : (
-                  <LockIcon sx={{ flexShrink: 0, fontSize: 17, mr: 1, color: '#dc2626' }} />
+                  <LockIcon
+                    sx={{
+                      flexShrink: 0,
+                      fontSize: 17,
+                      mr: 1,
+                      color: '#dc2626',
+                      verticalAlign: 'text-top',
+                    }}
+                  />
                 )}
                 <Typography component="span" sx={{ fontSize: 14 }}>
                   {isSelectedGroupOpen
@@ -1340,201 +1341,195 @@ export const AddGroupList = ({
             minHeight: 0,
           }}
         >
-<Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1 }}>
-              <TextField
-                inputProps={{ 'aria-label': t('group:find_groups.search_aria') }}
-                placeholder={t('group:find_groups.search_placeholder')}
-                variant="outlined"
-                fullWidth
-                value={inputValue}
-                onChange={handleChange}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <SearchRoundedIcon
-                        sx={{ color: 'text.secondary', fontSize: 18, mr: 0.5 }}
-                      />
-                    </InputAdornment>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1 }}>
+            <TextField
+              inputProps={{ 'aria-label': t('group:find_groups.search_aria') }}
+              placeholder={t('group:find_groups.search_placeholder')}
+              variant="outlined"
+              fullWidth
+              value={inputValue}
+              onChange={handleChange}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchRoundedIcon
+                      sx={{ color: 'text.secondary', fontSize: 18, mr: 0.5 }}
+                    />
+                  </InputAdornment>
+                ),
+                endAdornment: inputValue ? (
+                  <InputAdornment position="end">
+                    <IconButton
+                      aria-label={t('group:find_groups.clear_search')}
+                      onClick={() => setInputValue('')}
+                      size="small"
+                    >
+                      <CloseRoundedIcon fontSize="small" />
+                    </IconButton>
+                  </InputAdornment>
+                ) : undefined,
+              }}
+              sx={{
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: '9px',
+                  bgcolor: 'background.default',
+                  color: 'text.primary',
+                  fontSize: 15,
+                  height: 44,
+                  letterSpacing: '-0.005em',
+                  px: 2,
+                  '& .MuiOutlinedInput-notchedOutline': {
+                    borderColor: 'divider',
+                  },
+                  '&:hover .MuiOutlinedInput-notchedOutline': {
+                    borderColor: 'text.secondary',
+                  },
+                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                    borderColor: '#2563eb',
+                    borderWidth: 1,
+                  },
+                },
+              }}
+            />
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 1.25,
+              }}
+            >
+              {[
+                {
+                  icon: <EmojiEventsRoundedIcon sx={{ fontSize: 17 }} />,
+                  label: t('group:find_groups.sort_top'),
+                  selected: sortMode === 'top',
+                  onClick: () => handleSortChange('top'),
+                },
+                {
+                  icon: <BoltRoundedIcon sx={{ fontSize: 17 }} />,
+                  label: t('group:find_groups.sort_active'),
+                  selected: sortMode === 'active',
+                  onClick: () => handleSortChange('active'),
+                },
+                {
+                  icon: <ScheduleRoundedIcon sx={{ fontSize: 17 }} />,
+                  label: t('group:find_groups.sort_newest'),
+                  selected: sortMode === 'newest',
+                  onClick: () => handleSortChange('newest'),
+                },
+                {
+                  icon: <GroupsRoundedIcon sx={{ fontSize: 17 }} />,
+                  label: t('group:find_groups.sort_largest'),
+                  selected: sortMode === 'largest',
+                  onClick: () => handleSortChange('largest'),
+                },
+                {
+                  icon: (
+                    <AccountBalanceWalletRoundedIcon sx={{ fontSize: 17 }} />
                   ),
-                  endAdornment: inputValue ? (
-                    <InputAdornment position="end">
-                      <IconButton
-                        aria-label={t('group:find_groups.clear_search')}
-                        onClick={() => setInputValue('')}
-                        size="small"
-                      >
-                        <CloseRoundedIcon fontSize="small" />
-                      </IconButton>
-                    </InputAdornment>
-                  ) : undefined,
-                }}
-                sx={{
-                  '& .MuiOutlinedInput-root': {
+                  label: t('group:find_groups.sort_holdings'),
+                  selected: sortMode === 'holdings',
+                  onClick: () => handleSortChange('holdings'),
+                },
+              ].map((filter) => (
+                <ButtonBase
+                  aria-pressed={filter.selected}
+                  key={filter.label}
+                  onClick={filter.onClick}
+                  sx={{
+                    backgroundColor: filter.selected
+                      ? 'primary.main'
+                      : 'transparent',
+                    border: `1px solid ${filter.selected ? theme.palette.primary.main : theme.palette.divider}`,
                     borderRadius: '9px',
-                    bgcolor: 'background.default',
-                    color: 'text.primary',
-                    fontSize: 15,
-                    height: 44,
-                    letterSpacing: '-0.005em',
-                    px: 2,
-                    '& .MuiOutlinedInput-notchedOutline': {
-                      borderColor: 'divider',
-                    },
-                    '&:hover .MuiOutlinedInput-notchedOutline': {
-                      borderColor: 'text.secondary',
-                    },
-                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                      borderColor: '#2563eb',
-                      borderWidth: 1,
-                    },
-                  },
-                }}
-              />
-              <Box
-                sx={{
-                  alignItems: 'center',
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: 1.25,
-                }}
-              >
-                {[
-                  {
-                    icon: <EmojiEventsRoundedIcon sx={{ fontSize: 17 }} />,
-                    label: t('group:find_groups.sort_top'),
-                    selected: sortMode === 'top',
-                    onClick: () => handleSortChange('top'),
-                  },
-                  {
-                    icon: <BoltRoundedIcon sx={{ fontSize: 17 }} />,
-                    label: t('group:find_groups.sort_active'),
-                    selected: sortMode === 'active',
-                    onClick: () => handleSortChange('active'),
-                  },
-                  {
-                    icon: <ScheduleRoundedIcon sx={{ fontSize: 17 }} />,
-                    label: t('group:find_groups.sort_newest'),
-                    selected: sortMode === 'newest',
-                    onClick: () => handleSortChange('newest'),
-                  },
-                  {
-                    icon: <GroupsRoundedIcon sx={{ fontSize: 17 }} />,
-                    label: t('group:find_groups.sort_largest'),
-                    selected: sortMode === 'largest',
-                    onClick: () => handleSortChange('largest'),
-                  },
-                  {
-                    icon: (
-                      <AccountBalanceWalletRoundedIcon sx={{ fontSize: 17 }} />
-                    ),
-                    label: t('group:find_groups.sort_holdings'),
-                    selected: sortMode === 'holdings',
-                    onClick: () => handleSortChange('holdings'),
-                  },
-                ].map((filter) => (
-                  <ButtonBase
-                    aria-pressed={filter.selected}
-                    key={filter.label}
-                    onClick={filter.onClick}
-                    sx={{
+                    color: filter.selected
+                      ? 'primary.contrastText'
+                      : 'text.secondary',
+                    fontSize: 14,
+                    fontWeight: 600,
+                    gap: 1,
+                    height: 40,
+                    letterSpacing: '-0.01em',
+                    px: 1.75,
+                    '&:hover': {
                       backgroundColor: filter.selected
+                        ? 'primary.dark'
+                        : theme.palette.action.hover,
+                    },
+                    '&:focus-visible': {
+                      outline: '2px solid #60a5fa',
+                      outlineOffset: 2,
+                    },
+                  }}
+                >
+                  {filter.icon}
+                  {filter.label}
+                </ButtonBase>
+              ))}
+            </Box>
+            <Box
+              sx={{
+                alignItems: 'center',
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 1.25,
+              }}
+            >
+              {[
+                {
+                  label: t('group:find_groups.filter_all'),
+                  value: 'all' as const,
+                },
+                {
+                  icon: <PublicRoundedIcon sx={{ fontSize: 17 }} />,
+                  label: t('group:find_groups.filter_open'),
+                  value: 'open' as const,
+                },
+                {
+                  icon: <LockIcon sx={{ fontSize: 17 }} />,
+                  label: t('group:find_groups.filter_private'),
+                  value: 'private' as const,
+                },
+              ].map((filter) => (
+                <ButtonBase
+                  aria-pressed={accessFilter === filter.value}
+                  key={filter.value}
+                  onClick={() => setAccessFilter(filter.value)}
+                  sx={{
+                    backgroundColor:
+                      accessFilter === filter.value
                         ? 'primary.main'
                         : 'transparent',
-                      border: `1px solid ${filter.selected ? theme.palette.primary.main : theme.palette.divider}`,
-                      borderRadius: '9px',
-                      color: filter.selected
+                    border: `1px solid ${accessFilter === filter.value ? theme.palette.primary.main : theme.palette.divider}`,
+                    borderRadius: '9px',
+                    color:
+                      accessFilter === filter.value
                         ? 'primary.contrastText'
                         : 'text.secondary',
-                      fontSize: 14,
-                      fontWeight: 600,
-                      gap: 1,
-                      height: 40,
-                      letterSpacing: '-0.01em',
-                      px: 1.75,
-                      '&:hover': {
-                        backgroundColor: filter.selected
-                          ? 'primary.dark'
-                          : theme.palette.action.hover,
-                      },
-                      '&:focus-visible': {
-                        outline: '2px solid #60a5fa',
-                        outlineOffset: 2,
-                      },
-                    }}
-                  >
-                    {filter.icon}
-                    {filter.label}
-                  </ButtonBase>
-                ))}
-              </Box>
-              <Box
-                sx={{
-                  alignItems: 'center',
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: 1.25,
-                }}
-              >
-                {[
-                  {
-                    icon: (
-                      <>
-                        <PublicRoundedIcon sx={{ fontSize: 17 }} />
-                        <LockIcon sx={{ fontSize: 17, ml: -0.5 }} />
-                      </>
-                    ),
-                    label: t('group:find_groups.filter_all'),
-                    value: 'all' as const,
-                  },
-                  {
-                    icon: <PublicRoundedIcon sx={{ fontSize: 17 }} />,
-                    label: t('group:find_groups.filter_open'),
-                    value: 'open' as const,
-                  },
-                  {
-                    icon: <LockIcon sx={{ fontSize: 17 }} />,
-                    label: t('group:find_groups.filter_private'),
-                    value: 'private' as const,
-                  },
-                ].map((filter) => (
-                  <ButtonBase
-                    aria-pressed={accessFilter === filter.value}
-                    key={filter.value}
-                    onClick={() => setAccessFilter(filter.value)}
-                    sx={{
+                    fontSize: 14,
+                    fontWeight: 600,
+                    gap: 1,
+                    height: 40,
+                    letterSpacing: '-0.01em',
+                    px: 1.75,
+                    '&:hover': {
                       backgroundColor:
                         accessFilter === filter.value
-                          ? 'primary.main'
-                          : 'transparent',
-                      border: `1px solid ${accessFilter === filter.value ? theme.palette.primary.main : theme.palette.divider}`,
-                      borderRadius: '9px',
-                      color:
-                        accessFilter === filter.value
-                          ? 'primary.contrastText'
-                          : 'text.secondary',
-                      fontSize: 14,
-                      fontWeight: 600,
-                      gap: 1,
-                      height: 40,
-                      letterSpacing: '-0.01em',
-                      px: 1.75,
-                      '&:hover': {
-                        backgroundColor:
-                          accessFilter === filter.value
-                            ? 'primary.dark'
-                            : theme.palette.action.hover,
-                      },
-                      '&:focus-visible': {
-                        outline: '2px solid #60a5fa',
-                        outlineOffset: 2,
-                      },
-                    }}
-                  >
-                    {filter.icon}
-                    {filter.label}
-                  </ButtonBase>
-                ))}
-              </Box>
+                          ? 'primary.dark'
+                          : theme.palette.action.hover,
+                    },
+                    '&:focus-visible': {
+                      outline: '2px solid #60a5fa',
+                      outlineOffset: 2,
+                    },
+                  }}
+                >
+                  {filter.icon}
+                  {filter.label}
+                </ButtonBase>
+              ))}
+            </Box>
           </Box>
 
           <Box
