@@ -632,12 +632,13 @@ export const AddGroupList = ({
                 }}
               >
                 <Typography
+                variant='h1'
                   sx={{
                     fontSize: 16,
                     fontWeight: 700,
                     color: theme.palette.text.primary,
                     letterSpacing: '-0.015em',
-                    lineHeight: '21px',
+                lineHeight: '16px',
                     minWidth: 0,
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
@@ -659,9 +660,7 @@ export const AddGroupList = ({
                       sx={{
                         color: '#3f8cff',
                         flexShrink: 0,
-                        fontSize: 15,
-                        verticalAlign: 'text-top',
-                      }}
+                        fontSize: 15,                      }}
                     />
                   ) : (
                     <LockIcon
@@ -670,7 +669,6 @@ export const AddGroupList = ({
                         color: '#dc2626',
                         flexShrink: 0,
                         fontSize: 15,
-                        verticalAlign: 'text-top',
                       }}
                     />
                   )}
@@ -950,17 +948,15 @@ export const AddGroupList = ({
                       fontSize: 17,
                       mr: 1,
                       color: '#3f8cff',
-                      verticalAlign: 'text-top',
                     }}
                   />
                 ) : (
                   <LockIcon
                     sx={{
                       flexShrink: 0,
-                      fontSize: 17,
+                      fontSize: 16,
                       mr: 1,
                       color: '#dc2626',
-                      verticalAlign: 'text-top',
                     }}
                   />
                 )}
