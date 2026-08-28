@@ -42,9 +42,7 @@ export const CommunityAppsTab = ({
     sortValue === 'highest_rated' || sortValue === 'most_rated';
   const ratingsForSortAtom = useMemo(
     () =>
-      atom((get) =>
-        isRatingSort ? get(ratingsStoreAtom) : EMPTY_RATINGS_MAP
-      ),
+      atom((get) => (isRatingSort ? get(ratingsStoreAtom) : EMPTY_RATINGS_MAP)),
     [isRatingSort]
   );
   const ratingsStore = useAtomValue(ratingsForSortAtom);
@@ -67,7 +65,14 @@ export const CommunityAppsTab = ({
       search: searchValue,
       ratingsMap: ratingsStore,
     });
-  }, [communityApps, searchValue, categoryValue, statusValue, sortValue, ratingsStore]);
+  }, [
+    communityApps,
+    searchValue,
+    categoryValue,
+    statusValue,
+    sortValue,
+    ratingsStore,
+  ]);
 
   useEffect(() => {
     const element = gridRef.current;

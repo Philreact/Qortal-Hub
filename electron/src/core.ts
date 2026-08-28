@@ -7,7 +7,11 @@ import readline from 'readline';
 import { promises as fsPromise } from 'fs';
 import os from 'os';
 
-import { log as loggerLog, error as loggerError, warn as loggerWarn } from './logger';
+import {
+  log as loggerLog,
+  error as loggerError,
+  warn as loggerWarn,
+} from './logger';
 
 export const CORE_HTTP_LOCALHOST = 'http://127.0.0.1:12391';
 export const CORE_LOCALHOST = '127.0.0.1';

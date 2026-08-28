@@ -375,14 +375,14 @@ function AuthenticatedUserMenu({
   return (
     <>
       {primaryName ? (
-      <Tooltip
+        <Tooltip
           title={tooltipTitle(primaryName)}
-        placement="bottom"
-        arrow
-        slotProps={tooltipSlotProps}
-      >
-        {accountButton}
-      </Tooltip>
+          placement="bottom"
+          arrow
+          slotProps={tooltipSlotProps}
+        >
+          {accountButton}
+        </Tooltip>
       ) : (
         accountButton
       )}

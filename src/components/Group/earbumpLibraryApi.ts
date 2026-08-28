@@ -294,7 +294,10 @@ const fetchDualIdentifierSearch = async (
   const enjoyTracks =
     enjoyResult.status === 'fulfilled' ? enjoyResult.value : [];
 
-  if (earbumpResult.status === 'rejected' && enjoyResult.status === 'rejected') {
+  if (
+    earbumpResult.status === 'rejected' &&
+    enjoyResult.status === 'rejected'
+  ) {
     throw earbumpResult.reason;
   }
 

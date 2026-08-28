@@ -94,7 +94,10 @@ export function computeDesiredPoolSize(
   // Growth signals — take the strongest match.
   if (input.burstWindowActive && current < hwCap && multiSourceGrowEligible) {
     return {
-      desiredSize: Math.min(hwCap, Math.max(current, DECRYPT_POOL_MIN_SIZE + 1)),
+      desiredSize: Math.min(
+        hwCap,
+        Math.max(current, DECRYPT_POOL_MIN_SIZE + 1)
+      ),
       reason: 'grow-burst-window',
     };
   }
@@ -104,8 +107,7 @@ export function computeDesiredPoolSize(
     hwCap >= 4 &&
     multiSourceGrowEligible &&
     (input.activeSourceCount >= DECRYPT_POOL_GROW_TO_4_SOURCES ||
-      (input.peakDepthRecent >=
-        DECRYPT_POOL_GROW_TO_4_DEPTH_THRESHOLD &&
+      (input.peakDepthRecent >= DECRYPT_POOL_GROW_TO_4_DEPTH_THRESHOLD &&
         input.sustainedAboveGrow4Ms >= DECRYPT_POOL_GROW_SUSTAINED_MS))
   ) {
     const reason =
@@ -120,8 +122,7 @@ export function computeDesiredPoolSize(
     hwCap >= 3 &&
     multiSourceGrowEligible &&
     (input.activeSourceCount >= DECRYPT_POOL_GROW_TO_3_SOURCES ||
-      (input.peakDepthRecent >=
-        DECRYPT_POOL_GROW_TO_3_DEPTH_THRESHOLD &&
+      (input.peakDepthRecent >= DECRYPT_POOL_GROW_TO_3_DEPTH_THRESHOLD &&
         input.sustainedAboveGrow3Ms >= DECRYPT_POOL_GROW_SUSTAINED_MS))
   ) {
     const reason =

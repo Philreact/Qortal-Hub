@@ -96,7 +96,10 @@ export function encodeAudioPacketV2(
   if (addrBytes.length === 0 || addrBytes.length > GCALL_AUDIO_MAX_ADDR_LEN) {
     throw new Error('GCALL encode: invalid address length');
   }
-  if (opusFrame.length < GCALL_AUDIO_MIN_OPUS_LEN || opusFrame.length > GCALL_AUDIO_MAX_OPUS_LEN) {
+  if (
+    opusFrame.length < GCALL_AUDIO_MIN_OPUS_LEN ||
+    opusFrame.length > GCALL_AUDIO_MAX_OPUS_LEN
+  ) {
     throw new Error('GCALL encode: invalid opus length');
   }
 
@@ -139,13 +142,15 @@ function tryDecodeV2(
   const box = buf.subarray(24);
   const inner = provider.open(box, nonce, roomKey);
   if (!inner) return null;
-  if (inner.length < 1 + 1 + 1 + 1 + 2 + 4 + GCALL_AUDIO_MIN_OPUS_LEN) return null;
+  if (inner.length < 1 + 1 + 1 + 1 + 2 + 4 + GCALL_AUDIO_MIN_OPUS_LEN)
+    return null;
   let o = 0;
   const version = inner[o++];
   if (version !== GCALL_AUDIO_PACKET_V2_VERSION) return null;
   const addrLen = inner[o++];
   if (addrLen === 0 || addrLen > GCALL_AUDIO_MAX_ADDR_LEN) return null;
-  if (o + addrLen + 1 + 2 + 4 + GCALL_AUDIO_MIN_OPUS_LEN > inner.length) return null;
+  if (o + addrLen + 1 + 2 + 4 + GCALL_AUDIO_MIN_OPUS_LEN > inner.length)
+    return null;
   const sourceAddr = new TextDecoder().decode(inner.subarray(o, o + addrLen));
   o += addrLen;
   const vad = inner[o++] === 1;
@@ -153,7 +158,10 @@ function tryDecodeV2(
   const timestampMs =
     (inner[o++] << 24) | (inner[o++] << 16) | (inner[o++] << 8) | inner[o++];
   const opusFrame = inner.subarray(o);
-  if (opusFrame.length < GCALL_AUDIO_MIN_OPUS_LEN || opusFrame.length > GCALL_AUDIO_MAX_OPUS_LEN) {
+  if (
+    opusFrame.length < GCALL_AUDIO_MIN_OPUS_LEN ||
+    opusFrame.length > GCALL_AUDIO_MAX_OPUS_LEN
+  ) {
     return null;
   }
   return {
@@ -178,7 +186,10 @@ export function encodeAudioPacketV3(
   roomKey: Uint8Array,
   provider: SecretBoxProvider = defaultSecretBoxProvider
 ): Uint8Array {
-  if (opusFrames.length === 0 || opusFrames.length > GCALL_AUDIO_V3_MAX_FRAMES) {
+  if (
+    opusFrames.length === 0 ||
+    opusFrames.length > GCALL_AUDIO_V3_MAX_FRAMES
+  ) {
     throw new Error('GCALL v3 encode: frame count 1..MAX');
   }
   const addrBytes = new TextEncoder().encode(sourceAddr);
@@ -187,7 +198,10 @@ export function encodeAudioPacketV3(
   }
   let innerBody = 1 + 1 + addrBytes.length + 1 + 2 + 4 + 1;
   for (const f of opusFrames) {
-    if (f.length < GCALL_AUDIO_MIN_OPUS_LEN || f.length > GCALL_AUDIO_MAX_OPUS_LEN) {
+    if (
+      f.length < GCALL_AUDIO_MIN_OPUS_LEN ||
+      f.length > GCALL_AUDIO_MAX_OPUS_LEN
+    ) {
       throw new Error('GCALL v3 encode: invalid opus length');
     }
     innerBody += 2 + f.length;
@@ -252,7 +266,8 @@ function tryDecodeV3(
   for (let i = 0; i < frameCount; i++) {
     if (o + 2 > inner.length) return [];
     const ol = (inner[o++] << 8) | inner[o++];
-    if (ol < GCALL_AUDIO_MIN_OPUS_LEN || ol > GCALL_AUDIO_MAX_OPUS_LEN) return [];
+    if (ol < GCALL_AUDIO_MIN_OPUS_LEN || ol > GCALL_AUDIO_MAX_OPUS_LEN)
+      return [];
     if (o + ol > inner.length) return [];
     const opusFrame = new Uint8Array(inner.subarray(o, o + ol));
     o += ol;
@@ -278,7 +293,9 @@ function tryDecodeV1(
     const addrLen = buf[off++];
     if (addrLen === 0 || addrLen > GCALL_AUDIO_MAX_ADDR_LEN) return null;
     if (off + addrLen + 1 + 2 + 4 + 24 > buf.length) return null;
-    const sourceAddr = new TextDecoder().decode(buf.subarray(off, off + addrLen));
+    const sourceAddr = new TextDecoder().decode(
+      buf.subarray(off, off + addrLen)
+    );
     off += addrLen;
     const vad = buf[off++] === 1;
     const seq = (buf[off++] << 8) | buf[off++];
@@ -289,7 +306,10 @@ function tryDecodeV1(
     const ciphertext = buf.subarray(off);
     const plaintext = provider.open(ciphertext, nonce, roomKey);
     if (!plaintext) return null;
-    if (plaintext.length < GCALL_AUDIO_MIN_OPUS_LEN || plaintext.length > GCALL_AUDIO_MAX_OPUS_LEN) {
+    if (
+      plaintext.length < GCALL_AUDIO_MIN_OPUS_LEN ||
+      plaintext.length > GCALL_AUDIO_MAX_OPUS_LEN
+    ) {
       return null;
     }
     return {

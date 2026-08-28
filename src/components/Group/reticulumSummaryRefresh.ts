@@ -18,8 +18,7 @@ export const getReticulumMentionBadgeCount = (
   summaries: Record<string, ReticulumMentionSummary>
 ): number =>
   Object.values(summaries || {}).reduce(
-    (total, summary) =>
-      total + Math.max(0, Number(summary?.mentionCount) || 0),
+    (total, summary) => total + Math.max(0, Number(summary?.mentionCount) || 0),
     0
   );
 

@@ -169,8 +169,7 @@ export const MyAppsTab = ({
   }, [myNames, availableQapps, searchValue]);
 
   const isLoadingNames = myAddress != null && !namesLoaded;
-  const hasNoNames =
-    myAddress != null && namesLoaded && myNames.length === 0;
+  const hasNoNames = myAddress != null && namesLoaded && myNames.length === 0;
 
   if (isLoadingNames) {
     return (

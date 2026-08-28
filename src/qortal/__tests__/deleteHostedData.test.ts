@@ -212,7 +212,8 @@ describe('deleteHostedData', () => {
     simulatePermission(true);
     vi.stubGlobal(
       'fetch',
-      vi.fn()
+      vi
+        .fn()
         .mockResolvedValueOnce({ ok: true, status: 200 }) // item 1: ok
         .mockResolvedValueOnce({
           ok: false,
@@ -267,10 +268,7 @@ describe('deleteHostedData', () => {
     const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     vi.stubGlobal('fetch', mockFetch);
 
-    await deleteHostedData(
-      { hostedData: [makeItem(1), makeItem(2)] },
-      false
-    );
+    await deleteHostedData({ hostedData: [makeItem(1), makeItem(2)] }, false);
 
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(mockFetch).toHaveBeenCalledWith(

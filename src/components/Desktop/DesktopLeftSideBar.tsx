@@ -24,6 +24,7 @@ import {
   enabledDevModeAtom,
   hasUnreadGroupsAtom,
   isNewTabWindowAtom,
+  showActionDrawerAtom,
   supportChatOpenAtom,
 } from '../../atoms/global';
 import { keyframes } from '@mui/material/styles';
@@ -70,10 +71,7 @@ const SIDEBAR_OPEN_DELAY_MS = 0;
 const SIDEBAR_CLOSE_DELAY_MS = 140;
 const SIDEBAR_NUDGE_POSITION_KEY = 'qortal-hub-sidebar-nudge-top-v1';
 
-export const clampSidebarNudgeTop = (
-  value: number,
-  viewportHeight: number
-) =>
+export const clampSidebarNudgeTop = (value: number, viewportHeight: number) =>
   Math.max(
     0,
     Math.min(
@@ -85,9 +83,7 @@ export const clampSidebarNudgeTop = (
 const readSidebarNudgeTop = () => {
   if (typeof window === 'undefined') return 0;
   try {
-    const savedValue = window.localStorage.getItem(
-      SIDEBAR_NUDGE_POSITION_KEY
-    );
+    const savedValue = window.localStorage.getItem(SIDEBAR_NUDGE_POSITION_KEY);
     if (savedValue !== null) {
       const saved = Number(savedValue);
       if (Number.isFinite(saved)) {
@@ -288,6 +284,7 @@ export const DesktopSideBar = ({
   const isEnabledDevMode = useAtomValue(enabledDevModeAtom);
   const setIsNewTabWindow = useSetAtom(isNewTabWindowAtom);
   const hasUnreadGroups = useAtomValue(hasUnreadGroupsAtom);
+  const showActionDrawer = useAtomValue(showActionDrawerAtom);
   const theme = useTheme();
   const { t } = useTranslation(['core']);
   const [isVisible, setIsVisible] = useState(false);
@@ -447,22 +444,24 @@ export const DesktopSideBar = ({
 
   return (
     <>
-      <Box
-        onMouseEnter={showSidebar}
-        sx={{
-          position: 'fixed',
-          left: 0,
-          top: `${clampSidebarNudgeTop(
-            nudgeTop - (EDGE_SENSOR_HEIGHT_PX - TRIGGER_HEIGHT_PX) / 2,
-            viewportHeight - EDGE_SENSOR_HEIGHT_PX + TRIGGER_HEIGHT_PX
-          )}px`,
-          height: `${EDGE_SENSOR_HEIGHT_PX}px`,
-          width: `${EDGE_SENSOR_WIDTH_PX}px`,
-          opacity: 0,
-          pointerEvents: isVisible ? 'none' : 'auto',
-          zIndex: 9996,
-        }}
-      />
+      {showActionDrawer && (
+        <Box
+          onMouseEnter={showSidebar}
+          sx={{
+            position: 'fixed',
+            left: 0,
+            top: `${clampSidebarNudgeTop(
+              nudgeTop - (EDGE_SENSOR_HEIGHT_PX - TRIGGER_HEIGHT_PX) / 2,
+              viewportHeight - EDGE_SENSOR_HEIGHT_PX + TRIGGER_HEIGHT_PX
+            )}px`,
+            height: `${EDGE_SENSOR_HEIGHT_PX}px`,
+            width: `${EDGE_SENSOR_WIDTH_PX}px`,
+            opacity: 0,
+            pointerEvents: isVisible ? 'none' : 'auto',
+            zIndex: 9996,
+          }}
+        />
+      )}
 
       <Box
         sx={{
@@ -474,17 +473,25 @@ export const DesktopSideBar = ({
           backgroundColor: sidebarSurfaceColor,
           borderRight: `1px solid ${theme.palette.border.subtle}`,
           boxShadow: sidebarSurfaceShadow,
-          opacity: isVisible ? 1 : 0,
-          transform: isVisible ? 'translateX(0)' : 'translateX(-100%)',
-          pointerEvents: 'none',
+          opacity: showActionDrawer ? (isVisible ? 1 : 0) : 1,
+          transform: showActionDrawer
+            ? isVisible
+              ? 'translateX(0)'
+              : 'translateX(-100%)'
+            : 'translateX(0)',
+          pointerEvents: showActionDrawer ? 'none' : 'auto',
           transition: `transform ${OVERLAY_TRANSITION}, opacity ${OVERLAY_TRANSITION}, box-shadow 200ms ease`,
-          overflow: isVisible ? 'visible' : 'hidden',
+          overflow: showActionDrawer
+            ? isVisible
+              ? 'visible'
+              : 'hidden'
+            : 'visible',
           zIndex: 9998,
         }}
       >
         <Box
-          onMouseEnter={showSidebarImmediate}
-          onMouseLeave={hideSidebar}
+          onMouseEnter={showActionDrawer ? showSidebarImmediate : undefined}
+          onMouseLeave={showActionDrawer ? hideSidebar : undefined}
           sx={{
             position: 'absolute',
             left: 0,
@@ -496,7 +503,11 @@ export const DesktopSideBar = ({
             alignItems: 'center',
             justifyContent: 'center',
             overflow: 'visible',
-            pointerEvents: isVisible ? 'auto' : 'none',
+            pointerEvents: showActionDrawer
+              ? isVisible
+                ? 'auto'
+                : 'none'
+              : 'auto',
             '& .sidebarItem:hover .sidebarInfoLogo, & .sidebarItem:focus-visible .sidebarInfoLogo, & .sidebarItem.isOpen .sidebarInfoLogo':
               {
                 filter: 'grayscale(0) saturate(1) brightness(1) contrast(1)',
@@ -670,80 +681,82 @@ export const DesktopSideBar = ({
         </Box>
       </Box>
 
-      <Box
-        aria-label="Move sidebar handle"
-        onMouseEnter={showSidebarImmediate}
-        onPointerDown={(event) => {
-          if (event.button !== 0) return;
-          event.preventDefault();
-          event.stopPropagation();
-          nudgeDragRef.current = {
-            offsetY: event.clientY - nudgeTopRef.current,
-            pointerId: event.pointerId,
-          };
-          setIsDraggingNudge(true);
-          event.currentTarget.setPointerCapture(event.pointerId);
-          showSidebarImmediate();
-        }}
-        onPointerMove={(event) => {
-          const drag = nudgeDragRef.current;
-          if (!drag || drag.pointerId !== event.pointerId) return;
-          event.preventDefault();
-          const next = clampSidebarNudgeTop(
-            event.clientY - drag.offsetY,
-            viewportHeight
-          );
-          nudgeTopRef.current = next;
-          setNudgeTop(next);
-        }}
-        onPointerUp={(event) => finishNudgeDrag(event.pointerId)}
-        onPointerCancel={(event) => finishNudgeDrag(event.pointerId)}
-        onLostPointerCapture={(event) => finishNudgeDrag(event.pointerId)}
-        role="separator"
-        sx={{
-          background:
-            theme.palette.mode === 'dark'
-              ? isDraggingNudge
-                ? 'rgba(255, 255, 255, 0.24)'
-                : 'rgba(255, 255, 255, 0.14)'
-              : isDraggingNudge
-                ? 'rgba(17, 24, 39, 0.2)'
-                : 'rgba(17, 24, 39, 0.12)',
-          borderRadius: '0 10px 10px 0',
-          boxShadow:
-            theme.palette.mode === 'dark'
-              ? '0 0 0 1px rgba(255,255,255,0.08)'
-              : '0 0 0 1px rgba(17,24,39,0.08)',
-          cursor: isDraggingNudge ? 'grabbing' : 'grab',
-          height: `${TRIGGER_HEIGHT_PX}px`,
-          left: isVisible ? `${SIDEBAR_WIDTH_PX}px` : 0,
-          position: 'fixed',
-          touchAction: 'none',
-          top: `${nudgeTop}px`,
-          transition: isDraggingNudge
-            ? 'background 120ms ease'
-            : `left ${OVERLAY_TRANSITION}, background 200ms ease, box-shadow 200ms ease`,
-          userSelect: 'none',
-          width: `${TRIGGER_WIDTH_PX}px`,
-          zIndex: 9999,
-          '&::after':
-            effectiveUnreadChat && !isVisible
-              ? {
-                  animation: `${pulse} 1.2s ease-out 2`,
-                  background: unreadAccent,
-                  borderRadius: '50%',
-                  boxShadow: `0 0 0 2px ${alpha(unreadAccent, 0.14)}`,
-                  content: '""',
-                  height: 6,
-                  position: 'absolute',
-                  right: 2,
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  width: 6,
-                }
-              : undefined,
-        }}
-      />
+      {showActionDrawer && (
+        <Box
+          aria-label="Move sidebar handle"
+          onMouseEnter={showSidebarImmediate}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            nudgeDragRef.current = {
+              offsetY: event.clientY - nudgeTopRef.current,
+              pointerId: event.pointerId,
+            };
+            setIsDraggingNudge(true);
+            event.currentTarget.setPointerCapture(event.pointerId);
+            showSidebarImmediate();
+          }}
+          onPointerMove={(event) => {
+            const drag = nudgeDragRef.current;
+            if (!drag || drag.pointerId !== event.pointerId) return;
+            event.preventDefault();
+            const next = clampSidebarNudgeTop(
+              event.clientY - drag.offsetY,
+              viewportHeight
+            );
+            nudgeTopRef.current = next;
+            setNudgeTop(next);
+          }}
+          onPointerUp={(event) => finishNudgeDrag(event.pointerId)}
+          onPointerCancel={(event) => finishNudgeDrag(event.pointerId)}
+          onLostPointerCapture={(event) => finishNudgeDrag(event.pointerId)}
+          role="separator"
+          sx={{
+            background:
+              theme.palette.mode === 'dark'
+                ? isDraggingNudge
+                  ? 'rgba(255, 255, 255, 0.24)'
+                  : 'rgba(255, 255, 255, 0.14)'
+                : isDraggingNudge
+                  ? 'rgba(17, 24, 39, 0.2)'
+                  : 'rgba(17, 24, 39, 0.12)',
+            borderRadius: '0 10px 10px 0',
+            boxShadow:
+              theme.palette.mode === 'dark'
+                ? '0 0 0 1px rgba(255,255,255,0.08)'
+                : '0 0 0 1px rgba(17,24,39,0.08)',
+            cursor: isDraggingNudge ? 'grabbing' : 'grab',
+            height: `${TRIGGER_HEIGHT_PX}px`,
+            left: isVisible ? `${SIDEBAR_WIDTH_PX}px` : 0,
+            position: 'fixed',
+            touchAction: 'none',
+            top: `${nudgeTop}px`,
+            transition: isDraggingNudge
+              ? 'background 120ms ease'
+              : `left ${OVERLAY_TRANSITION}, background 200ms ease, box-shadow 200ms ease`,
+            userSelect: 'none',
+            width: `${TRIGGER_WIDTH_PX}px`,
+            zIndex: 9999,
+            '&::after':
+              effectiveUnreadChat && !isVisible
+                ? {
+                    animation: `${pulse} 1.2s ease-out 2`,
+                    background: unreadAccent,
+                    borderRadius: '50%',
+                    boxShadow: `0 0 0 2px ${alpha(unreadAccent, 0.14)}`,
+                    content: '""',
+                    height: 6,
+                    position: 'absolute',
+                    right: 2,
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    width: 6,
+                  }
+                : undefined,
+          }}
+        />
+      )}
     </>
   );
 };

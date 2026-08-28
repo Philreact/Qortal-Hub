@@ -1534,9 +1534,7 @@ export const MessageItemComponent = ({
         } else if (!payload.failed && !payload.canceled) {
           fileResourceFailureCheckRef.current += 1;
           setFileResourceStatus((status) =>
-            status === 'ready' || status === 'saving'
-              ? status
-              : 'downloading'
+            status === 'ready' || status === 'saving' ? status : 'downloading'
           );
         }
       }

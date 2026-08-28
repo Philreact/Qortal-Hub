@@ -3,7 +3,10 @@ import * as fs from 'fs';
 import * as nodeCrypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
-import { ReticulumResourceStore, type ReticulumResourceManifest } from './reticulum-resource-store';
+import {
+  ReticulumResourceStore,
+  type ReticulumResourceManifest,
+} from './reticulum-resource-store';
 import {
   RETICULUM_RESOURCE_TRANSFER_AUTHORIZATION_TIMEOUT_MS,
   RETICULUM_RESOURCE_TRANSFER_FINALIZATION_TIMEOUT_MS,
@@ -18,7 +21,9 @@ import {
 
 describe('reticulum resource transfer storage protection', () => {
   const stores: ReticulumResourceStore[] = [];
-  const transfers: Array<ReticulumResourceTransferManager<Record<string, never>>> = [];
+  const transfers: Array<
+    ReticulumResourceTransferManager<Record<string, never>>
+  > = [];
 
   afterEach(() => {
     while (transfers.length) transfers.pop()?.close();
@@ -27,13 +32,17 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('does not touch resource storage after the transfer manager closes', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     const store = new ReticulumResourceStore({
       dbPath: path.join(dir, 'resources.db'),
       rootDir: path.join(dir, 'resources'),
     });
     stores.push(store);
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       resourceStore: store,
       buildRequestPayloads: async () => [],
     });
@@ -58,7 +67,9 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('recreates expired leases and reservations when a provider appears later', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     let now = 100_000;
     const store = new ReticulumResourceStore({
       dbPath: path.join(dir, 'resources.db'),
@@ -78,7 +89,9 @@ describe('reticulum resource transfer storage protection', () => {
       createdAt: now,
       metadata: { groupId: 716 },
     };
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       resourceStore: store,
       now: () => now,
       buildRequestPayloads: async () => [],
@@ -96,7 +109,9 @@ describe('reticulum resource transfer storage protection', () => {
     await (transfer as any).processDownloads();
     now += 2;
     expect(store.getStorageStatus().reservedBytes).toBe(0);
-    expect(transfer.addCandidatePeers(manifest.fileHash, ['provider-a'])).toBe(true);
+    expect(transfer.addCandidatePeers(manifest.fileHash, ['provider-a'])).toBe(
+      true
+    );
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(state.storageLeaseId).not.toBe(oldLeaseId);
@@ -105,7 +120,9 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('builds the missing-range index once and keeps active ranges pending', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     const store = new ReticulumResourceStore({
       dbPath: path.join(dir, 'resources.db'),
       rootDir: path.join(dir, 'resources'),
@@ -125,17 +142,24 @@ describe('reticulum resource transfer storage protection', () => {
     };
     store.storeManifest(manifest, { provenance: 'remote_downloaded' });
     const completedRangeSpy = vi.spyOn(store, 'getCompletedRanges');
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       resourceStore: store,
       buildRequestPayloads: async () => [],
     });
     transfers.push(transfer);
 
-    const state = (transfer as any).upsertDownload(716, manifest, undefined, ['provider-a']);
+    const state = (transfer as any).upsertDownload(716, manifest, undefined, [
+      'provider-a',
+    ]);
     expect(completedRangeSpy).toHaveBeenCalledTimes(1);
     const firstRange = state.missingRanges.values().next().value;
     const firstKey = `${firstRange.startByte}:${firstRange.endByteExclusive}`;
-    state.inFlightRanges.set(firstKey, { transferId: 'active-transfer', startedAt: Date.now() });
+    state.inFlightRanges.set(firstKey, {
+      transferId: 'active-transfer',
+      startedAt: Date.now(),
+    });
 
     await (transfer as any).dispatchRequests(state);
     await (transfer as any).dispatchRequests(state);
@@ -146,7 +170,9 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('discards corrupt completed data and retries without reporting completion', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     const store = new ReticulumResourceStore({
       dbPath: path.join(dir, 'resources.db'),
       rootDir: path.join(dir, 'resources'),
@@ -161,7 +187,10 @@ describe('reticulum resource transfer storage protection', () => {
       fileName: 'attachment.bin',
       mimeType: 'application/octet-stream',
       sizeBytes: expectedContents.length,
-      fileHash: nodeCrypto.createHash('sha256').update(expectedContents).digest('hex'),
+      fileHash: nodeCrypto
+        .createHash('sha256')
+        .update(expectedContents)
+        .digest('hex'),
       encrypted: false,
       createdAt: Date.now(),
       metadata: { groupId: 716 },
@@ -174,14 +203,21 @@ describe('reticulum resource transfer storage protection', () => {
       corruptContents
     );
     const progressEvents: ReticulumResourceTransferProgress[] = [];
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       resourceStore: store,
       buildRequestPayloads: async () => [],
       onProgress: (progress) => progressEvents.push(progress),
     });
     transfers.push(transfer);
 
-    const state = (transfer as any).upsertDownload(716, manifest, undefined, []);
+    const state = (transfer as any).upsertDownload(
+      716,
+      manifest,
+      undefined,
+      []
+    );
     expect(state.missingRanges.size).toBe(0);
     (transfer as any).emitProgress(state);
     expect(progressEvents.at(-1)).toEqual(
@@ -212,7 +248,9 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('times out a range request that never reaches provider authorization', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     let now = 100_000;
     const store = new ReticulumResourceStore({
       dbPath: path.join(dir, 'resources.db'),
@@ -220,8 +258,12 @@ describe('reticulum resource transfer storage protection', () => {
       now: () => now,
     });
     stores.push(store);
-    const cancelReticulumResourceDetailed = vi.fn().mockResolvedValue({ ok: true });
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const cancelReticulumResourceDetailed = vi
+      .fn()
+      .mockResolvedValue({ ok: true });
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       bridge: { cancelReticulumResourceDetailed } as any,
       resourceStore: store,
       now: () => now,
@@ -266,7 +308,9 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('retries when transport reaches 100% but never hands off the received file', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     vi.useFakeTimers({ now: 100_000 });
     const now = () => Date.now();
     const store = new ReticulumResourceStore({
@@ -289,15 +333,24 @@ describe('reticulum resource transfer storage protection', () => {
     };
     store.storeManifest(manifest, { provenance: 'remote_downloaded' });
     const peer = 'b'.repeat(32);
-    const cancelReticulumResourceDetailed = vi.fn().mockResolvedValue({ ok: true });
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const cancelReticulumResourceDetailed = vi
+      .fn()
+      .mockResolvedValue({ ok: true });
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       bridge: { cancelReticulumResourceDetailed } as any,
       resourceStore: store,
       now,
       buildRequestPayloads: async () => [],
     });
     transfers.push(transfer);
-    const state = (transfer as any).upsertDownload(716, manifest, 'image-event', [peer]);
+    const state = (transfer as any).upsertDownload(
+      716,
+      manifest,
+      'image-event',
+      [peer]
+    );
     const transferId = 'stalled-finalization';
     const offer = {
       transferId,
@@ -328,9 +381,14 @@ describe('reticulum resource transfer storage protection', () => {
       progress: 1,
     });
     expect(store.getCompletedRanges(manifest.fileHash)).toEqual([]);
-    expect((transfer as any).transferProgressWatch.get(transferId).finalizationStartedAt).toBe(now());
+    expect(
+      (transfer as any).transferProgressWatch.get(transferId)
+        .finalizationStartedAt
+    ).toBe(now());
 
-    await vi.advanceTimersByTimeAsync(RETICULUM_RESOURCE_TRANSFER_FINALIZATION_TIMEOUT_MS - 1);
+    await vi.advanceTimersByTimeAsync(
+      RETICULUM_RESOURCE_TRANSFER_FINALIZATION_TIMEOUT_MS - 1
+    );
     expect(cancelReticulumResourceDetailed).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(2);
@@ -348,7 +406,9 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('disarms the finalization watchdog when the terminal received event arrives', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     let now = 100_000;
     const store = new ReticulumResourceStore({
       dbPath: path.join(dir, 'resources.db'),
@@ -369,15 +429,21 @@ describe('reticulum resource transfer storage protection', () => {
       metadata: { groupId: 716 },
     };
     store.storeManifest(manifest, { provenance: 'remote_downloaded' });
-    const cancelReticulumResourceDetailed = vi.fn().mockResolvedValue({ ok: true });
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const cancelReticulumResourceDetailed = vi
+      .fn()
+      .mockResolvedValue({ ok: true });
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       bridge: { cancelReticulumResourceDetailed } as any,
       resourceStore: store,
       now: () => now,
       buildRequestPayloads: async () => [],
     });
     transfers.push(transfer);
-    (transfer as any).upsertDownload(716, manifest, 'image-event', ['c'.repeat(32)]);
+    (transfer as any).upsertDownload(716, manifest, 'image-event', [
+      'c'.repeat(32),
+    ]);
     const transferId = 'received-finalization';
     (transfer as any).offers.set(transferId, {
       transferId,
@@ -397,9 +463,9 @@ describe('reticulum resource transfer storage protection', () => {
       receivingStarted: false,
       phase: 'requesting',
     });
-    const readAndHashFile = vi.spyOn(store, 'readAndHashFile').mockReturnValue(
-      new Promise(() => undefined)
-    );
+    const readAndHashFile = vi
+      .spyOn(store, 'readAndHashFile')
+      .mockReturnValue(new Promise(() => undefined));
 
     transfer.handleResourceEvent({
       status: 'receiving',
@@ -413,8 +479,12 @@ describe('reticulum resource transfer storage protection', () => {
       path: path.join(dir, 'received.range'),
     });
     expect(readAndHashFile).toHaveBeenCalledTimes(1);
-    expect((transfer as any).transferProgressWatch.get(transferId).receivedEventSeen).toBe(true);
-    expect((transfer as any).transferFinalizationTimers.has(transferId)).toBe(false);
+    expect(
+      (transfer as any).transferProgressWatch.get(transferId).receivedEventSeen
+    ).toBe(true);
+    expect((transfer as any).transferFinalizationTimers.has(transferId)).toBe(
+      false
+    );
 
     now += RETICULUM_RESOURCE_TRANSFER_FINALIZATION_TIMEOUT_MS + 1;
     (transfer as any).retryNoProgressTransfers();
@@ -422,7 +492,9 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('keeps an authorized request alive through the legacy provider window', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     let now = 100_000;
     const store = new ReticulumResourceStore({
       dbPath: path.join(dir, 'resources.db'),
@@ -430,8 +502,12 @@ describe('reticulum resource transfer storage protection', () => {
       now: () => now,
     });
     stores.push(store);
-    const cancelReticulumResourceDetailed = vi.fn().mockResolvedValue({ ok: true });
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const cancelReticulumResourceDetailed = vi
+      .fn()
+      .mockResolvedValue({ ok: true });
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       bridge: { cancelReticulumResourceDetailed } as any,
       resourceStore: store,
       now: () => now,
@@ -478,7 +554,9 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('does not treat a bridge-accepted queued range as a request-start failure', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     let now = 100_000;
     const store = new ReticulumResourceStore({
       dbPath: path.join(dir, 'resources.db'),
@@ -486,8 +564,12 @@ describe('reticulum resource transfer storage protection', () => {
       now: () => now,
     });
     stores.push(store);
-    const cancelReticulumResourceDetailed = vi.fn().mockResolvedValue({ ok: true });
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const cancelReticulumResourceDetailed = vi
+      .fn()
+      .mockResolvedValue({ ok: true });
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       bridge: { cancelReticulumResourceDetailed } as any,
       resourceStore: store,
       now: () => now,
@@ -520,8 +602,9 @@ describe('reticulum resource transfer storage protection', () => {
     (transfer as any).retryNoProgressTransfers();
     expect(cancelReticulumResourceDetailed).not.toHaveBeenCalled();
 
-    now += RETICULUM_RESOURCE_TRANSFER_QUEUE_TIMEOUT_MS
-      - RETICULUM_RESOURCE_TRANSFER_AUTHORIZATION_TIMEOUT_MS;
+    now +=
+      RETICULUM_RESOURCE_TRANSFER_QUEUE_TIMEOUT_MS -
+      RETICULUM_RESOURCE_TRANSFER_AUTHORIZATION_TIMEOUT_MS;
     (transfer as any).retryNoProgressTransfers();
     expect(cancelReticulumResourceDetailed).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -532,7 +615,9 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('temporarily throttles a timed-out provider and moves the range to another provider', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     let now = 100_000;
     const store = new ReticulumResourceStore({
       dbPath: path.join(dir, 'resources.db'),
@@ -556,18 +641,20 @@ describe('reticulum resource transfer storage protection', () => {
     const secondPeer = 'b'.repeat(32);
     store.storeManifest(manifest, { provenance: 'remote_downloaded' });
     const acceptedPeers: string[] = [];
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       bridge: {
         getLocalDestinationHash: () => 'c'.repeat(32),
         ensureReticulumResourceSessionDetailed: vi.fn(async () => ({
           ok: true,
         })),
-        acceptReticulumResourceDetailed: vi.fn(async (payload: {
-          peerPresenceHash: string;
-        }) => {
-          acceptedPeers.push(payload.peerPresenceHash);
-          return { ok: true };
-        }),
+        acceptReticulumResourceDetailed: vi.fn(
+          async (payload: { peerPresenceHash: string }) => {
+            acceptedPeers.push(payload.peerPresenceHash);
+            return { ok: true };
+          }
+        ),
         cancelReticulumResourceDetailed: vi.fn(async () => ({ ok: true })),
       } as any,
       resourceStore: store,
@@ -598,7 +685,9 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('briefly throttles a provider when a reused session is still releasing', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     const now = 100_000;
     const store = new ReticulumResourceStore({
       dbPath: path.join(dir, 'resources.db'),
@@ -620,10 +709,14 @@ describe('reticulum resource transfer storage protection', () => {
     };
     const peer = 'a'.repeat(32);
     store.storeManifest(manifest, { provenance: 'remote_downloaded' });
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       bridge: {
         getLocalDestinationHash: () => 'c'.repeat(32),
-        ensureReticulumResourceSessionDetailed: vi.fn(async () => ({ ok: true })),
+        ensureReticulumResourceSessionDetailed: vi.fn(async () => ({
+          ok: true,
+        })),
         acceptReticulumResourceDetailed: vi.fn(async () => ({ ok: true })),
         cancelReticulumResourceDetailed: vi.fn(async () => ({ ok: true })),
       } as any,
@@ -642,7 +735,9 @@ describe('reticulum resource transfer storage protection', () => {
     (transfer as any).ensureStorageProtection(state);
     store.ensurePartialFile(manifest.fileHash);
     await (transfer as any).dispatchRequests(state);
-    const [transferId] = Array.from((transfer as any).activeAccepts) as string[];
+    const [transferId] = Array.from(
+      (transfer as any).activeAccepts
+    ) as string[];
 
     transfer.handleResourceEvent({
       status: 'failed',
@@ -656,7 +751,9 @@ describe('reticulum resource transfer storage protection', () => {
   });
 
   it('retries a timed-out range against the same sole provider after backoff', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reticulum-resource-transfer-test-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'reticulum-resource-transfer-test-')
+    );
     let now = 100_000;
     const store = new ReticulumResourceStore({
       dbPath: path.join(dir, 'resources.db'),
@@ -679,16 +776,20 @@ describe('reticulum resource transfer storage protection', () => {
     const peer = 'a'.repeat(32);
     store.storeManifest(manifest, { provenance: 'remote_downloaded' });
     const acceptedPeers: string[] = [];
-    const transfer = new ReticulumResourceTransferManager<Record<string, never>>({
+    const transfer = new ReticulumResourceTransferManager<
+      Record<string, never>
+    >({
       bridge: {
         getLocalDestinationHash: () => 'c'.repeat(32),
-        ensureReticulumResourceSessionDetailed: vi.fn(async () => ({ ok: true })),
-        acceptReticulumResourceDetailed: vi.fn(async (payload: {
-          peerPresenceHash: string;
-        }) => {
-          acceptedPeers.push(payload.peerPresenceHash);
-          return { ok: true };
-        }),
+        ensureReticulumResourceSessionDetailed: vi.fn(async () => ({
+          ok: true,
+        })),
+        acceptReticulumResourceDetailed: vi.fn(
+          async (payload: { peerPresenceHash: string }) => {
+            acceptedPeers.push(payload.peerPresenceHash);
+            return { ok: true };
+          }
+        ),
         cancelReticulumResourceDetailed: vi.fn(async () => ({ ok: true })),
       } as any,
       resourceStore: store,

@@ -345,6 +345,8 @@
     "reduce_motion": "Reduce motion",
     "reduce_ui_animations": "Reduce UI Animations",
     "reduce_ui_animations_desc": "Turn on to minimize motion throughout the Hub. Leave off for the normal animated interface.",
+    "show_action_drawer": "Show Action Drawer",
+    "show_action_drawer_desc": "Turn off to always show action commands.",
     "reload": "Reload",
     "reset_reticulum_default": "Reset to Hub default",
     "reticulum": "Reticulum",

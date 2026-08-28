@@ -56,9 +56,15 @@ export function useMessageReadObserver(
   const markRef = useRef(markMessagesRead);
 
   // Keep the refs in sync on every render (no deps array = run after every render).
-  useEffect(() => { myAddressRef.current = myAddress; });
-  useEffect(() => { readReceiptsRef.current = readReceipts; });
-  useEffect(() => { markRef.current = markMessagesRead; });
+  useEffect(() => {
+    myAddressRef.current = myAddress;
+  });
+  useEffect(() => {
+    readReceiptsRef.current = readReceipts;
+  });
+  useEffect(() => {
+    markRef.current = markMessagesRead;
+  });
 
   // Create the observer once on mount.
   useEffect(() => {

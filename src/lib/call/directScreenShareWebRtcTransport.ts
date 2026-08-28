@@ -221,7 +221,9 @@ export class DirectScreenShareWebRtcTransport {
     }
     if (state !== 'failed' && state !== 'disconnected') return;
     this.scheduleRecovery(
-      state === 'failed' ? SCREEN_ICE_RESTART_DELAY_MS : SCREEN_DISCONNECT_GRACE_MS
+      state === 'failed'
+        ? SCREEN_ICE_RESTART_DELAY_MS
+        : SCREEN_DISCONNECT_GRACE_MS
     );
   }
 

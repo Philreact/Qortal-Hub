@@ -5,13 +5,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
-import {
-  Avatar,
-  Box,
-  IconButton,
-  Tooltip,
-  Typography,
-} from '@mui/material';
+import { Avatar, Box, IconButton, Tooltip, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
 import MicRoundedIcon from '@mui/icons-material/MicRounded';
@@ -86,7 +80,8 @@ export function DirectVoiceCallDock() {
     };
   }, [peerAddress]);
 
-  const title = peerPrimaryName || (peerAddress ? shortAddr(peerAddress) : 'Voice call');
+  const title =
+    peerPrimaryName || (peerAddress ? shortAddr(peerAddress) : 'Voice call');
   const avatarRegName = peerPrimaryName || undefined;
   const avatarSrc = qortalAvatarThumbnailSrc(avatarRegName);
   const initials = initialsFromDisplayLabel(title, peerAddress || myAddress);
@@ -104,228 +99,230 @@ export function DirectVoiceCallDock() {
 
   return (
     <>
-    <DirectVoiceDebugPanel />
-    <Box
-      sx={{
-        alignSelf: 'stretch',
-        width: 112,
-        flexShrink: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 0.75,
-        py: 1.25,
-        px: 0.5,
-        bgcolor: BG_RAIL,
-        borderLeft: `1px solid ${theme.palette.divider}`,
-        color: '#dbdee1',
-        minHeight: 0,
-        zIndex: 2,
-      }}
-    >
-      <Typography
-        variant="caption"
-        component="div"
+      <DirectVoiceDebugPanel />
+      <Box
         sx={{
-          fontWeight: 700,
-          fontSize: 10,
-          lineHeight: 1.2,
-          textAlign: 'center',
-          px: 0.25,
-          width: '100%',
-          overflow: 'hidden',
-          display: '-webkit-box',
-          WebkitLineClamp: 3,
-          WebkitBoxOrient: 'vertical',
-          wordBreak: 'break-word',
-          hyphens: 'auto',
-          color: TEXT_MUTED,
+          alignSelf: 'stretch',
+          width: 112,
+          flexShrink: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 0.75,
+          py: 1.25,
+          px: 0.5,
+          bgcolor: BG_RAIL,
+          borderLeft: `1px solid ${theme.palette.divider}`,
+          color: '#dbdee1',
+          minHeight: 0,
+          zIndex: 2,
         }}
       >
-        DM · {title}
-      </Typography>
-
-      {callState === 'connected' && callMediaReady && (
         <Typography
           variant="caption"
-          sx={{ fontSize: 11, fontWeight: 600, color: '#dbdee1' }}
-        >
-          {durationLabel}
-        </Typography>
-      )}
-
-      {startupStatus.headline && startupStatus.stage !== 'connected' ? (
-        <Box
+          component="div"
           sx={{
+            fontWeight: 700,
+            fontSize: 10,
+            lineHeight: 1.2,
+            textAlign: 'center',
+            px: 0.25,
             width: '100%',
-            px: 0.75,
-            py: 0.75,
-            borderRadius: 1.5,
-            bgcolor:
-              startupStatus.tone === 'warning'
-                ? alpha('#f59e0b', 0.16)
-                : alpha('#38bdf8', 0.14),
-            border: `1px solid ${
-              startupStatus.tone === 'warning'
-                ? alpha('#f59e0b', 0.32)
-                : alpha('#38bdf8', 0.28)
-            }`,
+            overflow: 'hidden',
+            display: '-webkit-box',
+            WebkitLineClamp: 3,
+            WebkitBoxOrient: 'vertical',
+            wordBreak: 'break-word',
+            hyphens: 'auto',
+            color: TEXT_MUTED,
           }}
         >
+          DM · {title}
+        </Typography>
+
+        {callState === 'connected' && callMediaReady && (
           <Typography
             variant="caption"
-            component="div"
+            sx={{ fontSize: 11, fontWeight: 600, color: '#dbdee1' }}
+          >
+            {durationLabel}
+          </Typography>
+        )}
+
+        {startupStatus.headline && startupStatus.stage !== 'connected' ? (
+          <Box
             sx={{
-              fontSize: 10,
-              fontWeight: 700,
-              lineHeight: 1.2,
-              color: '#e5e7eb',
+              width: '100%',
+              px: 0.75,
+              py: 0.75,
+              borderRadius: 1.5,
+              bgcolor:
+                startupStatus.tone === 'warning'
+                  ? alpha('#f59e0b', 0.16)
+                  : alpha('#38bdf8', 0.14),
+              border: `1px solid ${
+                startupStatus.tone === 'warning'
+                  ? alpha('#f59e0b', 0.32)
+                  : alpha('#38bdf8', 0.28)
+              }`,
             }}
           >
-            {startupStatus.headline}
-          </Typography>
-          {startupStatus.detail ? (
             <Typography
               variant="caption"
               component="div"
               sx={{
-                mt: 0.4,
-                fontSize: 9,
-                lineHeight: 1.25,
-                color: TEXT_MUTED,
+                fontSize: 10,
+                fontWeight: 700,
+                lineHeight: 1.2,
+                color: '#e5e7eb',
               }}
             >
-              {startupStatus.detail}
+              {startupStatus.headline}
             </Typography>
-          ) : null}
-        </Box>
-      ) : null}
+            {startupStatus.detail ? (
+              <Typography
+                variant="caption"
+                component="div"
+                sx={{
+                  mt: 0.4,
+                  fontSize: 9,
+                  lineHeight: 1.25,
+                  color: TEXT_MUTED,
+                }}
+              >
+                {startupStatus.detail}
+              </Typography>
+            ) : null}
+          </Box>
+        ) : null}
 
-      <Box
-        sx={{
-          flex: 1,
-          minHeight: 32,
-          width: '100%',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          py: 0.5,
-        }}
-      >
-        <Box sx={{ position: 'relative', flexShrink: 0 }}>
-          <Avatar
-            alt={title}
-            src={avatarSrc}
-            sx={{
-              width: 36,
-              height: 36,
-              bgcolor: addrHue(peerAddress || myAddress),
-              fontSize: 12,
-              fontWeight: 700,
-              color: '#fff',
-            }}
-          >
-            {!avatarSrc ? initials : null}
-          </Avatar>
-        </Box>
-      </Box>
-
-      {callState === 'connected' && callMediaReady && (
         <Box
           sx={{
-            '& .MuiIconButton-root': { color: '#b5bac1' },
+            flex: 1,
+            minHeight: 32,
+            width: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            py: 0.5,
           }}
         >
-          <CallAudioSettingsButton
-            IconComponent={SettingsRoundedIcon}
-            tooltipPlacement="left"
-          />
+          <Box sx={{ position: 'relative', flexShrink: 0 }}>
+            <Avatar
+              alt={title}
+              src={avatarSrc}
+              sx={{
+                width: 36,
+                height: 36,
+                bgcolor: addrHue(peerAddress || myAddress),
+                fontSize: 12,
+                fontWeight: 700,
+                color: '#fff',
+              }}
+            >
+              {!avatarSrc ? initials : null}
+            </Avatar>
+          </Box>
         </Box>
-      )}
 
-      <Tooltip
-        title={
-          isMuted
-            ? t('core:group_call_unmute', {
-                postProcess: 'capitalizeFirstChar',
-              })
-            : t('core:group_call_mute', { postProcess: 'capitalizeFirstChar' })
-        }
-      >
-        <span>
-          <IconButton
-            disabled={callState !== 'connected' || !callMediaReady}
-            onClick={toggleMute}
+        {callState === 'connected' && callMediaReady && (
+          <Box
             sx={{
-              width: 44,
-              height: 44,
-              bgcolor: isMuted ? DANGER : '#313338',
-              color: '#fff',
-              '&:hover': {
-                bgcolor: isMuted ? alpha(DANGER, 0.85) : '#4e5058',
-              },
+              '& .MuiIconButton-root': { color: '#b5bac1' },
             }}
           >
-            {isMuted ? (
-              <MicOffRoundedIcon sx={{ fontSize: 22 }} />
-            ) : (
-              <MicRoundedIcon sx={{ fontSize: 22 }} />
-            )}
-          </IconButton>
-        </span>
-      </Tooltip>
+            <CallAudioSettingsButton
+              IconComponent={SettingsRoundedIcon}
+              tooltipPlacement="left"
+            />
+          </Box>
+        )}
 
-      <Tooltip
-        title={
-          hearCall
-            ? t('core:call_audio_mute', {
-                postProcess: 'capitalizeFirstChar',
-              })
-            : t('core:call_audio_hear', {
-                postProcess: 'capitalizeFirstChar',
-              })
-        }
-        placement="left"
-      >
-        <span>
-          <IconButton
-            disabled={callState !== 'connected' || !callMediaReady}
-            onClick={toggleHearCall}
-            sx={{
-              width: 44,
-              height: 44,
-              bgcolor: hearCall ? '#313338' : DANGER,
-              color: '#fff',
-              '&:hover': {
-                bgcolor: hearCall ? '#4e5058' : alpha(DANGER, 0.85),
-              },
-            }}
-          >
-            {hearCall ? (
-              <VolumeUpRoundedIcon sx={{ fontSize: 22 }} />
-            ) : (
-              <VolumeOffRoundedIcon sx={{ fontSize: 22 }} />
-            )}
-          </IconButton>
-        </span>
-      </Tooltip>
-
-      <Tooltip title="Hang up" placement="left">
-        <IconButton
-          onClick={hangUp}
-          sx={{
-            width: 44,
-            height: 44,
-            bgcolor: DANGER,
-            color: '#fff',
-            '&:hover': { bgcolor: alpha(DANGER, 0.85) },
-          }}
+        <Tooltip
+          title={
+            isMuted
+              ? t('core:group_call_unmute', {
+                  postProcess: 'capitalizeFirstChar',
+                })
+              : t('core:group_call_mute', {
+                  postProcess: 'capitalizeFirstChar',
+                })
+          }
         >
-          <CallEndRoundedIcon sx={{ fontSize: 22 }} />
-      </IconButton>
-    </Tooltip>
-    </Box>
+          <span>
+            <IconButton
+              disabled={callState !== 'connected' || !callMediaReady}
+              onClick={toggleMute}
+              sx={{
+                width: 44,
+                height: 44,
+                bgcolor: isMuted ? DANGER : '#313338',
+                color: '#fff',
+                '&:hover': {
+                  bgcolor: isMuted ? alpha(DANGER, 0.85) : '#4e5058',
+                },
+              }}
+            >
+              {isMuted ? (
+                <MicOffRoundedIcon sx={{ fontSize: 22 }} />
+              ) : (
+                <MicRoundedIcon sx={{ fontSize: 22 }} />
+              )}
+            </IconButton>
+          </span>
+        </Tooltip>
+
+        <Tooltip
+          title={
+            hearCall
+              ? t('core:call_audio_mute', {
+                  postProcess: 'capitalizeFirstChar',
+                })
+              : t('core:call_audio_hear', {
+                  postProcess: 'capitalizeFirstChar',
+                })
+          }
+          placement="left"
+        >
+          <span>
+            <IconButton
+              disabled={callState !== 'connected' || !callMediaReady}
+              onClick={toggleHearCall}
+              sx={{
+                width: 44,
+                height: 44,
+                bgcolor: hearCall ? '#313338' : DANGER,
+                color: '#fff',
+                '&:hover': {
+                  bgcolor: hearCall ? '#4e5058' : alpha(DANGER, 0.85),
+                },
+              }}
+            >
+              {hearCall ? (
+                <VolumeUpRoundedIcon sx={{ fontSize: 22 }} />
+              ) : (
+                <VolumeOffRoundedIcon sx={{ fontSize: 22 }} />
+              )}
+            </IconButton>
+          </span>
+        </Tooltip>
+
+        <Tooltip title="Hang up" placement="left">
+          <IconButton
+            onClick={hangUp}
+            sx={{
+              width: 44,
+              height: 44,
+              bgcolor: DANGER,
+              color: '#fff',
+              '&:hover': { bgcolor: alpha(DANGER, 0.85) },
+            }}
+          >
+            <CallEndRoundedIcon sx={{ fontSize: 22 }} />
+          </IconButton>
+        </Tooltip>
+      </Box>
     </>
   );
 }

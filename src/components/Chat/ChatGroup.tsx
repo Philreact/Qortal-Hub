@@ -220,7 +220,9 @@ type ReticulumGroupChannel = {
 type ReticulumGroupChannelWriteMode = 'members' | 'admins';
 type ReticulumGroupChannelReadMode = 'members' | 'admins';
 type ReticulumGroupChannelAccessMode =
-  'regular' | 'admin_write' | 'admin_private';
+  | 'regular'
+  | 'admin_write'
+  | 'admin_private';
 
 type ReticulumSearchResult = {
   event: {

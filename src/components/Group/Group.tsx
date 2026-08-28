@@ -109,6 +109,7 @@ import {
   qortalGroupVoiceCallMinimizedAtom,
   qortalGroupCallPrimaryNamesAtom,
   dmFriendsByAddressAtom,
+  showActionDrawerAtom,
 } from '../../atoms/global';
 import { mergeDirectsWithFriends } from '../../lib/dm/mergeDirectsWithFriends';
 import { validateAddress } from '../../utils/validateAddress';
@@ -929,6 +930,7 @@ export const Group = ({
   const [isLoadingGroupMessage, setIsLoadingGroupMessage] = useState('');
   const setMutedGroups = useSetAtom(mutedGroupsAtom);
   const mutedGroups = useAtomValue(mutedGroupsAtom);
+  const showActionDrawer = useAtomValue(showActionDrawerAtom);
   const memberGroupsForReticulum = useAtomValue(memberGroupsAtom);
   const memberGroupsWithReticulumActivity = useAtomValue(
     memberGroupsWithReticulumChatAtom
@@ -5302,7 +5304,7 @@ export const Group = ({
           setAppsModeDev={setAppsModeDev}
         />
 
-        <MainContentBox>
+        <MainContentBox hasFixedSidebar={!showActionDrawer}>
           {openAddGroup && (
             <Suspense fallback={null}>
               <LazyAddGroup

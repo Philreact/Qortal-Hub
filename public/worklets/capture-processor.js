@@ -95,7 +95,7 @@ class CaptureProcessor extends AudioWorkletProcessor {
         this._muted = !!e.data.muted;
       } else if (e.data?.type === 'set-frame-port') {
         this._framePort = e.ports?.[0] || null;
-        this._framePortGeneration = (e.data.generation >>> 0) || 0;
+        this._framePortGeneration = e.data.generation >>> 0 || 0;
         this._sharedSamples =
           e.data.sharedSamples instanceof SharedArrayBuffer
             ? new Float32Array(e.data.sharedSamples)

@@ -18,7 +18,10 @@ import {
   useState,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { quitterDashboardFeedCacheAtom, userInfoAtom } from '../../atoms/global';
+import {
+  quitterDashboardFeedCacheAtom,
+  userInfoAtom,
+} from '../../atoms/global';
 import { executeEvent } from '../../utils/events';
 import type { WidgetDisplayMode } from './DashboardWidgetFrame';
 import {
@@ -209,7 +212,9 @@ export const QuitterFeedWidget = ({
   const cacheMatches = feedCache?.feedKey === feedKey;
   const items = cacheMatches ? feedCache.items : [];
   const pendingItems = cacheMatches ? feedCache.pendingItems : [];
-  const followingEmptyReason = cacheMatches ? feedCache.followingEmptyReason : null;
+  const followingEmptyReason = cacheMatches
+    ? feedCache.followingEmptyReason
+    : null;
   const initialFeedState: QuitterDashboardInitialFeedState = cacheMatches
     ? feedCache.initialFeedState
     : 'loading';
@@ -262,31 +267,37 @@ export const QuitterFeedWidget = ({
     setFeedMode(readQuitterFeedMode(feedModeStorageKey));
   }, [feedModeStorageKey]);
 
-  const commitVisibleItems = useCallback((nextItems: QuitterFeedItem[]) => {
-    itemsRef.current = nextItems;
-    setFeedCache((prev) => {
-      const key = feedKeyRef.current;
-      const next: QuitterDashboardFeedCache =
-        prev?.feedKey === key
-          ? { ...prev, items: nextItems }
-          : { ...emptyCacheForKey(key), items: nextItems };
-      feedCacheRef.current = next;
-      return next;
-    });
-  }, [setFeedCache]);
+  const commitVisibleItems = useCallback(
+    (nextItems: QuitterFeedItem[]) => {
+      itemsRef.current = nextItems;
+      setFeedCache((prev) => {
+        const key = feedKeyRef.current;
+        const next: QuitterDashboardFeedCache =
+          prev?.feedKey === key
+            ? { ...prev, items: nextItems }
+            : { ...emptyCacheForKey(key), items: nextItems };
+        feedCacheRef.current = next;
+        return next;
+      });
+    },
+    [setFeedCache]
+  );
 
-  const commitPendingItems = useCallback((nextItems: QuitterFeedItem[]) => {
-    pendingItemsRef.current = nextItems;
-    setFeedCache((prev) => {
-      const key = feedKeyRef.current;
-      const next: QuitterDashboardFeedCache =
-        prev?.feedKey === key
-          ? { ...prev, pendingItems: nextItems }
-          : { ...emptyCacheForKey(key), pendingItems: nextItems };
-      feedCacheRef.current = next;
-      return next;
-    });
-  }, [setFeedCache]);
+  const commitPendingItems = useCallback(
+    (nextItems: QuitterFeedItem[]) => {
+      pendingItemsRef.current = nextItems;
+      setFeedCache((prev) => {
+        const key = feedKeyRef.current;
+        const next: QuitterDashboardFeedCache =
+          prev?.feedKey === key
+            ? { ...prev, pendingItems: nextItems }
+            : { ...emptyCacheForKey(key), pendingItems: nextItems };
+        feedCacheRef.current = next;
+        return next;
+      });
+    },
+    [setFeedCache]
+  );
 
   useEffect(() => {
     onRefreshStateChange?.(isRefreshing);

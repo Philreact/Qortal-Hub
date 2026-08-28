@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
-import { subscribeToEvent, unsubscribeFromEvent } from "../utils/events";
-import { Box, Button } from "@mui/material";
-import { appHeighOffsetPx } from "../components/Desktop/CustomTitleBar";
+import { useEffect, useState } from 'react';
+import { subscribeToEvent, unsubscribeFromEvent } from '../utils/events';
+import { Box, Button } from '@mui/material';
+import { appHeighOffsetPx } from '../components/Desktop/CustomTitleBar';
 
 export const PdfViewer = () => {
-  const [pdfUrl, setPdfUrl] = useState("");
+  const [pdfUrl, setPdfUrl] = useState('');
 
   const openPdf = (e) => {
     try {
@@ -28,10 +28,10 @@ export const PdfViewer = () => {
   }, [pdfUrl]);
 
   useEffect(() => {
-    subscribeToEvent("openPdf", openPdf);
+    subscribeToEvent('openPdf', openPdf);
 
     return () => {
-      unsubscribeFromEvent("openPdf", openPdf);
+      unsubscribeFromEvent('openPdf', openPdf);
     };
   }, []);
 
@@ -40,26 +40,26 @@ export const PdfViewer = () => {
   return (
     <Box
       sx={{
-        position: "fixed",
+        position: 'fixed',
         height: `calc(100vh - ${appHeighOffsetPx})`,
-        width: "100vw",
+        width: '100vw',
         backgroundColor: 'var(--Mail-Background)',
-        zIndex: 990000000
+        zIndex: 990000000,
       }}
     >
       <Box
         sx={{
-          height: "50px",
-          display: "flex",
-          width: "100%",
-          alignItems: "center",
-          justifyContent: "flex-end",
-          padding: '10px'
+          height: '50px',
+          display: 'flex',
+          width: '100%',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          padding: '10px',
         }}
       >
         <Button
           onClick={() => {
-            setPdfUrl("");
+            setPdfUrl('');
           }}
           variant="contained"
         >
@@ -70,9 +70,9 @@ export const PdfViewer = () => {
         title="PDFViewer"
         src={`/pdfjs/web/viewer.html?file=${pdfUrl}`}
         style={{
-          width: "100vw",
+          width: '100vw',
           height: `calc(100vh - ${appHeighOffsetPx} - 50px)`,
-          display: "fixed",
+          display: 'fixed',
           left: 0,
         }}
       />

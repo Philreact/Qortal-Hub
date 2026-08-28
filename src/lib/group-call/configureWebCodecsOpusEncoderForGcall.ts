@@ -35,8 +35,17 @@ export async function configureWebCodecsOpusEncoderForGcall(
 
   let encoderConfig: Record<string, unknown> = baseEncoderConfig;
   try {
-    const AudioEncoderCtor = (globalThis as unknown as { AudioEncoder?: { isConfigSupported?: (c: unknown) => Promise<{ supported: boolean; config?: AudioEncoderConfig }> } }).AudioEncoder;
-    const supportResult = await AudioEncoderCtor?.isConfigSupported?.(fecEncoderConfig);
+    const AudioEncoderCtor = (
+      globalThis as unknown as {
+        AudioEncoder?: {
+          isConfigSupported?: (
+            c: unknown
+          ) => Promise<{ supported: boolean; config?: AudioEncoderConfig }>;
+        };
+      }
+    ).AudioEncoder;
+    const supportResult =
+      await AudioEncoderCtor?.isConfigSupported?.(fecEncoderConfig);
     if (supportResult?.supported) {
       encoderConfig =
         (supportResult.config as Record<string, unknown> | undefined) ??

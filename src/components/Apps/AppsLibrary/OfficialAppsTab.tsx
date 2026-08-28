@@ -74,9 +74,7 @@ export const OfficialAppsTab = ({
 
   // Stable key string for the set of featured app cache keys (order-independent)
   const featuredKeysStable = useMemo(() => {
-    const keys = featuredAppsBase.map((a) =>
-      getCacheKey(a.name, a.service)
-    );
+    const keys = featuredAppsBase.map((a) => getCacheKey(a.name, a.service));
     return [...new Set(keys)].sort().join(',');
   }, [featuredAppsBase]);
 

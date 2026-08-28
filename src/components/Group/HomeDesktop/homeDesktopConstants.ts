@@ -90,11 +90,13 @@ export const HOME_QUITTER_WIDGET_LOAD_MORE_BATCH_SIZES: Record<
   compact: 4,
   expanded: 4,
 };
-export const HOME_QUITTER_WIDGET_SEARCH_LIMITS: Record<WidgetDisplayMode, number> =
-  {
-    compact: 6,
-    expanded: 8,
-  };
+export const HOME_QUITTER_WIDGET_SEARCH_LIMITS: Record<
+  WidgetDisplayMode,
+  number
+> = {
+  compact: 6,
+  expanded: 8,
+};
 export const WALLET_ACTIVITY_RECENT_PAYMENT_LOOKBACK_MS =
   7 * 24 * 60 * 60 * 1000;
 export const WALLET_ACTIVITY_RECENT_PAYMENT_FETCH_LIMIT = 50;

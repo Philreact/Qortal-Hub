@@ -84,11 +84,7 @@ function waitForCondition(
   });
 }
 
-export function CallSwitchGuardProvider({
-  children,
-}: {
-  children: ReactNode;
-}) {
+export function CallSwitchGuardProvider({ children }: { children: ReactNode }) {
   const directCall = useVoiceCallContext();
   const groupCall = useGroupCallContext();
   const theme = useTheme();
@@ -128,25 +124,28 @@ export function CallSwitchGuardProvider({
   const targetLabel =
     pendingTarget?.type === 'group' ? 'group call' : 'direct message call';
 
-  const dropCurrentCalls = useCallback(async (target: CallSwitchTarget) => {
-    const { shouldDropDirect, shouldDropGroup } = getCallSwitchDropPlan({
-      target,
-      directState: directStateRef.current,
-      directIncomingChatId: directIncomingChatIdRef.current,
-      groupState: groupStateRef.current,
-    });
+  const dropCurrentCalls = useCallback(
+    async (target: CallSwitchTarget) => {
+      const { shouldDropDirect, shouldDropGroup } = getCallSwitchDropPlan({
+        target,
+        directState: directStateRef.current,
+        directIncomingChatId: directIncomingChatIdRef.current,
+        groupState: groupStateRef.current,
+      });
 
-    const drops: Promise<unknown>[] = [];
-    if (shouldDropDirect) drops.push(directCall.hangUp());
-    if (shouldDropGroup) drops.push(groupCall.leaveGroupCall());
-    await Promise.allSettled(drops);
+      const drops: Promise<unknown>[] = [];
+      if (shouldDropDirect) drops.push(directCall.hangUp());
+      if (shouldDropGroup) drops.push(groupCall.leaveGroupCall());
+      await Promise.allSettled(drops);
 
-    await waitForCondition(
-      () =>
-        (!shouldDropDirect || directStateRef.current === 'idle') &&
-        (!shouldDropGroup || groupStateRef.current === 'idle')
-    );
-  }, [directCall, groupCall]);
+      await waitForCondition(
+        () =>
+          (!shouldDropDirect || directStateRef.current === 'idle') &&
+          (!shouldDropGroup || groupStateRef.current === 'idle')
+      );
+    },
+    [directCall, groupCall]
+  );
 
   const closePrompt = useCallback((confirmed: boolean) => {
     resolverRef.current?.(confirmed);
@@ -186,10 +185,7 @@ export function CallSwitchGuardProvider({
     [closePrompt, dropCurrentCalls]
   );
 
-  const value = useMemo(
-    () => ({ confirmCallSwitch }),
-    [confirmCallSwitch]
-  );
+  const value = useMemo(() => ({ confirmCallSwitch }), [confirmCallSwitch]);
 
   return (
     <CallSwitchGuardContext.Provider value={value}>

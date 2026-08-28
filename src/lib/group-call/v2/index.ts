@@ -56,7 +56,11 @@ export {
 } from './decodeService';
 
 // Validation platform
-export { ReplayHarness, type ReplayResult, type ReplayBarResult } from './replayHarness';
+export {
+  ReplayHarness,
+  type ReplayResult,
+  type ReplayBarResult,
+} from './replayHarness';
 export {
   FaultInjector,
   FAULT_CALL63_PATTERN,

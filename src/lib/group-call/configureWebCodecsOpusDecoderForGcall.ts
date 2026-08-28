@@ -33,7 +33,8 @@ export async function configureWebCodecsOpusDecoderForGcall(
         };
       }
     ).AudioDecoder;
-    const supportResult = await AudioDecoderCtor?.isConfigSupported?.(plcConfig);
+    const supportResult =
+      await AudioDecoderCtor?.isConfigSupported?.(plcConfig);
     if (supportResult?.supported) {
       decoder.configure(
         (supportResult.config ?? plcConfig) as unknown as AudioDecoderConfig

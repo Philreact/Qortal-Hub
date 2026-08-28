@@ -9,14 +9,12 @@ import { trustPinnedCertificateForHost } from './local-https-cert';
 const AUDIO_SURFACE_HTTPS_BASE_PORT = 56000;
 
 let audioSurfaceInstanceIndex = 0;
-let audioSurfaceServer:
-  | {
-      host: string;
-      origin: string;
-      port: number;
-      server: https.Server;
-    }
-  | null = null;
+let audioSurfaceServer: {
+  host: string;
+  origin: string;
+  port: number;
+  server: https.Server;
+} | null = null;
 let audioSurfaceServerReady: Promise<string> | null = null;
 
 export function setAudioSurfaceHttpsInstanceIndex(index: number): void {
@@ -49,13 +47,12 @@ export async function ensureAudioSurfaceHttpsServer(
   const port = getAudioSurfaceHttpsPort();
   const origin = getAudioSurfaceHttpsOrigin();
 
-  audioSurfaceServerReady = new Promise<string>(async (resolvePromise, rejectPromise) => {
-    try {
-      const notAfterDate = new Date();
-      notAfterDate.setFullYear(notAfterDate.getFullYear() + 10);
-      const pems = await generateCert(
-        [{ name: 'commonName', value: host }],
-        {
+  audioSurfaceServerReady = new Promise<string>(
+    async (resolvePromise, rejectPromise) => {
+      try {
+        const notAfterDate = new Date();
+        notAfterDate.setFullYear(notAfterDate.getFullYear() + 10);
+        const pems = await generateCert([{ name: 'commonName', value: host }], {
           algorithm: 'sha256',
           keySize: 2048,
           notAfterDate,
@@ -75,63 +72,65 @@ export async function ensureAudioSurfaceHttpsServer(
               ],
             },
           ],
-        }
-      );
+        });
 
-      trustPinnedCertificateForHost(host, pems.cert);
+        trustPinnedCertificateForHost(host, pems.cert);
 
-      const server = https.createServer(
-        {
-          key: pems.private,
-          cert: pems.cert,
-        },
-        async (req, res) => {
-          try {
-            const requestUrl = new URL(req.url || '/', origin);
-            const result = await buildStaticResponse(
-              requestUrl.pathname,
-              directory
-            );
-            if (shouldTraceAudioSurfaceIsolationAsset(requestUrl.pathname)) {
-              loggerLog('[GCall:audio-surface][https] response', {
-                url: requestUrl.toString(),
-                pathname: requestUrl.pathname,
-                contentType: result.contentType,
-                coop: result.headers['Cross-Origin-Opener-Policy'] ?? null,
-                coep: result.headers['Cross-Origin-Embedder-Policy'] ?? null,
-                corp: result.headers['Cross-Origin-Resource-Policy'] ?? null,
+        const server = https.createServer(
+          {
+            key: pems.private,
+            cert: pems.cert,
+          },
+          async (req, res) => {
+            try {
+              const requestUrl = new URL(req.url || '/', origin);
+              const result = await buildStaticResponse(
+                requestUrl.pathname,
+                directory
+              );
+              if (shouldTraceAudioSurfaceIsolationAsset(requestUrl.pathname)) {
+                loggerLog('[GCall:audio-surface][https] response', {
+                  url: requestUrl.toString(),
+                  pathname: requestUrl.pathname,
+                  contentType: result.contentType,
+                  coop: result.headers['Cross-Origin-Opener-Policy'] ?? null,
+                  coep: result.headers['Cross-Origin-Embedder-Policy'] ?? null,
+                  corp: result.headers['Cross-Origin-Resource-Policy'] ?? null,
+                });
+              }
+              res.writeHead(result.status, {
+                ...result.headers,
+                'content-type': result.contentType,
               });
+              res.end(result.body);
+            } catch {
+              res.writeHead(500, {
+                'content-type': 'text/plain; charset=utf-8',
+              });
+              res.end('Internal Server Error');
             }
-            res.writeHead(result.status, {
-              ...result.headers,
-              'content-type': result.contentType,
-            });
-            res.end(result.body);
-          } catch {
-            res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
-            res.end('Internal Server Error');
           }
-        }
-      );
+        );
 
-      server.once('error', (error) => {
+        server.once('error', (error) => {
+          audioSurfaceServerReady = null;
+          rejectPromise(error);
+        });
+        server.listen(port, '127.0.0.1', () => {
+          audioSurfaceServer = { host, origin, port, server };
+          loggerLog('[GCall:audio-surface][https] listening', {
+            host,
+            origin,
+            port,
+          });
+          resolvePromise(origin);
+        });
+      } catch (error) {
         audioSurfaceServerReady = null;
         rejectPromise(error);
-      });
-      server.listen(port, '127.0.0.1', () => {
-        audioSurfaceServer = { host, origin, port, server };
-        loggerLog('[GCall:audio-surface][https] listening', {
-          host,
-          origin,
-          port,
-        });
-        resolvePromise(origin);
-      });
-    } catch (error) {
-      audioSurfaceServerReady = null;
-      rejectPromise(error);
+      }
     }
-  });
+  );
 
   return audioSurfaceServerReady;
 }
@@ -174,7 +173,10 @@ async function buildStaticResponse(
 
 function resolveStaticPath(directory: string, requestPathname: string): string {
   const decodedPath = decodeURIComponent(requestPathname);
-  const sanitizedRelative = normalize(decodedPath).replace(/^(\.\.(\/|\\|$))+/, '');
+  const sanitizedRelative = normalize(decodedPath).replace(
+    /^(\.\.(\/|\\|$))+/,
+    ''
+  );
   const resolved = resolve(directory, `.${sep}${sanitizedRelative}`);
   const normalizedDirectory = ensureTrailingSep(resolve(directory));
   if (!ensureTrailingSep(resolved).startsWith(normalizedDirectory)) {
@@ -196,9 +198,7 @@ async function getExistingFilePath(filePath: string): Promise<string | null> {
   return null;
 }
 
-function staticHeadersForPath(
-  requestPathname: string
-): Record<string, string> {
+function staticHeadersForPath(requestPathname: string): Record<string, string> {
   const headers: Record<string, string> = {};
   if (requestPathname === AUDIO_SURFACE_ENTRY_PATH) {
     headers['Cross-Origin-Opener-Policy'] = 'same-origin';
@@ -222,7 +222,9 @@ function isEmbedderCriticalAsset(requestPathname: string): boolean {
   );
 }
 
-function shouldTraceAudioSurfaceIsolationAsset(requestPathname: string): boolean {
+function shouldTraceAudioSurfaceIsolationAsset(
+  requestPathname: string
+): boolean {
   return (
     requestPathname === AUDIO_SURFACE_ENTRY_PATH ||
     /\/assets\/.*\.(?:js|mjs|cjs|css|wasm)$/i.test(requestPathname) ||

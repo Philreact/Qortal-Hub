@@ -208,9 +208,7 @@ const TabComponent = ({
             : theme.palette.mode === 'dark'
               ? alpha(theme.palette.common.white, 0.06)
               : alpha(theme.palette.common.black, 0.06),
-          boxShadow: isVisuallySelected
-            ? selectedTabShadow
-            : undefined,
+          boxShadow: isVisuallySelected ? selectedTabShadow : undefined,
           color: isVisuallySelected
             ? selectedTabTextColor
             : theme.palette.text.primary,

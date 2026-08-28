@@ -174,7 +174,9 @@ class Statement {
             Number(row.author_seq) >= Number(fromSeq) &&
             Number(row.author_seq) <= Number(toSeq)
         )
-        .sort((left, right) => Number(left.author_seq) - Number(right.author_seq))
+        .sort(
+          (left, right) => Number(left.author_seq) - Number(right.author_seq)
+        )
         .map((row) => ({ author_seq: row.author_seq }));
     }
     if (this.sql.includes('FROM rchat_missing_range_peer_observations')) {

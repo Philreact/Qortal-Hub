@@ -37,4 +37,3 @@ export const contextBridge = {
 export const shell = {
   openExternal: async () => undefined,
 };
-

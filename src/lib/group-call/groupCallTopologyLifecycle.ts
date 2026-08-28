@@ -1,7 +1,4 @@
-import type {
-  GroupCallRole,
-  GroupCallTopology,
-} from './groupCallTopology';
+import type { GroupCallRole, GroupCallTopology } from './groupCallTopology';
 
 export function computeTopologySettleMs(opts: {
   previousTopology: GroupCallTopology | null;

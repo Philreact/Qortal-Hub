@@ -172,7 +172,8 @@ export function shouldAdoptTrustedRootSessionDuringRecovery(opts: {
   startupGraceUntilMs: number;
 }): boolean {
   if (!opts.hasInstalledRoomKey) return false;
-  if (!opts.currentRoot || opts.senderAddress !== opts.currentRoot) return false;
+  if (!opts.currentRoot || opts.senderAddress !== opts.currentRoot)
+    return false;
   const sessionMismatch =
     opts.payloadCallSessionId !== opts.localCallSessionId ||
     opts.payloadMediaSessionGeneration !== opts.localMediaSessionGeneration;

@@ -3,7 +3,13 @@ import { atomWithReset } from 'jotai/utils';
 import type { AppRatingData } from '../types/ratings';
 
 // Types
-export type SortOption = 'alphabetical' | 'newest' | 'oldest' | 'highest_rated' | 'most_rated' | 'recently_updated';
+export type SortOption =
+  | 'alphabetical'
+  | 'newest'
+  | 'oldest'
+  | 'highest_rated'
+  | 'most_rated'
+  | 'recently_updated';
 
 export type StatusFilterOption = 'all' | 'installed' | 'not_installed';
 
@@ -12,7 +18,6 @@ export const appSortAtom = atomWithReset<SortOption>('newest');
 export const appCategoryFilterAtom = atomWithReset<string>('all');
 export const appStatusFilterAtom = atomWithReset<StatusFilterOption>('all');
 export const appSearchQueryAtom = atomWithReset<string>('');
-
 
 // Current tab atom
 export type AppsLibraryTab =
@@ -27,8 +32,9 @@ export type PublishEditTarget = {
   name: string;
   service: 'APP' | 'WEBSITE';
 };
-export const publishEditTargetAtom =
-  atomWithReset<PublishEditTarget | null>(null);
+export const publishEditTargetAtom = atomWithReset<PublishEditTarget | null>(
+  null
+);
 
 // Helper function to filter and sort apps
 export const filterAndSortApps = (
@@ -42,7 +48,14 @@ export const filterAndSortApps = (
     ratingsMap?: Map<string, AppRatingData>;
   }
 ) => {
-  const { sort, category, status, search, installedApps = new Set(), ratingsMap } = options;
+  const {
+    sort,
+    category,
+    status,
+    search,
+    installedApps = new Set(),
+    ratingsMap,
+  } = options;
   // Derive cache key the same way getCacheKey does (service-name, lowercased)
   const getRatingKey = (app: any) =>
     `${(app.service ?? '').toLowerCase()}-${(app.name ?? '').toLowerCase()}`;
@@ -90,15 +103,29 @@ export const filterAndSortApps = (
       break;
     case 'highest_rated':
       filtered.sort((a, b) => {
-        const ratingA = ratingsMap?.get(getRatingKey(a))?.averageRating ?? a.averageRating ?? 0;
-        const ratingB = ratingsMap?.get(getRatingKey(b))?.averageRating ?? b.averageRating ?? 0;
+        const ratingA =
+          ratingsMap?.get(getRatingKey(a))?.averageRating ??
+          a.averageRating ??
+          0;
+        const ratingB =
+          ratingsMap?.get(getRatingKey(b))?.averageRating ??
+          b.averageRating ??
+          0;
         return ratingB - ratingA;
       });
       break;
     case 'most_rated':
       filtered.sort((a, b) => {
-        const votesA = ratingsMap?.get(getRatingKey(a))?.totalVotes ?? a.totalVotes ?? a.ratingCount ?? 0;
-        const votesB = ratingsMap?.get(getRatingKey(b))?.totalVotes ?? b.totalVotes ?? b.ratingCount ?? 0;
+        const votesA =
+          ratingsMap?.get(getRatingKey(a))?.totalVotes ??
+          a.totalVotes ??
+          a.ratingCount ??
+          0;
+        const votesB =
+          ratingsMap?.get(getRatingKey(b))?.totalVotes ??
+          b.totalVotes ??
+          b.ratingCount ??
+          0;
         return votesB - votesA;
       });
       break;

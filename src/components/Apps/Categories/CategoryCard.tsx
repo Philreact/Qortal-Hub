@@ -75,7 +75,8 @@ export const CategoryCard = ({
         <IconWrapper>{getCategoryIcon(category.id)}</IconWrapper>
         <CategoryName>{displayName}</CategoryName>
         <AppCount>
-          {appCount} {t('core:app_other', { postProcess: 'capitalizeFirstChar' })}
+          {appCount}{' '}
+          {t('core:app_other', { postProcess: 'capitalizeFirstChar' })}
         </AppCount>
       </CardContainer>
     </ButtonBase>

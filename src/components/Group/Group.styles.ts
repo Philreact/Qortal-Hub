@@ -3,6 +3,8 @@ import { styled } from '@mui/system';
 import { AuthenticatedContainerInnerRight } from '../../styles/App-styles';
 import { appChromeOffset } from '../Desktop/CustomTitleBar';
 
+const SIDEBAR_WIDTH_PX = 72;
+
 /**
  * Group layout styled components using MUI's styled API.
  * Keeps style definitions out of Group.tsx and avoids new object references per render.
@@ -17,11 +19,18 @@ export const RootBox = styled(Box)({
   width: '100%',
 });
 
-export const MainContentBox = styled(Box)({
+interface MainContentBoxProps {
+  hasFixedSidebar?: boolean;
+}
+
+export const MainContentBox = styled(Box, {
+  shouldForwardProp: (prop) => prop !== 'hasFixedSidebar',
+})<MainContentBoxProps>(({ hasFixedSidebar }) => ({
   width: '100%',
   height: '100%',
   position: 'relative',
-});
+  marginLeft: hasFixedSidebar ? `${SIDEBAR_WIDTH_PX}px` : 0,
+}));
 
 export const CenterBox = styled(Box)({
   alignItems: 'center',

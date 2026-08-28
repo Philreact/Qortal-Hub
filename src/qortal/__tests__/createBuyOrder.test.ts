@@ -169,7 +169,10 @@ describe('createBuyOrder', () => {
 
     it('throws when foreignBlockchain is missing', async () => {
       await expect(
-        createBuyOrder({ crosschainAtInfo: [{ qortalAtAddress: AT_ADDRESS }] }, false)
+        createBuyOrder(
+          { crosschainAtInfo: [{ qortalAtAddress: AT_ADDRESS }] },
+          false
+        )
       ).rejects.toThrow('question:message.error.missing_fields');
     });
 
@@ -186,7 +189,9 @@ describe('createBuyOrder', () => {
     it('throws when the fetched AT has a different foreignBlockchain', async () => {
       vi.stubGlobal(
         'fetch',
-        makeFetch({ atData: { ...DEFAULT_AT_DATA, foreignBlockchain: 'BITCOIN' } })
+        makeFetch({
+          atData: { ...DEFAULT_AT_DATA, foreignBlockchain: 'BITCOIN' },
+        })
       );
 
       await expect(createBuyOrder(makeInput(), false)).rejects.toThrow(
@@ -202,17 +207,25 @@ describe('createBuyOrder', () => {
         vi.fn(async (url: string) => {
           if (url.includes('/crosschain/trade/')) {
             callCount++;
-            const blockchain =
-              callCount === 2 ? 'BITCOIN' : FOREIGN_BLOCKCHAIN;
+            const blockchain = callCount === 2 ? 'BITCOIN' : FOREIGN_BLOCKCHAIN;
             return {
               ok: true,
-              json: async () => ({ ...DEFAULT_AT_DATA, foreignBlockchain: blockchain }),
+              json: async () => ({
+                ...DEFAULT_AT_DATA,
+                foreignBlockchain: blockchain,
+              }),
             };
           }
           if (url.includes('/feerequired'))
-            return { ok: true, clone: () => ({ json: async () => UNLOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => UNLOCK_FEE_SATS }),
+            };
           if (url.includes('/feekb'))
-            return { ok: true, clone: () => ({ json: async () => LOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => LOCK_FEE_SATS }),
+            };
           throw new Error(`Unexpected URL: ${url}`);
         })
       );
@@ -319,9 +332,15 @@ describe('createBuyOrder', () => {
           if (url.includes(`/crosschain/trade/${AT_ADDRESS_2}`))
             return { ok: true, json: async () => at2 };
           if (url.includes('/feerequired'))
-            return { ok: true, clone: () => ({ json: async () => UNLOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => UNLOCK_FEE_SATS }),
+            };
           if (url.includes('/feekb'))
-            return { ok: true, clone: () => ({ json: async () => LOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => LOCK_FEE_SATS }),
+            };
           throw new Error(`Unexpected URL: ${url}`);
         })
       );

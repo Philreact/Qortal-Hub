@@ -19,7 +19,9 @@ export { DM_VOICE_ROOM_PREFIX };
 /** Hex chars from SHA-256 kept in `buildDmVoiceRoomId` (wire-size bound; full hash is 64 hex). */
 export const DM_VOICE_ROOM_ID_DIGEST_HEX_LEN = 18;
 
-export async function buildDmVoiceRoomId(directChatId: string): Promise<string> {
+export async function buildDmVoiceRoomId(
+  directChatId: string
+): Promise<string> {
   const digest = await sha256Hex(directChatId);
   return `${DM_VOICE_ROOM_PREFIX}${digest.slice(0, DM_VOICE_ROOM_ID_DIGEST_HEX_LEN)}`;
 }
@@ -50,7 +52,9 @@ export async function buildGcKeyDigest(
 }
 
 /** Local hub Reticulum destination hash (32 hex) from bridge; required for GC_JOIN. */
-export async function fetchLocalReticulumDestinationHash(): Promise<string | null> {
+export async function fetchLocalReticulumDestinationHash(): Promise<
+  string | null
+> {
   const fn = (
     window as Window & {
       electronAPI?: {
@@ -196,7 +200,9 @@ export async function signGcJoin(params: {
     fromPublicKey: params.fromPublicKey,
     timestamp: params.timestamp,
     reticulumDestinationHash: params.reticulumDestinationHash,
-    ...(typeof jg === 'number' && Number.isFinite(jg) ? { joinGeneration: jg } : {}),
+    ...(typeof jg === 'number' && Number.isFinite(jg)
+      ? { joinGeneration: jg }
+      : {}),
   }).catch(() => '');
   if (!joinSig) return null;
   if (!params.reticulumIdentityPublicKeyBase64) {
@@ -214,7 +220,9 @@ export async function signGcJoin(params: {
     timestamp: params.timestamp,
     reticulumDestinationHash: params.reticulumDestinationHash,
     reticulumIdentityPublicKeyBase64: rkForSign,
-    ...(typeof jg === 'number' && Number.isFinite(jg) ? { joinGeneration: jg } : {}),
+    ...(typeof jg === 'number' && Number.isFinite(jg)
+      ? { joinGeneration: jg }
+      : {}),
   }).catch(() => '');
   if (!joinRkSig) return null;
   return { joinSig, joinRkSig };

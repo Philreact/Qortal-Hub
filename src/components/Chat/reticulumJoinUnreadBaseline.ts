@@ -40,11 +40,7 @@ export const resolveReticulumMembershipJoinedAt = async (
   address: string
 ): Promise<number | null> => {
   const normalizedAddress = String(address || '').trim();
-  if (
-    !Number.isInteger(groupId) ||
-    groupId <= 0 ||
-    !normalizedAddress
-  ) {
+  if (!Number.isInteger(groupId) || groupId <= 0 || !normalizedAddress) {
     return null;
   }
   const response = await fetch(

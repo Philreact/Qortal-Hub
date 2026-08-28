@@ -26,7 +26,9 @@ export function generateNativeEd25519KeyPair(): NativeEd25519KeyPair {
   if (
     publicKeyDer.byteLength !==
       ED25519_SPKI_PREFIX.byteLength + ED25519_PUBLIC_KEY_BYTES ||
-    !publicKeyDer.subarray(0, ED25519_SPKI_PREFIX.byteLength).equals(ED25519_SPKI_PREFIX)
+    !publicKeyDer
+      .subarray(0, ED25519_SPKI_PREFIX.byteLength)
+      .equals(ED25519_SPKI_PREFIX)
   ) {
     throw new Error('Unexpected native Ed25519 public key format');
   }
@@ -212,7 +214,11 @@ export function verifyCallSignedDetached(
     if (skew > 30_000 || skew < -10_000) return false;
     const derived = deriveAddressFromPublicKey(fromPublicKey);
     if (derived !== expectedAddress) return false;
-    const msgBytes = canonicalizeForSigning({ callId, timestamp, type: wireType });
+    const msgBytes = canonicalizeForSigning({
+      callId,
+      timestamp,
+      type: wireType,
+    });
     const sigBytes = base58Decode(signature) as Uint8Array;
     const keyBytes = base58Decode(fromPublicKey) as Uint8Array;
     return verifyEd25519Detached(msgBytes, sigBytes, keyBytes);

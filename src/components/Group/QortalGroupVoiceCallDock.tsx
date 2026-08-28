@@ -3,20 +3,9 @@
  * Paired with `QortalGroupVoiceCallStage` and `qortalGroupVoiceCallMinimizedAtom`.
  */
 
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
-import {
-  Avatar,
-  Box,
-  IconButton,
-  Tooltip,
-  Typography,
-} from '@mui/material';
+import { Avatar, Box, IconButton, Tooltip, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import CallEndRoundedIcon from '@mui/icons-material/CallEndRounded';
 import MicRoundedIcon from '@mui/icons-material/MicRounded';
@@ -269,8 +258,7 @@ export function QortalGroupVoiceCallDock() {
       >
         {sortedTiles.map((p) => {
           const self = p.address === userInfo?.address;
-          const speaking =
-            activeSpeakers.includes(p.address) || p.speaking;
+          const speaking = activeSpeakers.includes(p.address) || p.speaking;
           const displayName = participantDisplayLabel(p.address, self);
           const regName = registeredNameForAvatar(
             p.address,
@@ -286,11 +274,7 @@ export function QortalGroupVoiceCallDock() {
             ? initialsFromDisplayLabel(displayName, p.address)
             : p.address.slice(0, 2).toUpperCase();
           const voiceDotColor =
-            self && muted
-              ? DANGER
-              : speaking
-                ? SPEAKING
-                : VOICE_CONNECTED;
+            self && muted ? DANGER : speaking ? SPEAKING : VOICE_CONNECTED;
           return (
             <Box
               key={p.address}

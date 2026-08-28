@@ -59,10 +59,9 @@ import {
 
 const uid = new ShortUniqueId({ length: 10 });
 const BOOKMARK_VIEW_STORAGE_KEY = 'qortal_app_bookmark_view_by_address';
-const bookmarkViewByAddressAtom = atomWithStorage<Record<string, string | null>>(
-  BOOKMARK_VIEW_STORAGE_KEY,
-  {}
-);
+const bookmarkViewByAddressAtom = atomWithStorage<
+  Record<string, string | null>
+>(BOOKMARK_VIEW_STORAGE_KEY, {});
 
 type AppBookmarksButtonProps = {
   address?: string | null;
@@ -121,8 +120,9 @@ export function AppBookmarksButton({
     left: number;
     top: number;
   } | null>(null);
-  const [moveMenuAnchorEl, setMoveMenuAnchorEl] =
-    useState<HTMLElement | null>(null);
+  const [moveMenuAnchorEl, setMoveMenuAnchorEl] = useState<HTMLElement | null>(
+    null
+  );
   const [menuTarget, setMenuTarget] = useState<
     | { type: 'bookmark'; bookmark: AppBookmark }
     | { type: 'folder'; folder: AppBookmarkFolder }
@@ -145,22 +145,18 @@ export function AppBookmarksButton({
   const isDark = theme.palette.mode === 'dark';
   const currentFolder =
     data.folders.find((folder) => folder.id === currentFolderId) || null;
-  const bookmarkChromeBackground =
-    increaseBackgroundOpacity(
-      chromeBackground || (isDark ? 'rgb(33, 36, 42)' : 'rgb(223, 228, 235)')
-    );
-  const bookmarkFieldBackground =
-    isDark
-      ? 'rgba(28, 31, 37, 0.98)'
-      : 'rgba(232, 236, 241, 0.96)';
-  const bookmarkHoverBackground =
-    isDark
-      ? 'rgba(255, 255, 255, 0.07)'
-      : 'rgba(0, 0, 0, 0.06)';
-  const bookmarkInsetBackground =
-    isDark
-      ? 'rgba(28, 31, 37, 0.82)'
-      : 'rgba(232, 236, 241, 0.88)';
+  const bookmarkChromeBackground = increaseBackgroundOpacity(
+    chromeBackground || (isDark ? 'rgb(33, 36, 42)' : 'rgb(223, 228, 235)')
+  );
+  const bookmarkFieldBackground = isDark
+    ? 'rgba(28, 31, 37, 0.98)'
+    : 'rgba(232, 236, 241, 0.96)';
+  const bookmarkHoverBackground = isDark
+    ? 'rgba(255, 255, 255, 0.07)'
+    : 'rgba(0, 0, 0, 0.06)';
+  const bookmarkInsetBackground = isDark
+    ? 'rgba(28, 31, 37, 0.82)'
+    : 'rgba(232, 236, 241, 0.88)';
   const panelBorderColor = isDark
     ? alpha('#A9BCD8', 0.18)
     : theme.palette.divider;
@@ -250,7 +246,9 @@ export function AppBookmarksButton({
 
   useEffect(() => {
     if (!address || !currentFolderId || !hasLoaded) return;
-    const stillExists = data.folders.some((folder) => folder.id === currentFolderId);
+    const stillExists = data.folders.some(
+      (folder) => folder.id === currentFolderId
+    );
     if (!stillExists) {
       setViewByAddress((prev) => ({ ...prev, [address]: null }));
     }
@@ -319,7 +317,7 @@ export function AppBookmarksButton({
         service: bookmark.service,
         name: bookmark.appName,
         identifier: bookmark.identifier,
-        path: bookmark.path
+        path: bookmark.path,
       },
     });
     executeEvent('open-apps-mode', {});
@@ -678,10 +676,16 @@ export function AppBookmarksButton({
                 disabled={!!form}
                 size="small"
                 startIcon={
-                  isBookmarked ? <BookmarkAddedIcon /> : <BookmarkAddOutlinedIcon />
+                  isBookmarked ? (
+                    <BookmarkAddedIcon />
+                  ) : (
+                    <BookmarkAddOutlinedIcon />
+                  )
                 }
                 onClick={() =>
-                  existingBookmark ? startEdit(existingBookmark) : startAddCurrent()
+                  existingBookmark
+                    ? startEdit(existingBookmark)
+                    : startAddCurrent()
                 }
                 sx={{ borderRadius: '8px', textTransform: 'none' }}
                 variant={isBookmarked ? 'outlined' : 'contained'}
@@ -892,10 +896,14 @@ export function AppBookmarksButton({
                   value={form.folderId || ''}
                   renderValue={() => {
                     const selectedFolder = form.folderId
-                      ? data.folders.find((folder) => folder.id === form.folderId)
+                      ? data.folders.find(
+                          (folder) => folder.id === form.folderId
+                        )
                       : null;
                     return (
-                      <Box sx={{ alignItems: 'center', display: 'flex', gap: 1 }}>
+                      <Box
+                        sx={{ alignItems: 'center', display: 'flex', gap: 1 }}
+                      >
                         <FolderOutlinedIcon
                           sx={{
                             color: theme.palette.text.secondary,
@@ -903,7 +911,8 @@ export function AppBookmarksButton({
                           }}
                         />
                         <Typography sx={{ fontSize: 13, fontWeight: 500 }}>
-                          {selectedFolder?.name || t('core:bookmarks.top_level')}
+                          {selectedFolder?.name ||
+                            t('core:bookmarks.top_level')}
                         </Typography>
                       </Box>
                     );
@@ -1087,19 +1096,19 @@ export function AppBookmarksButton({
 
                 {visibleBookmarks.length === 0 &&
                   (currentFolder || data.folders.length === 0) && (
-                  <Typography
-                    sx={{
-                      color: theme.palette.text.secondary,
-                      fontSize: 13,
-                      py: 3,
-                      textAlign: 'center',
-                    }}
-                  >
-                    {currentFolder
-                      ? t('core:bookmarks.no_bookmarks_folder')
-                      : t('core:bookmarks.no_bookmarks')}
-                  </Typography>
-                )}
+                    <Typography
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontSize: 13,
+                        py: 3,
+                        textAlign: 'center',
+                      }}
+                    >
+                      {currentFolder
+                        ? t('core:bookmarks.no_bookmarks_folder')
+                        : t('core:bookmarks.no_bookmarks')}
+                    </Typography>
+                  )}
               </Box>
             </>
           )}

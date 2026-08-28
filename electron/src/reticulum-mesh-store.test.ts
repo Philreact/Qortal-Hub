@@ -19,7 +19,9 @@ import {
   type ReticulumMeshState,
 } from './reticulum-mesh-store';
 
-function baseState(overrides: Partial<ReticulumMeshState> = {}): ReticulumMeshState {
+function baseState(
+  overrides: Partial<ReticulumMeshState> = {}
+): ReticulumMeshState {
   return {
     version: 2,
     listenPort: 4243,
@@ -93,17 +95,26 @@ describe('meshConfigSliceFromState', () => {
   });
 
   it('enables transport when mesh listen on (private gateway, reachable unknown)', () => {
-    const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation((p: fs.PathLike) => {
-      const s = String(p);
-      return s.endsWith('mesh-network.identity') || s.endsWith('mesh-network.passphrase');
-    });
-    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((p: fs.PathLike) => {
-      const s = String(p);
-      if (s.endsWith('mesh-network.passphrase')) {
-        return 'qortal-hub-community-mesh-v1\n' as unknown as ReturnType<typeof fs.readFileSync>;
-      }
-      throw new Error(`Unexpected readFileSync path: ${s}`);
-    });
+    const existsSpy = vi
+      .spyOn(fs, 'existsSync')
+      .mockImplementation((p: fs.PathLike) => {
+        const s = String(p);
+        return (
+          s.endsWith('mesh-network.identity') ||
+          s.endsWith('mesh-network.passphrase')
+        );
+      });
+    const readSpy = vi
+      .spyOn(fs, 'readFileSync')
+      .mockImplementation((p: fs.PathLike) => {
+        const s = String(p);
+        if (s.endsWith('mesh-network.passphrase')) {
+          return 'qortal-hub-community-mesh-v1\n' as unknown as ReturnType<
+            typeof fs.readFileSync
+          >;
+        }
+        throw new Error(`Unexpected readFileSync path: ${s}`);
+      });
     try {
       const state = baseState({ meshListenEnabled: true });
       const s = meshConfigSliceFromState(state, []);
@@ -130,10 +141,12 @@ describe('meshConfigSliceFromState', () => {
   });
 
   it('keeps plain mesh listen when passphrase is missing', () => {
-    const existsSpy = vi.spyOn(fs, 'existsSync').mockImplementation((p: fs.PathLike) => {
-      const s = String(p);
-      return s.endsWith('mesh-network.identity');
-    });
+    const existsSpy = vi
+      .spyOn(fs, 'existsSync')
+      .mockImplementation((p: fs.PathLike) => {
+        const s = String(p);
+        return s.endsWith('mesh-network.identity');
+      });
     const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(() => {
       throw new Error('mesh passphrase missing');
     });

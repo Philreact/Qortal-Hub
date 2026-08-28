@@ -57,7 +57,8 @@ describe('AppCardEnhanced', () => {
     created: 1700000000000,
     metadata: {
       title: 'Test Application',
-      description: 'This is a test application with a long description that should be truncated when displayed in the card component.',
+      description:
+        'This is a test application with a long description that should be truncated when displayed in the card component.',
       category: 'games',
       categoryName: 'Games',
       tags: 'game,fun,test',

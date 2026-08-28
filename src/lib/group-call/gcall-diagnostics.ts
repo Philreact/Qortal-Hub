@@ -258,8 +258,14 @@ export function extractTransportTriadFromLiveMetrics(
   if (typeof binaryHw !== 'number' || !Number.isFinite(binaryHw)) return null;
   return {
     reticulumAudioBridgeWaitingForDrain: drain,
-    reticulumAudioBridgeQueuedFramesHighWater: Math.max(0, Math.trunc(bridgeHw)),
-    reticulumAudioBinaryOutQueueDepthHighWater: Math.max(0, Math.trunc(binaryHw)),
+    reticulumAudioBridgeQueuedFramesHighWater: Math.max(
+      0,
+      Math.trunc(bridgeHw)
+    ),
+    reticulumAudioBinaryOutQueueDepthHighWater: Math.max(
+      0,
+      Math.trunc(binaryHw)
+    ),
   };
 }
 
@@ -418,7 +424,9 @@ export function buildGcallDiagnosticsExportJson(params: {
   v2DiagnosticEvents?: readonly AnyGcallV2Event[];
   v2ManagedSourceAddrs?: readonly string[];
 }): string {
-  const triad = extractTransportTriadFromLiveMetrics(params.liveMetricsSnapshot);
+  const triad = extractTransportTriadFromLiveMetrics(
+    params.liveMetricsSnapshot
+  );
   const v2Diagnostics = buildV2DiagnosticsExportSection(
     params.v2DiagnosticEvents,
     params.v2ManagedSourceAddrs
@@ -452,7 +460,9 @@ export function buildGcallDiagnosticsExportJson(params: {
         : undefined,
     recentWindowTrends:
       params.recentWindowTrends !== undefined
-        ? (redactDeep(params.recentWindowTrends) as GcallDiagExportPayload['recentWindowTrends'])
+        ? (redactDeep(
+            params.recentWindowTrends
+          ) as GcallDiagExportPayload['recentWindowTrends'])
         : undefined,
     audioSurfaceRuntimeDiagnostics:
       params.audioSurfaceRuntimeDiagnostics !== undefined
@@ -524,7 +534,10 @@ function buildV2DiagnosticsExportSection(
           stream.pcmOldestAgeMax,
           payload.oldestFrameAgeMs
         );
-        stream.stalePcmDrops = Math.max(stream.stalePcmDrops, payload.staleDrops);
+        stream.stalePcmDrops = Math.max(
+          stream.stalePcmDrops,
+          payload.staleDrops
+        );
         break;
       }
       default:
@@ -552,13 +565,17 @@ function buildV2DiagnosticsExportSection(
 
   const avgJitterBufferedMs =
     perStreamSummary.length > 0
-      ? perStreamSummary.reduce((sum, stream) => sum + stream.avgJitterBufferedMs, 0) /
-        perStreamSummary.length
+      ? perStreamSummary.reduce(
+          (sum, stream) => sum + stream.avgJitterBufferedMs,
+          0
+        ) / perStreamSummary.length
       : 0;
   const avgPcmRingBufferedMs =
     perStreamSummary.length > 0
-      ? perStreamSummary.reduce((sum, stream) => sum + stream.avgPcmRingBufferedMs, 0) /
-        perStreamSummary.length
+      ? perStreamSummary.reduce(
+          (sum, stream) => sum + stream.avgPcmRingBufferedMs,
+          0
+        ) / perStreamSummary.length
       : 0;
   const avgPcmRingOldestFrameAgeMs =
     perStreamSummary.length > 0
@@ -569,7 +586,9 @@ function buildV2DiagnosticsExportSection(
       : 0;
   const maxPcmRingOldestFrameAgeMs =
     perStreamSummary.length > 0
-      ? Math.max(...perStreamSummary.map((stream) => stream.maxPcmRingOldestFrameAgeMs))
+      ? Math.max(
+          ...perStreamSummary.map((stream) => stream.maxPcmRingOldestFrameAgeMs)
+        )
       : 0;
   const stalePcmDrops =
     perStreamSummary.length > 0
@@ -577,8 +596,10 @@ function buildV2DiagnosticsExportSection(
       : 0;
   const avgTargetBufferMs =
     perStreamSummary.length > 0
-      ? perStreamSummary.reduce((sum, stream) => sum + stream.targetBufferMs, 0) /
-        perStreamSummary.length
+      ? perStreamSummary.reduce(
+          (sum, stream) => sum + stream.targetBufferMs,
+          0
+        ) / perStreamSummary.length
       : 0;
 
   return {
@@ -698,7 +719,10 @@ export async function downloadGcallDiagnosticsJson(
       await writable.close();
       return;
     } catch (err: unknown) {
-      const name = err && typeof err === 'object' && 'name' in err ? String((err as Error).name) : '';
+      const name =
+        err && typeof err === 'object' && 'name' in err
+          ? String((err as Error).name)
+          : '';
       if (name === 'AbortError') return;
     }
   }
@@ -715,6 +739,8 @@ export async function downloadGcallDiagnosticsJson(
   URL.revokeObjectURL(url);
 }
 
-export async function copyGcallDiagnosticsToClipboard(json: string): Promise<void> {
+export async function copyGcallDiagnosticsToClipboard(
+  json: string
+): Promise<void> {
   await navigator.clipboard.writeText(json);
 }

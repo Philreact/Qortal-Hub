@@ -9,7 +9,13 @@ import {
 } from '@mui/material';
 import { useTranslation } from 'react-i18next';
 
-export type SortOption = 'newest' | 'oldest' | 'alphabetical' | 'highest_rated' | 'most_rated' | 'recently_updated';
+export type SortOption =
+  | 'newest'
+  | 'oldest'
+  | 'alphabetical'
+  | 'highest_rated'
+  | 'most_rated'
+  | 'recently_updated';
 
 interface SortDropdownProps {
   value: SortOption;
@@ -31,7 +37,14 @@ const StyledFormControl = styled(FormControl)(({ theme }) => ({
   },
 }));
 
-const SORT_OPTIONS: SortOption[] = ['alphabetical', 'newest', 'oldest', 'highest_rated', 'most_rated', 'recently_updated'];
+const SORT_OPTIONS: SortOption[] = [
+  'alphabetical',
+  'newest',
+  'oldest',
+  'highest_rated',
+  'most_rated',
+  'recently_updated',
+];
 
 export const SortDropdown = ({ value, onChange }: SortDropdownProps) => {
   const { t } = useTranslation(['core']);

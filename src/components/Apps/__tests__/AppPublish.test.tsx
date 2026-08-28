@@ -31,7 +31,9 @@ vi.mock('react-dropzone', () => ({
 
 vi.mock('../../../background/background.ts', () => ({
   getFee: vi.fn().mockResolvedValue({ fee: '0.01' }),
-  performPowTask: vi.fn().mockResolvedValue({ success: true, nonce: 0, hash: '00' }),
+  performPowTask: vi
+    .fn()
+    .mockResolvedValue({ success: true, nonce: 0, hash: '00' }),
 }));
 
 import { AppPublish } from '../AppPublish';
@@ -90,8 +92,12 @@ describe('AppPublish – getQapp metadata loading', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('My App');
-      expect(screen.getByRole('textbox', { name: 'Description' })).toHaveValue('A great app');
+      expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue(
+        'My App'
+      );
+      expect(screen.getByRole('textbox', { name: 'Description' })).toHaveValue(
+        'A great app'
+      );
     });
   });
 
@@ -109,9 +115,15 @@ describe('AppPublish – getQapp metadata loading', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('textbox', { name: 'Tag 1' })).toHaveValue('alpha');
-      expect(screen.getByRole('textbox', { name: 'Tag 2' })).toHaveValue('beta');
-      expect(screen.getByRole('textbox', { name: 'Tag 3' })).toHaveValue('gamma');
+      expect(screen.getByRole('textbox', { name: 'Tag 1' })).toHaveValue(
+        'alpha'
+      );
+      expect(screen.getByRole('textbox', { name: 'Tag 2' })).toHaveValue(
+        'beta'
+      );
+      expect(screen.getByRole('textbox', { name: 'Tag 3' })).toHaveValue(
+        'gamma'
+      );
       expect(screen.getByRole('textbox', { name: 'Tag 4' })).toHaveValue('');
       expect(screen.getByRole('textbox', { name: 'Tag 5' })).toHaveValue('');
     });
@@ -131,14 +143,24 @@ describe('AppPublish – getQapp metadata loading', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('textbox', { name: 'Tag 1' })).toHaveValue('alpha');
-      expect(screen.getByRole('textbox', { name: 'Tag 2' })).toHaveValue('beta');
-      expect(screen.getByRole('textbox', { name: 'Tag 3' })).toHaveValue('gamma');
+      expect(screen.getByRole('textbox', { name: 'Tag 1' })).toHaveValue(
+        'alpha'
+      );
+      expect(screen.getByRole('textbox', { name: 'Tag 2' })).toHaveValue(
+        'beta'
+      );
+      expect(screen.getByRole('textbox', { name: 'Tag 3' })).toHaveValue(
+        'gamma'
+      );
     });
   });
 
   it('does not crash and still loads title/description when tags is undefined', async () => {
-    mockFetch({ title: 'My App', description: 'A great app', category: 'games' });
+    mockFetch({
+      title: 'My App',
+      description: 'A great app',
+      category: 'games',
+    });
 
     render(
       <TestWrapper>
@@ -147,8 +169,12 @@ describe('AppPublish – getQapp metadata loading', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('My App');
-      expect(screen.getByRole('textbox', { name: 'Description' })).toHaveValue('A great app');
+      expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue(
+        'My App'
+      );
+      expect(screen.getByRole('textbox', { name: 'Description' })).toHaveValue(
+        'A great app'
+      );
     });
 
     expect(screen.getByRole('textbox', { name: 'Tag 1' })).toHaveValue('');
@@ -164,8 +190,12 @@ describe('AppPublish – getQapp metadata loading', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('My App');
-      expect(screen.getByRole('textbox', { name: 'Description' })).toHaveValue('No tags here');
+      expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue(
+        'My App'
+      );
+      expect(screen.getByRole('textbox', { name: 'Description' })).toHaveValue(
+        'No tags here'
+      );
     });
 
     expect(screen.getByRole('textbox', { name: 'Tag 1' })).toHaveValue('');
@@ -182,7 +212,9 @@ describe('AppPublish – getQapp metadata loading', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('');
-      expect(screen.getByRole('textbox', { name: 'Description' })).toHaveValue('');
+      expect(screen.getByRole('textbox', { name: 'Description' })).toHaveValue(
+        ''
+      );
       expect(screen.getByRole('textbox', { name: 'Tag 1' })).toHaveValue('');
     });
   });

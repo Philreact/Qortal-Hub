@@ -40,8 +40,7 @@ export function assessSourceTimestampLateness(
 
   const senderDeltaMs =
     normalizedSenderTimestampMs - state.baselineSenderTimestampMs;
-  const receivedDeltaMs =
-    normalizedReceivedAtMs - state.baselineReceivedAtMs;
+  const receivedDeltaMs = normalizedReceivedAtMs - state.baselineReceivedAtMs;
   const excessLatenessMs = Math.max(0, receivedDeltaMs - senderDeltaMs);
   const timestampRegressionMs = Math.max(
     0,
@@ -60,11 +59,8 @@ export function assessSourceTimestampLateness(
   );
   const shouldResyncLateBaseline =
     shouldDrop &&
-    (
-      (timestampRegressionMs === 0 && monotonicForwardProgress) ||
-      (baselineAgeMs > opts.maxExcessLatenessMs &&
-        senderAdvancedPastBaseline)
-    );
+    ((timestampRegressionMs === 0 && monotonicForwardProgress) ||
+      (baselineAgeMs > opts.maxExcessLatenessMs && senderAdvancedPastBaseline));
 
   return {
     nextState: shouldResyncLateBaseline
@@ -75,13 +71,13 @@ export function assessSourceTimestampLateness(
         }
       : shouldDrop
         ? state
-      : {
-          ...state,
-          maxAcceptedTimestampMs: Math.max(
-            state.maxAcceptedTimestampMs,
-            normalizedSenderTimestampMs
-          ),
-        },
+        : {
+            ...state,
+            maxAcceptedTimestampMs: Math.max(
+              state.maxAcceptedTimestampMs,
+              normalizedSenderTimestampMs
+            ),
+          },
     shouldDrop: shouldResyncLateBaseline ? false : shouldDrop,
     excessLatenessMs,
     timestampRegressionMs,

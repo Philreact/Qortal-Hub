@@ -35,10 +35,7 @@ import {
   peerAddressFromDirectVoiceChatId,
 } from '../../lib/call/directVoiceCallChatId';
 import { useCallSwitchGuard } from '../../contexts/CallSwitchGuardContext';
-import {
-  subscribeToEvent,
-  unsubscribeFromEvent,
-} from '../../utils/events';
+import { subscribeToEvent, unsubscribeFromEvent } from '../../utils/events';
 import { DIRECT_VOICE_CALL_NAV_SLOT_ID } from '../Desktop/GlobalQortalNavBar';
 import { useLivePortalTarget } from '../../hooks/useLivePortalTarget';
 import { CallAudioSettingsButton } from '../Chat/CallAudioDeviceSelectors';
@@ -111,7 +108,9 @@ export function DirectVoiceCallNavWidget() {
         return;
       }
       if (p2pHealth !== 'good') {
-        showCallError('Voice calls are unavailable until P2P connectivity recovers.');
+        showCallError(
+          'Voice calls are unavailable until P2P connectivity recovers.'
+        );
         return;
       }
 

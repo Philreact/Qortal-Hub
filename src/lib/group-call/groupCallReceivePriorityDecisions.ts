@@ -174,7 +174,8 @@ export function computeWeakSingleRemoteRecoveryHoldState(opts: {
   }
   const recentStability = opts.recentStability;
   const sourceRecentlyPushed =
-    Number.isFinite(opts.lastPushAgeMs) && opts.lastPushAgeMs <= recentPushMaxMs;
+    Number.isFinite(opts.lastPushAgeMs) &&
+    opts.lastPushAgeMs <= recentPushMaxMs;
   const weakLiveRecovery =
     recentStability.sampleCount >= 2 &&
     !recentStability.stable &&

@@ -39,18 +39,18 @@ A successfully fetched activity directory that omits a public group is treated a
 
 Member count maps to ten tiers, then to the shared scale as `tier × 10`:
 
-| Members | Tier / score |
-| --- | --- |
-| 0–10 | 1 / 10 |
-| 11–25 | 2 / 20 |
-| 26–50 | 3 / 30 |
-| 51–99 | 4 / 40 |
-| 100–249 | 5 / 50 |
-| 250–499 | 6 / 60 |
-| 500–999 | 7 / 70 |
-| 1,000–2,499 | 8 / 80 |
-| 2,500–4,999 | 9 / 90 |
-| 5,000+ | 10 / 100 |
+| Members     | Tier / score |
+| ----------- | ------------ |
+| 0–10        | 1 / 10       |
+| 11–25       | 2 / 20       |
+| 26–50       | 3 / 30       |
+| 51–99       | 4 / 40       |
+| 100–249     | 5 / 50       |
+| 250–499     | 6 / 60       |
+| 500–999     | 7 / 70       |
+| 1,000–2,499 | 8 / 80       |
+| 2,500–4,999 | 9 / 90       |
+| 5,000+      | 10 / 100     |
 
 Community contributes at most 10 points to the total. A group reaches 9/10 Community points at 2,500 members and the full 10/10 at 5,000 members.
 

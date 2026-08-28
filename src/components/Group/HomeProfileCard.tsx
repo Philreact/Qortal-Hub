@@ -58,6 +58,7 @@ import {
   userInfoAtom,
   openSnackGlobalAtom,
   infoSnackGlobalAtom,
+  showActionDrawerAtom,
 } from '../../atoms/global';
 import { type SelectableStatus } from '../../atoms/presence';
 import {
@@ -218,6 +219,7 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
   const setInfoSnack = useSetAtom(infoSnackGlobalAtom);
   const [isEnabledDevMode, setIsEnabledDevMode] = useAtom(enabledDevModeAtom);
   const [disableDevLogs, setDisableDevLogs] = useAtom(disableDevLogsAtom);
+  const [showActionDrawer, setShowActionDrawer] = useAtom(showActionDrawerAtom);
 
   const avatarAnchorRef = useRef<HTMLButtonElement | null>(null);
   const avatarPanelRef = useRef<HTMLDivElement | null>(null);
@@ -4296,6 +4298,57 @@ export const HomeProfileCard = ({ onOpenReceive }: HomeProfileCardProps) => {
                       <Switch
                         checked={!areUiAnimationsEnabled}
                         onChange={handleToggleUiAnimations}
+                        sx={settingsSwitchSx}
+                      />
+                    </Box>
+
+                    <Box
+                      sx={{
+                        borderTop: `1px solid ${avatarSectionDivider}`,
+                        mx: 1.35,
+                      }}
+                    />
+
+                    <Box
+                      sx={{
+                        alignItems: 'center',
+                        display: 'flex',
+                        gap: 1.2,
+                        justifyContent: 'space-between',
+                        px: 1.35,
+                        py: 1.2,
+                      }}
+                    >
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.primary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            letterSpacing: '0.01em',
+                          }}
+                        >
+                          {td('show_action_drawer', 'Show Action Drawer')}
+                        </Typography>
+                        <Typography
+                          sx={{
+                            color: theme.palette.text.secondary,
+                            fontSize: '0.75rem',
+                            lineHeight: 1.45,
+                            mt: 0.4,
+                          }}
+                        >
+                          {td(
+                            'show_action_drawer_desc',
+                            'Turn off to always show action commands.'
+                          )}
+                        </Typography>
+                      </Box>
+                      <Switch
+                        checked={showActionDrawer}
+                        onChange={(_event, checked) =>
+                          setShowActionDrawer(checked)
+                        }
                         sx={settingsSwitchSx}
                       />
                     </Box>

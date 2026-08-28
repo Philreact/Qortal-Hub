@@ -44,7 +44,9 @@ function sectionBody(config: string, header: string): string {
   const start = config.indexOf(header);
   expect(start).toBeGreaterThanOrEqual(0);
   const nextBlock = config.indexOf('[[', start + header.length);
-  return nextBlock === -1 ? config.slice(start) : config.slice(start, nextBlock);
+  return nextBlock === -1
+    ? config.slice(start)
+    : config.slice(start, nextBlock);
 }
 
 function getTestAppSettingsPath(): string {
@@ -114,10 +116,18 @@ describe('reticulum-daemon managed config', () => {
     ]);
     const activeAppPids = new Set([101]);
 
-    expect(processHasActiveReticulumAppAncestor(501, parents, activeAppPids)).toBe(true);
-    expect(processHasActiveReticulumAppAncestor(601, parents, activeAppPids)).toBe(true);
-    expect(processHasActiveReticulumAppAncestor(701, parents, activeAppPids)).toBe(false);
-    expect(processHasActiveReticulumAppAncestor(801, parents, activeAppPids)).toBe(false);
+    expect(
+      processHasActiveReticulumAppAncestor(501, parents, activeAppPids)
+    ).toBe(true);
+    expect(
+      processHasActiveReticulumAppAncestor(601, parents, activeAppPids)
+    ).toBe(true);
+    expect(
+      processHasActiveReticulumAppAncestor(701, parents, activeAppPids)
+    ).toBe(false);
+    expect(
+      processHasActiveReticulumAppAncestor(801, parents, activeAppPids)
+    ).toBe(false);
   });
 
   it('uses the canonical qortal-hub Reticulum config directory', () => {
@@ -144,7 +154,8 @@ describe('reticulum-daemon managed config', () => {
     for (const hub of DEFAULT_RETICULUM_HUBS) {
       expect(config).toContain(`[[${hub.name}]]`);
       const wantType =
-        hub.interfaceType === 'BackboneInterface' && process.platform === 'linux'
+        hub.interfaceType === 'BackboneInterface' &&
+        process.platform === 'linux'
           ? 'BackboneInterface'
           : 'TCPClientInterface';
       const wantHostKey =
@@ -224,7 +235,10 @@ describe('reticulum-daemon managed config', () => {
       enableTransport: true,
       reachableOn: null,
     };
-    const config = buildManagedReticulumConfig(DEFAULT_RETICULUM_HUBS, meshSlice);
+    const config = buildManagedReticulumConfig(
+      DEFAULT_RETICULUM_HUBS,
+      meshSlice
+    );
     expect(config).toContain('enable_transport = True');
     const reticulumBlock = config.slice(
       config.indexOf('[reticulum]'),
@@ -255,9 +269,11 @@ describe('reticulum-daemon managed config', () => {
   });
 
   it('omits mesh listen when private gateway has no reachable_on', () => {
-    const spy = vi.spyOn(fs, 'existsSync').mockImplementation((p: fs.PathLike) => {
-      return String(p).endsWith('mesh-network.identity');
-    });
+    const spy = vi
+      .spyOn(fs, 'existsSync')
+      .mockImplementation((p: fs.PathLike) => {
+        return String(p).endsWith('mesh-network.identity');
+      });
     const meshSlice: ReticulumMeshConfigSlice = {
       listenEnabled: true,
       listenPort: 4243,
@@ -272,7 +288,10 @@ describe('reticulum-daemon managed config', () => {
       reachableOn: null,
     };
     try {
-      const config = buildManagedReticulumConfig(DEFAULT_RETICULUM_HUBS, meshSlice);
+      const config = buildManagedReticulumConfig(
+        DEFAULT_RETICULUM_HUBS,
+        meshSlice
+      );
       expect(config).toContain('enable_transport = True');
       expect(config).toContain(
         'network_identity = /tmp/qortal-appdata/qortal-hub/reticulum/mesh-network.identity'
@@ -288,9 +307,11 @@ describe('reticulum-daemon managed config', () => {
   });
 
   it('emits reachable_on and enable_transport when private gateway slice includes reachableOn', () => {
-    const spy = vi.spyOn(fs, 'existsSync').mockImplementation((p: fs.PathLike) => {
-      return String(p).endsWith('mesh-network.identity');
-    });
+    const spy = vi
+      .spyOn(fs, 'existsSync')
+      .mockImplementation((p: fs.PathLike) => {
+        return String(p).endsWith('mesh-network.identity');
+      });
     const meshSlice: ReticulumMeshConfigSlice = {
       listenEnabled: true,
       listenPort: 4243,
@@ -305,7 +326,10 @@ describe('reticulum-daemon managed config', () => {
       reachableOn: '203.0.113.7',
     };
     try {
-      const config = buildManagedReticulumConfig(DEFAULT_RETICULUM_HUBS, meshSlice);
+      const config = buildManagedReticulumConfig(
+        DEFAULT_RETICULUM_HUBS,
+        meshSlice
+      );
       expect(config).toContain('enable_transport = True');
       expect(config).toContain(
         'network_identity = /tmp/qortal-appdata/qortal-hub/reticulum/mesh-network.identity'
@@ -317,7 +341,9 @@ describe('reticulum-daemon managed config', () => {
       expect(config).toContain('announce_interval = 5');
       expect(config).toContain('publish_ifac = yes');
       const privateGatewayListenType =
-        process.platform === 'linux' ? 'BackboneInterface' : 'TCPServerInterface';
+        process.platform === 'linux'
+          ? 'BackboneInterface'
+          : 'TCPServerInterface';
       expect(config).toContain(`type = ${privateGatewayListenType}`);
     } finally {
       spy.mockRestore();
@@ -327,7 +353,10 @@ describe('reticulum-daemon managed config', () => {
   it('computeManagedReticulumConfigFingerprint matches sha256 of buildCurrentManagedReticulumConfig', () => {
     const body = buildCurrentManagedReticulumConfig();
     const fp = computeManagedReticulumConfigFingerprint();
-    const expected = crypto.createHash('sha256').update(body, 'utf8').digest('hex');
+    const expected = crypto
+      .createHash('sha256')
+      .update(body, 'utf8')
+      .digest('hex');
     expect(fp).toBe(expected);
   });
 
@@ -350,19 +379,20 @@ describe('reticulum-daemon managed config', () => {
 
   it('keeps the shared daemon running while other app instances remain active', () => {
     const alivePids = new Set([101, 202]);
-    const killSpy = vi
-      .spyOn(process, 'kill')
-      .mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
-        if (signal === 0 || typeof signal === 'undefined') {
-          if (alivePids.has(pid)) {
-            return true;
-          }
-          const err = new Error('ESRCH') as Error & { code?: string };
-          err.code = 'ESRCH';
-          throw err;
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: number | NodeJS.Signals
+    ) => {
+      if (signal === 0 || typeof signal === 'undefined') {
+        if (alivePids.has(pid)) {
+          return true;
         }
-        return true;
-      }) as typeof process.kill);
+        const err = new Error('ESRCH') as Error & { code?: string };
+        err.code = 'ESRCH';
+        throw err;
+      }
+      return true;
+    }) as typeof process.kill);
 
     registerReticulumAppInstance(0, 101);
     registerReticulumAppInstance(1, 202);
@@ -387,19 +417,20 @@ describe('reticulum-daemon managed config', () => {
   });
 
   it('lets the last surviving secondary instance stop the shared daemon from pid metadata', () => {
-    const killSpy = vi
-      .spyOn(process, 'kill')
-      .mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
-        if (pid !== 999 && pid !== -999) {
-          const err = new Error('ESRCH') as Error & { code?: string };
-          err.code = 'ESRCH';
-          throw err;
-        }
-        if (signal === 0 || signal === 'SIGTERM') {
-          return true;
-        }
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: number | NodeJS.Signals
+    ) => {
+      if (pid !== 999 && pid !== -999) {
+        const err = new Error('ESRCH') as Error & { code?: string };
+        err.code = 'ESRCH';
+        throw err;
+      }
+      if (signal === 0 || signal === 'SIGTERM') {
         return true;
-      }) as typeof process.kill);
+      }
+      return true;
+    }) as typeof process.kill);
 
     fs.mkdirSync(path.dirname(getReticulumSharedDaemonStatePath()), {
       recursive: true,
@@ -425,19 +456,20 @@ describe('reticulum-daemon managed config', () => {
   });
 
   it('recovers an orphaned shared daemon on a fresh primary-instance launch', () => {
-    const killSpy = vi
-      .spyOn(process, 'kill')
-      .mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
-        if (pid !== 999 && pid !== -999) {
-          const err = new Error('ESRCH') as Error & { code?: string };
-          err.code = 'ESRCH';
-          throw err;
-        }
-        if (signal === 0 || signal === 'SIGTERM') {
-          return true;
-        }
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: number | NodeJS.Signals
+    ) => {
+      if (pid !== 999 && pid !== -999) {
+        const err = new Error('ESRCH') as Error & { code?: string };
+        err.code = 'ESRCH';
+        throw err;
+      }
+      if (signal === 0 || signal === 'SIGTERM') {
         return true;
-      }) as typeof process.kill);
+      }
+      return true;
+    }) as typeof process.kill);
 
     fs.mkdirSync(path.dirname(getReticulumSharedDaemonStatePath()), {
       recursive: true,
@@ -469,13 +501,14 @@ describe('reticulum-daemon managed config', () => {
   });
 
   it('clears stale daemon metadata without signaling when the saved pid is already dead', () => {
-    const killSpy = vi
-      .spyOn(process, 'kill')
-      .mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
-        const err = new Error('ESRCH') as Error & { code?: string };
-        err.code = 'ESRCH';
-        throw err;
-      }) as typeof process.kill);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: number | NodeJS.Signals
+    ) => {
+      const err = new Error('ESRCH') as Error & { code?: string };
+      err.code = 'ESRCH';
+      throw err;
+    }) as typeof process.kill);
 
     fs.mkdirSync(path.dirname(getReticulumSharedDaemonStatePath()), {
       recursive: true,
@@ -507,16 +540,17 @@ describe('reticulum-daemon managed config', () => {
   });
 
   it('reports the shared daemon as running for secondary instances without a local child', () => {
-    const killSpy = vi
-      .spyOn(process, 'kill')
-      .mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
-        if (pid === 999 && signal === 0) {
-          return true;
-        }
-        const err = new Error('ESRCH') as Error & { code?: string };
-        err.code = 'ESRCH';
-        throw err;
-      }) as typeof process.kill);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: number | NodeJS.Signals
+    ) => {
+      if (pid === 999 && signal === 0) {
+        return true;
+      }
+      const err = new Error('ESRCH') as Error & { code?: string };
+      err.code = 'ESRCH';
+      throw err;
+    }) as typeof process.kill);
 
     fs.mkdirSync(path.dirname(getReticulumSharedDaemonStatePath()), {
       recursive: true,
@@ -546,17 +580,18 @@ describe('reticulum-daemon managed config', () => {
 
   it('detects a shared daemon owned by another live app instance', () => {
     const alivePids = new Set([101, 999]);
-    vi.spyOn(process, 'kill').mockImplementation(
-      ((pid: number, signal?: number | NodeJS.Signals) => {
-        if (signal === 0 || typeof signal === 'undefined') {
-          if (alivePids.has(pid)) return true;
-          const err = new Error('ESRCH') as Error & { code?: string };
-          err.code = 'ESRCH';
-          throw err;
-        }
-        return true;
-      }) as typeof process.kill
-    );
+    vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: number | NodeJS.Signals
+    ) => {
+      if (signal === 0 || typeof signal === 'undefined') {
+        if (alivePids.has(pid)) return true;
+        const err = new Error('ESRCH') as Error & { code?: string };
+        err.code = 'ESRCH';
+        throw err;
+      }
+      return true;
+    }) as typeof process.kill);
 
     registerReticulumAppInstance(0, 101);
     fs.mkdirSync(path.dirname(getReticulumSharedDaemonStatePath()), {
@@ -580,17 +615,18 @@ describe('reticulum-daemon managed config', () => {
 
   it('uses another live app instance as restart protection even without daemon metadata', () => {
     const alivePids = new Set([202]);
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(
-      ((pid: number, signal?: number | NodeJS.Signals) => {
-        if (signal === 0 || typeof signal === 'undefined') {
-          if (alivePids.has(pid)) return true;
-          const err = new Error('ESRCH') as Error & { code?: string };
-          err.code = 'ESRCH';
-          throw err;
-        }
-        return true;
-      }) as typeof process.kill
-    );
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: number | NodeJS.Signals
+    ) => {
+      if (signal === 0 || typeof signal === 'undefined') {
+        if (alivePids.has(pid)) return true;
+        const err = new Error('ESRCH') as Error & { code?: string };
+        err.code = 'ESRCH';
+        throw err;
+      }
+      return true;
+    }) as typeof process.kill);
 
     registerReticulumAppInstance(1, 202);
 
@@ -600,17 +636,18 @@ describe('reticulum-daemon managed config', () => {
 
   it('uses another live app instance as restart protection when owner metadata is stale', () => {
     const alivePids = new Set([202, 999]);
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(
-      ((pid: number, signal?: number | NodeJS.Signals) => {
-        if (signal === 0 || typeof signal === 'undefined') {
-          if (alivePids.has(pid)) return true;
-          const err = new Error('ESRCH') as Error & { code?: string };
-          err.code = 'ESRCH';
-          throw err;
-        }
-        return true;
-      }) as typeof process.kill
-    );
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: number | NodeJS.Signals
+    ) => {
+      if (signal === 0 || typeof signal === 'undefined') {
+        if (alivePids.has(pid)) return true;
+        const err = new Error('ESRCH') as Error & { code?: string };
+        err.code = 'ESRCH';
+        throw err;
+      }
+      return true;
+    }) as typeof process.kill);
 
     registerReticulumAppInstance(1, 202);
     fs.mkdirSync(path.dirname(getReticulumSharedDaemonStatePath()), {

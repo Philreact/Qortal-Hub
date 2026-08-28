@@ -592,9 +592,7 @@ export class CallManager extends EventEmitter {
     }
   }
 
-  setDmCallLinkControlSender(
-    sender: DmCallLinkControlSender | null
-  ): void {
+  setDmCallLinkControlSender(sender: DmCallLinkControlSender | null): void {
     this.dmCallLinkControlSender = sender;
   }
 
@@ -2047,10 +2045,7 @@ export class CallManager extends EventEmitter {
     loggerLog(`[Call] Call ${callId.slice(0, 8)}… rejected.`);
   }
 
-  private finalizeRemoteHangup(
-    call: CallRecord,
-    timestamp: number
-  ): void {
+  private finalizeRemoteHangup(call: CallRecord, timestamp: number): void {
     const previousState = call.state;
     if (call.cleanupTimer) clearTimeout(call.cleanupTimer);
     if (call.rejectionFinalizeTimer) {

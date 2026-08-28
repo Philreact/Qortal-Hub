@@ -62,7 +62,8 @@ function getEvents(json: Record<string, unknown>): AnyGcallV2Event[] {
 function extractSignals(json: Record<string, unknown>): ExportReplaySignals {
   const live = (json.liveMetricsSnapshot ?? {}) as Record<string, unknown>;
   const win = (json.exportWindowMetrics ?? {}) as Record<string, unknown>;
-  const perf = ((json.gcallPerfSnapshot as Record<string, unknown> | undefined)?.meta ?? {}) as Record<string, unknown>;
+  const perf = ((json.gcallPerfSnapshot as Record<string, unknown> | undefined)
+    ?.meta ?? {}) as Record<string, unknown>;
   const events = getEvents(json);
 
   const transportEvidenceKinds = new Set<string>();
@@ -86,7 +87,10 @@ function extractSignals(json: Record<string, unknown>): ExportReplaySignals {
     }
     if (event.kind === 'jitter-stats') {
       const payload = event.payload as Record<string, unknown>;
-      peakJitterBufferedMs = Math.max(peakJitterBufferedMs, num(payload, 'bufferedMs'));
+      peakJitterBufferedMs = Math.max(
+        peakJitterBufferedMs,
+        num(payload, 'bufferedMs')
+      );
       continue;
     }
     if (event.kind === 'pcm-ring-stats') {
@@ -102,7 +106,10 @@ function extractSignals(json: Record<string, unknown>): ExportReplaySignals {
     tickBudgetBreachP95Ms: num(perf, 'tickBudgetBreachP95Ms'),
     playoutUnderTargetFraction: num(live, 'playoutUnderTargetFraction'),
     avgPcmBufferedMs: num(live, 'avgPcmBufferedMs'),
-    bridgeQueuedFramesHighWater: num(live, 'reticulumAudioBridgeQueuedFramesHighWater'),
+    bridgeQueuedFramesHighWater: num(
+      live,
+      'reticulumAudioBridgeQueuedFramesHighWater'
+    ),
     queuePressureDrops: num(live, 'reticulumAudioQueuePressureDrops'),
     staleTimestampDrops: num(live, 'packetsDroppedStaleTimestamp'),
     transportEvidenceKinds: [...transportEvidenceKinds],
@@ -118,14 +125,23 @@ export function reducePairedLiveExportToReplayScript(
   const peerA = extractSignals(pair.peerAExport);
   const peerB = extractSignals(pair.peerBExport);
   const primary =
-    peerA.tickBudgetBreachP95Ms + peerA.bridgeQueuedFramesHighWater + peerA.backlogDrainActivations * 20 >=
-      peerB.tickBudgetBreachP95Ms + peerB.bridgeQueuedFramesHighWater + peerB.backlogDrainActivations * 20
+    peerA.tickBudgetBreachP95Ms +
+      peerA.bridgeQueuedFramesHighWater +
+      peerA.backlogDrainActivations * 20 >=
+    peerB.tickBudgetBreachP95Ms +
+      peerB.bridgeQueuedFramesHighWater +
+      peerB.backlogDrainActivations * 20
       ? peerA
       : peerB;
-  const stale = peerA.staleTimestampDrops >= peerB.staleTimestampDrops ? peerA : peerB;
+  const stale =
+    peerA.staleTimestampDrops >= peerB.staleTimestampDrops ? peerA : peerB;
   const durationMs = Math.max(peerA.durationMs, peerB.durationMs, 24_000);
   const tickCount = Math.max(1, durationMs / 20);
-  const tickBreachFraction = clamp(primary.tickBudgetBreachCount / tickCount, 0, 0.25);
+  const tickBreachFraction = clamp(
+    primary.tickBudgetBreachCount / tickCount,
+    0,
+    0.25
+  );
   const tickBreachAvgMs = clamp(primary.tickBudgetBreachP95Ms || 0, 0, 60);
   const packetPattern =
     primary.backlogDrainActivations > 0 && stale.staleTimestampDrops > 0
@@ -136,12 +152,20 @@ export function reducePairedLiveExportToReplayScript(
           ? 'recovery-channel'
           : 'steady';
   const jitterStdDevMs = clamp(
-    8 + primary.peakJitterBufferedMs / 8 + Math.max(peerA.playoutUnderTargetFraction, peerB.playoutUnderTargetFraction) * 12,
+    8 +
+      primary.peakJitterBufferedMs / 8 +
+      Math.max(
+        peerA.playoutUnderTargetFraction,
+        peerB.playoutUnderTargetFraction
+      ) *
+        12,
     8,
     80
   );
   const burstFraction = clamp(
-    0.08 + primary.backlogDrainActivations * 0.08 + primary.transportEvidenceKinds.length * 0.04,
+    0.08 +
+      primary.backlogDrainActivations * 0.08 +
+      primary.transportEvidenceKinds.length * 0.04,
     0.08,
     0.7
   );
@@ -150,7 +174,8 @@ export function reducePairedLiveExportToReplayScript(
     0.005,
     0.08
   );
-  const simulateRecoveryPathLatch = primary.transportEvidenceKinds.includes('path-warming');
+  const simulateRecoveryPathLatch =
+    primary.transportEvidenceKinds.includes('path-warming');
   const faults: FaultSpec[] = [];
   if (primary.bridgeQueuedFramesHighWater >= 16) {
     faults.push({
@@ -160,12 +185,17 @@ export function reducePairedLiveExportToReplayScript(
       params: { depth: primary.bridgeQueuedFramesHighWater },
     });
   }
-  if (primary.transportEvidenceKinds.includes('path-warming') || primary.backlogDrainActivations > 0) {
+  if (
+    primary.transportEvidenceKinds.includes('path-warming') ||
+    primary.backlogDrainActivations > 0
+  ) {
     faults.push({
       kind: 'latency-spike',
       atMs: 4_000,
       durationMs: 5_000,
-      params: { addMs: clamp(Math.round(primary.peakJitterBufferedMs * 0.35), 60, 140) },
+      params: {
+        addMs: clamp(Math.round(primary.peakJitterBufferedMs * 0.35), 60, 140),
+      },
     });
   }
   if (primary.queuePressureDrops > 0) {

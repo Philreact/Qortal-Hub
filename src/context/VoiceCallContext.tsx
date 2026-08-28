@@ -6,14 +6,18 @@ const VoiceCallContext = createContext<UseVoiceCallReturn | null>(null);
 export function VoiceCallProvider({ children }: { children: ReactNode }) {
   const value = useVoiceCall();
   return (
-    <VoiceCallContext.Provider value={value}>{children}</VoiceCallContext.Provider>
+    <VoiceCallContext.Provider value={value}>
+      {children}
+    </VoiceCallContext.Provider>
   );
 }
 
 export function useVoiceCallContext(): UseVoiceCallReturn {
   const ctx = useContext(VoiceCallContext);
   if (!ctx) {
-    throw new Error('useVoiceCallContext must be used within VoiceCallProvider');
+    throw new Error(
+      'useVoiceCallContext must be used within VoiceCallProvider'
+    );
   }
   return ctx;
 }

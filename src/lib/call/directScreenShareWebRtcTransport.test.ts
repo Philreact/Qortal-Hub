@@ -30,7 +30,9 @@ class FakePeerConnection {
     return {} as RTCRtpSender;
   }
 
-  async createOffer(options: RTCOfferOptions = {}): Promise<RTCSessionDescriptionInit> {
+  async createOffer(
+    options: RTCOfferOptions = {}
+  ): Promise<RTCSessionDescriptionInit> {
     this.offerOptions.push(options);
     return { type: 'offer', sdp: 'screen-offer' };
   }
