@@ -643,6 +643,80 @@ export const getUserAccount = async ({ isFromExtension, appInfo }) => {
   }
 };
 
+export const signQappIdentityProof = async (
+  payload,
+  _isFromExtension,
+  appInfo
+) => {
+  const protocol = payload?.protocol;
+  const challengeId = payload?.challengeId;
+  const nonce = payload?.nonce;
+  const backendDestination = payload?.backendDestination;
+  const expiresAt = payload?.expiresAt;
+  if (
+    protocol !== 'qortal-qapp-auth-v1' ||
+    typeof challengeId !== 'string' ||
+    !/^[A-Za-z0-9_-]{12,128}$/.test(challengeId) ||
+    typeof nonce !== 'string' ||
+    !/^[A-Za-z0-9_-]{32,128}$/.test(nonce) ||
+    typeof backendDestination !== 'string' ||
+    !/^[0-9a-f]{32}$/.test(backendDestination) ||
+    !Number.isSafeInteger(expiresAt) ||
+    expiresAt < Date.now() - 5_000 ||
+    expiresAt > Date.now() + 180_000
+  ) {
+    throw new Error('Invalid Q-App identity challenge');
+  }
+  const hasPersistentAccountPermission = appInfo?.name
+    ? Boolean(await getPermission(`qAPPAutoAuth-${appInfo.name}`))
+    : false;
+  const hasAccountSessionPermission = Boolean(
+    appInfo?.tabId &&
+    appInfo?.name &&
+    hasSessionPermission(appInfo.tabId, appInfo.name, 'GET_USER_ACCOUNT')
+  );
+  if (!hasPersistentAccountPermission && !hasAccountSessionPermission) {
+    throw new Error(
+      'Q-App must authenticate with GET_USER_ACCOUNT before requesting an identity proof'
+    );
+  }
+  const wallet = await getSaveWallet();
+  const account = {
+    address: wallet?.address0,
+    publicKey: wallet?.publicKey,
+  };
+  const keyPair = await getKeyPair();
+  if (
+    !account?.address ||
+    !account?.publicKey ||
+    keyPair?.publicKey !== account.publicKey
+  ) {
+    throw new Error('Authenticated wallet does not match Qortal account');
+  }
+  const fields = {
+    address: account.address,
+    backendDestination,
+    challengeId,
+    expiresAt,
+    nonce,
+    protocol,
+    publicKey: account.publicKey,
+  };
+  const sorted = {};
+  for (const key of Object.keys(fields).sort()) sorted[key] = fields[key];
+  const message = new TextEncoder().encode(JSON.stringify(sorted));
+  const privateKey = Base58.decode(keyPair.privateKey);
+  try {
+    return {
+      ...fields,
+      signature: Base58.encode(nacl.sign.detached(message, privateKey)),
+    };
+  } finally {
+    privateKey.fill(0);
+    message.fill(0);
+  }
+};
+
 export const getNotificationPermission = async ({ appInfo }) => {
   try {
     const stored =

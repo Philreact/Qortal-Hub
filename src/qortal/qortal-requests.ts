@@ -71,6 +71,7 @@ import {
   sellNameRequest,
   cancelSellNameRequest,
   signForeignFees,
+  signQappIdentityProof,
   multiPaymentWithPrivateData,
   transferAssetRequest,
   reEncryptQortalKeys,
@@ -657,6 +658,35 @@ function setupMessageListenerQortalRequest() {
               requestId: request.requestId,
               action: request.action,
               error: 'Unable to get user account',
+              type: 'backgroundMessageResponse',
+            },
+            event.origin
+          );
+        }
+        break;
+      }
+      case 'SIGN_QAPP_IDENTITY': {
+        try {
+          const res = await signQappIdentityProof(
+            request.payload,
+            isFromExtension,
+            appInfo
+          );
+          event.source!.postMessage(
+            {
+              requestId: request.requestId,
+              action: request.action,
+              payload: res,
+              type: 'backgroundMessageResponse',
+            },
+            event.origin
+          );
+        } catch (error) {
+          event.source!.postMessage(
+            {
+              requestId: request.requestId,
+              action: request.action,
+              error: error?.message || 'Unable to sign Q-App identity proof',
               type: 'backgroundMessageResponse',
             },
             event.origin
