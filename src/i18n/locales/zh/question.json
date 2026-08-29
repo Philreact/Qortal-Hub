@@ -170,6 +170,7 @@
     "register_name": "是否允许该应用注册该名称？",
     "remove_admin": "是否允许该应用将用户 {{ partecipant }} 移除管理员权限？",
     "remove_from_list": "是否允许该应用从列表 {{ name }} 中移除以下内容？",
+    "reticulum_destination": "{{appName}} 想要连接到 Reticulum 后端 {{destination}}。是否允许此标签页建立连接？",
     "sell_name_cancel": "是否允许该应用取消名称的出售？",
     "sell_name_transaction": "是否允许该应用创建出售名称的交易？",
     "sell_name_transaction_detail": "以 {{ price }} QORT 出售 {{ name }}",

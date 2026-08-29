@@ -132,6 +132,11 @@ import {
   startReticulumBridge,
   type ReticulumOverlayVerifiedPeer,
 } from './reticulum-bridge';
+import {
+  QAppReticulumManager,
+  type QAppReticulumNativeEvent,
+  type QAppReticulumOwner,
+} from './qapp-reticulum-manager';
 import { attachReticulumStatusBridgeEvents } from './reticulum-daemon';
 import {
   startReticulumMeshCoordinator,
@@ -2823,10 +2828,92 @@ export function stopReticulumManagers(): void {
   stopReticulumChatManager();
   reticulumChatListenersAttached = false;
   stopPresenceManager();
+  qAppReticulumManager?.destroy();
+  qAppReticulumManager = null;
   shutdownReticulumResourceStore();
   attachReticulumStatusBridgeEvents(null);
   reticulumChatReadiness.reset();
 }
+
+let qAppReticulumManager: QAppReticulumManager | null = null;
+let qAppReticulumBridge: ReturnType<typeof getReticulumBridge> = null;
+const qAppReticulumNativeListeners = new Set<
+  (event: QAppReticulumNativeEvent) => void
+>();
+
+function getQAppReticulumManager(): QAppReticulumManager {
+  if (qAppReticulumManager) return qAppReticulumManager;
+  const transport = {
+    invoke: async (action: string, payload: Record<string, unknown>) => {
+      await ensureReticulumManagersStarted();
+      const bridge = getReticulumBridge() ?? (await startReticulumBridge());
+      if (qAppReticulumBridge !== bridge) {
+        qAppReticulumBridge = bridge;
+        bridge.on('qapp-rns', (event: QAppReticulumNativeEvent) => {
+          for (const listener of qAppReticulumNativeListeners) listener(event);
+        });
+      }
+      return bridge.invokeQAppReticulum(action as any, payload);
+    },
+    onEvent: (listener: (event: QAppReticulumNativeEvent) => void) => {
+      qAppReticulumNativeListeners.add(listener);
+      return () => qAppReticulumNativeListeners.delete(listener);
+    },
+  };
+  qAppReticulumManager = new QAppReticulumManager(transport);
+  qAppReticulumManager.on('event', (event) => {
+    const win = myCapacitorApp.getMainWindow();
+    if (!win.isDestroyed()) win.webContents.send('qappReticulum:event', event);
+  });
+  return qAppReticulumManager;
+}
+
+function validateQAppReticulumIpcSender(
+  event: Electron.IpcMainInvokeEvent
+): void {
+  const win = myCapacitorApp.getMainWindow();
+  if (win.isDestroyed() || event.sender.id !== win.webContents.id) {
+    throw new Error('RNS_PERMISSION_DENIED');
+  }
+}
+
+ipcMain.handle(
+  'qappReticulum:request',
+  async (event, owner: QAppReticulumOwner, options) => {
+    validateQAppReticulumIpcSender(event);
+    return getQAppReticulumManager().request(owner, options);
+  }
+);
+ipcMain.handle(
+  'qappReticulum:connect',
+  async (event, owner: QAppReticulumOwner, destination: string) => {
+    validateQAppReticulumIpcSender(event);
+    return getQAppReticulumManager().connect(owner, destination);
+  }
+);
+ipcMain.handle(
+  'qappReticulum:send',
+  async (event, owner: QAppReticulumOwner, connectionId: string, payload) => {
+    validateQAppReticulumIpcSender(event);
+    return getQAppReticulumManager().send(owner, connectionId, payload);
+  }
+);
+ipcMain.handle(
+  'qappReticulum:close',
+  async (event, owner: QAppReticulumOwner, connectionId: string) => {
+    validateQAppReticulumIpcSender(event);
+    await getQAppReticulumManager().close(owner, connectionId);
+    return true;
+  }
+);
+ipcMain.handle(
+  'qappReticulum:cleanupOwner',
+  async (event, owner: QAppReticulumOwner) => {
+    validateQAppReticulumIpcSender(event);
+    await getQAppReticulumManager().cleanupOwner(owner);
+    return true;
+  }
+);
 
 async function getReadyReticulumChatManager(): Promise<
   ReturnType<typeof getReticulumChatManager>

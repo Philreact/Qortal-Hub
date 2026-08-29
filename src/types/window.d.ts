@@ -348,6 +348,19 @@ declare global {
       reticulumGetLocalIdentityPublicKeyBase64?: () => Promise<{
         publicKeyBase64: string | null;
       }>;
+      qappReticulumRequest?: (owner: any, options: any) => Promise<any>;
+      qappReticulumConnect?: (owner: any, destination: string) => Promise<any>;
+      qappReticulumSend?: (
+        owner: any,
+        connectionId: string,
+        payload: unknown
+      ) => Promise<any>;
+      qappReticulumClose?: (
+        owner: any,
+        connectionId: string
+      ) => Promise<boolean>;
+      qappReticulumCleanupOwner?: (owner: any) => Promise<boolean>;
+      onQAppReticulumEvent?: (callback: (payload: any) => void) => () => void;
       /** Hidden audio-surface: proxy signing to the main shell (wallet key in-memory). */
       gcallProxySignPresenceMessage?: (
         payload: Record<string, unknown>

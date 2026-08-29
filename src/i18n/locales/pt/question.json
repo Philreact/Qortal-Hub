@@ -170,6 +170,7 @@
     "register_name": "você dá permissão para que este aplicativo registre este nome?",
     "remove_admin": "você dá permissão para que este aplicativo remova o usuário {{ partecipant }} como administrador?",
     "remove_from_list": "você dá permissão para que este aplicativo remova o seguinte da lista {{ name }}:",
+    "reticulum_destination": "{{appName}} quer se conectar ao backend Reticulum {{destination}}. Permitir esta conexão para esta aba?",
     "sell_name_cancel": "você dá permissão para que este aplicativo cancele a venda de um nome?",
     "sell_name_transaction": "você dá permissão para que este aplicativo crie uma transação de venda de nome?",
     "sell_name_transaction_detail": "vender {{ name }} por {{ price }} QORTs",

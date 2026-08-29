@@ -668,6 +668,22 @@ try {
       ) as Promise<{
         publicKeyBase64: string | null;
       }>,
+    qappReticulumRequest: (owner, options) =>
+      ipcRenderer.invoke('qappReticulum:request', owner, options),
+    qappReticulumConnect: (owner, destination: string) =>
+      ipcRenderer.invoke('qappReticulum:connect', owner, destination),
+    qappReticulumSend: (owner, connectionId: string, payload) =>
+      ipcRenderer.invoke('qappReticulum:send', owner, connectionId, payload),
+    qappReticulumClose: (owner, connectionId: string) =>
+      ipcRenderer.invoke('qappReticulum:close', owner, connectionId),
+    qappReticulumCleanupOwner: (owner) =>
+      ipcRenderer.invoke('qappReticulum:cleanupOwner', owner),
+    onQAppReticulumEvent: (callback: (payload: unknown) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: unknown) =>
+        callback(payload);
+      ipcRenderer.on('qappReticulum:event', listener);
+      return () => ipcRenderer.removeListener('qappReticulum:event', listener);
+    },
     qchatFileSelect: () =>
       ipcRenderer.invoke('reticulum:qchatFileSelect') as Promise<{
         ok: boolean;

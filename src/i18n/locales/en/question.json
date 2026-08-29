@@ -170,6 +170,7 @@
     "register_name": "do you give this application permission to register this name?",
     "remove_admin": "do you give this application permission to remove user {{ partecipant }} as an admin?",
     "remove_from_list": "do you give this application permission to remove the following from the list {{ name }}:",
+    "reticulum_destination": "{{appName}} wants to connect to the Reticulum backend {{destination}}. Allow this connection for this tab?",
     "sell_name_cancel": "do you give this application permission to cancel the selling of a name?",
     "sell_name_transaction": "do you give this application permission to create a sell name transaction?",
     "sell_name_transaction_detail": "sell {{ name }} for {{ price }} QORT",

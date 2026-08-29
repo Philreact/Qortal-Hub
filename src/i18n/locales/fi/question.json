@@ -170,6 +170,7 @@
     "register_name": "annatko tälle sovellukselle luvan rekisteröidä tämän nimen?",
     "remove_admin": "annatko tälle sovellukselle luvan poistaa käyttäjä {{ partecipant }} järjestelmänvalvojana?",
     "remove_from_list": "annatko tälle sovellukselle luvan poistaa seuraavat kohteet luettelosta {{ name }}:",
+    "reticulum_destination": "{{appName}} haluaa muodostaa yhteyden Reticulum-taustapalvelimeen {{destination}}. Sallitaanko yhteys tässä välilehdessä?",
     "sell_name_cancel": "annatko tälle sovellukselle luvan peruuttaa nimen myynnin?",
     "sell_name_transaction": "annatko tälle sovellukselle luvan luoda nimenmyyntitransaktion?",
     "sell_name_transaction_detail": "myy {{ name }} hintaan {{ price }} QORT",

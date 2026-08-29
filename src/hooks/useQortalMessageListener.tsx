@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { executeEvent } from '../utils/events';
 import {
   infoSnackGlobalAtom,
@@ -178,6 +178,10 @@ export function openIndexedDB() {
 }
 
 export const listOfAllQortalRequests = [
+  'RNS_CLOSE',
+  'RNS_CONNECT',
+  'RNS_REQUEST',
+  'RNS_SEND',
   'ADD_FOREIGN_SERVER',
   'ADD_GROUP_ADMIN',
   'ADD_LIST_ITEMS',
@@ -285,6 +289,10 @@ export const listOfAllQortalRequests = [
 ];
 
 export const UIQortalRequests = [
+  'RNS_CLOSE',
+  'RNS_CONNECT',
+  'RNS_REQUEST',
+  'RNS_SEND',
   'ADD_FOREIGN_SERVER',
   'ADD_GROUP_ADMIN',
   'ADD_LIST_ITEMS',
@@ -555,6 +563,7 @@ export const useQortalMessageListener = (
   appService,
   appIdentifier
 ) => {
+  const hasLoadedFrameRef = useRef(false);
   const [path, setPath] = useState('');
   const [history, setHistory] = useState({
     customQDNHistoryPaths: [],
@@ -701,6 +710,16 @@ export const useQortalMessageListener = (
             TIME_MINUTES_30_IN_MILLISECONDS;
         } else if (message?.action === 'PUBLISH_QDN_RESOURCE') {
           timeout = TIME_HOURS_1_IN_MILLISECONDS;
+        } else if (message?.action === 'RNS_CONNECT') {
+          timeout = 120_000;
+        } else if (message?.action === 'RNS_REQUEST') {
+          timeout = Math.min(
+            195_000,
+            Math.max(
+              120_000,
+              Number(message?.payload?.timeoutMs ?? 30_000) + 75_000
+            )
+          );
         }
 
         // Build deduplication key for read-only actions
@@ -946,6 +965,52 @@ export const useQortalMessageListener = (
       frameWindow.removeEventListener('message', listener);
     };
   }, [isDevMode, appName, appService, tabId]); // Empty dependency array to run once when the component mounts
+
+  useEffect(() => {
+    const api = window.electronAPI;
+    const iframe = iframeRef.current;
+    if (!api || !iframe || tabId == null || !appName) return;
+    const owner = {
+      tabId: String(tabId),
+      name: String(appName),
+      service: String(appService ?? ''),
+    };
+    const expectedOwnerKey = `${owner.tabId}\u0000${owner.service}\u0000${owner.name}`;
+    const unsubscribe = api.onQAppReticulumEvent?.((payload) => {
+      if (payload?.ownerKey !== expectedOwnerKey || !iframe.contentWindow)
+        return;
+      let targetOrigin: string;
+      try {
+        targetOrigin = new URL(iframe.src).origin;
+      } catch {
+        return;
+      }
+      iframe.contentWindow.postMessage(
+        {
+          action: payload.action,
+          connectionId: payload.connectionId,
+          ...(payload.action === 'RNS_MESSAGE'
+            ? { payload: payload.payload }
+            : { state: payload.state, reason: payload.reason }),
+          requestedHandler: 'UI',
+        },
+        targetOrigin
+      );
+    });
+    const handleLoad = () => {
+      if (!hasLoadedFrameRef.current) {
+        hasLoadedFrameRef.current = true;
+        return;
+      }
+      void api.qappReticulumCleanupOwner?.(owner);
+    };
+    iframe.addEventListener('load', handleLoad);
+    return () => {
+      unsubscribe?.();
+      iframe.removeEventListener('load', handleLoad);
+      void api.qappReticulumCleanupOwner?.(owner);
+    };
+  }, [appName, appService, iframeRef, tabId]);
 
   return { path, history, resetHistory, changeCurrentIndex };
 };

@@ -452,6 +452,7 @@ function getFileFromContentScript(fileId) {
 
 const responseResolvers = new Map();
 const notificationPermissionResolvers = new Map();
+const rnsDestinationPermissions = new Set<string>();
 
 function generatePermissionRequestId(): string {
   if (globalThis.crypto?.randomUUID) {
@@ -514,6 +515,48 @@ async function getUserPermission(payload, isFromExtension) {
     }, TIME_MINUTES_1_IN_MILLISECONDS);
   });
 }
+
+export const authorizeRnsDestination = async (
+  destination: string,
+  isFromExtension: boolean,
+  appInfo: { tabId?: string | number; name?: string }
+) => {
+  const normalized = String(destination ?? '')
+    .trim()
+    .toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(normalized)) {
+    throw new Error('RNS_DESTINATION_UNREACHABLE');
+  }
+  if (!window.electronAPI?.qappReticulumConnect) {
+    throw new Error('RNS_NATIVE_TRANSPORT_UNAVAILABLE');
+  }
+  if (appInfo?.tabId == null || !appInfo?.name) {
+    throw new Error('RNS_PERMISSION_DENIED');
+  }
+  const key = `${appInfo.tabId}\u0000${appInfo.name}\u0000${normalized}`;
+  if (rnsDestinationPermissions.has(key)) return normalized;
+  const response = await getUserPermission(
+    {
+      text1: i18n.t('question:permission.reticulum_destination', {
+        appName: appInfo.name,
+        destination: normalized,
+      }),
+    },
+    isFromExtension
+  );
+  if (response?.accepted !== true) throw new Error('RNS_PERMISSION_DENIED');
+  rnsDestinationPermissions.add(key);
+  return normalized;
+};
+
+export const clearRnsDestinationPermissionsByTabId = (
+  tabId: string | number
+) => {
+  const prefix = `${tabId}\u0000`;
+  for (const key of rnsDestinationPermissions) {
+    if (key.startsWith(prefix)) rnsDestinationPermissions.delete(key);
+  }
+};
 
 export const getWhichUI = async () => {
   try {

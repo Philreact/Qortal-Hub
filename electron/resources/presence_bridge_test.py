@@ -38,6 +38,149 @@ def load_bridge():
     return module
 
 
+class QAppReticulumV1CompatibilityTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.bridge = load_bridge()
+        vector_path = Path(__file__).parents[2] / "protocol-v1-vectors.json"
+        cls.vectors = json.loads(vector_path.read_text(encoding="utf-8"))
+
+    def test_frozen_frame_vectors(self):
+        for key in ("data_frame", "ack_frame", "control_frame"):
+            vector = self.vectors[key]
+            encoded = self.bridge._qapp_rns_frame(
+                int(vector["type"]),
+                int(vector["message_id_hex"], 16),
+                bytes.fromhex(vector["payload_hex"]),
+            )
+            self.assertEqual(encoded.hex(), vector["frame_hex"])
+
+    def test_ping_control_returns_pong_with_same_message_id(self):
+        writes = []
+
+        class Writer:
+            def write(self, data):
+                writes.append(bytes(data))
+                return len(data)
+
+            def flush(self):
+                return None
+
+        entry = {
+            "writer": Writer(),
+            "established": True,
+            "write_lock": threading.Lock(),
+            "last_used": 0,
+        }
+        vector = self.vectors["control_frame"]
+        self.bridge._qapp_rns_handle_frame(
+            entry,
+            self.bridge._QAPP_RNS_CONTROL,
+            int(vector["message_id_hex"], 16),
+            bytes.fromhex(vector["payload_hex"]),
+        )
+        _version, frame_type, message_id, length = self.bridge._QAPP_RNS_HEADER.unpack_from(writes[0])
+        self.assertEqual(frame_type, self.bridge._QAPP_RNS_CONTROL)
+        self.assertEqual(message_id, int(vector["message_id_hex"], 16))
+        self.assertEqual(writes[0][self.bridge._QAPP_RNS_HEADER.size:], b'{"type":"PONG"}')
+        self.assertEqual(length, len(b'{"type":"PONG"}'))
+
+    def test_buffer_write_retries_partial_writes_and_flushes(self):
+        output = bytearray()
+
+        class PartialWriter:
+            flushed = False
+
+            def write(self, data):
+                amount = min(2, len(data))
+                output.extend(data[:amount])
+                return amount
+
+            def flush(self):
+                self.flushed = True
+
+        writer = PartialWriter()
+        entry = {
+            "writer": writer,
+            "established": True,
+            "write_lock": threading.Lock(),
+            "last_used": 0,
+        }
+        self.assertTrue(self.bridge._qapp_rns_write(entry, b"0123456789"))
+        self.assertEqual(bytes(output), b"0123456789")
+        self.assertTrue(writer.flushed)
+        self.assertEqual(self.bridge._QAPP_RNS_STREAM_ID, 7)
+
+    def test_rpc_response_callback_extracts_request_receipt_response(self):
+        emitted = []
+
+        class Receipt:
+            def get_response(self):
+                return {
+                    "protocol": "qortal-example",
+                    "version": 1,
+                    "items": [],
+                }
+
+        class Link:
+            def request(self, _path, **options):
+                options["response_callback"](Receipt())
+                return object()
+
+        entry = {"link": Link(), "active_requests": 0, "last_used": 0}
+        payload = {
+            "managerKey": "rpc-receipt-test",
+            "destination": "00" * 16,
+            "path": "/example/status",
+            "requestId": "status-test",
+            "encoding": "json",
+            "payloadBase64": base64.b64encode(b"{}").decode("ascii"),
+        }
+
+        with mock.patch.object(self.bridge, "_qapp_rns_entry", return_value=entry), mock.patch.object(
+            self.bridge, "_qapp_rns_open_link", return_value=True
+        ), mock.patch.object(self.bridge, "_qapp_rns_schedule_idle"), mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda request_id, ok, payload=None: emitted.append((request_id, ok, payload)),
+        ):
+            self.bridge.handle_qapp_rns_request("bridge-request", payload)
+
+        self.assertEqual(len(emitted), 1)
+        request_id, ok, response = emitted[0]
+        self.assertEqual(request_id, "bridge-request")
+        self.assertTrue(ok)
+        self.assertEqual(response["encoding"], "json")
+        decoded = json.loads(base64.b64decode(response["payloadBase64"]))
+        self.assertEqual(
+            decoded,
+            {"protocol": "qortal-example", "version": 1, "items": []},
+        )
+
+    def test_close_while_reconnecting_does_not_resurrect_link(self):
+        entry = {
+            "managerKey": "close-race-test",
+            "connections": {"rns-test"},
+            "established": False,
+            "reconnect_attempt": 0,
+        }
+        self.bridge._qapp_rns_entries[entry["managerKey"]] = entry
+        opened = mock.Mock()
+        try:
+            with mock.patch.object(self.bridge, "_qapp_rns_open_link", opened), mock.patch.object(
+                self.bridge.secrets, "randbelow", return_value=20
+            ):
+                self.bridge._qapp_rns_schedule_reconnect(entry)
+                entry["connections"].clear()
+                time.sleep(0.65)
+            opened.assert_not_called()
+        finally:
+            timer = entry.get("reconnect_timer")
+            if timer is not None:
+                timer.cancel()
+            self.bridge._qapp_rns_entries.pop(entry["managerKey"], None)
+
+
 class PresenceBridgePacketSendDispatcherTest(unittest.TestCase):
     def setUp(self):
         self.bridge = load_bridge()

@@ -170,6 +170,7 @@
     "register_name": "このアプリにこの名前を登録することを許可しますか？",
     "remove_admin": "このアプリに {{ partecipant }} を管理者から削除することを許可しますか？",
     "remove_from_list": "このアプリにリスト {{ name }} から以下を削除することを許可しますか？",
+    "reticulum_destination": "{{appName}} が Reticulum バックエンド {{destination}} への接続を要求しています。このタブで接続を許可しますか？",
     "sell_name_cancel": "このアプリに名前の販売をキャンセルすることを許可しますか？",
     "sell_name_transaction": "このアプリに名前の販売取引を作成することを許可しますか？",
     "sell_name_transaction_detail": "{{ price }} QORTで{{ name }}を販売",

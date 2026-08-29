@@ -170,6 +170,7 @@
     "register_name": "kas sa annad sellele rakendusele loa registreerida see nimi?",
     "remove_admin": "kas sa annad sellele rakendusele loa eemaldada kasutaja {{ partecipant }} administraatori staatusest?",
     "remove_from_list": "kas sa annad sellele rakendusele loa eemaldada järgmised asjad nimekirjast {{ name }}:",
+    "reticulum_destination": "{{appName}} soovib luua ühenduse Reticulumi taustserveriga {{destination}}. Kas lubada see ühendus sellel vahekaardil?",
     "sell_name_cancel": "kas sa annad sellele rakendusele loa tühistada nime müümise?",
     "sell_name_transaction": "kas sa annad sellele rakendusele loa luua nime müümise tehing?",
     "sell_name_transaction_detail": "müü {{ name }} hinnaga {{ price }} QORT",

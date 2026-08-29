@@ -235,6 +235,10 @@ type BridgeCmdFrame = {
     | 'configure_group_audio_data_plane_routes'
     | 'configure_group_audio_forwarding'
     | 'configure_land_state_forwarding'
+    | 'qapp_rns_request'
+    | 'qapp_rns_connect'
+    | 'qapp_rns_send'
+    | 'qapp_rns_close'
     | 'get_local_identity_public_key'
     | 'ensure_peer_identity'
     | 'register_peer_identity';
@@ -822,6 +826,11 @@ type BridgeEventFrame =
         lastSendOkAgeMs?: number | null;
         lastActivityAgeMs?: number | null;
       };
+    }
+  | {
+      type: 'event';
+      event: 'qapp_rns';
+      payload?: Record<string, unknown>;
     }
   | {
       type: 'event';
@@ -3655,6 +3664,39 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     }
   }
 
+  async invokeQAppReticulum(
+    action:
+      | 'qapp_rns_request'
+      | 'qapp_rns_connect'
+      | 'qapp_rns_send'
+      | 'qapp_rns_close',
+    payload: Record<string, unknown>
+  ): Promise<{
+    ok: boolean;
+    payload?: Record<string, unknown>;
+    code?: string;
+  }> {
+    try {
+      await this.start();
+      if (this.state !== 'ready') {
+        return { ok: false, code: 'RNS_DESTINATION_UNREACHABLE' };
+      }
+      const response = await this.sendCommand(action, payload);
+      return {
+        ok: response.ok,
+        payload: response.payload,
+        code:
+          typeof response.payload?.code === 'string'
+            ? response.payload.code
+            : response.ok
+              ? undefined
+              : 'RNS_DESTINATION_UNREACHABLE',
+      };
+    } catch {
+      return { ok: false, code: 'RNS_LINK_TIMEOUT' };
+    }
+  }
+
   async ensurePeerIdentityKnown(peerPresenceHash: string): Promise<boolean> {
     const peer = peerPresenceHash.trim().toLowerCase();
     if (!peer) return false;
@@ -3963,12 +4005,24 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const frame: BridgeCmdFrame = { type: 'cmd', action, id, payload };
     const wire = JSON.stringify(frame) + '\n';
+    const timeoutMs =
+      action === 'qapp_rns_connect'
+        ? 45_000
+        : action === 'qapp_rns_request'
+          ? Math.min(
+              125_000,
+              Math.max(
+                REQUEST_TIMEOUT_MS,
+                Number(payload?.timeoutMs ?? 30_000) + 5_000
+              )
+            )
+          : REQUEST_TIMEOUT_MS;
 
     return new Promise<BridgeRespFrame>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Reticulum bridge request timed out: ${action}`));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       this.pending.set(id, { action, priority, resolve, reject, timer });
       this.enqueueCommand({ id, wire, priority });
       this.flushWriteQueue();
@@ -5326,6 +5380,10 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
           return;
         }
         this.emitBridgeFrameEvent('qchat-file-transfer', frame.payload ?? {});
+        return;
+      }
+      case 'qapp_rns': {
+        this.emitBridgeFrameEvent('qapp-rns', frame.payload ?? {});
         return;
       }
       case 'reticulum_chat_resource': {

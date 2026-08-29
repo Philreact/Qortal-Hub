@@ -170,6 +170,7 @@
     "register_name": "Souhaitez-vous autoriser cette application à enregistrer ce nom ?",
     "remove_admin": "Souhaitez-vous autoriser cette application à retirer {{ partecipant }} en tant qu'administrateur ?",
     "remove_from_list": "Souhaitez-vous autoriser cette application à supprimer les éléments suivants de la liste {{ name }} :",
+    "reticulum_destination": "{{appName}} souhaite se connecter au serveur Reticulum {{destination}}. Autoriser cette connexion pour cet onglet ?",
     "sell_name_cancel": "Souhaitez-vous autoriser cette application à annuler la vente d'un nom ?",
     "sell_name_transaction": "Souhaitez-vous autoriser cette application à créer une transaction de vente de nom ?",
     "sell_name_transaction_detail": "vente de {{ name }} pour {{ price }} QORT",

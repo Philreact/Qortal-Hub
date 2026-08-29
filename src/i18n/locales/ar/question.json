@@ -170,6 +170,7 @@
     "register_name": "هل تسمح للتطبيق بتسجيل هذا الاسم؟",
     "remove_admin": "هل تسمح للتطبيق بإزالة {{ partecipant }} من الأدمنية؟",
     "remove_from_list": "هل تسمح للتطبيق بإزالة الآتي من القائمة {{ name }}:",
+    "reticulum_destination": "يريد {{appName}} الاتصال بخادم Reticulum الخلفي {{destination}}. هل تسمح بهذا الاتصال لعلامة التبويب هذه؟",
     "sell_name_cancel": "هل تسمح للتطبيق بإلغاء بيع الاسم؟",
     "sell_name_transaction": "هل تسمح للتطبيق بعمل صفقة بيع اسم؟",
     "sell_name_transaction_detail": "بيع {{ name }} بسعر {{ price }} QORT",

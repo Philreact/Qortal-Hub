@@ -170,6 +170,7 @@
     "register_name": "Möchten Sie dieser Anwendung die Berechtigung geben, diesen Namen zu registrieren?",
     "remove_admin": "Möchten Sie dieser Anwendung die Berechtigung geben, den Benutzer {{ partecipant }} als Administrator zu entfernen?",
     "remove_from_list": "Möchten Sie dieser Anwendung die Berechtigung geben, Folgendes aus der Liste {{ name }} zu entfernen:",
+    "reticulum_destination": "{{appName}} möchte eine Verbindung zum Reticulum-Backend {{destination}} herstellen. Diese Verbindung für diesen Tab zulassen?",
     "sell_name_cancel": "Möchten Sie dieser Anwendung die Berechtigung geben, den Verkauf eines Namens abzubrechen?",
     "sell_name_transaction": "Möchten Sie dieser Anwendung die Berechtigung geben, eine Verkaufs-Transaktion für einen Namen zu erstellen?",
     "sell_name_transaction_detail": "{{ name }} für {{ price }} QORT verkaufen",
