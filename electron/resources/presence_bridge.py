@@ -873,6 +873,9 @@ _SCHEDULER_PRESENCE_FANOUT_SHARDS = 8
 _SCHEDULER_LAND_STATE_SHARDS = 4
 _SCHEDULER_RESOURCE_OPEN_SHARDS = 4
 _SCHEDULER_OVERLAY_MIGRATION_SHARDS = 2
+_SCHEDULER_QAPP_RPC_SHARDS = 4
+_SCHEDULER_QAPP_REALTIME_SHARDS = 4
+_SCHEDULER_QAPP_LIFECYCLE_SHARDS = 2
 _SCHEDULER_RNS_OVERLAY_CALLBACK_SHARDS = 4
 _SCHEDULER_RNS_REALTIME_CALLBACK_SHARDS = 4
 _SCHEDULER_RNS_RESOURCE_CALLBACK_SHARDS = 4
@@ -904,6 +907,12 @@ for _resource_open_shard in range(_SCHEDULER_RESOURCE_OPEN_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"resource-open-{_resource_open_shard}"] = 32
 for _overlay_migration_shard in range(_SCHEDULER_OVERLAY_MIGRATION_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"overlay-migration-{_overlay_migration_shard}"] = 2
+for _qapp_rpc_shard in range(_SCHEDULER_QAPP_RPC_SHARDS):
+    _SCHEDULER_QUEUE_MAX_BY_LANE[f"qapp-rpc-{_qapp_rpc_shard}"] = 32
+for _qapp_realtime_shard in range(_SCHEDULER_QAPP_REALTIME_SHARDS):
+    _SCHEDULER_QUEUE_MAX_BY_LANE[f"qapp-realtime-{_qapp_realtime_shard}"] = 64
+for _qapp_lifecycle_shard in range(_SCHEDULER_QAPP_LIFECYCLE_SHARDS):
+    _SCHEDULER_QUEUE_MAX_BY_LANE[f"qapp-lifecycle-{_qapp_lifecycle_shard}"] = 16
 for _callback_shard in range(_SCHEDULER_RNS_OVERLAY_CALLBACK_SHARDS):
     _SCHEDULER_QUEUE_MAX_BY_LANE[f"rns-overlay-callback-{_callback_shard}"] = 1024
 for _callback_shard in range(_SCHEDULER_RNS_REALTIME_CALLBACK_SHARDS):
@@ -5507,6 +5516,20 @@ def _resource_open_scheduler_lane(peer_hash: str) -> str:
     return f"resource-open-{shard}"
 
 
+def _qapp_scheduler_lane(prefix: str, message: Optional[Dict[str, Any]], shards: int) -> str:
+    payload = message.get("payload") if isinstance(message, dict) else None
+    route_key = "unknown"
+    if isinstance(payload, dict):
+        route_key = str(
+            payload.get("managerKey")
+            or payload.get("destination")
+            or payload.get("connectionId")
+            or "unknown"
+        )
+    digest = hashlib.blake2s(route_key.encode("utf-8"), digest_size=2).digest()
+    return f"{prefix}-{int.from_bytes(digest, 'big') % max(1, shards)}"
+
+
 def _rns_callback_lane(kind: str, link_id: str) -> str:
     normalized_kind = str(kind or "overlay").strip().lower()
     route_key = str(link_id or "unknown")
@@ -5737,6 +5760,16 @@ def _scheduler_lane_for_command(
     message: Optional[Dict[str, Any]] = None,
 ) -> str:
     action_name = str(action or "")
+    if action_name == "qapp_rns_request":
+        return _qapp_scheduler_lane("qapp-rpc", message, _SCHEDULER_QAPP_RPC_SHARDS)
+    if action_name == "qapp_rns_send":
+        return _qapp_scheduler_lane(
+            "qapp-realtime", message, _SCHEDULER_QAPP_REALTIME_SHARDS
+        )
+    if action_name in {"qapp_rns_connect", "qapp_rns_close"}:
+        return _qapp_scheduler_lane(
+            "qapp-lifecycle", message, _SCHEDULER_QAPP_LIFECYCLE_SHARDS
+        )
     if action_name in {"clear_group_audio_diagnostics"}:
         return "control-send"
     if action_name == "send_group_audio_link_control":
@@ -26937,9 +26970,6 @@ def _qapp_rns_schedule_reconnect(entry: Dict[str, Any]) -> None:
 
 
 def _qapp_rns_schedule_idle(entry: Dict[str, Any]) -> None:
-    generation = int(entry.get("idle_generation") or 0) + 1
-    entry["idle_generation"] = generation
-
     def cleanup() -> None:
         link = None
         with _state_lock:
@@ -26953,6 +26983,7 @@ def _qapp_rns_schedule_idle(entry: Dict[str, Any]) -> None:
                 or time.time() - float(entry.get("last_used") or 0) < _QAPP_RNS_IDLE_SECONDS
             ):
                 return
+            entry["idle_timer"] = None
             _qapp_rns_entries.pop(entry["managerKey"], None)
             link = entry.get("link")
             entry["generation"] = int(entry.get("generation") or 0) + 1
@@ -26963,9 +26994,23 @@ def _qapp_rns_schedule_idle(entry: Dict[str, Any]) -> None:
                 pass
         log(f"[presence_bridge] target=qapp-rns idle_teardown destination={entry.get('destination')}")
 
-    timer = threading.Timer(_QAPP_RNS_IDLE_SECONDS, cleanup)
-    timer.daemon = True
-    timer.start()
+    with _state_lock:
+        previous_timer = entry.get("idle_timer")
+        if previous_timer is not None:
+            previous_timer.cancel()
+        generation = int(entry.get("idle_generation") or 0) + 1
+        entry["idle_generation"] = generation
+        timer = threading.Timer(_QAPP_RNS_IDLE_SECONDS, cleanup)
+        timer.daemon = True
+        entry["idle_timer"] = timer
+        try:
+            timer.start()
+        except Exception as exc:
+            entry["idle_timer"] = None
+            log(
+                "[presence_bridge] target=qapp-rns idle_timer_start_failed "
+                f"destination={entry.get('destination')} error={type(exc).__name__}"
+            )
 
 
 def _qapp_rns_closed(manager_key: str, generation: int, link) -> None:
@@ -27063,6 +27108,7 @@ def _qapp_rns_entry(manager_key: str, destination: str) -> Dict[str, Any]:
             "last_used": time.time(),
             "reconnect_attempt": 0,
             "idle_generation": 0,
+            "idle_timer": None,
         }
         _qapp_rns_entries[manager_key] = entry
         return entry
@@ -27152,9 +27198,38 @@ def handle_qapp_rns_request(req_id: str, payload: Dict[str, Any]) -> None:
         if not _qapp_rns_open_link(entry):
             return _qapp_rns_error(req_id, "RNS_LINK_TIMEOUT")
         timeout = min(120.0, max(1.0, float(payload.get("timeoutMs") or 30000) / 1000.0))
-        completed = threading.Event()
-        result: Dict[str, Any] = {}
         max_response = min(1024 * 1024, max(1, int(payload.get("maxResponseBytes") or 1024 * 1024)))
+
+        with _state_lock:
+            if int(entry.get("active_requests") or 0) >= 16:
+                return _qapp_rns_error(req_id, "RNS_SEND_QUEUE_FULL")
+            entry["active_requests"] += 1
+
+        completion_lock = threading.Lock()
+        completed = False
+        timeout_timer: Optional[threading.Timer] = None
+
+        def finish(
+            response_payload: Optional[Dict[str, Any]] = None,
+            code: str = "",
+        ) -> None:
+            nonlocal completed
+            with completion_lock:
+                if completed:
+                    return
+                completed = True
+            if timeout_timer is not None:
+                timeout_timer.cancel()
+            with _state_lock:
+                entry["active_requests"] = max(
+                    0, int(entry.get("active_requests") or 0) - 1
+                )
+                entry["last_used"] = time.time()
+                _qapp_rns_schedule_idle(entry)
+            if response_payload is not None:
+                emit_resp(req_id, True, payload=response_payload)
+            else:
+                _qapp_rns_error(req_id, code or "RNS_REQUEST_TIMEOUT")
 
         def response_received(receipt) -> None:
             try:
@@ -27166,16 +27241,19 @@ def handle_qapp_rns_request(req_id: str, payload: Dict[str, Any]) -> None:
                     response_bytes = json.dumps(value, separators=(",", ":")).encode("utf-8")
                     encoding = "json"
                 if len(response_bytes) > max_response:
-                    result["code"] = "RNS_RESPONSE_TOO_LARGE"
+                    finish(code="RNS_RESPONSE_TOO_LARGE")
                 else:
-                    result["payload"] = {"payloadBase64": base64.b64encode(response_bytes).decode("ascii"), "encoding": encoding}
+                    finish(
+                        {
+                            "payloadBase64": base64.b64encode(response_bytes).decode("ascii"),
+                            "encoding": encoding,
+                        }
+                    )
             except Exception:
-                result["code"] = "RNS_PROTOCOL_ERROR"
-            completed.set()
+                finish(code="RNS_PROTOCOL_ERROR")
 
         def request_failed(_value=None) -> None:
-            result["code"] = "RNS_REQUEST_TIMEOUT"
-            completed.set()
+            finish(code="RNS_REQUEST_TIMEOUT")
 
         request_data = {
             "version": 1,
@@ -27183,27 +27261,21 @@ def handle_qapp_rns_request(req_id: str, payload: Dict[str, Any]) -> None:
             "encoding": "base64" if payload.get("encoding") == "base64" else "json",
             "payloadBase64": str(payload.get("payloadBase64") or ""),
         }
-        with _state_lock:
-            if int(entry.get("active_requests") or 0) >= 16:
-                return _qapp_rns_error(req_id, "RNS_SEND_QUEUE_FULL")
-            entry["active_requests"] += 1
-        receipt = entry["link"].request(
-            str(payload.get("path") or "/"),
-            data=request_data,
-            response_callback=response_received,
-            failed_callback=request_failed,
-            timeout=timeout,
-        )
-        if receipt is False:
-            request_failed()
-        completed.wait(timeout + 1.0)
-        with _state_lock:
-            entry["active_requests"] = max(0, int(entry["active_requests"]) - 1)
-            entry["last_used"] = time.time()
-            _qapp_rns_schedule_idle(entry)
-        if "payload" not in result:
-            return _qapp_rns_error(req_id, str(result.get("code") or "RNS_REQUEST_TIMEOUT"))
-        emit_resp(req_id, True, payload=result["payload"])
+        try:
+            timeout_timer = threading.Timer(timeout + 1.0, request_failed)
+            timeout_timer.daemon = True
+            timeout_timer.start()
+            receipt = entry["link"].request(
+                str(payload.get("path") or "/"),
+                data=request_data,
+                response_callback=response_received,
+                failed_callback=request_failed,
+                timeout=timeout,
+            )
+            if receipt is False:
+                request_failed()
+        except Exception:
+            finish(code="RNS_REQUEST_TIMEOUT")
     except Exception:
         _qapp_rns_error(req_id, "RNS_REQUEST_TIMEOUT")
 

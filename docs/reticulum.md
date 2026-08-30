@@ -94,6 +94,16 @@ A Python subprocess (`presence_bridge.py`) launched after the daemon is ready.
 | `send_qchat_file_resource` | Send a file offer to a peer |
 | `authorize_qchat_file_resource` | Authorise file delivery |
 
+### Q-App Backend Scheduling
+
+Q-App backend traffic is isolated from Hub control traffic and from its own realtime data path:
+
+- `qapp-rpc-*` handles bounded request/response work.
+- `qapp-realtime-*` handles gameplay and other realtime sends.
+- `qapp-lifecycle-*` handles connection setup and teardown.
+
+Each class is deterministically sharded by Q-App owner and backend destination. Once an RPC link is established, waiting for its response is callback-driven; it does not occupy a scheduler worker. The Electron manager additionally caps pending RPCs and logical connections both per Q-App owner and globally so one Q-App—or many malfunctioning owners—cannot exhaust shared bridge capacity.
+
 ### Mesh Coordinator — `reticulum-mesh.ts`
 
 Handles hub-to-hub mesh networking, separate from the TLS P2P layer (`p2p-network.ts`).

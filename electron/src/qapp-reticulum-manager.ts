@@ -59,6 +59,10 @@ const DESTINATION_PATTERN = /^[0-9a-f]{32}$/;
 const MAX_RPC_REQUEST_BYTES = 256 * 1024;
 const MAX_RPC_RESPONSE_BYTES = 1024 * 1024;
 const MAX_REALTIME_MESSAGE_BYTES = 256 * 1024;
+const MAX_PENDING_RPC_REQUESTS_PER_OWNER = 8;
+const MAX_PENDING_RPC_REQUESTS_GLOBAL = 64;
+const MAX_CONNECTIONS_PER_OWNER = 8;
+const MAX_CONNECTIONS_GLOBAL = 64;
 
 function ownerKey(owner: QAppReticulumOwner): string {
   return `${owner.tabId}\u0000${owner.service}\u0000${owner.name}`;
@@ -98,6 +102,8 @@ function decodePayload(payload: Record<string, unknown>): unknown {
 export class QAppReticulumManager extends EventEmitter {
   private readonly connections = new Map<string, LogicalConnection>();
   private readonly connectionsByOwner = new Map<string, Set<string>>();
+  private readonly pendingRequestsByOwner = new Map<string, number>();
+  private pendingRequestCount = 0;
   private readonly detachTransport: () => void;
 
   constructor(private readonly transport: QAppReticulumTransport) {
@@ -126,26 +132,40 @@ export class QAppReticulumManager extends EventEmitter {
         'Invalid request path'
       );
     }
-    const encoded = encodePayload(options.payload, MAX_RPC_REQUEST_BYTES);
-    const result = await this.transport.invoke('qapp_rns_request', {
-      managerKey: this.managerKey(owner, destination),
-      destination,
-      path,
-      ...encoded,
-      timeoutMs: Math.min(
-        Math.max(options.timeoutMs ?? 30_000, 1_000),
-        120_000
-      ),
-      maxResponseBytes: Math.min(
-        Math.max(options.maxResponseBytes ?? MAX_RPC_RESPONSE_BYTES, 1),
-        MAX_RPC_RESPONSE_BYTES
-      ),
-      requestId: String(options.requestId ?? randomUUID()),
-    });
-    if (!result.ok || !result.payload) {
-      throw new QAppReticulumError(result.code ?? 'RNS_REQUEST_TIMEOUT');
+    const key = ownerKey(owner);
+    const pending = this.pendingRequestsByOwner.get(key) ?? 0;
+    if (
+      pending >= MAX_PENDING_RPC_REQUESTS_PER_OWNER ||
+      this.pendingRequestCount >= MAX_PENDING_RPC_REQUESTS_GLOBAL
+    ) {
+      throw new QAppReticulumError('RNS_SEND_QUEUE_FULL');
     }
-    return decodePayload(result.payload);
+    this.pendingRequestsByOwner.set(key, pending + 1);
+    this.pendingRequestCount += 1;
+    try {
+      const encoded = encodePayload(options.payload, MAX_RPC_REQUEST_BYTES);
+      const result = await this.transport.invoke('qapp_rns_request', {
+        managerKey: this.managerKey(owner, destination),
+        destination,
+        path,
+        ...encoded,
+        timeoutMs: Math.min(
+          Math.max(options.timeoutMs ?? 30_000, 1_000),
+          120_000
+        ),
+        maxResponseBytes: Math.min(
+          Math.max(options.maxResponseBytes ?? MAX_RPC_RESPONSE_BYTES, 1),
+          MAX_RPC_RESPONSE_BYTES
+        ),
+        requestId: String(options.requestId ?? randomUUID()),
+      });
+      if (!result.ok || !result.payload) {
+        throw new QAppReticulumError(result.code ?? 'RNS_REQUEST_TIMEOUT');
+      }
+      return decodePayload(result.payload);
+    } finally {
+      this.releasePendingRequest(key);
+    }
   }
 
   async connect(
@@ -155,6 +175,13 @@ export class QAppReticulumManager extends EventEmitter {
     const destination = this.validateDestination(destinationValue);
     const connectionId = `rns-${randomUUID()}`;
     const key = ownerKey(owner);
+    if (
+      (this.connectionsByOwner.get(key)?.size ?? 0) >=
+        MAX_CONNECTIONS_PER_OWNER ||
+      this.connections.size >= MAX_CONNECTIONS_GLOBAL
+    ) {
+      throw new QAppReticulumError('RNS_SEND_QUEUE_FULL');
+    }
     const connection: LogicalConnection = {
       connectionId,
       ownerKey: key,
@@ -166,11 +193,17 @@ export class QAppReticulumManager extends EventEmitter {
     const owned = this.connectionsByOwner.get(key) ?? new Set<string>();
     owned.add(connectionId);
     this.connectionsByOwner.set(key, owned);
-    const result = await this.transport.invoke('qapp_rns_connect', {
-      managerKey: connection.managerKey,
-      connectionId,
-      destination,
-    });
+    let result: Awaited<ReturnType<QAppReticulumTransport['invoke']>>;
+    try {
+      result = await this.transport.invoke('qapp_rns_connect', {
+        managerKey: connection.managerKey,
+        connectionId,
+        destination,
+      });
+    } catch (error) {
+      this.removeConnection(connection);
+      throw error;
+    }
     if (!result.ok) {
       this.removeConnection(connection);
       throw new QAppReticulumError(
@@ -248,6 +281,8 @@ export class QAppReticulumManager extends EventEmitter {
     this.detachTransport();
     this.connections.clear();
     this.connectionsByOwner.clear();
+    this.pendingRequestsByOwner.clear();
+    this.pendingRequestCount = 0;
   }
 
   private handleTransportEvent(event: QAppReticulumNativeEvent): void {
@@ -291,6 +326,14 @@ export class QAppReticulumManager extends EventEmitter {
     const owned = this.connectionsByOwner.get(connection.ownerKey);
     owned?.delete(connection.connectionId);
     if (owned?.size === 0) this.connectionsByOwner.delete(connection.ownerKey);
+  }
+
+  private releasePendingRequest(key: string): void {
+    const pending = this.pendingRequestsByOwner.get(key) ?? 0;
+    if (pending <= 0) return;
+    if (pending === 1) this.pendingRequestsByOwner.delete(key);
+    else this.pendingRequestsByOwner.set(key, pending - 1);
+    this.pendingRequestCount = Math.max(0, this.pendingRequestCount - 1);
   }
 
   private managerKey(owner: QAppReticulumOwner, destination: string): string {

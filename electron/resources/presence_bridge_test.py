@@ -157,6 +157,217 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
             {"protocol": "qortal-example", "version": 1, "items": []},
         )
 
+    def test_rpc_response_wait_does_not_block_scheduler_worker(self):
+        emitted = []
+        callbacks = {}
+
+        class Receipt:
+            def get_response(self):
+                return {"ok": True}
+
+        class Link:
+            def request(self, _path, **options):
+                callbacks.update(options)
+                return object()
+
+        entry = {"link": Link(), "active_requests": 0, "last_used": 0}
+        payload = {
+            "managerKey": "rpc-async-test",
+            "destination": "00" * 16,
+            "path": "/example/status",
+            "requestId": "status-test",
+            "encoding": "json",
+            "payloadBase64": base64.b64encode(b"{}").decode("ascii"),
+        }
+
+        with mock.patch.object(
+            self.bridge, "_qapp_rns_entry", return_value=entry
+        ), mock.patch.object(
+            self.bridge, "_qapp_rns_open_link", return_value=True
+        ), mock.patch.object(
+            self.bridge, "_qapp_rns_schedule_idle"
+        ), mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda request_id, ok, payload=None: emitted.append(
+                (request_id, ok, payload)
+            ),
+        ):
+            started = time.monotonic()
+            self.bridge.handle_qapp_rns_request("bridge-request", payload)
+            elapsed = time.monotonic() - started
+
+            self.assertLess(elapsed, 0.1)
+            self.assertEqual(emitted, [])
+            self.assertEqual(entry["active_requests"], 1)
+
+            callbacks["response_callback"](Receipt())
+            self.assertEqual(len(emitted), 1)
+            self.assertEqual(entry["active_requests"], 0)
+
+    def test_rpc_timeout_and_late_callback_complete_only_once(self):
+        emitted = []
+        callbacks = {}
+        timers = []
+
+        class Timer:
+            def __init__(self, _delay, callback):
+                self.callback = callback
+                self.cancelled = False
+                self.daemon = False
+                timers.append(self)
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                self.cancelled = True
+
+        class Receipt:
+            def get_response(self):
+                return {"late": True}
+
+        class Link:
+            def request(self, _path, **options):
+                callbacks.update(options)
+                return object()
+
+        entry = {"link": Link(), "active_requests": 0, "last_used": 0}
+        payload = {
+            "managerKey": "rpc-timeout-test",
+            "destination": "00" * 16,
+            "path": "/example/status",
+            "requestId": "timeout-test",
+        }
+
+        with mock.patch.object(
+            self.bridge, "_qapp_rns_entry", return_value=entry
+        ), mock.patch.object(
+            self.bridge, "_qapp_rns_open_link", return_value=True
+        ), mock.patch.object(
+            self.bridge, "_qapp_rns_schedule_idle"
+        ), mock.patch.object(
+            self.bridge.threading, "Timer", Timer
+        ), mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda request_id, ok, payload=None, error=None: emitted.append(
+                (request_id, ok, payload, error)
+            ),
+        ):
+            self.bridge.handle_qapp_rns_request("bridge-request", payload)
+            timers[0].callback()
+            callbacks["response_callback"](Receipt())
+
+        self.assertEqual(len(emitted), 1)
+        self.assertFalse(emitted[0][1])
+        self.assertEqual(entry["active_requests"], 0)
+
+    def test_rpc_timer_start_failure_releases_active_request(self):
+        emitted = []
+
+        class Timer:
+            daemon = False
+
+            def __init__(self, _delay, _callback):
+                pass
+
+            def start(self):
+                raise RuntimeError("thread unavailable")
+
+            def cancel(self):
+                pass
+
+        entry = {"link": object(), "active_requests": 0, "last_used": 0}
+        payload = {
+            "managerKey": "rpc-timer-failure-test",
+            "destination": "00" * 16,
+            "path": "/example/status",
+            "requestId": "timer-failure-test",
+        }
+
+        with mock.patch.object(
+            self.bridge, "_qapp_rns_entry", return_value=entry
+        ), mock.patch.object(
+            self.bridge, "_qapp_rns_open_link", return_value=True
+        ), mock.patch.object(
+            self.bridge, "_qapp_rns_schedule_idle"
+        ), mock.patch.object(
+            self.bridge.threading, "Timer", Timer
+        ), mock.patch.object(
+            self.bridge,
+            "emit_resp",
+            side_effect=lambda request_id, ok, payload=None, error=None: emitted.append(
+                (request_id, ok, payload, error)
+            ),
+        ):
+            self.bridge.handle_qapp_rns_request("bridge-request", payload)
+
+        self.assertEqual(len(emitted), 1)
+        self.assertFalse(emitted[0][1])
+        self.assertEqual(entry["active_requests"], 0)
+
+    def test_idle_reschedule_replaces_previous_timer(self):
+        timers = []
+
+        class Timer:
+            def __init__(self, _delay, callback):
+                self.callback = callback
+                self.cancelled = False
+                self.daemon = False
+                timers.append(self)
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                self.cancelled = True
+
+        entry = {
+            "managerKey": "idle-timer-test",
+            "destination": "00" * 16,
+            "idle_generation": 0,
+            "idle_timer": None,
+        }
+
+        with mock.patch.object(self.bridge.threading, "Timer", Timer):
+            self.bridge._qapp_rns_schedule_idle(entry)
+            self.bridge._qapp_rns_schedule_idle(entry)
+
+        self.assertEqual(len(timers), 2)
+        self.assertTrue(timers[0].cancelled)
+        self.assertFalse(timers[1].cancelled)
+        self.assertIs(entry["idle_timer"], timers[1])
+        self.assertEqual(entry["idle_generation"], 2)
+
+    def test_idle_timer_start_failure_is_best_effort(self):
+        class Timer:
+            daemon = False
+
+            def __init__(self, _delay, _callback):
+                pass
+
+            def start(self):
+                raise RuntimeError("thread unavailable")
+
+            def cancel(self):
+                pass
+
+        entry = {
+            "managerKey": "idle-timer-failure-test",
+            "destination": "00" * 16,
+            "idle_generation": 0,
+            "idle_timer": None,
+        }
+
+        with mock.patch.object(self.bridge.threading, "Timer", Timer), mock.patch.object(
+            self.bridge, "log"
+        ) as log:
+            self.bridge._qapp_rns_schedule_idle(entry)
+
+        self.assertIsNone(entry["idle_timer"])
+        log.assert_called_once()
+
     def test_close_while_reconnecting_does_not_resurrect_link(self):
         entry = {
             "managerKey": "close-race-test",
@@ -4457,6 +4668,62 @@ class PresenceBridgeResourceSchedulingTest(unittest.TestCase):
                     self.bridge._scheduler_lane_for_command(action),
                     "resource-control",
                 )
+
+    def test_qapp_commands_are_isolated_by_work_class_and_owner(self):
+        first = {"payload": {"managerKey": "owner-a"}}
+        same_owner = {"payload": {"managerKey": "owner-a"}}
+        second = {"payload": {"managerKey": "owner-b"}}
+
+        rpc_lane = self.bridge._scheduler_lane_for_command(
+            "qapp_rns_request", first
+        )
+        self.assertEqual(
+            rpc_lane,
+            self.bridge._scheduler_lane_for_command(
+                "qapp_rns_request", same_owner
+            ),
+        )
+        self.assertTrue(rpc_lane.startswith("qapp-rpc-"))
+        self.assertTrue(
+            self.bridge._scheduler_lane_for_command(
+                "qapp_rns_send", first
+            ).startswith("qapp-realtime-")
+        )
+        self.assertTrue(
+            self.bridge._scheduler_lane_for_command(
+                "qapp_rns_connect", second
+            ).startswith("qapp-lifecycle-")
+        )
+        self.assertEqual(
+            self.bridge._scheduler_lane_for_command("publish_presence"),
+            "control-send",
+        )
+        self.assertIn(rpc_lane, self.bridge._SCHEDULER_QUEUE_MAX_BY_LANE)
+
+    def test_full_qapp_rpc_lane_does_not_consume_control_capacity(self):
+        message = {"payload": {"managerKey": "owner-a"}}
+        rpc_lane = self.bridge._scheduler_lane_for_command(
+            "qapp_rns_request", message
+        )
+        previous = dict(self.bridge._scheduler_queues)
+        try:
+            self.bridge._scheduler_queues[rpc_lane] = queue.Queue(maxsize=1)
+            self.bridge._scheduler_queues["control-send"] = queue.Queue(maxsize=1)
+            self.bridge._scheduler_queues[rpc_lane].put_nowait(object())
+
+            self.assertFalse(
+                self.bridge._enqueue_scheduler_task(
+                    rpc_lane, "blocked-rpc", lambda: None
+                )
+            )
+            self.assertTrue(
+                self.bridge._enqueue_scheduler_task(
+                    "control-send", "healthy-control", lambda: None
+                )
+            )
+        finally:
+            self.bridge._scheduler_queues.clear()
+            self.bridge._scheduler_queues.update(previous)
 
     def test_resource_open_shard_is_stable_for_a_peer(self):
         lane = self.bridge._resource_open_scheduler_lane(self.peer_hash)

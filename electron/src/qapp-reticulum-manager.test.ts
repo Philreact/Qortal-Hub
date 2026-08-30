@@ -220,4 +220,130 @@ describe('QAppReticulumManager', () => {
     ).rejects.toMatchObject({ code: 'RNS_REQUEST_TIMEOUT' });
     expect(transport.invoke).toHaveBeenCalledTimes(1);
   });
+
+  it('limits pending RPCs independently for each Q-App owner', async () => {
+    const transport = new FakeTransport();
+    const releases: Array<() => void> = [];
+    transport.invoke = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          releases.push(() =>
+            resolve({
+              ok: true,
+              payload: {
+                payloadBase64: Buffer.from('{}').toString('base64'),
+                encoding: 'json',
+              },
+            })
+          );
+        })
+    );
+    const manager = new QAppReticulumManager(transport);
+    const pending = Array.from({ length: 8 }, (_, index) =>
+      manager.request(alice, {
+        destination,
+        path: '/status',
+        requestId: `pending-${index}`,
+      })
+    );
+
+    await expect(
+      manager.request(alice, { destination, path: '/status' })
+    ).rejects.toMatchObject({ code: 'RNS_SEND_QUEUE_FULL' });
+    const bobRequest = manager.request(bob, {
+      destination,
+      path: '/status',
+    });
+
+    for (const release of releases) release();
+    await expect(Promise.all([...pending, bobRequest])).resolves.toHaveLength(
+      9
+    );
+  });
+
+  it('bounds pending RPCs across all Q-App owners', async () => {
+    const transport = new FakeTransport();
+    const releases: Array<() => void> = [];
+    transport.invoke = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          releases.push(() =>
+            resolve({
+              ok: true,
+              payload: {
+                payloadBase64: Buffer.from('{}').toString('base64'),
+                encoding: 'json',
+              },
+            })
+          );
+        })
+    );
+    const manager = new QAppReticulumManager(transport);
+    const pending = Array.from({ length: 64 }, (_, index) =>
+      manager.request(
+        { ...alice, tabId: `global-rpc-${index}` },
+        { destination, path: '/status' }
+      )
+    );
+
+    await expect(
+      manager.request(
+        { ...alice, tabId: 'global-rpc-overflow' },
+        { destination, path: '/status' }
+      )
+    ).rejects.toMatchObject({ code: 'RNS_SEND_QUEUE_FULL' });
+
+    for (const release of releases) release();
+    await expect(Promise.all(pending)).resolves.toHaveLength(64);
+  });
+
+  it('releases a logical connection slot when native connect rejects', async () => {
+    const transport = new FakeTransport();
+    transport.invoke = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('transport unavailable'))
+      .mockResolvedValue({ ok: true, payload: {} });
+    const manager = new QAppReticulumManager(transport);
+
+    await expect(manager.connect(alice, destination)).rejects.toThrow(
+      'transport unavailable'
+    );
+    await expect(
+      Promise.all(
+        Array.from({ length: 8 }, () => manager.connect(alice, destination))
+      )
+    ).resolves.toHaveLength(8);
+  });
+
+  it('limits logical realtime connections per Q-App owner', async () => {
+    const manager = new QAppReticulumManager(new FakeTransport());
+    await Promise.all(
+      Array.from({ length: 8 }, () => manager.connect(alice, destination))
+    );
+    await expect(manager.connect(alice, destination)).rejects.toMatchObject({
+      code: 'RNS_SEND_QUEUE_FULL',
+    });
+    await expect(manager.connect(bob, destination)).resolves.toMatchObject({
+      state: 'CONNECTED',
+    });
+  });
+
+  it('bounds logical realtime connections across all Q-App owners', async () => {
+    const manager = new QAppReticulumManager(new FakeTransport());
+    await Promise.all(
+      Array.from({ length: 64 }, (_, index) =>
+        manager.connect(
+          { ...alice, tabId: `global-connection-${index}` },
+          destination
+        )
+      )
+    );
+
+    await expect(
+      manager.connect(
+        { ...alice, tabId: 'global-connection-overflow' },
+        destination
+      )
+    ).rejects.toMatchObject({ code: 'RNS_SEND_QUEUE_FULL' });
+  });
 });
