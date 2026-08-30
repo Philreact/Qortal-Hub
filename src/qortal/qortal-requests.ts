@@ -84,7 +84,6 @@ import {
   markNotificationSeenInApp,
   notificationHasPermission,
   removeNotificationSubscriptions,
-  authorizeRnsDestination,
   clearRnsDestinationPermissionsByTabId,
 } from './get.ts';
 import { triggerMemberGroupsFetch } from '../subscriptions/useInitializeMySubscriptions.ts';
@@ -572,71 +571,6 @@ function setupMessageListenerQortalRequest() {
 
     // Handle actions based on the `request.action` value
     switch (request.action) {
-      case 'RNS_REQUEST':
-      case 'RNS_CONNECT':
-      case 'RNS_SEND':
-      case 'RNS_CLOSE': {
-        try {
-          const owner = {
-            tabId: String(appInfo?.tabId ?? ''),
-            name: String(appInfo?.name ?? ''),
-            service: String(appInfo?.service ?? ''),
-          };
-          let res;
-          if (request.action === 'RNS_REQUEST') {
-            const destination = await authorizeRnsDestination(
-              request.payload?.destination,
-              isFromExtension,
-              appInfo
-            );
-            res = await window.electronAPI.qappReticulumRequest(owner, {
-              ...request.payload,
-              destination,
-            });
-          } else if (request.action === 'RNS_CONNECT') {
-            const destination = await authorizeRnsDestination(
-              request.payload?.destination,
-              isFromExtension,
-              appInfo
-            );
-            res = await window.electronAPI.qappReticulumConnect(
-              owner,
-              destination
-            );
-          } else if (request.action === 'RNS_SEND') {
-            res = await window.electronAPI.qappReticulumSend(
-              owner,
-              request.payload?.connectionId,
-              request.payload?.payload
-            );
-          } else {
-            res = await window.electronAPI.qappReticulumClose(
-              owner,
-              request.payload?.connectionId
-            );
-          }
-          event.source.postMessage(
-            {
-              requestId: request.requestId,
-              action: request.action,
-              payload: res,
-              type: 'backgroundMessageResponse',
-            },
-            event.origin
-          );
-        } catch (error) {
-          event.source.postMessage(
-            {
-              requestId: request.requestId,
-              action: request.action,
-              error: error?.code || error?.message || 'RNS_PROTOCOL_ERROR',
-              type: 'backgroundMessageResponse',
-            },
-            event.origin
-          );
-        }
-        break;
-      }
       case 'GET_USER_ACCOUNT': {
         try {
           const res = await getUserAccount({

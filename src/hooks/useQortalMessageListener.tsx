@@ -17,6 +17,10 @@ import {
   TIME_SECONDS_30_IN_MILLISECONDS,
 } from '../constants/constants';
 import { buildQortalResourceLink } from '../utils/qortalLink';
+import {
+  dispatchQAppReticulumRequest,
+  isQAppReticulumAction,
+} from '../qortal/qapp-reticulum-request';
 
 export const saveFileInChunks = async (
   blob: Blob,
@@ -712,16 +716,6 @@ export const useQortalMessageListener = (
             TIME_MINUTES_30_IN_MILLISECONDS;
         } else if (message?.action === 'PUBLISH_QDN_RESOURCE') {
           timeout = TIME_HOURS_1_IN_MILLISECONDS;
-        } else if (message?.action === 'RNS_CONNECT') {
-          timeout = 120_000;
-        } else if (message?.action === 'RNS_REQUEST') {
-          timeout = Math.min(
-            195_000,
-            Math.max(
-              120_000,
-              Number(message?.payload?.timeoutMs ?? 30_000) + 75_000
-            )
-          );
         }
 
         // Build deduplication key for read-only actions
@@ -768,17 +762,24 @@ export const useQortalMessageListener = (
           return;
         }
 
-        const requestPromise = window.sendMessage(
-          message.action,
-          message.payload,
-          timeout,
-          message.isExtension,
-          {
-            name: appName,
-            service: appService,
-            tabId,
-          }
-        );
+        const requestPromise = isQAppReticulumAction(message?.action)
+          ? dispatchQAppReticulumRequest(message.payload, {
+              appName,
+              appService,
+              isFromExtension: message.isExtension,
+              tabId,
+            })
+          : window.sendMessage(
+              message.action,
+              message.payload,
+              timeout,
+              message.isExtension,
+              {
+                name: appName,
+                service: appService,
+                tabId,
+              }
+            );
 
         // Store the promise for deduplication
         if (isDeduplicable) {
@@ -812,11 +813,13 @@ export const useQortalMessageListener = (
           })
           .catch((error) => {
             console.error('Failed qortalRequest', error);
+            const requestError =
+              error?.code || error?.message || 'Request failed';
             eventPort.postMessage({
               result: null,
               error: {
-                error: error?.message || 'Request failed',
-                message: error?.message || 'An error has occurred',
+                error: requestError,
+                message: requestError,
               },
             });
           });
