@@ -26788,6 +26788,10 @@ _QAPP_RNS_MAX_QUEUE = int(os.environ.get("QORTAL_QAPP_RNS_MAX_UNACKED", 64))
 _QAPP_RNS_MAX_QUEUE_BYTES = int(os.environ.get("QORTAL_QAPP_RNS_MAX_QUEUE_BYTES", 2 * 1024 * 1024))
 _QAPP_RNS_IDLE_SECONDS = float(os.environ.get("QORTAL_QAPP_RNS_IDLE_SECONDS", 300))
 _QAPP_RNS_ACK_TIMEOUT_SECONDS = float(os.environ.get("QORTAL_QAPP_RNS_ACK_TIMEOUT_SECONDS", 120))
+_QAPP_RNS_KEEPALIVE_SECONDS = max(
+    15.0,
+    float(os.environ.get("QORTAL_QAPP_RNS_KEEPALIVE_SECONDS", 60)),
+)
 _qapp_rns_entries: Dict[str, Dict[str, Any]] = {}
 
 
@@ -26831,6 +26835,69 @@ def _qapp_rns_emit_state(entry: Dict[str, Any], state: str, reason: str = "") ->
             "state": state,
             **({"reason": reason} if reason else {}),
         })
+
+
+def _qapp_rns_cancel_keepalive(entry: Dict[str, Any]) -> None:
+    with _state_lock:
+        entry["keepalive_generation"] = int(entry.get("keepalive_generation") or 0) + 1
+        timer = entry.get("keepalive_timer")
+        entry["keepalive_timer"] = None
+    if timer is not None:
+        timer.cancel()
+
+
+def _qapp_rns_schedule_keepalive(entry: Dict[str, Any]) -> None:
+    """Keep an actively-owned realtime Link alive without involving the Q-App."""
+    with _state_lock:
+        previous_timer = entry.get("keepalive_timer")
+        if previous_timer is not None:
+            previous_timer.cancel()
+        generation = int(entry.get("keepalive_generation") or 0) + 1
+        entry["keepalive_generation"] = generation
+        entry["keepalive_timer"] = None
+        if entry.get("established") is not True or not entry.get("connections"):
+            return
+
+        def keepalive() -> None:
+            with _state_lock:
+                current = _qapp_rns_entries.get(entry["managerKey"])
+                if (
+                    current is not entry
+                    or entry.get("keepalive_generation") != generation
+                    or entry.get("established") is not True
+                    or not entry.get("connections")
+                ):
+                    return
+                entry["keepalive_timer"] = None
+                message_id = int(entry["next_message_id"])
+                entry["next_message_id"] = (message_id + 1) & 0xffffffffffffffff
+            payload = json.dumps({"type": "PING"}, separators=(",", ":")).encode("utf-8")
+            if not _qapp_rns_write(
+                entry,
+                _qapp_rns_frame(_QAPP_RNS_CONTROL, message_id, payload),
+            ):
+                link = entry.get("link")
+                if link is not None:
+                    try:
+                        link.teardown()
+                    except Exception:
+                        pass
+                return
+            _qapp_rns_schedule_keepalive(entry)
+
+        timer = threading.Timer(_QAPP_RNS_KEEPALIVE_SECONDS, keepalive)
+        timer.daemon = True
+        entry["keepalive_timer"] = timer
+    try:
+        timer.start()
+    except Exception as exc:
+        with _state_lock:
+            if entry.get("keepalive_timer") is timer:
+                entry["keepalive_timer"] = None
+        log(
+            "[presence_bridge] target=qapp-rns keepalive_timer_start_failed "
+            f"destination={entry.get('destination')} error={type(exc).__name__}"
+        )
 
 
 def _qapp_rns_handle_frame(entry: Dict[str, Any], frame_type: int, message_id: int, payload: bytes) -> None:
@@ -26943,6 +27010,7 @@ def _qapp_rns_established(manager_key: str, generation: int, link) -> None:
         entry["established_event"].set()
         unacked = [value["frame"] for _, value in sorted(entry["unacked"].items())]
     threading.Thread(target=_qapp_rns_reader, args=(entry, generation), daemon=True, name="qapp-rns-reader").start()
+    _qapp_rns_schedule_keepalive(entry)
     for frame in unacked:
         if not _qapp_rns_write(entry, frame):
             break
@@ -27024,6 +27092,7 @@ def _qapp_rns_closed(manager_key: str, generation: int, link) -> None:
         entry["writer"] = None
         entry["reader"] = None
         has_connections = bool(entry.get("connections"))
+    _qapp_rns_cancel_keepalive(entry)
     _qapp_rns_emit_state(entry, "RECONNECTING" if has_connections else "DISCONNECTED")
     if has_connections:
         _qapp_rns_schedule_reconnect(entry)
@@ -27109,6 +27178,8 @@ def _qapp_rns_entry(manager_key: str, destination: str) -> Dict[str, Any]:
             "reconnect_attempt": 0,
             "idle_generation": 0,
             "idle_timer": None,
+            "keepalive_generation": 0,
+            "keepalive_timer": None,
         }
         _qapp_rns_entries[manager_key] = entry
         return entry
@@ -27129,6 +27200,7 @@ def handle_qapp_rns_connect(req_id: str, payload: Dict[str, Any]) -> None:
                 entry["connections"].discard(connection_id)
             _qapp_rns_schedule_idle(entry)
             return _qapp_rns_error(req_id, "RNS_LINK_TIMEOUT")
+        _qapp_rns_schedule_keepalive(entry)
         emit_resp(req_id, True, payload={"state": "CONNECTED"})
     except Exception:
         _qapp_rns_error(req_id, "RNS_DESTINATION_UNREACHABLE")
@@ -27186,6 +27258,8 @@ def handle_qapp_rns_close(req_id: str, payload: Dict[str, Any]) -> None:
         if entry is not None:
             entry["connections"].discard(connection_id)
             entry["last_used"] = time.time()
+            if not entry["connections"]:
+                _qapp_rns_cancel_keepalive(entry)
             _qapp_rns_schedule_idle(entry)
     emit_resp(req_id, True, payload={"state": "CLOSED"})
 

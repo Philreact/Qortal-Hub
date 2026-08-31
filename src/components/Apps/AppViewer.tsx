@@ -25,7 +25,7 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
         app?.tabId,
         isDevMode,
         isDevMode ? 'devapp' : app?.name,
-        app?.service,
+        isDevMode ? 'APP' : app?.service,
         app?.identifier
       );
 

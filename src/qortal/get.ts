@@ -112,6 +112,10 @@ import { getElectronPersistentStorage } from '../utils/electronPersistentStorage
 import { fileToBase64 } from '../utils/fileReading/index.ts';
 import { mimeToExtensionMap } from '../utils/memeTypes.ts';
 import { RequestQueueWithPromise } from '../utils/queue/queue.ts';
+import {
+  normalizeQappIdentityContext,
+  qappReticulumSessionPermissionKey,
+} from './qapp-identity.ts';
 import utils from '../utils/utils.ts';
 import ShortUniqueId from 'short-unique-id';
 import {
@@ -533,7 +537,11 @@ export const authorizeRnsDestination = async (
   if (appInfo?.tabId == null || !appInfo?.name) {
     throw new Error('RNS_PERMISSION_DENIED');
   }
-  const key = `${appInfo.tabId}\u0000${appInfo.name}\u0000${normalized}`;
+  const key = qappReticulumSessionPermissionKey(
+    appInfo.tabId,
+    appInfo.name,
+    normalized
+  );
   if (rnsDestinationPermissions.has(key)) return normalized;
   const response = await getUserPermission(
     {
@@ -665,7 +673,13 @@ export const signQappIdentityProof = async (
     expiresAt < Date.now() - 5_000 ||
     expiresAt > Date.now() + 180_000
   ) {
-    throw new Error('Invalid Q-App identity challenge');
+    throw new Error(
+      i18n.t('auth:message.error.invalid_qapp_identity_challenge')
+    );
+  }
+  const qapp = normalizeQappIdentityContext(appInfo);
+  if (appInfo?.tabId == null) {
+    throw new Error(i18n.t('auth:message.error.invalid_qapp_identity_context'));
   }
   const hasPersistentAccountPermission = appInfo?.name
     ? Boolean(await getPermission(`qAPPAutoAuth-${appInfo.name}`))
@@ -677,9 +691,16 @@ export const signQappIdentityProof = async (
   );
   if (!hasPersistentAccountPermission && !hasAccountSessionPermission) {
     throw new Error(
-      'Q-App must authenticate with GET_USER_ACCOUNT before requesting an identity proof'
+      i18n.t('auth:message.error.qapp_account_authentication_required')
     );
   }
+  const reticulumPermissionKey = qappReticulumSessionPermissionKey(
+    appInfo.tabId,
+    appInfo.name,
+    backendDestination
+  );
+  if (!rnsDestinationPermissions.has(reticulumPermissionKey))
+    throw new Error('RNS_PERMISSION_DENIED');
   const wallet = await getSaveWallet();
   const account = {
     address: wallet?.address0,
@@ -691,7 +712,7 @@ export const signQappIdentityProof = async (
     !account?.publicKey ||
     keyPair?.publicKey !== account.publicKey
   ) {
-    throw new Error('Authenticated wallet does not match Qortal account');
+    throw new Error(i18n.t('auth:message.error.wallet_account_mismatch'));
   }
   const fields = {
     address: account.address,
@@ -701,6 +722,8 @@ export const signQappIdentityProof = async (
     nonce,
     protocol,
     publicKey: account.publicKey,
+    qappName: qapp.name,
+    qappService: qapp.service,
   };
   const sorted = {};
   for (const key of Object.keys(fields).sort()) sorted[key] = fields[key];

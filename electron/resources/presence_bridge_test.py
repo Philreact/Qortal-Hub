@@ -111,6 +111,72 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
         self.assertTrue(writer.flushed)
         self.assertEqual(self.bridge._QAPP_RNS_STREAM_ID, 7)
 
+    def test_active_realtime_connection_sends_internal_keepalive(self):
+        timers = []
+        writes = []
+
+        class Timer:
+            def __init__(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                self.cancelled = False
+                self.daemon = False
+                timers.append(self)
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                self.cancelled = True
+
+        entry = {
+            "managerKey": "keepalive-test",
+            "destination": "00" * 16,
+            "connections": {"rns-test"},
+            "established": True,
+            "generation": 1,
+            "next_message_id": 7,
+            "keepalive_generation": 0,
+            "keepalive_timer": None,
+        }
+        self.bridge._qapp_rns_entries[entry["managerKey"]] = entry
+        try:
+            with mock.patch.object(self.bridge.threading, "Timer", Timer), mock.patch.object(
+                self.bridge,
+                "_qapp_rns_write",
+                side_effect=lambda _entry, frame: writes.append(frame) or True,
+            ):
+                self.bridge._qapp_rns_schedule_keepalive(entry)
+                self.assertEqual(timers[0].delay, self.bridge._QAPP_RNS_KEEPALIVE_SECONDS)
+                timers[0].callback()
+
+            self.assertEqual(len(writes), 1)
+            _version, frame_type, message_id, length = self.bridge._QAPP_RNS_HEADER.unpack_from(writes[0])
+            self.assertEqual(frame_type, self.bridge._QAPP_RNS_CONTROL)
+            self.assertEqual(message_id, 7)
+            self.assertEqual(writes[0][self.bridge._QAPP_RNS_HEADER.size:], b'{"type":"PING"}')
+            self.assertEqual(length, len(b'{"type":"PING"}'))
+            self.assertEqual(entry["next_message_id"], 8)
+            self.assertEqual(len(timers), 2)
+        finally:
+            timer = entry.get("keepalive_timer")
+            if timer is not None:
+                timer.cancel()
+            self.bridge._qapp_rns_entries.pop(entry["managerKey"], None)
+
+    def test_keepalive_stops_without_logical_connections(self):
+        timer = mock.Mock()
+        entry = {
+            "keepalive_generation": 2,
+            "keepalive_timer": timer,
+        }
+
+        self.bridge._qapp_rns_cancel_keepalive(entry)
+
+        timer.cancel.assert_called_once_with()
+        self.assertIsNone(entry["keepalive_timer"])
+        self.assertEqual(entry["keepalive_generation"], 3)
+
     def test_rpc_response_callback_extracts_request_receipt_response(self):
         emitted = []
 
