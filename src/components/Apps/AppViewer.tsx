@@ -8,6 +8,7 @@ import { useThemeContext } from '../Theme/ThemeContext';
 import { useTranslation } from 'react-i18next';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
 import { appHeighOffsetPx } from '../Desktop/CustomTitleBar';
+import { buildPreviewUrl } from './appPreviewUrl';
 
 type AppViewerProps = {
   app: any;
@@ -53,9 +54,14 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
     useEffect(() => {
       if (app?.isPreview && app?.url) {
         resetHistory();
-        setUrl(app.url + `&theme=${themeMode}&lang=${currentLang}`);
+        setUrl(
+          buildPreviewUrl(app.url, {
+            language: currentLang,
+            theme: themeMode,
+          })
+        );
       }
-    }, [app?.url, app?.isPreview]);
+    }, [app?.url, app?.isPreview, currentLang, resetHistory, themeMode]);
 
     const defaultUrl = useMemo(() => {
       return url;
@@ -64,14 +70,26 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
     const refreshAppFunc = (e) => {
       const { tabId } = e.detail;
       if (tabId === app?.tabId) {
+        if (app?.isPreview && app?.url) {
+          resetHistory();
+          setUrl(
+            buildPreviewUrl(app.url, {
+              cacheBuster: Date.now(),
+              language: currentLang,
+              theme: themeMode,
+            })
+          );
+          return;
+        }
         if (isDevMode) {
           resetHistory();
-          if (!app?.isPreview || app?.isPrivate) {
-            setUrl(
-              app?.url +
-                `?time=${Date.now()}&theme=${themeMode}&lang=${currentLang}`
-            );
-          }
+          setUrl(
+            buildPreviewUrl(app?.url, {
+              cacheBuster: Date.now(),
+              language: currentLang,
+              theme: themeMode,
+            })
+          );
           return;
         }
         const constructUrl = `${getBaseApiReact()}/render/${app?.service}/${app?.name}${path != null ? path : ''}?theme=${themeMode}&lang=${currentLang}&identifier=${app?.identifier != null ? app?.identifier : ''}&time=${new Date().getMilliseconds()}`;

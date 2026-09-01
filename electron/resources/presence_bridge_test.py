@@ -177,6 +177,102 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
         self.assertIsNone(entry["keepalive_timer"])
         self.assertEqual(entry["keepalive_generation"], 3)
 
+    def test_close_sends_logical_control_without_closing_other_connections(self):
+        writes = []
+
+        class Writer:
+            def write(self, data):
+                writes.append(bytes(data))
+                return len(data)
+
+            def flush(self):
+                return None
+
+        entry = {
+            "managerKey": "logical-close-test",
+            "destination": "00" * 16,
+            "connections": {"rns-one", "rns-two"},
+            "established": True,
+            "writer": Writer(),
+            "write_lock": threading.Lock(),
+            "last_used": 0,
+            "next_message_id": 41,
+            "keepalive_generation": 0,
+            "keepalive_timer": None,
+            "idle_generation": 0,
+            "idle_timer": None,
+            "link": mock.Mock(),
+        }
+        self.bridge._qapp_rns_entries[entry["managerKey"]] = entry
+        try:
+            with mock.patch.object(self.bridge, "emit_resp") as emit_resp, mock.patch.object(
+                self.bridge, "_qapp_rns_schedule_idle"
+            ):
+                self.bridge.handle_qapp_rns_close("request-1", {
+                    "managerKey": entry["managerKey"],
+                    "connectionId": "rns-one",
+                })
+
+            self.assertEqual(entry["connections"], {"rns-two"})
+            self.assertEqual(entry["next_message_id"], 42)
+            self.assertEqual(len(writes), 1)
+            _version, frame_type, message_id, _length = (
+                self.bridge._QAPP_RNS_HEADER.unpack_from(writes[0])
+            )
+            self.assertEqual(frame_type, self.bridge._QAPP_RNS_CONTROL)
+            self.assertEqual(message_id, 41)
+            self.assertEqual(
+                json.loads(writes[0][self.bridge._QAPP_RNS_HEADER.size:]),
+                {"type": "CLOSE", "connectionId": "rns-one"},
+            )
+            entry["link"].teardown.assert_not_called()
+            emit_resp.assert_called_once_with(
+                "request-1", True, payload={"state": "CLOSED"}
+            )
+        finally:
+            timer = entry.get("idle_timer")
+            if timer is not None:
+                timer.cancel()
+            self.bridge._qapp_rns_entries.pop(entry["managerKey"], None)
+
+    def test_close_tears_down_failed_link_when_control_cannot_be_written(self):
+        class FailingWriter:
+            def write(self, _data):
+                raise RuntimeError("link failed")
+
+            def flush(self):
+                return None
+
+        entry = {
+            "managerKey": "logical-close-failure-test",
+            "destination": "00" * 16,
+            "connections": {"rns-one"},
+            "established": True,
+            "writer": FailingWriter(),
+            "write_lock": threading.Lock(),
+            "last_used": 0,
+            "next_message_id": 51,
+            "keepalive_generation": 0,
+            "keepalive_timer": None,
+            "idle_generation": 0,
+            "idle_timer": None,
+            "link": mock.Mock(),
+        }
+        self.bridge._qapp_rns_entries[entry["managerKey"]] = entry
+        try:
+            with mock.patch.object(self.bridge, "emit_resp"), mock.patch.object(
+                self.bridge, "_qapp_rns_schedule_idle"
+            ):
+                self.bridge.handle_qapp_rns_close("request-2", {
+                    "managerKey": entry["managerKey"],
+                    "connectionId": "rns-one",
+                })
+
+            self.assertEqual(entry["connections"], set())
+            entry["link"].teardown.assert_called_once_with()
+        finally:
+            self.bridge._qapp_rns_entries.pop(entry["managerKey"], None)
+
     def test_rpc_response_callback_extracts_request_receipt_response(self):
         emitted = []
 

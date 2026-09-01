@@ -415,10 +415,12 @@ export const VALID_SESSION_PERMISSIONS = [
   'NOTIFICATION_PERMISSION',
 ];
 
-// Permissions automatically granted for the session when GET_USER_ACCOUNT is accepted
-// These are read-only, low-risk permissions
+// Permissions automatically granted for the same Q-App tab session when
+// GET_USER_ACCOUNT is accepted. LOCK_TAB is a reversible, tab-scoped UI
+// safeguard and therefore does not need a second prompt after authentication.
 export const AUTO_GRANTED_PERMISSIONS_ON_AUTH = [
   'GET_USER_ACCOUNT',
+  'LOCK_TAB',
   'GET_USER_WALLET',
   'GET_WALLET_BALANCE',
   'GET_USER_WALLET_INFO',

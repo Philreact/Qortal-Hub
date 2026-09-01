@@ -34,6 +34,9 @@ describe('Q-App Reticulum framing', () => {
     expect(decodeQAppRnsControl(encodeQAppRnsControl('PING'))).toEqual({
       type: 'PING',
     });
+    expect(
+      decodeQAppRnsControl(encodeQAppRnsControl('CLOSE', 'rns-one'))
+    ).toEqual({ type: 'CLOSE', connectionId: 'rns-one' });
   });
 
   it('round-trips the maximum unsigned message ID', () => {
@@ -119,5 +122,9 @@ describe('Q-App Reticulum framing', () => {
     expect(() =>
       decodeQAppRnsControl(Buffer.from('{"type":"WELCOME"}'))
     ).toThrow(QAppRnsProtocolError);
+    expect(() => encodeQAppRnsControl('CLOSE')).toThrow(QAppRnsProtocolError);
+    expect(() => decodeQAppRnsControl(Buffer.from('{"type":"CLOSE"}'))).toThrow(
+      QAppRnsProtocolError
+    );
   });
 });

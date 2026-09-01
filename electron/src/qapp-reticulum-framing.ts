@@ -8,11 +8,11 @@ export enum QAppRnsFrameType {
   Control = 3,
 }
 
-export type QAppRnsControlType = 'PING' | 'PONG';
+export type QAppRnsControlType = 'PING' | 'PONG' | 'CLOSE';
 
-export type QAppRnsControl = {
-  type: QAppRnsControlType;
-};
+export type QAppRnsControl =
+  | { type: 'PING' | 'PONG' }
+  | { type: 'CLOSE'; connectionId: string };
 
 export type QAppRnsFrame = {
   version: number;
@@ -47,16 +47,40 @@ export function encodeQAppRnsFrame(
   return frame;
 }
 
-export function encodeQAppRnsControl(type: QAppRnsControlType): Buffer {
+export function encodeQAppRnsControl(
+  type: QAppRnsControlType,
+  connectionId?: string
+): Buffer {
+  if (type === 'CLOSE') {
+    if (!connectionId || connectionId.length > 128) {
+      throw new QAppRnsProtocolError('RNS_PROTOCOL_ERROR');
+    }
+    return Buffer.from(JSON.stringify({ type, connectionId }), 'utf8');
+  }
+  if (connectionId !== undefined) {
+    throw new QAppRnsProtocolError('RNS_PROTOCOL_ERROR');
+  }
   return Buffer.from(JSON.stringify({ type }), 'utf8');
 }
 
 export function decodeQAppRnsControl(payload: Uint8Array): QAppRnsControl {
   try {
     const value = JSON.parse(Buffer.from(payload).toString('utf8'));
+    if (!value || typeof value !== 'object') {
+      throw new Error('unsupported control');
+    }
+    if (value.type === 'CLOSE') {
+      if (
+        Object.keys(value).length !== 2 ||
+        typeof value.connectionId !== 'string' ||
+        value.connectionId.length < 1 ||
+        value.connectionId.length > 128
+      ) {
+        throw new Error('unsupported control');
+      }
+      return { type: 'CLOSE', connectionId: value.connectionId };
+    }
     if (
-      !value ||
-      typeof value !== 'object' ||
       Object.keys(value).length !== 1 ||
       (value.type !== 'PING' && value.type !== 'PONG')
     ) {

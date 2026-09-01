@@ -27253,14 +27253,39 @@ def handle_qapp_rns_send(req_id: str, payload: Dict[str, Any]) -> None:
 def handle_qapp_rns_close(req_id: str, payload: Dict[str, Any]) -> None:
     manager_key = str(payload.get("managerKey") or "")
     connection_id = str(payload.get("connectionId") or "")
+    entry = None
+    close_frame = None
     with _state_lock:
         entry = _qapp_rns_entries.get(manager_key)
-        if entry is not None:
+        if entry is not None and connection_id in entry.get("connections", set()):
+            message_id = int(entry["next_message_id"])
+            entry["next_message_id"] = (message_id + 1) & 0xffffffffffffffff
+            control = json.dumps({
+                "type": "CLOSE",
+                "connectionId": connection_id,
+            }, separators=(",", ":")).encode("utf-8")
+            close_frame = _qapp_rns_frame(_QAPP_RNS_CONTROL, message_id, control)
+    try:
+        close_written = close_frame is None or _qapp_rns_write(entry, close_frame)
+    except Exception:
+        close_written = False
+    with _state_lock:
+        current = _qapp_rns_entries.get(manager_key)
+        if current is entry and entry is not None:
             entry["connections"].discard(connection_id)
             entry["last_used"] = time.time()
             if not entry["connections"]:
                 _qapp_rns_cancel_keepalive(entry)
             _qapp_rns_schedule_idle(entry)
+    if not close_written and entry is not None:
+        # If the stream cannot carry the logical CLOSE, closing the failed
+        # physical Link is the only way to guarantee backend cleanup.
+        link = entry.get("link")
+        if link is not None:
+            try:
+                link.teardown()
+            except Exception:
+                pass
     emit_resp(req_id, True, payload={"state": "CLOSED"})
 
 

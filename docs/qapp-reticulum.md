@@ -76,10 +76,13 @@ arbitrary bytes. Standard padded Base64 is used. JSON key order and whitespace
 are not normative. Multiple stable logical `connectionId` values can share the
 Link. The complete envelope, not only the decoded Q-App body, must fit 256 KiB.
 
-CONTROL `3` supports exactly `{"type":"PING"}` and `{"type":"PONG"}`.
-PING receives PONG with the same header message ID. CONTROL is not ACKed. Other
-control shapes are protocol errors. Application authentication/session resume
-is above transport; v1 has no WELCOME or RESUME transport control.
+CONTROL `3` supports `{"type":"PING"}`, `{"type":"PONG"}`, and
+`{"type":"CLOSE","connectionId":"rns-<UUID>"}`. PING receives PONG with the
+same header message ID. CLOSE removes only the named logical connection on the
+receiving physical Link and is idempotent; a delayed DATA frame for that ID is
+acknowledged but not delivered. CONTROL is not ACKed. Other control shapes are
+protocol errors. Application authentication/session resume is above transport;
+v1 has no WELCOME or RESUME transport control.
 
 RPC `link.request()` data is a native dictionary with `version: 1`, application
 `requestId`, `encoding`, and `payloadBase64`. The backend returns a native JSON
@@ -90,7 +93,8 @@ automatically after ambiguous failure.
 Reconnect begins at 0.5 seconds, doubles with 0.8–1.2 jitter, and caps at 30
 seconds. Partial Buffer bytes are discarded. Complete unacknowledged DATA frames
 are resent in message-ID order from byte zero. Closing the last logical
-connection prevents a pending reconnect timer from reopening the Link.
+connection sends CLOSE before removing local ownership and prevents a pending
+reconnect timer from reopening the Link.
 
 Transport IDs prevent duplicate delivery across reconnects. They do not prevent
 duplicate business operations: Q-Apps must include their own operation IDs for
