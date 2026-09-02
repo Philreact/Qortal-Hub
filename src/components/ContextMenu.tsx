@@ -36,7 +36,6 @@ export const CustomStyledMenu = styled(Menu, {
   '& .MuiPaper-root': {
     ...(reticulumMenu
       ? {
-          backgroundColor: `color-mix(in srgb, ${theme.palette.background.surface} 70%, #000)`,
           backgroundImage: 'none',
           border: `1px solid ${theme.palette.divider}`,
           borderRadius: '8px',

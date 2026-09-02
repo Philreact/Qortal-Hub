@@ -1033,6 +1033,7 @@ export class ElectronCapacitorApp {
         contextIsolation: true,
         preload: preloadPath,
         backgroundThrottling: false,
+        spellcheck: true,
         additionalArguments: [
           `--hub-p2p-seeds=${seedsB64}`,
           `--window-role=${MAIN_WINDOW_ROLE}`,

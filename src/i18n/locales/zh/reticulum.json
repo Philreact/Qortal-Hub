@@ -21,6 +21,16 @@
     "sign_failed": "无法签名 Reticulum 聊天事件",
     "welcome_failed": "Reticulum 欢迎消息发布失败"
   },
+  "context_menu": {
+    "clipboard_permission_denied": "无法访问剪贴板",
+    "copy": "复制",
+    "copy_shortcut": "复制\tCtrl+C",
+    "cut": "剪切",
+    "cut_shortcut": "剪切\tCtrl+X",
+    "no_suggestions": "无建议",
+    "paste": "粘贴",
+    "paste_shortcut": "粘贴\tCtrl+V"
+  },
   "copy_invite_link": "复制邀请链接",
   "discussion": {
     "choose_emoji": "choose emoji",

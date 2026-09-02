@@ -30,6 +30,7 @@ import {
 import { ChatList } from './ChatList';
 import { AdminSpaceInner } from './AdminSpaceInner';
 import Tiptap, { type MentionSuggestionItem } from './TipTap';
+import { SpellCheckContextMenu } from './SpellCheckContextMenu';
 import { normalizeExactReticulumMentions } from './reticulumMentionNormalization';
 import { shouldBlockChatForLowBalance } from './chatTransportBalance';
 import './chat.css';
@@ -10111,39 +10112,41 @@ export const ChatGroup = ({
                       </Box>
                     )}
 
-                    <Tiptap
-                      enableMentions
-                      mentionSuggestions={
-                        reticulumChatEnabled
-                          ? reticulumMentionSuggestions
-                          : undefined
-                      }
-                      setEditorRef={setEditorRef}
-                      onEnter={sendMessage}
-                      onKeyDown={handleComposerKeyDown}
-                      onContentUpdate={(editor) => {
-                        noteReticulumComposerActivity(
-                          Boolean(editor.getText().trim())
-                        );
-                      }}
-                      isChat
-                      readOnly={!canWriteSelectedReticulumChannel}
-                      disableEnter={!canWriteSelectedReticulumChannel}
-                      isFocusedParent={isFocusedParent}
-                      setIsFocusedParent={setIsFocusedParent}
-                      membersWithNames={members}
-                      insertImage={insertImage}
-                      insertFiles={insertFiles}
-                      compactChat={reticulumChatEnabled}
-                      collapseFormattingTraySignal={formattingTrayResetKey}
-                      placeholder={
-                        reticulumChatEnabled
-                          ? canWriteSelectedReticulumChannel
-                            ? t('group:chat_group.message_placeholder')
-                            : t('group:chat_group.admins_only_write')
-                          : undefined
-                      }
-                    />
+                    <SpellCheckContextMenu editorRef={editorRef} disabled={!canWriteSelectedReticulumChannel}>
+                      <Tiptap
+                        enableMentions
+                        mentionSuggestions={
+                          reticulumChatEnabled
+                            ? reticulumMentionSuggestions
+                            : undefined
+                        }
+                        setEditorRef={setEditorRef}
+                        onEnter={sendMessage}
+                        onKeyDown={handleComposerKeyDown}
+                        onContentUpdate={(editor) => {
+                          noteReticulumComposerActivity(
+                            Boolean(editor.getText().trim())
+                          );
+                        }}
+                        isChat
+                        readOnly={!canWriteSelectedReticulumChannel}
+                        disableEnter={!canWriteSelectedReticulumChannel}
+                        isFocusedParent={isFocusedParent}
+                        setIsFocusedParent={setIsFocusedParent}
+                        membersWithNames={members}
+                        insertImage={insertImage}
+                        insertFiles={insertFiles}
+                        compactChat={reticulumChatEnabled}
+                        collapseFormattingTraySignal={formattingTrayResetKey}
+                        placeholder={
+                          reticulumChatEnabled
+                            ? canWriteSelectedReticulumChannel
+                              ? t('group:chat_group.message_placeholder')
+                              : t('group:chat_group.admins_only_write')
+                            : undefined
+                        }
+                      />
+                    </SpellCheckContextMenu>
                     {messageSize >= 3200 && (
                       <Box
                         sx={{

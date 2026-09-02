@@ -21,6 +21,16 @@
     "sign_failed": "Impossible de signer l'événement du chat Reticulum",
     "welcome_failed": "Échec de la publication du message de bienvenue Reticulum"
   },
+  "context_menu": {
+    "clipboard_permission_denied": "Impossible d'accéder au presse-papiers",
+    "copy": "Copier",
+    "copy_shortcut": "Copier\tCtrl+C",
+    "cut": "Couper",
+    "cut_shortcut": "Couper\tCtrl+X",
+    "no_suggestions": "Aucune suggestion",
+    "paste": "Coller",
+    "paste_shortcut": "Coller\tCtrl+V"
+  },
   "copy_invite_link": "copier le lien d'invitation",
   "discussion": {
     "choose_emoji": "choose emoji",

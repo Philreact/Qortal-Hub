@@ -21,6 +21,16 @@
     "sign_failed": "Reticulumi vestluse sündmust ei õnnestunud allkirjastada",
     "welcome_failed": "Reticulumi tervituse avaldamine ebaõnnestus"
   },
+  "context_menu": {
+    "clipboard_permission_denied": "Lõikepuhvurile puudub juurdepääs",
+    "copy": "Kopeeri",
+    "copy_shortcut": "Kopeeri\tCtrl+C",
+    "cut": "Lõika",
+    "cut_shortcut": "Lõika\tCtrl+X",
+    "no_suggestions": "Soovitusi pole",
+    "paste": "Kleebi",
+    "paste_shortcut": "Kleebi\tCtrl+V"
+  },
   "copy_invite_link": "kopeeri kutselink",
   "discussion": {
     "choose_emoji": "choose emoji",

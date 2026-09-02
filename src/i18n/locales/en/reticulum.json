@@ -21,6 +21,16 @@
     "sign_failed": "Unable to sign Reticulum chat event",
     "welcome_failed": "Reticulum welcome publish failed"
   },
+  "context_menu": {
+    "clipboard_permission_denied": "Unable to access clipboard",
+    "copy": "Copy",
+    "copy_shortcut": "Copy\tCtrl+C",
+    "cut": "Cut",
+    "cut_shortcut": "Cut\tCtrl+X",
+    "no_suggestions": "No suggestions",
+    "paste": "Paste",
+    "paste_shortcut": "Paste\tCtrl+V"
+  },
   "copy_invite_link": "copy invite link",
   "discussion": {
     "choose_emoji": "choose emoji",

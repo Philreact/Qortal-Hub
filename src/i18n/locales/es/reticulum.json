@@ -21,6 +21,16 @@
     "sign_failed": "No se pudo firmar el evento del chat de Reticulum",
     "welcome_failed": "Error al publicar la bienvenida de Reticulum"
   },
+  "context_menu": {
+    "clipboard_permission_denied": "No se puede acceder al portapapeles",
+    "copy": "Copiar",
+    "copy_shortcut": "Copiar\tCtrl+C",
+    "cut": "Cortar",
+    "cut_shortcut": "Cortar\tCtrl+X",
+    "no_suggestions": "Sin sugerencias",
+    "paste": "Pegar",
+    "paste_shortcut": "Pegar\tCtrl+V"
+  },
   "copy_invite_link": "copiar el enlace de invitación",
   "discussion": {
     "choose_emoji": "choose emoji",

@@ -21,6 +21,16 @@
     "sign_failed": "Reticulum-Chat-Ereignis konnte nicht signiert werden",
     "welcome_failed": "Reticulum-Willkommensnachricht konnte nicht veröffentlicht werden"
   },
+  "context_menu": {
+    "clipboard_permission_denied": "Zwischenablage kann nicht zugegriffen werden",
+    "copy": "Kopieren",
+    "copy_shortcut": "Kopieren\tStrg+C",
+    "cut": "Ausschneiden",
+    "cut_shortcut": "Ausschneiden\tStrg+X",
+    "no_suggestions": "Keine Vorschläge",
+    "paste": "Einfügen",
+    "paste_shortcut": "Einfügen\tStrg+V"
+  },
   "copy_invite_link": "Einladungslink kopieren",
   "discussion": {
     "choose_emoji": "choose emoji",

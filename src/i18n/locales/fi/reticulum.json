@@ -21,6 +21,16 @@
     "sign_failed": "Reticulum-keskustelutapahtumaa ei voitu allekirjoittaa",
     "welcome_failed": "Reticulum-tervetuloviestin julkaisu epäonnistui"
   },
+  "context_menu": {
+    "clipboard_permission_denied": "Leikepöydän käyttö epäonnistui",
+    "copy": "Kopioi",
+    "copy_shortcut": "Kopioi\tCtrl+C",
+    "cut": "Leikkaa",
+    "cut_shortcut": "Leikkaa\tCtrl+X",
+    "no_suggestions": "Ei ehdotuksia",
+    "paste": "Liitä",
+    "paste_shortcut": "Liitä\tCtrl+V"
+  },
   "copy_invite_link": "kopioi kutsulinkki",
   "discussion": {
     "choose_emoji": "choose emoji",

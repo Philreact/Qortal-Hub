@@ -460,6 +460,25 @@ try {
           appIcon: string;
         }>;
       }>,
+    spellCheck: {
+      getSuggestions: (word: string): Promise<string[]> => {
+        // webFrame is available in preload/renderer context
+        // This calls Electron's built-in Hunspell spellcheck directly
+        const webFrame = require('electron').webFrame;
+        if (webFrame && typeof webFrame.getWordSuggestions === 'function') {
+          try {
+            const suggestions = webFrame.getWordSuggestions(word);
+            console.log('[Preload] webFrame.getWordSuggestions returned:', suggestions);
+            return Promise.resolve(suggestions ?? []);
+          } catch (e) {
+            console.warn('[Preload] webFrame.getWordSuggestions error:', e);
+            return Promise.resolve([]);
+          }
+        }
+        console.log('[Preload] webFrame.getWordSuggestions not available');
+        return Promise.resolve([]);
+      },
+    },
     getSystemCallReadiness: () =>
       ipcRenderer.invoke('systemCallReadiness:getSnapshot') as Promise<{
         status: 'good' | 'warning' | 'blocked' | 'unknown';

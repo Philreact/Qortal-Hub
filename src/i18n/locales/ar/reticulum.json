@@ -21,6 +21,16 @@
     "sign_failed": "تعذّر توقيع حدث دردشة Reticulum",
     "welcome_failed": "فشل نشر ترحيب Reticulum"
   },
+  "context_menu": {
+    "clipboard_permission_denied": "تعذر الوصول إلى الحافظة",
+    "copy": "نسخ",
+    "copy_shortcut": "نسخ\tCtrl+C",
+    "cut": "قص",
+    "cut_shortcut": "قص\tCtrl+X",
+    "no_suggestions": "لا توجد اقتراحات",
+    "paste": "لصق",
+    "paste_shortcut": "لصق\tCtrl+V"
+  },
   "copy_invite_link": "نسخ رابط الدعوة",
   "discussion": {
     "choose_emoji": "choose emoji",
