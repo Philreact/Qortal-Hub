@@ -549,6 +549,10 @@ export const authorizeRnsDestination = async (
         appName: appInfo.name,
         destination: normalized,
       }),
+      confirmCheckbox: true,
+      confirmCheckboxLabel: i18n.t(
+        'question:permission.reticulum_remote_backend_understand'
+      ),
     },
     isFromExtension
   );
