@@ -6960,7 +6960,7 @@ export class ReticulumChatManager extends EventEmitter {
   private localGroupAdminIds = new Set<number>();
   private localGroupAuthoritativeAdminStatusIds = new Set<number>();
   private localGroupAddresses = new Map<number, string>();
-  private publicGroupDirectoryIds = new Set<number>();
+  private discoveryGroupDirectoryIds = new Set<number>();
   private publicGroupActivityStates = new Map<
     number,
     ReticulumPublicGroupActivityLocalState
@@ -7089,8 +7089,9 @@ export class ReticulumChatManager extends EventEmitter {
   private tempEventBlobPaths = new Set<string>();
   private tempEventBlobLastSweepAt = 0;
   private tempEventBlobSweepPromise: Promise<void> | null = null;
-  private tempEventBlobDeferredSweepTimer: ReturnType<typeof setTimeout> | null =
-    null;
+  private tempEventBlobDeferredSweepTimer: ReturnType<
+    typeof setTimeout
+  > | null = null;
   private backgroundAuthorGapRepairTimer: ReturnType<typeof setTimeout> | null =
     null;
   private backgroundAuthorGapRepairDueAt = 0;
@@ -8893,11 +8894,7 @@ export class ReticulumChatManager extends EventEmitter {
     const previousAuthoritativeAdminStatusIds =
       this.localGroupAuthoritativeAdminStatusIds;
     const previousGroupAddresses = this.localGroupAddresses;
-    const previousPublicGroupIds = new Set(
-      [...this.localGroupIds].filter(
-        (groupId) => !this.localPrivateGroupIds.has(groupId)
-      )
-    );
+    const previousActivityGroupIds = new Set(this.localGroupIds);
     const normalizedMemberships =
       this.normalizeLocalGroupMemberships(memberships);
     const groupsWithExpandedHistoryAccess = membershipsWereInitialized
@@ -8985,11 +8982,9 @@ export class ReticulumChatManager extends EventEmitter {
     this.hydrateAllPendingReadSync();
     void this.replayReadStatesToOwnDevices();
     this.scheduleNextCalendarReminder();
-    const nextPublicGroupIds = new Set(
-      nextGroupIds.filter((groupId) => !this.localPrivateGroupIds.has(groupId))
-    );
-    for (const groupId of previousPublicGroupIds) {
-      if (nextPublicGroupIds.has(groupId)) continue;
+    const nextActivityGroupIds = new Set(nextGroupIds);
+    for (const groupId of previousActivityGroupIds) {
+      if (nextActivityGroupIds.has(groupId)) continue;
       this.publicGroupActivityStates.delete(groupId);
       this.publicGroupActivityDirty.delete(groupId);
       this.db.deletePublicGroupActivity(groupId);
@@ -9056,7 +9051,8 @@ export class ReticulumChatManager extends EventEmitter {
     } else {
       this.enqueueMembershipInitialization(groupsRequiringInitialization);
     }
-    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
+    if (this.hasKnownDiscoveryGroups())
+      this.schedulePublicActivityRefresh(1_000);
   }
 
   private initializeMembershipGroup(groupId: number): void {
@@ -9123,22 +9119,24 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   setPublicGroupDirectory(groupIds: number[]): void {
-    this.publicGroupDirectoryIds = new Set(
+    // Keep the public API name for wire/preload compatibility. The directory
+    // now contains every group eligible for discovery activity.
+    this.discoveryGroupDirectoryIds = new Set(
       (Array.isArray(groupIds) ? groupIds : [])
         .map((groupId) => Number(groupId))
         .filter((groupId) => Number.isInteger(groupId) && groupId > 0)
     );
     for (const groupId of this.publicGroupActivitySamples.keys()) {
-      if (!this.isKnownPublicGroup(groupId)) {
+      if (!this.isKnownDiscoveryGroup(groupId)) {
         this.publicGroupActivitySamples.delete(groupId);
       }
     }
-    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(0);
+    if (this.hasKnownDiscoveryGroups()) this.schedulePublicActivityRefresh(0);
   }
 
   getPublicGroupActivitySummaries(): ReticulumPublicGroupActivitySummary[] {
     if (
-      this.hasKnownPublicGroups() &&
+      this.hasKnownDiscoveryGroups() &&
       this.now() - this.publicGroupActivityLastRequestedAt >=
         RETICULUM_PUBLIC_ACTIVITY_REFRESH_MS
     ) {
@@ -9151,7 +9149,7 @@ export class ReticulumChatManager extends EventEmitter {
 
   getPublicGroupActivitySnapshot(): ReticulumPublicGroupActivitySnapshot {
     if (
-      this.hasKnownPublicGroups() &&
+      this.hasKnownDiscoveryGroups() &&
       this.now() - this.publicGroupActivityLastRequestedAt >=
         RETICULUM_PUBLIC_ACTIVITY_REFRESH_MS
     ) {
@@ -9164,7 +9162,8 @@ export class ReticulumChatManager extends EventEmitter {
       )
     );
     for (const groupId of this.localGroupIds) {
-      if (!this.isLocalPublicGroup(groupId) || byGroup.has(groupId)) continue;
+      if (!this.isLocalDiscoveryGroup(groupId) || byGroup.has(groupId))
+        continue;
       byGroup.set(
         groupId,
         summarizeReticulumPublicGroupActivity(
@@ -9182,37 +9181,29 @@ export class ReticulumChatManager extends EventEmitter {
     };
   }
 
-  private isLocalPublicGroup(groupId: number): boolean {
+  private isLocalDiscoveryGroup(groupId: number): boolean {
     return (
-      this.localGroupMembershipsInitialized &&
-      this.localGroupIds.has(groupId) &&
-      !this.localPrivateGroupIds.has(groupId)
+      this.localGroupMembershipsInitialized && this.localGroupIds.has(groupId)
     );
   }
 
-  private isKnownPublicGroup(groupId: number): boolean {
-    if (
-      this.localGroupMembershipsInitialized &&
-      this.localPrivateGroupIds.has(groupId)
-    ) {
-      return false;
-    }
+  private isKnownDiscoveryGroup(groupId: number): boolean {
     return (
-      this.publicGroupDirectoryIds.has(groupId) ||
-      this.isLocalPublicGroup(groupId)
+      this.discoveryGroupDirectoryIds.has(groupId) ||
+      this.isLocalDiscoveryGroup(groupId)
     );
   }
 
-  private hasKnownPublicGroups(): boolean {
-    if (this.publicGroupDirectoryIds.size > 0) return true;
+  private hasKnownDiscoveryGroups(): boolean {
+    if (this.discoveryGroupDirectoryIds.size > 0) return true;
     for (const groupId of this.localGroupIds) {
-      if (this.isLocalPublicGroup(groupId)) return true;
+      if (this.isLocalDiscoveryGroup(groupId)) return true;
     }
     return false;
   }
 
   private recordPublicGroupActivity(event: ReticulumChatEvent): void {
-    if (!this.isLocalPublicGroup(event.groupId)) return;
+    if (!this.isLocalDiscoveryGroup(event.groupId)) return;
     if (event.eventType !== 'message') {
       return;
     }
@@ -9256,7 +9247,7 @@ export class ReticulumChatManager extends EventEmitter {
     const now = this.now();
     for (const groupId of this.publicGroupActivityDirty) {
       const state = this.publicGroupActivityStates.get(groupId);
-      if (!state || !this.isLocalPublicGroup(groupId)) continue;
+      if (!state || !this.isLocalDiscoveryGroup(groupId)) continue;
       this.db.upsertPublicGroupActivityLocalState(
         groupId,
         JSON.stringify(state),
@@ -9277,7 +9268,7 @@ export class ReticulumChatManager extends EventEmitter {
     )) {
       if (
         record.localStateJson ||
-        !this.isKnownPublicGroup(record.groupId) ||
+        !this.isKnownDiscoveryGroup(record.groupId) ||
         record.observedAt < now - RETICULUM_PUBLIC_ACTIVITY_SAMPLE_TTL_MS
       ) {
         continue;
@@ -9292,7 +9283,7 @@ export class ReticulumChatManager extends EventEmitter {
       });
     }
     for (const [groupId, state] of this.publicGroupActivityStates) {
-      if (!this.isLocalPublicGroup(groupId)) continue;
+      if (!this.isLocalDiscoveryGroup(groupId)) continue;
       byGroup.set(
         groupId,
         summarizeReticulumPublicGroupActivity(groupId, state, now)
@@ -9321,7 +9312,7 @@ export class ReticulumChatManager extends EventEmitter {
   ): ReticulumPublicGroupActivitySummary[] {
     const now = this.now();
     return [...this.publicGroupActivityStates]
-      .filter(([groupId]) => this.isLocalPublicGroup(groupId))
+      .filter(([groupId]) => this.isLocalDiscoveryGroup(groupId))
       .map(([groupId, state]) =>
         summarizeReticulumPublicGroupActivity(groupId, state, now)
       )
@@ -9342,7 +9333,7 @@ export class ReticulumChatManager extends EventEmitter {
   }
 
   private schedulePublicActivityRefresh(delayMs: number): void {
-    if (this.isClosed || !this.hasKnownPublicGroups()) return;
+    if (this.isClosed || !this.hasKnownDiscoveryGroups()) return;
     const delay = Math.max(0, Math.floor(delayMs));
     const dueAt = this.now() + delay;
     if (
@@ -9398,7 +9389,7 @@ export class ReticulumChatManager extends EventEmitter {
     if (
       this.isClosed ||
       this.publicGroupActivityRefreshInFlight ||
-      !this.hasKnownPublicGroups()
+      !this.hasKnownDiscoveryGroups()
     ) {
       return;
     }
@@ -9535,7 +9526,7 @@ export class ReticulumChatManager extends EventEmitter {
       if (
         !Number.isInteger(groupId) ||
         groupId <= 0 ||
-        !this.isKnownPublicGroup(groupId) ||
+        !this.isKnownDiscoveryGroup(groupId) ||
         ![messages24h, messages7d, activeAuthors7d, observedAt].every(
           Number.isFinite
         ) ||
@@ -9599,7 +9590,7 @@ export class ReticulumChatManager extends EventEmitter {
       .filter((sample) => sample.expiresAt > now)
       .map((sample) => sample.summary);
     const localState = this.publicGroupActivityStates.get(groupId);
-    if (localState && this.isLocalPublicGroup(groupId)) {
+    if (localState && this.isLocalDiscoveryGroup(groupId)) {
       summaries.push(
         summarizeReticulumPublicGroupActivity(groupId, localState, now)
       );
@@ -10145,7 +10136,8 @@ export class ReticulumChatManager extends EventEmitter {
 
   notifyOverlayHealthChanged(isHealthy: boolean): void {
     if (!isHealthy) return;
-    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
+    if (this.hasKnownDiscoveryGroups())
+      this.schedulePublicActivityRefresh(1_000);
     this.flushPendingDmDiscoveryIfHealthy('overlay-health');
     void this.replayReadStatesToOwnDevices();
     for (const [conversationId, pref] of this.activeDmLinkPreferences) {
@@ -12059,7 +12051,8 @@ export class ReticulumChatManager extends EventEmitter {
     // This path also runs after resume/reconnect. Re-evaluate the single
     // nearest reminder timer in case the system slept through its deadline.
     this.scheduleNextCalendarReminder();
-    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
+    if (this.hasKnownDiscoveryGroups())
+      this.schedulePublicActivityRefresh(1_000);
     if (this.subscribedGroups.size === 0) return;
     this.enqueueSubscriptionFanouts([this.buildHelloWire()]);
     this.refreshSubscriptions(false);
@@ -27150,10 +27143,8 @@ export class ReticulumChatManager extends EventEmitter {
           previousChannel.readMode ===
             RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS) &&
         channel.readMode !== RETICULUM_CHAT_CHANNEL_READ_MODE_ADMINS &&
-        this.db.wakeKnownUnavailableRangesForGroup(
-          event.groupId,
-          this.now()
-        ) > 0
+        this.db.wakeKnownUnavailableRangesForGroup(event.groupId, this.now()) >
+          0
       ) {
         this.scheduleBackgroundAuthorGapRepair(1);
       }
@@ -43356,7 +43347,8 @@ export class ReticulumChatManager extends EventEmitter {
     this.landStateForwardingAppliedTargets.clear();
     this.landStateForwardingSnapshotDirty = true;
     this.scheduleLandStateForwardingSync(0);
-    if (this.hasKnownPublicGroups()) this.schedulePublicActivityRefresh(1_000);
+    if (this.hasKnownDiscoveryGroups())
+      this.schedulePublicActivityRefresh(1_000);
   };
 
   private onBridgeChatMessage = (

@@ -1,6 +1,6 @@
 # Reticulum Group Score
 
-Group Score is a public-group discovery signal shown in Reticulum Q-Chat. It is an integer from 0 to 100 that combines four independent signals. Private groups deliberately receive no score: their activity and membership context should not be exposed through public discovery.
+Group Score is a group-discovery signal shown in Reticulum Q-Chat. It is an integer from 0 to 100 that combines four independent signals for both open and private groups.
 
 ## Formula
 
@@ -33,7 +33,7 @@ Activity Score =
 
 One visible user post counts once. Active authors carry the most weight because participation breadth is harder to inflate than message volume; seven-day volume rewards sustained use; 24-hour volume adds recency without letting a short burst dominate. Activity contributes up to 30 points, making sustained participation the second-largest signal after QORT Holdings.
 
-A successfully fetched activity directory that omits a public group is treated as zero activity. If the complete activity request fails, an existing valid snapshot is retained instead of replacing Activity with zeros.
+A successfully fetched activity directory that omits a group is treated as zero activity. If the complete activity request fails, an existing valid snapshot is retained instead of replacing Activity with zeros. Activity for private groups starts accumulating from newly accepted messages after support is enabled; existing private history is not backfilled.
 
 ### Community — 10%
 
@@ -66,7 +66,7 @@ Q-Chat starts score discovery when Reticulum Q-Chat loads, not only when Find Gr
 - Cached score data may be reused for up to 24 hours when a later fetch is unavailable.
 - A newly encountered group can request an out-of-cycle refresh, with a five-minute cooldown.
 - Real activity data may replace an assumed zero within the same slot.
-- Holding data comes from `/groups/balances?limit=0&reverse=true`; Activity comes from the Reticulum public-group activity directory.
+- Holding data comes from `/groups/balances?limit=0&reverse=true`; Activity comes from the Reticulum group-discovery activity directory.
 
 ## Display and discovery
 

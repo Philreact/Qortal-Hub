@@ -6813,14 +6813,12 @@ describe('reticulum chat manager', () => {
     manager.close();
   });
 
-  it('exchanges bounded public activity directly and excludes admin-only channels', async () => {
+  it('exchanges bounded discovery activity for open and private groups', async () => {
     const providerPeer = 'a'.repeat(32);
     const requesterPeer = 'b'.repeat(32);
     const sent: Array<{ from: string; to: string; wire: ReticulumChatWire }> =
       [];
-    let provider!: ReticulumChatManager;
-    let requester!: ReticulumChatManager;
-    provider = new ReticulumChatManager({
+    const provider = new ReticulumChatManager({
       dbPath: tempDbPath(),
       bridge: {
         on: () => undefined,
@@ -6835,7 +6833,7 @@ describe('reticulum chat manager', () => {
         },
       } as any,
     });
-    requester = new ReticulumChatManager({
+    const requester = new ReticulumChatManager({
       dbPath: tempDbPath(),
       getVerifiedReticulumPeers: () => [
         {
@@ -6857,7 +6855,10 @@ describe('reticulum chat manager', () => {
         },
       } as any,
     });
-    provider.setLocalGroupMemberships([{ groupId: 716, isOpen: true }]);
+    provider.setLocalGroupMemberships([
+      { groupId: 716, isOpen: true },
+      { groupId: 718, isPrivate: true },
+    ]);
     upsertTestChannel(provider, {
       groupId: 716,
       channelId: 'staff',
@@ -6875,6 +6876,14 @@ describe('reticulum chat manager', () => {
       signedEvent({ groupId: 716, channelId: 'staff', timestamp: Date.now() }),
       false
     );
+    (provider as any).acceptValidatedEvent(
+      signedEvent({
+        groupId: 718,
+        channelId: 'general',
+        timestamp: Date.now(),
+      }),
+      false
+    );
     (provider as any).db.upsertPublicGroupActivityCache(
       [
         {
@@ -6889,7 +6898,7 @@ describe('reticulum chat manager', () => {
       200,
       Date.now()
     );
-    requester.setPublicGroupDirectory([716, 717]);
+    requester.setPublicGroupDirectory([716, 717, 718]);
     const scheduled = (requester as any).publicGroupActivityRefreshTimer;
     if (scheduled) clearTimeout(scheduled);
     (requester as any).publicGroupActivityRefreshTimer = null;
@@ -6908,11 +6917,23 @@ describe('reticulum chat manager', () => {
         messages7d: 1,
         activeAuthors7d: 1,
       },
+      {
+        groupId: 718,
+        messages24h: 1,
+        messages7d: 1,
+        activeAuthors7d: 1,
+      },
     ]);
     const response = sent.find(
       (item) => item.wire.k === 'public_activity_top_v1'
     )?.wire as Extract<ReticulumChatWire, { k: 'public_activity_top_v1' }>;
-    expect(response.e.map(([groupId]) => groupId)).toEqual([716]);
+    expect(response.e.map(([groupId]) => groupId)).toEqual([716, 718]);
+    provider.setLocalGroupMemberships([{ groupId: 716, isOpen: true }]);
+    expect(
+      provider
+        .getPublicGroupActivitySummaries()
+        .some((summary) => summary.groupId === 718)
+    ).toBe(false);
     requester.close();
     provider.close();
   });
@@ -6946,7 +6967,9 @@ describe('reticulum chat manager', () => {
       manager.setLocalGroupMemberships(memberships);
       expect((manager as any).membershipInitializationQueue).toHaveLength(54);
 
-      await vi.runAllTimersAsync();
+      for (let index = 0; index < memberships.length; index += 1) {
+        await vi.advanceTimersToNextTimerAsync();
+      }
 
       expect(repair).toHaveBeenCalledTimes(54);
       expect(recentEvents).toHaveBeenCalledTimes(54);
@@ -16511,7 +16534,9 @@ describe('reticulum chat manager', () => {
     now += 7 * 60_000 + 30_001;
     (manager as any).noteGroupInterestRoute(73, 'peer-c', 'peer-a', 1);
     expect((manager as any).landStateForwardingRevision).toBe(initialRevision);
-    expect((manager as any).landStateForwardingLeaseRefreshTimer).not.toBeNull();
+    expect(
+      (manager as any).landStateForwardingLeaseRefreshTimer
+    ).not.toBeNull();
     manager.close();
   });
 

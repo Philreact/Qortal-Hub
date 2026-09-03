@@ -68,12 +68,10 @@ export const CustomStyledMenu = styled(Menu, {
 
 const ReticulumMenuGroupScore = ({
   groupId,
-  isPublic,
 }: {
   groupId?: string | number;
-  isPublic: boolean;
 }) => {
-  const score = useReticulumGroupScore(groupId, isPublic);
+  const score = useReticulumGroupScore(groupId);
   if (!score) return null;
   return (
     <Box sx={{ px: 0.15, pt: 0.25 }}>
@@ -580,11 +578,8 @@ export const ContextMenu = ({
             </Typography>
           </MenuItem>
         )}
-        {reticulumGroup && isMenuOpen && !isClosedGroup && (
-          <ReticulumMenuGroupScore
-            groupId={displayedGroupInfo.groupId}
-            isPublic
-          />
+        {reticulumGroup && isMenuOpen && (
+          <ReticulumMenuGroupScore groupId={displayedGroupInfo.groupId} />
         )}
         {reticulumGroup && showGroupInfo && (
           <>

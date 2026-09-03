@@ -4,7 +4,7 @@ import { getBaseApiReact } from '../../App';
 // Scoring contract and rationale: docs/reticulum-group-score.md
 
 const GROUP_SCORE_CACHE_KEY = 'qortal-reticulum-group-score-snapshot-v1';
-const GROUP_SCORE_VERSION = 3;
+const GROUP_SCORE_VERSION = 4;
 const GROUP_SCORE_SLOT_MS = 6 * 60 * 60_000;
 const GROUP_SCORE_MAX_STALE_MS = 24 * 60 * 60_000;
 const UNKNOWN_GROUP_REFRESH_COOLDOWN_MS = 5 * 60_000;
@@ -43,7 +43,7 @@ export type ReticulumGroupScoreSnapshot = {
   holdings: Record<string, number>;
   networkOffsetMs: number;
   slot: number;
-  version: 3;
+  version: 4;
 };
 
 const EMPTY_SNAPSHOT: ReticulumGroupScoreSnapshot = {
@@ -150,11 +150,6 @@ export const calculateReticulumGroupScore = (input: {
   };
 };
 
-const isPublicGroup = (group: any) =>
-  group?.isOpen === true ||
-  group?.groupType === 0 ||
-  group?.groupType === 'OPEN';
-
 const readCachedSnapshot = (): ReticulumGroupScoreSnapshot => {
   if (typeof window === 'undefined') return EMPTY_SNAPSHOT;
   try {
@@ -251,20 +246,21 @@ export const refreshReticulumGroupScores = async (
         : currentSnapshot.networkOffsetMs;
       const capturedAt = Date.now() + networkOffsetMs;
       const slot = Math.floor(capturedAt / GROUP_SCORE_SLOT_MS);
-      const publicGroups = balances.filter(isPublicGroup);
-      const privateGroups = balances.filter((g: any) => !isPublicGroup(g));
+      const discoveryGroups = balances.filter((group: any) => {
+        const groupId = Number(group?.groupId);
+        return Number.isInteger(groupId) && groupId > 0;
+      });
       const holdings = Object.fromEntries(
-        balances.flatMap((group: any) => {
-          const groupId = Number(group?.groupId);
-          if (!Number.isInteger(groupId) || groupId <= 0) return [];
-          return [[String(groupId), Math.max(0, Number(group?.balance) || 0)]];
-        })
+        discoveryGroups.map((group: any) => [
+          String(group.groupId),
+          Math.max(0, Number(group?.balance) || 0),
+        ])
       );
-      const publicGroupIds = publicGroups
-        .map((group: any) => Number(group?.groupId))
-        .filter((groupId: number) => Number.isInteger(groupId) && groupId > 0);
+      const discoveryGroupIds = discoveryGroups.map((group: any) =>
+        Number(group.groupId)
+      );
 
-      await window.reticulumChat?.setPublicGroupDirectory?.(publicGroupIds);
+      await window.reticulumChat?.setPublicGroupDirectory?.(discoveryGroupIds);
       const readActivity = async () => {
         if (!window.reticulumChat?.getPublicGroupActivitySnapshot) {
           throw new Error('Public group Activity snapshot is unavailable');
@@ -299,22 +295,21 @@ export const refreshReticulumGroupScores = async (
         ].map(Number)
       );
 
-      const publicIds = new Set(publicGroupIds.map(String));
-      const allGroupIds = new Set(balances.map((g: any) => String(g?.groupId)));
+      const discoveryIds = new Set(discoveryGroupIds.map(String));
       const preservingCurrentSlot = currentSnapshot.slot === slot;
       const nextGroups: Record<string, ReticulumGroupScoreBreakdown> = {};
       for (const [groupId, previous] of Object.entries(
         currentSnapshot.groups
       )) {
         if (
-          allGroupIds.has(groupId) &&
+          discoveryIds.has(groupId) &&
           capturedAt - Number(previous?.capturedAt || 0) <=
             GROUP_SCORE_MAX_STALE_MS
         ) {
           nextGroups[groupId] = previous;
         }
       }
-      for (const group of publicGroups) {
+      for (const group of discoveryGroups) {
         const groupId = Number(group?.groupId);
         if (!Number.isInteger(groupId) || groupId <= 0) continue;
         const groupKey = String(groupId);
@@ -346,43 +341,9 @@ export const refreshReticulumGroupScores = async (
         });
         if (breakdown) nextGroups[groupKey] = breakdown;
       }
-      // Private groups: calculate score without activity data
-      for (const group of privateGroups) {
-        const groupId = Number(group?.groupId);
-        if (!Number.isInteger(groupId) || groupId <= 0) continue;
-        const groupKey = String(groupId);
-        const previous = nextGroups[groupKey];
-        if (preservingCurrentSlot && previous) continue;
-        const activity: ReticulumGroupActivityMetrics = {
-          activeAuthors7d: 0,
-          confidence: 0,
-          messages24h: 0,
-          messages7d: 0,
-          observedAt: capturedAt,
-        };
-        const created = Number(
-          group?.created ?? group?.creationTimestamp ?? group?.createdAt
-        );
-        const memberCount = Math.max(0, Number(group?.memberCount) || 0);
-        const balance = Math.max(0, Number(group?.balance) || 0);
-        const breakdown = calculateReticulumGroupScore({
-          activity,
-          activityObserved: false,
-          balance,
-          capturedAt,
-          created,
-          groupId,
-          memberCount,
-        });
-        if (breakdown) nextGroups[groupKey] = breakdown;
-      }
-
-      const privateGroupIds = privateGroups
-        .map((group: any) => String(group?.groupId))
-        .filter((id: string) => id);
       const nextSnapshot: ReticulumGroupScoreSnapshot = {
         capturedAt,
-        evaluatedGroupIds: [...publicIds, ...privateGroupIds],
+        evaluatedGroupIds: [...discoveryIds],
         groups: nextGroups,
         holdings,
         networkOffsetMs,
@@ -436,20 +397,16 @@ export const startReticulumGroupScoreScheduler = () => {
 export const useReticulumGroupScoreSnapshot = () =>
   useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_SNAPSHOT);
 
-export const useReticulumGroupScore = (
-  groupId?: string | number,
-  isPublic = true
-) => {
+export const useReticulumGroupScore = (groupId?: string | number) => {
   const snapshot = useReticulumGroupScoreSnapshot();
   const normalizedGroupId = String(groupId ?? '').trim();
-  const score =
-    isPublic && normalizedGroupId
-      ? snapshot.groups[normalizedGroupId]
-      : undefined;
+  const score = normalizedGroupId
+    ? snapshot.groups[normalizedGroupId]
+    : undefined;
   useEffect(() => {
-    if (!isPublic || !normalizedGroupId || score) return;
+    if (!normalizedGroupId || score) return;
     void ensureReticulumGroupScore(normalizedGroupId);
-  }, [isPublic, normalizedGroupId, score]);
+  }, [normalizedGroupId, score]);
   if (
     !score ||
     currentNetworkTime() - score.capturedAt > GROUP_SCORE_MAX_STALE_MS
