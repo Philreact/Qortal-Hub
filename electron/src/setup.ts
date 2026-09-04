@@ -167,6 +167,7 @@ import {
   buildAudioSurfaceUrl,
   withAudioSurfaceIsolationHeaders,
 } from './audio-window-policy';
+import { withEmbeddedFrameWebRtcBlocked } from './embedded-frame-network-policy';
 import { ensureAudioSurfaceHttpsServer } from './audio-surface-https';
 import {
   buildDefaultAudioSurfaceBridgeStateLike,
@@ -1329,10 +1330,11 @@ export function setupContentSecurityPolicy(customScheme: string): void {
 
       // Determine if the request is cross-origin
       const isCrossOrigin = requestOrigin !== requestUrlOrigin;
+      const originalResponseHeaders = details.responseHeaders ?? {};
 
       // Check if the response already includes Access-Control-Allow-Origin
       const hasAccessControlAllowOrigin = Object.keys(
-        details.responseHeaders
+        originalResponseHeaders
       ).some(
         (header) => header.toLowerCase() === 'access-control-allow-origin'
       );
@@ -1341,14 +1343,17 @@ export function setupContentSecurityPolicy(customScheme: string): void {
       // so only our permissive CSP is applied and qapps (e.g. extract7z) can use eval.
       const cspHeaderLower = 'content-security-policy';
       const filtered = Object.fromEntries(
-        Object.entries(details.responseHeaders).filter(
+        Object.entries(originalResponseHeaders).filter(
           ([key]) => key.toLowerCase() !== cspHeaderLower
         )
       );
-      const responseHeaders: Record<string, string | string[]> = {
-        ...filtered,
-        'Content-Security-Policy': [csp],
-      };
+      const responseHeaders = withEmbeddedFrameWebRtcBlocked(
+        {
+          ...filtered,
+          'Content-Security-Policy': [csp],
+        },
+        { resourceType: details.resourceType }
+      );
 
       Object.assign(
         responseHeaders,

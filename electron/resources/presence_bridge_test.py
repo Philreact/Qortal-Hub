@@ -179,6 +179,7 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
 
     def test_close_sends_logical_control_without_closing_other_connections(self):
         writes = []
+        flushed = threading.Event()
 
         class Writer:
             def write(self, data):
@@ -186,6 +187,7 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
                 return len(data)
 
             def flush(self):
+                flushed.set()
                 return None
 
         entry = {
@@ -213,6 +215,7 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
                     "connectionId": "rns-one",
                 })
 
+            self.assertTrue(flushed.wait(0.5))
             self.assertEqual(entry["connections"], {"rns-two"})
             self.assertEqual(entry["next_message_id"], 42)
             self.assertEqual(len(writes), 1)
@@ -260,18 +263,103 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
         }
         self.bridge._qapp_rns_entries[entry["managerKey"]] = entry
         try:
+            teardown_called = threading.Event()
             with mock.patch.object(self.bridge, "emit_resp"), mock.patch.object(
                 self.bridge, "_qapp_rns_schedule_idle"
-            ):
+            ), mock.patch.object(
+                self.bridge,
+                "_qapp_rns_teardown_failed_close",
+                side_effect=lambda *_args: teardown_called.set(),
+            ) as teardown:
                 self.bridge.handle_qapp_rns_close("request-2", {
                     "managerKey": entry["managerKey"],
                     "connectionId": "rns-one",
                 })
 
-            self.assertEqual(entry["connections"], set())
-            entry["link"].teardown.assert_called_once_with()
+                self.assertEqual(entry["connections"], set())
+                self.assertTrue(teardown_called.wait(0.5))
+                teardown.assert_called_once_with(entry, entry["link"], "exception")
         finally:
             self.bridge._qapp_rns_entries.pop(entry["managerKey"], None)
+
+    def test_close_releases_lifecycle_lane_when_control_write_stalls(self):
+        write_started = threading.Event()
+        release_write = threading.Event()
+
+        def stalled_write(_entry, _frame):
+            write_started.set()
+            release_write.wait(1.0)
+            return True
+
+        entry = {
+            "managerKey": "logical-close-stalled-test",
+            "destination": "00" * 16,
+            "connections": {"rns-one"},
+            "established": True,
+            "writer": mock.Mock(),
+            "write_lock": threading.Lock(),
+            "last_used": 0,
+            "next_message_id": 61,
+            "keepalive_generation": 0,
+            "keepalive_timer": None,
+            "idle_generation": 0,
+            "idle_timer": None,
+            "link": mock.Mock(),
+        }
+        self.bridge._qapp_rns_entries[entry["managerKey"]] = entry
+        try:
+            teardown_called = threading.Event()
+            started_at = time.monotonic()
+            with mock.patch.object(
+                self.bridge, "_qapp_rns_write", side_effect=stalled_write
+            ), mock.patch.object(
+                self.bridge, "_QAPP_RNS_CLOSE_WRITE_TIMEOUT_SECONDS", 0.05
+            ), mock.patch.object(
+                self.bridge, "emit_resp"
+            ) as emit_resp, mock.patch.object(
+                self.bridge, "_qapp_rns_schedule_idle"
+            ), mock.patch.object(
+                self.bridge,
+                "_qapp_rns_teardown_failed_close",
+                side_effect=lambda *_args: teardown_called.set(),
+            ) as teardown:
+                self.bridge.handle_qapp_rns_close("request-stalled", {
+                    "managerKey": entry["managerKey"],
+                    "connectionId": "rns-one",
+                })
+                elapsed = time.monotonic() - started_at
+
+                self.assertLess(elapsed, 0.1)
+                self.assertEqual(entry["connections"], set())
+                emit_resp.assert_called_once_with(
+                    "request-stalled", True, payload={"state": "CLOSED"}
+                )
+                self.assertTrue(write_started.wait(0.5))
+                self.assertTrue(teardown_called.wait(0.5))
+                teardown.assert_called_once_with(
+                    entry,
+                    entry["link"],
+                    "send_timeout",
+                )
+        finally:
+            release_write.set()
+            self.bridge._qapp_rns_entries.pop(entry["managerKey"], None)
+
+    def test_failed_close_does_not_teardown_a_replacement_link(self):
+        stale_link = mock.Mock()
+        current_link = mock.Mock()
+        entry = {"link": current_link}
+
+        with mock.patch.object(
+            self.bridge, "_teardown_reticulum_link_bounded"
+        ) as teardown:
+            self.bridge._qapp_rns_teardown_failed_close(
+                entry,
+                stale_link,
+                "send_timeout",
+            )
+
+        teardown.assert_not_called()
 
     def test_rpc_response_callback_extracts_request_receipt_response(self):
         emitted = []

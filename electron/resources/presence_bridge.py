@@ -1137,6 +1137,9 @@ _CONTROL_PACKET_SEND_MAX_QUEUE_WAIT_SECONDS = 0.25
 _REALTIME_PACKET_SEND_WORKERS = 4
 _REALTIME_PACKET_SEND_MAX_PENDING = 128
 _REALTIME_PACKET_SEND_MAX_QUEUE_WAIT_SECONDS = 0.05
+_QAPP_CLOSE_WRITE_WORKERS = 4
+_QAPP_CLOSE_WRITE_MAX_PENDING = 64
+_QAPP_CLOSE_WRITE_MAX_QUEUE_WAIT_SECONDS = 0.25
 _control_packet_send_dispatcher = _BoundedKeyedSendDispatcher(
     "control-packet",
     _CONTROL_PACKET_SEND_WORKERS,
@@ -1148,6 +1151,15 @@ _realtime_packet_send_dispatcher = _BoundedKeyedSendDispatcher(
     _REALTIME_PACKET_SEND_WORKERS,
     _REALTIME_PACKET_SEND_MAX_PENDING,
     _REALTIME_PACKET_SEND_MAX_QUEUE_WAIT_SECONDS,
+)
+_qapp_close_write_dispatcher = _BoundedKeyedSendDispatcher(
+    "qapp-close",
+    _QAPP_CLOSE_WRITE_WORKERS,
+    _QAPP_CLOSE_WRITE_MAX_PENDING,
+    _QAPP_CLOSE_WRITE_MAX_QUEUE_WAIT_SECONDS,
+)
+_qapp_close_coordinator_slots = threading.BoundedSemaphore(
+    _QAPP_CLOSE_WRITE_MAX_PENDING
 )
 _rns_overlay_callback_pending_keys: set[str] = set()
 _rns_packet_dispatcher_missing_logged = False
@@ -2219,16 +2231,19 @@ def _start_scheduler_workers() -> None:
 def _start_packet_send_dispatchers() -> None:
     _control_packet_send_dispatcher.start()
     _realtime_packet_send_dispatcher.start()
+    _qapp_close_write_dispatcher.start()
     log(
         "[presence_bridge] target=reticulum-packet-send-dispatcher started "
         f"control_workers={_CONTROL_PACKET_SEND_WORKERS} "
-        f"realtime_workers={_REALTIME_PACKET_SEND_WORKERS}"
+        f"realtime_workers={_REALTIME_PACKET_SEND_WORKERS} "
+        f"qapp_close_workers={_QAPP_CLOSE_WRITE_WORKERS}"
     )
 
 
 def _stop_packet_send_dispatchers() -> None:
     _control_packet_send_dispatcher.stop()
     _realtime_packet_send_dispatcher.stop()
+    _qapp_close_write_dispatcher.stop()
 
 
 def _stop_scheduler_workers() -> None:
@@ -26788,6 +26803,10 @@ _QAPP_RNS_MAX_QUEUE = int(os.environ.get("QORTAL_QAPP_RNS_MAX_UNACKED", 64))
 _QAPP_RNS_MAX_QUEUE_BYTES = int(os.environ.get("QORTAL_QAPP_RNS_MAX_QUEUE_BYTES", 2 * 1024 * 1024))
 _QAPP_RNS_IDLE_SECONDS = float(os.environ.get("QORTAL_QAPP_RNS_IDLE_SECONDS", 300))
 _QAPP_RNS_ACK_TIMEOUT_SECONDS = float(os.environ.get("QORTAL_QAPP_RNS_ACK_TIMEOUT_SECONDS", 120))
+_QAPP_RNS_CLOSE_WRITE_TIMEOUT_SECONDS = max(
+    0.1,
+    float(os.environ.get("QORTAL_QAPP_RNS_CLOSE_WRITE_TIMEOUT_SECONDS", 10.0)),
+)
 _QAPP_RNS_KEEPALIVE_SECONDS = max(
     15.0,
     float(os.environ.get("QORTAL_QAPP_RNS_KEEPALIVE_SECONDS", 60)),
@@ -26824,6 +26843,70 @@ def _qapp_rns_write(entry: Dict[str, Any], frame: bytes) -> bool:
         writer.flush()
     entry["last_used"] = time.time()
     return True
+
+
+def _qapp_rns_teardown_failed_close(
+    entry: Dict[str, Any],
+    link: Any,
+    reason: str,
+) -> None:
+    if link is None:
+        return
+    with _state_lock:
+        if entry.get("link") is not link:
+            return
+    _teardown_reticulum_link_bounded(
+        link,
+        f"target=qapp-rns close_write_failed reason={reason}",
+    )
+
+
+def _qapp_rns_schedule_close_write(entry: Dict[str, Any], frame: bytes) -> None:
+    manager_key = str(entry.get("managerKey") or "unknown")
+    link = entry.get("link")
+    if link is None:
+        return
+    if not _qapp_close_coordinator_slots.acquire(blocking=False):
+        log(
+            "[presence_bridge] target=qapp-rns close_write_rejected "
+            f"manager={manager_key} reason=coordinator_full"
+        )
+        _qapp_rns_teardown_failed_close(entry, link, "coordinator_full")
+        return
+
+    def coordinate() -> None:
+        try:
+            status, result, error = _qapp_close_write_dispatcher.submit_and_wait(
+                manager_key,
+                _QAPP_RNS_CLOSE_WRITE_TIMEOUT_SECONDS,
+                lambda: _qapp_rns_write(entry, frame),
+            )
+            if status == "completed" and result is True and not error:
+                return
+            log(
+                "[presence_bridge] target=qapp-rns close_write_failed "
+                f"manager={manager_key} reason={status} "
+                f"timeout_ms={int(_QAPP_RNS_CLOSE_WRITE_TIMEOUT_SECONDS * 1000)}"
+                f"{f' err={error}' if error else ''}"
+            )
+            _qapp_rns_teardown_failed_close(entry, link, status)
+        finally:
+            _qapp_close_coordinator_slots.release()
+
+    thread = threading.Thread(
+        target=coordinate,
+        name=f"qapp-rns-close-{manager_key[-12:]}",
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception:
+        _qapp_close_coordinator_slots.release()
+        _qapp_rns_teardown_failed_close(
+            entry,
+            link,
+            "coordinator_start_failed",
+        )
 
 
 def _qapp_rns_emit_state(entry: Dict[str, Any], state: str, reason: str = "") -> None:
@@ -27265,10 +27348,6 @@ def handle_qapp_rns_close(req_id: str, payload: Dict[str, Any]) -> None:
                 "connectionId": connection_id,
             }, separators=(",", ":")).encode("utf-8")
             close_frame = _qapp_rns_frame(_QAPP_RNS_CONTROL, message_id, control)
-    try:
-        close_written = close_frame is None or _qapp_rns_write(entry, close_frame)
-    except Exception:
-        close_written = False
     with _state_lock:
         current = _qapp_rns_entries.get(manager_key)
         if current is entry and entry is not None:
@@ -27277,16 +27356,15 @@ def handle_qapp_rns_close(req_id: str, payload: Dict[str, Any]) -> None:
             if not entry["connections"]:
                 _qapp_rns_cancel_keepalive(entry)
             _qapp_rns_schedule_idle(entry)
-    if not close_written and entry is not None:
-        # If the stream cannot carry the logical CLOSE, closing the failed
-        # physical Link is the only way to guarantee backend cleanup.
-        link = entry.get("link")
-        if link is not None:
-            try:
-                link.teardown()
-            except Exception:
-                pass
-    emit_resp(req_id, True, payload={"state": "CLOSED"})
+    try:
+        emit_resp(req_id, True, payload={"state": "CLOSED"})
+    finally:
+        if close_frame is not None and entry is not None:
+            # Local ownership is already closed. Deliver the remote CLOSE in a
+            # bounded worker so a wedged Reticulum stream can never hold the
+            # lifecycle scheduler. Failure tears down only the same physical
+            # Link; a replacement Link created meanwhile is left untouched.
+            _qapp_rns_schedule_close_write(entry, close_frame)
 
 
 def handle_qapp_rns_request(req_id: str, payload: Dict[str, Any]) -> None:

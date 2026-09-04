@@ -75,8 +75,10 @@
     "category": "Network",
     "packageCategory": "Network",
     "desktop": {
-      "Name": "Qortal Hub",
-      "StartupWMClass": "qortal-hub"
+      "entry": {
+        "Name": "Qortal Hub",
+        "StartupWMClass": "qortal-hub"
+      }
     },
     "executableName": "qortal-hub",
     "icon": "assets/png"

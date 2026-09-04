@@ -92,9 +92,11 @@ automatically after ambiguous failure.
 
 Reconnect begins at 0.5 seconds, doubles with 0.8–1.2 jitter, and caps at 30
 seconds. Partial Buffer bytes are discarded. Complete unacknowledged DATA frames
-are resent in message-ID order from byte zero. Closing the last logical
-connection sends CLOSE before removing local ownership and prevents a pending
-reconnect timer from reopening the Link.
+are resent in message-ID order from byte zero. Closing removes local ownership
+immediately and queues the remote CLOSE on a bounded, per-backend worker. A
+failed or stalled CLOSE tears down that same physical Link, while a replacement
+Link created in the meantime is left untouched. Removing the last logical
+connection prevents a pending reconnect timer from reopening the Link.
 
 Transport IDs prevent duplicate delivery across reconnects. They do not prevent
 duplicate business operations: Q-Apps must include their own operation IDs for
