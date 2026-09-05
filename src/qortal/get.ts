@@ -47,6 +47,10 @@ import {
   uint8ArrayToObject,
 } from '../encryption/encryption.ts';
 import { showSaveFilePicker } from '../hooks/useQortalMessageListener.tsx';
+import {
+  codedQortalRequestError,
+  USER_DECLINED_REQUEST_CODE,
+} from './qortal-request-errors.ts';
 import { getPublishesFromAdminsAdminSpace } from '../components/Chat/AdminSpaceInner.tsx';
 import { extractComponents } from '../components/Chat/MessageDisplay.tsx';
 import {
@@ -5749,7 +5753,8 @@ export const sendCoin = async (data, isFromExtension) => {
       );
       return makePayment.res?.data;
     } else {
-      throw new Error(
+      throw codedQortalRequestError(
+        USER_DECLINED_REQUEST_CODE,
         i18n.t('question:message.generic.user_declined_request', {
           postProcess: 'capitalizeFirstChar',
         })

@@ -86,6 +86,7 @@ import {
   removeNotificationSubscriptions,
   clearRnsDestinationPermissionsByTabId,
 } from './get.ts';
+import { serializeQortalRequestError } from './qortal-request-errors.ts';
 import { triggerMemberGroupsFetch } from '../subscriptions/useInitializeMySubscriptions.ts';
 import { getData, storeData } from '../utils/chromeStorage.ts';
 import { executeEvent } from '../utils/events.ts';
@@ -1572,11 +1573,12 @@ function setupMessageListenerQortalRequest() {
             event.origin
           );
         } catch (error) {
+          const serializedError = serializeQortalRequestError(error);
           event.source.postMessage(
             {
               requestId: request.requestId,
               action: request.action,
-              error: error.message,
+              ...serializedError,
               type: 'backgroundMessageResponse',
             },
             event.origin

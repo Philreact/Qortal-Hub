@@ -21,6 +21,7 @@ import {
   dispatchQAppReticulumRequest,
   isQAppReticulumAction,
 } from '../qortal/qapp-reticulum-request';
+import { serializeQortalRequestError } from '../qortal/qortal-request-errors';
 
 export const saveFileInChunks = async (
   blob: Blob,
@@ -735,12 +736,18 @@ export const useQortalMessageListener = (
                   result: null,
                   error: {
                     error: response?.error,
+                    ...(typeof response?.code === 'string'
+                      ? { code: response.code }
+                      : {}),
                     message:
-                      typeof response?.error === 'string'
-                        ? response?.error
-                        : typeof response?.message === 'string'
-                          ? response?.message
-                          : 'An error has occurred',
+                      typeof response?.code === 'string' &&
+                      typeof response?.message === 'string'
+                        ? response?.message
+                        : typeof response?.error === 'string'
+                          ? response?.error
+                          : typeof response?.message === 'string'
+                            ? response?.message
+                            : 'An error has occurred',
                   },
                 });
               } else {
@@ -796,12 +803,18 @@ export const useQortalMessageListener = (
                 result: null,
                 error: {
                   error: response?.error,
+                  ...(typeof response?.code === 'string'
+                    ? { code: response.code }
+                    : {}),
                   message:
-                    typeof response?.error === 'string'
-                      ? response?.error
-                      : typeof response?.message === 'string'
-                        ? response?.message
-                        : 'An error has occurred',
+                    typeof response?.code === 'string' &&
+                    typeof response?.message === 'string'
+                      ? response?.message
+                      : typeof response?.error === 'string'
+                        ? response?.error
+                        : typeof response?.message === 'string'
+                          ? response?.message
+                          : 'An error has occurred',
                 },
               });
             } else {
@@ -813,14 +826,9 @@ export const useQortalMessageListener = (
           })
           .catch((error) => {
             console.error('Failed qortalRequest', error);
-            const requestError =
-              error?.code || error?.message || 'Request failed';
             eventPort.postMessage({
               result: null,
-              error: {
-                error: requestError,
-                message: requestError,
-              },
+              error: serializeQortalRequestError(error),
             });
           });
       };
