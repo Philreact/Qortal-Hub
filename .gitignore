@@ -10,6 +10,9 @@ lerna-debug.log*
 node_modules
 .emsdk
 native/libopus-fec-wasm/build
+electron/resources/private-transport/*/qortal-private-transport
+electron/resources/private-transport/*/qortal-private-transport.exe
+electron/tools/masque-relay/
 dist
 dist.zip
 dist-ssr

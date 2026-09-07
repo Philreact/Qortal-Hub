@@ -41,6 +41,14 @@ const bob: QAppReticulumOwner = {
 };
 
 describe('QAppReticulumManager', () => {
+  it('reports connection ownership without exposing its destination', async () => {
+    const manager = new QAppReticulumManager(new FakeTransport());
+    const { connectionId } = await manager.connect(alice, destination);
+    expect(manager.connectionOwnership(alice, connectionId)).toBe('owned');
+    expect(manager.connectionOwnership(bob, connectionId)).toBe('not-owned');
+    expect(manager.connectionOwnership(alice, 'missing')).toBe('missing');
+  });
+
   it('uses the same isolated manager key for RPC and realtime', async () => {
     const transport = new FakeTransport();
     const manager = new QAppReticulumManager(transport);
@@ -49,6 +57,28 @@ describe('QAppReticulumManager', () => {
     const connectPayload = transport.invoke.mock.calls[0][1];
     const requestPayload = transport.invoke.mock.calls[1][1];
     expect(connectPayload.managerKey).toBe(requestPayload.managerKey);
+  });
+
+  it('binds reserved main-process RPCs to an owned logical connection', async () => {
+    const transport = new FakeTransport();
+    const manager = new QAppReticulumManager(transport);
+    const { connectionId } = await manager.connect(alice, destination);
+    await manager.request(alice, {
+      destination,
+      path: '/qortal/private-transport/bootstrap/v1',
+      payload: {},
+      connectionId,
+    });
+    expect(transport.invoke.mock.calls[1][1]).toMatchObject({
+      logicalConnectionId: connectionId,
+    });
+    await expect(
+      manager.request(bob, {
+        destination,
+        path: '/qortal/private-transport/bootstrap/v1',
+        connectionId,
+      })
+    ).rejects.toMatchObject({ code: 'RNS_INVALID_CONNECTION' });
   });
 
   it('encodes the frozen RPC request payload and decodes its JSON response', async () => {

@@ -21,6 +21,11 @@ import {
   dispatchQAppReticulumRequest,
   isQAppReticulumAction,
 } from '../qortal/qapp-reticulum-request';
+import {
+  dispatchQAppPrivateChannelRequest,
+  isQAppPrivateChannelAction,
+} from '../qortal/qapp-private-channel-request';
+import { normalizeQappIdentityContext } from '../qortal/qapp-identity';
 import { serializeQortalRequestError } from '../qortal/qortal-request-errors';
 
 export const saveFileInChunks = async (
@@ -187,6 +192,10 @@ export const listOfAllQortalRequests = [
   'RNS_CONNECT',
   'RNS_REQUEST',
   'RNS_SEND',
+  'PRIVATE_CHANNEL_CLOSE',
+  'PRIVATE_CHANNEL_OPEN',
+  'PRIVATE_CHANNEL_SEND',
+  'PRIVATE_CHANNEL_STATUS',
   'ADD_FOREIGN_SERVER',
   'ADD_GROUP_ADMIN',
   'ADD_LIST_ITEMS',
@@ -299,6 +308,10 @@ export const UIQortalRequests = [
   'RNS_CONNECT',
   'RNS_REQUEST',
   'RNS_SEND',
+  'PRIVATE_CHANNEL_CLOSE',
+  'PRIVATE_CHANNEL_OPEN',
+  'PRIVATE_CHANNEL_SEND',
+  'PRIVATE_CHANNEL_STATUS',
   'ADD_FOREIGN_SERVER',
   'ADD_GROUP_ADMIN',
   'ADD_LIST_ITEMS',
@@ -769,24 +782,27 @@ export const useQortalMessageListener = (
           return;
         }
 
+        const requestContext = {
+          appName,
+          appService,
+          isFromExtension: message.isExtension,
+          tabId,
+        };
         const requestPromise = isQAppReticulumAction(message?.action)
-          ? dispatchQAppReticulumRequest(message.payload, {
-              appName,
-              appService,
-              isFromExtension: message.isExtension,
-              tabId,
-            })
-          : window.sendMessage(
-              message.action,
-              message.payload,
-              timeout,
-              message.isExtension,
-              {
-                name: appName,
-                service: appService,
-                tabId,
-              }
-            );
+          ? dispatchQAppReticulumRequest(message.payload, requestContext)
+          : isQAppPrivateChannelAction(message?.action)
+            ? dispatchQAppPrivateChannelRequest(message.payload, requestContext)
+            : window.sendMessage(
+                message.action,
+                message.payload,
+                timeout,
+                message.isExtension,
+                {
+                  name: appName,
+                  service: appService,
+                  tabId,
+                }
+              );
 
         // Store the promise for deduplication
         if (isDeduplicable) {
@@ -983,10 +999,19 @@ export const useQortalMessageListener = (
     const api = window.electronAPI;
     const iframe = iframeRef.current;
     if (!api || !iframe || tabId == null || !appName) return;
+    let identity;
+    try {
+      identity = normalizeQappIdentityContext({
+        name: appName,
+        service: appService,
+      });
+    } catch {
+      return;
+    }
     const owner = {
       tabId: String(tabId),
-      name: String(appName),
-      service: String(appService ?? ''),
+      name: identity.name,
+      service: identity.service,
     };
     const expectedOwnerKey = `${owner.tabId}\u0000${owner.service}\u0000${owner.name}`;
     const unsubscribe = api.onQAppReticulumEvent?.((payload) => {
@@ -1010,18 +1035,50 @@ export const useQortalMessageListener = (
         targetOrigin
       );
     });
+    const unsubscribePrivateChannel = api.onPrivateChannelEvent?.((payload) => {
+      if (payload?.ownerKey !== expectedOwnerKey || !iframe.contentWindow)
+        return;
+      let targetOrigin: string;
+      try {
+        targetOrigin = new URL(iframe.src).origin;
+      } catch {
+        return;
+      }
+      const eventPayload =
+        payload.action === 'PRIVATE_CHANNEL_MESSAGE'
+          ? {
+              lane: payload.lane,
+              messageId: payload.messageId,
+              data: payload.data,
+            }
+          : payload.action === 'PRIVATE_CHANNEL_ERROR'
+            ? { code: payload.code, message: payload.message }
+            : { state: payload.state };
+      iframe.contentWindow.postMessage(
+        {
+          action: payload.action,
+          channelId: payload.channelId,
+          ...eventPayload,
+          requestedHandler: 'UI',
+        },
+        targetOrigin
+      );
+    });
     const handleLoad = () => {
       if (!hasLoadedFrameRef.current) {
         hasLoadedFrameRef.current = true;
         return;
       }
       void api.qappReticulumCleanupOwner?.(owner);
+      void api.privateChannelCleanupOwner?.(owner);
     };
     iframe.addEventListener('load', handleLoad);
     return () => {
       unsubscribe?.();
+      unsubscribePrivateChannel?.();
       iframe.removeEventListener('load', handleLoad);
       void api.qappReticulumCleanupOwner?.(owner);
+      void api.privateChannelCleanupOwner?.(owner);
     };
   }, [appName, appService, iframeRef, tabId]);
 

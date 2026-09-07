@@ -137,6 +137,14 @@ import {
   type QAppReticulumNativeEvent,
   type QAppReticulumOwner,
 } from './qapp-reticulum-manager';
+import {
+  PrivateChannelError,
+  PrivateChannelManager,
+} from './private-channel-manager';
+import {
+  getExperimentalPrivateTransportFactory,
+  shutdownPrivateTransportSidecar,
+} from './private-transport-runtime';
 import { attachReticulumStatusBridgeEvents } from './reticulum-daemon';
 import {
   startReticulumMeshCoordinator,
@@ -2833,6 +2841,9 @@ export function stopReticulumManagers(): void {
   stopReticulumChatManager();
   reticulumChatListenersAttached = false;
   stopPresenceManager();
+  privateChannelManager?.destroy();
+  privateChannelManager = null;
+  void shutdownPrivateTransportSidecar();
   qAppReticulumManager?.destroy();
   qAppReticulumManager = null;
   shutdownReticulumResourceStore();
@@ -2841,6 +2852,7 @@ export function stopReticulumManagers(): void {
 }
 
 let qAppReticulumManager: QAppReticulumManager | null = null;
+let privateChannelManager: PrivateChannelManager | null = null;
 let qAppReticulumBridge: ReturnType<typeof getReticulumBridge> = null;
 const qAppReticulumNativeListeners = new Set<
   (event: QAppReticulumNativeEvent) => void
@@ -2871,6 +2883,23 @@ function getQAppReticulumManager(): QAppReticulumManager {
     if (!win.isDestroyed()) win.webContents.send('qappReticulum:event', event);
   });
   return qAppReticulumManager;
+}
+
+function getPrivateChannelManager(): PrivateChannelManager {
+  if (privateChannelManager) return privateChannelManager;
+  privateChannelManager = new PrivateChannelManager(
+    (owner, connectionId) =>
+      getQAppReticulumManager().connectionOwnership(owner, connectionId),
+    getExperimentalPrivateTransportFactory(
+      getQAppReticulumManager(),
+      () => getReticulumBridge()
+    )
+  );
+  privateChannelManager.on('event', (event) => {
+    const win = myCapacitorApp.getMainWindow();
+    if (!win.isDestroyed()) win.webContents.send('privateChannel:event', event);
+  });
+  return privateChannelManager;
 }
 
 function validateQAppReticulumIpcSender(
@@ -2907,6 +2936,7 @@ ipcMain.handle(
   'qappReticulum:close',
   async (event, owner: QAppReticulumOwner, connectionId: string) => {
     validateQAppReticulumIpcSender(event);
+    await privateChannelManager?.cleanupRnsConnection(owner, connectionId);
     await getQAppReticulumManager().close(owner, connectionId);
     return true;
   }
@@ -2915,8 +2945,94 @@ ipcMain.handle(
   'qappReticulum:cleanupOwner',
   async (event, owner: QAppReticulumOwner) => {
     validateQAppReticulumIpcSender(event);
+    await privateChannelManager?.cleanupOwner(owner);
     await getQAppReticulumManager().cleanupOwner(owner);
     return true;
+  }
+);
+
+function validatePrivateChannelIpcSender(
+  event: Electron.IpcMainInvokeEvent
+): void {
+  const win = myCapacitorApp.getMainWindow();
+  if (win.isDestroyed() || event.sender.id !== win.webContents.id) {
+    throw new Error('PERMISSION_DENIED');
+  }
+}
+
+async function privateChannelIpcResult<T>(
+  operation: () => Promise<T> | T
+): Promise<
+  | { ok: true; value: T }
+  | { ok: false; error: { code: string; message: string } }
+> {
+  try {
+    return { ok: true, value: await operation() };
+  } catch (error) {
+    const code =
+      error instanceof PrivateChannelError
+        ? error.code
+        : 'PRIVATE_CHANNEL_ERROR';
+    return { ok: false, error: { code, message: code } };
+  }
+}
+
+ipcMain.handle(
+  'privateChannel:open',
+  async (
+    event,
+    owner: QAppReticulumOwner,
+    rnsConnectionId: unknown,
+    purpose: unknown
+  ) => {
+    validatePrivateChannelIpcSender(event);
+    return privateChannelIpcResult(() =>
+      getPrivateChannelManager().open(owner, rnsConnectionId, purpose)
+    );
+  }
+);
+ipcMain.handle(
+  'privateChannel:send',
+  async (
+    event,
+    owner: QAppReticulumOwner,
+    channelId: unknown,
+    lane: unknown,
+    messageId: unknown,
+    data: unknown
+  ) => {
+    validatePrivateChannelIpcSender(event);
+    return privateChannelIpcResult(() =>
+      getPrivateChannelManager().send(owner, channelId, lane, messageId, data)
+    );
+  }
+);
+ipcMain.handle(
+  'privateChannel:status',
+  (event, owner: QAppReticulumOwner, channelId: unknown) => {
+    validatePrivateChannelIpcSender(event);
+    return privateChannelIpcResult(() =>
+      getPrivateChannelManager().status(owner, channelId)
+    );
+  }
+);
+ipcMain.handle(
+  'privateChannel:close',
+  async (event, owner: QAppReticulumOwner, channelId: unknown) => {
+    validatePrivateChannelIpcSender(event);
+    return privateChannelIpcResult(() =>
+      getPrivateChannelManager().close(owner, channelId)
+    );
+  }
+);
+ipcMain.handle(
+  'privateChannel:cleanupOwner',
+  async (event, owner: QAppReticulumOwner) => {
+    validatePrivateChannelIpcSender(event);
+    return privateChannelIpcResult(async () => {
+      await privateChannelManager?.cleanupOwner(owner);
+      return true;
+    });
   }
 );
 

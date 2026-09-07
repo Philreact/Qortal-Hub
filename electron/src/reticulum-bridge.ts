@@ -201,6 +201,7 @@ type BridgeCmdFrame = {
     | 'overlay_note_candidate_failure'
     | 'configure_community_stun'
     | 'get_community_stun_endpoints'
+    | 'get_community_masque_relays'
     | 'configure_developer_log_filter'
     | 'stop'
     | 'send_call'
@@ -865,6 +866,17 @@ type BridgeEventFrame =
     }
   | {
       type: 'event';
+      event: 'community_masque_relay';
+      payload?: {
+        host?: string;
+        port?: number;
+        serverName?: string;
+        certSha256?: string;
+        expiresAt?: number;
+      };
+    }
+  | {
+      type: 'event';
       event: 'error';
       payload?: {
         code?: string;
@@ -1162,6 +1174,7 @@ function commandPriorityForAction(
     case 'overlay_note_candidate_failure':
     case 'configure_community_stun':
     case 'get_community_stun_endpoints':
+    case 'get_community_masque_relays':
     case 'configure_developer_log_filter':
       return 'low';
     default:
@@ -3373,6 +3386,37 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     );
   }
 
+  async getCommunityMasqueRelays(): Promise<
+    Array<{
+      host: string;
+      port: number;
+      serverName: string;
+      certSha256: string;
+      expiresAt: number;
+    }>
+  > {
+    await this.start();
+    if (this.state !== 'ready') return [];
+    const resp = await this.sendCommand('get_community_masque_relays', {});
+    if (!resp.ok || !Array.isArray(resp.payload?.relays)) return [];
+    return resp.payload.relays.filter(
+      (value): value is {
+        host: string;
+        port: number;
+        serverName: string;
+        certSha256: string;
+        expiresAt: number;
+      } =>
+        value != null &&
+        typeof value === 'object' &&
+        typeof (value as { host?: unknown }).host === 'string' &&
+        typeof (value as { port?: unknown }).port === 'number' &&
+        typeof (value as { serverName?: unknown }).serverName === 'string' &&
+        typeof (value as { certSha256?: unknown }).certSha256 === 'string' &&
+        typeof (value as { expiresAt?: unknown }).expiresAt === 'number'
+    );
+  }
+
   async setDeveloperLogsFiltered(filtered: boolean): Promise<boolean> {
     const changed = this.developerLogsFiltered !== filtered;
     this.developerLogsFiltered = filtered;
@@ -5407,6 +5451,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
       case 'community_stun_endpoint': {
         this.emitBridgeFrameEvent(
           'community-stun-endpoint',
+          frame.payload ?? {}
+        );
+        return;
+      }
+      case 'community_masque_relay': {
+        this.emitBridgeFrameEvent(
+          'community-masque-relay',
           frame.payload ?? {}
         );
         return;

@@ -1,0 +1,460 @@
+package protocol
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"strings"
+	"sync"
+	"time"
+
+	"qortal.org/qortal-hub/private-transport/internal/innerquic"
+	masqueclient "qortal.org/qortal-hub/private-transport/internal/masque"
+)
+
+const (
+	Version                 = 2
+	SidecarVersion          = "0.2.0"
+	MaxControlMessageBytes  = 64 * 1024
+	MaxBinaryMessageBytes   = innerquic.MaxReliablePayloadBytes
+	maxRememberedRequestIDs = 4096
+)
+
+type Request struct {
+	Version      int             `json:"version"`
+	RequestID    string          `json:"requestId"`
+	Operation    string          `json:"operation"`
+	Params       json.RawMessage `json:"params,omitempty"`
+	BinaryLength int             `json:"binaryLength,omitempty"`
+}
+type Error struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+type Response struct {
+	Version   int         `json:"version"`
+	Type      string      `json:"type"`
+	RequestID string      `json:"requestId"`
+	OK        bool        `json:"ok"`
+	Result    interface{} `json:"result,omitempty"`
+	Error     *Error      `json:"error,omitempty"`
+}
+type Event struct {
+	Version      int    `json:"version"`
+	Type         string `json:"type"`
+	Event        string `json:"event"`
+	SessionID    string `json:"sessionId"`
+	MessageID    string `json:"messageId,omitempty"`
+	Code         string `json:"code,omitempty"`
+	BinaryLength int    `json:"binaryLength,omitempty"`
+}
+
+type Server struct {
+	mu       sync.Mutex
+	tunnels  map[string]*masqueclient.Tunnel
+	sessions map[string]*innerquic.Session
+	seen     map[string]struct{}
+	seenIDs  []string
+	writeMu  sync.Mutex
+	emit     func(Event, []byte)
+}
+
+func NewServer() *Server {
+	return &Server{tunnels: map[string]*masqueclient.Tunnel{}, sessions: map[string]*innerquic.Session{}, seen: map[string]struct{}{}}
+}
+
+func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) error {
+	reader := bufio.NewReaderSize(input, 4096)
+	s.emit = func(event Event, binary []byte) { s.write(output, event, binary) }
+	defer s.Close()
+	for {
+		line, err := readControlLine(reader)
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			s.write(output, failure("", "CONTROL_MESSAGE_TOO_LARGE", "control message exceeds limit"), nil)
+			return nil
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var req Request
+		if json.Unmarshal(line, &req) != nil {
+			s.write(output, failure("", "MALFORMED_JSON", "invalid JSON request"), nil)
+			continue
+		}
+		if req.BinaryLength < 0 || req.BinaryLength > MaxBinaryMessageBytes {
+			s.write(output, failure(req.RequestID, "BINARY_FRAME_TOO_LARGE", "binary frame exceeds limit"), nil)
+			return nil
+		}
+		binary := make([]byte, req.BinaryLength)
+		if _, err := io.ReadFull(reader, binary); err != nil {
+			s.write(output, failure(req.RequestID, "MALFORMED_BINARY_FRAME", "truncated binary frame"), nil)
+			return nil
+		}
+		response, shutdown := s.handleRequest(ctx, req, binary)
+		s.write(output, response, nil)
+		if shutdown {
+			return nil
+		}
+	}
+}
+
+func readControlLine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		part, prefix, err := reader.ReadLine()
+		if err != nil {
+			return nil, err
+		}
+		if len(line)+len(part) > MaxControlMessageBytes {
+			return nil, errors.New("control too large")
+		}
+		line = append(line, part...)
+		if !prefix {
+			return line, nil
+		}
+	}
+}
+func (s *Server) write(output io.Writer, value interface{}, binary []byte) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	if writeAll(output, append(encoded, '\n')) != nil {
+		return
+	}
+	if len(binary) > 0 {
+		_ = writeAll(output, binary)
+	}
+}
+
+func writeAll(output io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := output.Write(data)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	return nil
+}
+
+func (s *Server) Handle(ctx context.Context, line []byte) (Response, bool) {
+	var req Request
+	if json.Unmarshal(line, &req) != nil {
+		return failure("", "MALFORMED_JSON", "invalid JSON request"), false
+	}
+	return s.handleRequest(ctx, req, nil)
+}
+
+func (s *Server) handleRequest(ctx context.Context, req Request, binary []byte) (Response, bool) {
+	if req.RequestID == "" {
+		return failure("", "MISSING_REQUEST_ID", "requestId is required"), false
+	}
+	if req.Version != Version {
+		return failure(req.RequestID, "UNSUPPORTED_VERSION", "unsupported protocol version"), false
+	}
+	if s.rememberRequestID(req.RequestID) {
+		return failure(req.RequestID, "DUPLICATE_REQUEST_ID", "requestId was already used"), false
+	}
+	switch req.Operation {
+	case "health":
+		return success(req.RequestID, map[string]interface{}{"service": "qortal-private-transport", "sidecarVersion": SidecarVersion, "protocolVersion": Version, "innerAlpn": innerquic.ALPN}), false
+	case "openMasqueTunnel":
+		return s.openTunnel(ctx, req), false
+	case "sendDatagram":
+		return s.sendTunnel(req), false
+	case "receiveDatagram":
+		return s.receiveTunnel(req), false
+	case "closeTunnel":
+		return s.closeTunnel(req), false
+	case "openPrivateSession":
+		return s.openPrivateSession(ctx, req), false
+	case "sendPrivateReliable":
+		return s.sendPrivate(req, binary, true), false
+	case "sendPrivateDatagram":
+		return s.sendPrivate(req, binary, false), false
+	case "sessionMetrics":
+		return s.sessionMetrics(req), false
+	case "closePrivateSession":
+		return s.closePrivateSession(req), false
+	case "shutdown":
+		return success(req.RequestID, map[string]bool{"shuttingDown": true}), true
+	default:
+		return failure(req.RequestID, "UNKNOWN_OPERATION", "unsupported operation"), false
+	}
+}
+
+type privateOpenParams struct {
+	RelayAddress      string `json:"relayAddress"`
+	RelayServerName   string `json:"relayServerName"`
+	RelayCertSHA256   string `json:"relayCertSha256"`
+	BackendAddress    string `json:"backendAddress"`
+	BackendServerName string `json:"backendServerName"`
+	BackendCertSHA256 string `json:"backendCertSha256"`
+	LogicalSessionID  string `json:"logicalSessionId"`
+	AttachToken       string `json:"attachToken"`
+	Nonce             string `json:"nonce"`
+	Purpose           string `json:"purpose"`
+	OwnerBindingHash  string `json:"ownerBindingHash"`
+	TimeoutMS         int    `json:"timeoutMs"`
+}
+
+func (s *Server) openPrivateSession(ctx context.Context, req Request) Response {
+	var p privateOpenParams
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	sessionID, err := randomID("session-")
+	if err != nil {
+		return failure(req.RequestID, "INTERNAL_ERROR", "failed to allocate session ID")
+	}
+	session, err := innerquic.Open(ctx, innerquic.Config{Relay: masqueclient.Config{RelayAddress: p.RelayAddress, RelayServerName: p.RelayServerName, RelayCertSHA256: p.RelayCertSHA256, TargetAddress: p.BackendAddress, Timeout: duration(p.TimeoutMS)}, BackendServerName: p.BackendServerName, BackendCertSHA256: p.BackendCertSHA256, LogicalSessionID: p.LogicalSessionID, AttachToken: p.AttachToken, Nonce: p.Nonce, Purpose: p.Purpose, OwnerBindingHash: p.OwnerBindingHash, Timeout: duration(p.TimeoutMS)}, func(e innerquic.Event) { s.emitInner(sessionID, e) })
+	if err != nil {
+		return failure(req.RequestID, innerErrorCode(err), "private session establishment failed")
+	}
+	s.mu.Lock()
+	s.sessions[sessionID] = session
+	s.mu.Unlock()
+	innerID, _ := randomID("inner-")
+	return success(req.RequestID, map[string]interface{}{"sessionId": sessionID, "innerQuicConnectionId": innerID, "logicalSessionId": p.LogicalSessionID, "transportGeneration": 1})
+}
+func innerErrorCode(err error) string {
+	text := err.Error()
+	for _, code := range []string{"ATTACH_TOKEN_REJECTED", "DATAGRAM_UNSUPPORTED", "SESSION_ATTACH_FAILED", "MASQUE_TUNNEL_FAILED"} {
+		if strings.Contains(text, code) {
+			return code
+		}
+	}
+	if strings.Contains(text, "certificate") {
+		return "BACKEND_IDENTITY_MISMATCH"
+	}
+	if strings.Contains(text, "INNER_QUIC_FAILED") {
+		return "INNER_QUIC_FAILED"
+	}
+	return "INNER_QUIC_FAILED"
+}
+func (s *Server) emitInner(sessionID string, e innerquic.Event) {
+	if s.emit == nil {
+		return
+	}
+	s.emit(Event{Version: Version, Type: "event", Event: e.Kind, SessionID: sessionID, MessageID: e.MessageID, Code: e.Code, BinaryLength: len(e.Data)}, e.Data)
+}
+func (s *Server) sendPrivate(req Request, binary []byte, reliable bool) Response {
+	var p struct {
+		SessionID string `json:"sessionId"`
+		MessageID string `json:"messageId"`
+	}
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	if len(binary) == 0 {
+		return failure(req.RequestID, "INVALID_BINARY_FRAME", "binary payload required")
+	}
+	session := s.getSession(p.SessionID)
+	if session == nil {
+		return failure(req.RequestID, "TRANSPORT_CLOSED", "session does not exist")
+	}
+	var err error
+	if reliable {
+		err = session.SendReliable(p.MessageID, binary)
+	} else {
+		err = session.SendDatagram(p.MessageID, binary)
+	}
+	if err != nil {
+		code := "TRANSPORT_SEND_FAILED"
+		if strings.Contains(err.Error(), "large") || strings.Contains(err.Error(), "invalid") {
+			code = "FRAME_TOO_LARGE"
+		}
+		return failure(req.RequestID, code, "transport send failed")
+	}
+	return success(req.RequestID, map[string]interface{}{"accepted": true, "bytesSent": len(binary)})
+}
+func (s *Server) sessionMetrics(req Request) Response {
+	var p struct {
+		SessionID string `json:"sessionId"`
+	}
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	session := s.getSession(p.SessionID)
+	if session == nil {
+		return failure(req.RequestID, "TRANSPORT_CLOSED", "session does not exist")
+	}
+	return success(req.RequestID, session.Metrics())
+}
+func (s *Server) closePrivateSession(req Request) Response {
+	var p struct {
+		SessionID string `json:"sessionId"`
+	}
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	s.mu.Lock()
+	session := s.sessions[p.SessionID]
+	delete(s.sessions, p.SessionID)
+	s.mu.Unlock()
+	if session == nil {
+		return failure(req.RequestID, "TRANSPORT_CLOSED", "session does not exist")
+	}
+	_ = session.Close()
+	return success(req.RequestID, map[string]bool{"closed": true})
+}
+func (s *Server) getSession(id string) *innerquic.Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessions[id]
+}
+
+// Step 2 tunnel operations remain for regression tests.
+func (s *Server) openTunnel(ctx context.Context, req Request) Response {
+	var p struct {
+		RelayAddress    string `json:"relayAddress"`
+		RelayServerName string `json:"relayServerName"`
+		RelayCertSHA256 string `json:"relayCertSha256"`
+		TargetAddress   string `json:"targetAddress"`
+		TimeoutMS       int    `json:"timeoutMs"`
+	}
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	t, err := masqueclient.Open(ctx, masqueclient.Config{RelayAddress: p.RelayAddress, RelayServerName: p.RelayServerName, RelayCertSHA256: p.RelayCertSHA256, TargetAddress: p.TargetAddress, Timeout: duration(p.TimeoutMS)})
+	if err != nil {
+		return failure(req.RequestID, "MASQUE_OPEN_FAILED", "failed to open authenticated MASQUE tunnel")
+	}
+	id, _ := randomID("tunnel-")
+	s.mu.Lock()
+	s.tunnels[id] = t
+	s.mu.Unlock()
+	return success(req.RequestID, map[string]string{"tunnelId": id})
+}
+func (s *Server) sendTunnel(req Request) Response {
+	var p struct {
+		TunnelID   string `json:"tunnelId"`
+		DataBase64 string `json:"dataBase64"`
+	}
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	data, err := base64.StdEncoding.DecodeString(p.DataBase64)
+	if err != nil || len(data) == 0 || len(data) > masqueclient.MaxDatagramBytes {
+		return failure(req.RequestID, "INVALID_DATAGRAM", "invalid or oversized datagram")
+	}
+	t := s.getTunnel(p.TunnelID)
+	if t == nil {
+		return failure(req.RequestID, "UNKNOWN_TUNNEL", "tunnel does not exist")
+	}
+	if t.Send(data) != nil {
+		return failure(req.RequestID, "DATAGRAM_SEND_FAILED", "failed to send datagram")
+	}
+	return success(req.RequestID, map[string]int{"bytesSent": len(data)})
+}
+func (s *Server) receiveTunnel(req Request) Response {
+	var p struct {
+		TunnelID  string `json:"tunnelId"`
+		TimeoutMS int    `json:"timeoutMs"`
+	}
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	t := s.getTunnel(p.TunnelID)
+	if t == nil {
+		return failure(req.RequestID, "UNKNOWN_TUNNEL", "tunnel does not exist")
+	}
+	data, err := t.Receive(duration(p.TimeoutMS))
+	if err != nil {
+		return failure(req.RequestID, "DATAGRAM_RECEIVE_FAILED", "failed to receive datagram")
+	}
+	return success(req.RequestID, map[string]string{"dataBase64": base64.StdEncoding.EncodeToString(data)})
+}
+func (s *Server) closeTunnel(req Request) Response {
+	var p struct {
+		TunnelID string `json:"tunnelId"`
+	}
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	s.mu.Lock()
+	t := s.tunnels[p.TunnelID]
+	delete(s.tunnels, p.TunnelID)
+	s.mu.Unlock()
+	if t == nil {
+		return failure(req.RequestID, "UNKNOWN_TUNNEL", "tunnel does not exist")
+	}
+	_ = t.Close()
+	return success(req.RequestID, map[string]bool{"closed": true})
+}
+func (s *Server) getTunnel(id string) *masqueclient.Tunnel {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tunnels[id]
+}
+func (s *Server) Close() {
+	s.mu.Lock()
+	ts := s.tunnels
+	ss := s.sessions
+	s.tunnels = map[string]*masqueclient.Tunnel{}
+	s.sessions = map[string]*innerquic.Session{}
+	s.mu.Unlock()
+	for _, x := range ss {
+		_ = x.Close()
+	}
+	for _, x := range ts {
+		_ = x.Close()
+	}
+}
+func (s *Server) rememberRequestID(id string) bool {
+	if _, ok := s.seen[id]; ok {
+		return true
+	}
+	if len(s.seenIDs) == maxRememberedRequestIDs {
+		delete(s.seen, s.seenIDs[0])
+		s.seenIDs = s.seenIDs[1:]
+	}
+	s.seen[id] = struct{}{}
+	s.seenIDs = append(s.seenIDs, id)
+	return false
+}
+func decodeParams(raw json.RawMessage, target interface{}) error {
+	if len(raw) == 0 {
+		return errors.New("params required")
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.DisallowUnknownFields()
+	if d.Decode(target) != nil {
+		return errors.New("invalid params")
+	}
+	return nil
+}
+func duration(ms int) time.Duration {
+	if ms < 1 || ms > 30_000 {
+		return 8 * time.Second
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+func randomID(prefix string) (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return prefix + hex.EncodeToString(b), nil
+}
+func success(id string, result interface{}) Response {
+	return Response{Version: Version, Type: "response", RequestID: id, OK: true, Result: result}
+}
+func failure(id, code, message string) Response {
+	return Response{Version: Version, Type: "response", RequestID: id, OK: false, Error: &Error{Code: code, Message: message}}
+}

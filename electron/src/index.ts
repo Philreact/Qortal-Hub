@@ -47,6 +47,7 @@ import {
   setLastP2POptions,
   startDecentralizedStunAfterP2P,
 } from './setup';
+import { shutdownPrivateTransportSidecar } from './private-transport-runtime';
 import {
   startP2PNetwork,
   DEFAULT_P2P_PORT,
@@ -289,6 +290,11 @@ function performAppShutdown(reason: string): Promise<void> {
       stopReticulumManagers();
     } catch (error) {
       loggerError('[Reticulum] Manager shutdown failed:', error);
+    }
+    try {
+      await shutdownPrivateTransportSidecar();
+    } catch (error) {
+      loggerError('[PrivateTransport] Sidecar shutdown failed:', error);
     }
     try {
       // Do not let Electron disappear after merely sending SIGTERM. Waiting

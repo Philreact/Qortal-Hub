@@ -361,6 +361,22 @@ declare global {
       ) => Promise<boolean>;
       qappReticulumCleanupOwner?: (owner: any) => Promise<boolean>;
       onQAppReticulumEvent?: (callback: (payload: any) => void) => () => void;
+      privateChannelOpen?: (
+        owner: any,
+        rnsConnectionId: unknown,
+        purpose: unknown
+      ) => Promise<any>;
+      privateChannelSend?: (
+        owner: any,
+        channelId: unknown,
+        lane: unknown,
+        messageId: unknown,
+        data: unknown
+      ) => Promise<any>;
+      privateChannelStatus?: (owner: any, channelId: unknown) => Promise<any>;
+      privateChannelClose?: (owner: any, channelId: unknown) => Promise<any>;
+      privateChannelCleanupOwner?: (owner: any) => Promise<boolean>;
+      onPrivateChannelEvent?: (callback: (payload: any) => void) => () => void;
       /** Hidden audio-surface: proxy signing to the main shell (wallet key in-memory). */
       gcallProxySignPresenceMessage?: (
         payload: Record<string, unknown>

@@ -414,6 +414,7 @@ export const VALID_SESSION_PERMISSIONS = [
   'REENCRYPT_GROUP_KEYS',
   'START_CROSSCHAIN_SERVER',
   'NOTIFICATION_PERMISSION',
+  'PRIVATE_DATA_CHANNEL',
 ];
 
 // Permissions automatically granted for the same Q-App tab session when

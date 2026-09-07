@@ -1,4 +1,5 @@
 import { authorizeRnsDestination } from './get.ts';
+import { normalizeQappIdentityContext } from './qapp-identity.ts';
 
 const QAPP_RETICULUM_ACTIONS = new Set([
   'RNS_CLOSE',
@@ -42,10 +43,14 @@ export async function dispatchQAppReticulumRequest(
   const api = window.electronAPI;
   if (!api) throw new Error('RNS_NATIVE_TRANSPORT_UNAVAILABLE');
 
+  const identity = normalizeQappIdentityContext({
+    name: context.appName,
+    service: context.appService,
+  });
   const owner = {
     tabId: String(context.tabId),
-    name: String(context.appName),
-    service: String(context.appService ?? ''),
+    name: identity.name,
+    service: identity.service,
   };
   const appInfo = { tabId: context.tabId, name: context.appName };
 
@@ -80,11 +85,7 @@ export async function dispatchQAppReticulumRequest(
       throw new Error('RNS_NATIVE_TRANSPORT_UNAVAILABLE');
     if (typeof message.connectionId !== 'string' || !message.connectionId)
       throw new Error('RNS_UNKNOWN_CONNECTION');
-    return api.qappReticulumSend(
-      owner,
-      message.connectionId,
-      message.payload
-    );
+    return api.qappReticulumSend(owner, message.connectionId, message.payload);
   }
 
   if (!api.qappReticulumClose)

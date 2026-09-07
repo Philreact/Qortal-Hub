@@ -69,6 +69,26 @@ function parseWindowRoleFromArgv(): string {
   return 'main-shell';
 }
 
+async function invokePrivateChannel(
+  ipcChannel: string,
+  ...args: unknown[]
+): Promise<unknown> {
+  const result = (await ipcRenderer.invoke(ipcChannel, ...args)) as
+    | { ok: true; value: unknown }
+    | { ok: false; error: { code?: string; message?: string } };
+  if (result.ok === true) return result.value;
+  const failure = result as {
+    ok: false;
+    error: { code?: string; message?: string };
+  };
+  const code = failure.error?.code || 'PRIVATE_CHANNEL_ERROR';
+  const error = new Error(failure.error?.message || code) as Error & {
+    code?: string;
+  };
+  error.code = code;
+  throw error;
+}
+
 const hubP2pBootstrapIceServers = isDisabledLegacy
   ? []
   : buildBootstrapIceServers(parseHubBootstrapSeedsFromArgv());
@@ -683,6 +703,34 @@ try {
         callback(payload);
       ipcRenderer.on('qappReticulum:event', listener);
       return () => ipcRenderer.removeListener('qappReticulum:event', listener);
+    },
+    privateChannelOpen: (owner, rnsConnectionId, purpose) =>
+      invokePrivateChannel(
+        'privateChannel:open',
+        owner,
+        rnsConnectionId,
+        purpose
+      ),
+    privateChannelSend: (owner, channelId, lane, messageId, data) =>
+      invokePrivateChannel(
+        'privateChannel:send',
+        owner,
+        channelId,
+        lane,
+        messageId,
+        data
+      ),
+    privateChannelStatus: (owner, channelId) =>
+      invokePrivateChannel('privateChannel:status', owner, channelId),
+    privateChannelClose: (owner, channelId) =>
+      invokePrivateChannel('privateChannel:close', owner, channelId),
+    privateChannelCleanupOwner: (owner) =>
+      invokePrivateChannel('privateChannel:cleanupOwner', owner),
+    onPrivateChannelEvent: (callback: (payload: unknown) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: unknown) =>
+        callback(payload);
+      ipcRenderer.on('privateChannel:event', listener);
+      return () => ipcRenderer.removeListener('privateChannel:event', listener);
     },
     qchatFileSelect: () =>
       ipcRenderer.invoke('reticulum:qchatFileSelect') as Promise<{

@@ -59,6 +59,14 @@ COMMUNITY_STUN_IDENTITY_FILENAME = (
 )
 COMMUNITY_STUN_IDENTITY_MAX_AGE_SECONDS = 24 * 60 * 60
 COMMUNITY_STUN_PORT = 47321
+COMMUNITY_MASQUE_ASPECT = "community-masque-relay"
+COMMUNITY_MASQUE_VERSION = "v1"
+COMMUNITY_MASQUE_IDENTITY_FILENAME = (
+    "community-masque-relay."
+    + hashlib.sha256(APP_NAMESPACE.encode("utf-8")).hexdigest()[:12]
+    + ".identity"
+)
+COMMUNITY_MASQUE_IDENTITY_MAX_AGE_SECONDS = 24 * 60 * 60
 disable_bootstrap = False
 _developer_logs_filtered = (
     str(os.environ.get("QORTAL_FILTER_DEVELOPER_LOGS", "1")).strip().lower()
@@ -101,6 +109,13 @@ _community_stun_event_times: "deque[float]" = deque()
 _community_stun_local_hashes: "deque[bytes]" = deque(maxlen=8)
 _community_stun_local_endpoint: Optional[Dict[str, Any]] = None
 _community_stun_last_query_response_at = 0.0
+_community_masque_identity = None
+_community_masque_destination = None
+_community_masque_announce_handler = None
+_community_masque_seen_endpoints: Dict[str, float] = {}
+_community_masque_recent_endpoints: Dict[str, Dict[str, Any]] = {}
+_community_masque_event_times: "deque[float]" = deque()
+_community_masque_local_hashes: "deque[bytes]" = deque(maxlen=8)
 _reticulum_config_dir = ""
 # A shared-instance client does not own the authoritative Transport.path_table.
 # Keep a very short cache for the uncommon local-miss/RPC-fallback path so
@@ -9327,6 +9342,168 @@ def handle_get_community_stun_endpoints(req_id: str) -> None:
         # cannot be sent during a transient bridge/transport transition.
         pass
     emit_resp(req_id, True, payload={"endpoints": endpoints})
+
+
+def _community_masque_host_allowed(host: str) -> bool:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if not isinstance(address, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+        return False
+    if address.is_global:
+        return True
+    return (
+        str(os.environ.get("QORTAL_PRIVATE_TRANSPORT_ALLOW_LOCAL_RELAY", ""))
+        .strip()
+        .lower()
+        in {"1", "true", "yes", "on"}
+        and address.is_loopback
+    )
+
+
+class CommunityMasqueRelayAnnounceHandler:
+    """Receive anonymous, short-lived MASQUE relay advertisements.
+
+    The Reticulum announce authenticates the advertised metadata as one
+    internally consistent lease. The relay's advertised TLS leaf pin then
+    authenticates the QUIC endpoint without HTTPS, DNS, or public Web PKI.
+    """
+
+    def __init__(self):
+        self.aspect_filter = (
+            f"{APP_NAMESPACE}.{COMMUNITY_MASQUE_ASPECT}.{COMMUNITY_MASQUE_VERSION}"
+        )
+
+    def received_announce(self, destination_hash, announced_identity, app_data):
+        if destination_hash in _community_masque_local_hashes:
+            return
+        try:
+            raw = bytes(app_data or b"")
+            if not raw or len(raw) > 512:
+                return
+            value = json.loads(raw.decode("utf-8"))
+            if not isinstance(value, dict) or int(value.get("v") or 0) != 1:
+                return
+            if value.get("q") is True:
+                return
+            host = str(value.get("h") or "").strip()
+            port = int(value.get("p") or 0)
+            server_name = str(value.get("s") or "").strip()
+            cert_sha256 = str(value.get("c") or "").strip().lower()
+            expires_at = int(value.get("x") or 0)
+            now = int(time.time())
+            if (
+                not _community_masque_host_allowed(host)
+                or port < 1
+                or port > 65535
+                or not server_name
+                or len(server_name) > 128
+                or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-" for ch in server_name)
+                or len(cert_sha256) != 64
+                or any(ch not in "0123456789abcdef" for ch in cert_sha256)
+                or expires_at <= now
+                or expires_at > now + 60 * 60
+            ):
+                return
+            endpoint_key = f"{host}:{port}:{cert_sha256}"
+            received_at = time.time()
+            with _state_lock:
+                while (
+                    _community_masque_event_times
+                    and received_at - _community_masque_event_times[0] >= 60.0
+                ):
+                    _community_masque_event_times.popleft()
+                if len(_community_masque_event_times) >= 60:
+                    return
+                seen_at = _community_masque_seen_endpoints.get(endpoint_key, 0.0)
+                if received_at - seen_at < 30.0:
+                    return
+                endpoint = {
+                    "host": host,
+                    "port": port,
+                    "serverName": server_name,
+                    "certSha256": cert_sha256,
+                    "expiresAt": expires_at * 1000,
+                }
+                _community_masque_seen_endpoints[endpoint_key] = received_at
+                _community_masque_recent_endpoints[endpoint_key] = endpoint
+                _community_masque_event_times.append(received_at)
+                if len(_community_masque_seen_endpoints) > 256:
+                    oldest = sorted(
+                        _community_masque_seen_endpoints.items(),
+                        key=lambda item: item[1],
+                    )[:64]
+                    for key, _ in oldest:
+                        _community_masque_seen_endpoints.pop(key, None)
+                        _community_masque_recent_endpoints.pop(key, None)
+            emit_event("community_masque_relay", endpoint)
+        except Exception:
+            return
+
+
+def _ensure_community_masque_discovery(config_dir: str) -> None:
+    global _community_masque_identity, _community_masque_destination
+    global _community_masque_announce_handler
+    if _community_masque_announce_handler is None:
+        _community_masque_announce_handler = CommunityMasqueRelayAnnounceHandler()
+        RNS.Transport.register_announce_handler(_community_masque_announce_handler)
+    identity_path = os.path.join(config_dir, COMMUNITY_MASQUE_IDENTITY_FILENAME)
+    if _community_masque_destination is not None:
+        try:
+            age = time.time() - os.path.getmtime(identity_path)
+            if 0 <= age < COMMUNITY_MASQUE_IDENTITY_MAX_AGE_SECONDS:
+                return
+        except Exception:
+            pass
+    try:
+        age = time.time() - os.path.getmtime(identity_path)
+        if 0 <= age < COMMUNITY_MASQUE_IDENTITY_MAX_AGE_SECONDS:
+            identity = RNS.Identity.from_file(identity_path)
+        else:
+            identity = None
+    except Exception:
+        identity = None
+    if identity is None:
+        identity = RNS.Identity()
+        identity.to_file(identity_path)
+        try:
+            os.chmod(identity_path, 0o600)
+        except Exception:
+            pass
+    _community_masque_identity = identity
+    _community_masque_destination = RNS.Destination(
+        identity,
+        RNS.Destination.IN,
+        RNS.Destination.SINGLE,
+        APP_NAMESPACE,
+        COMMUNITY_MASQUE_ASPECT,
+        COMMUNITY_MASQUE_VERSION,
+    )
+    _community_masque_local_hashes.append(_community_masque_destination.hash)
+
+
+def handle_get_community_masque_relays(req_id: str) -> None:
+    now_ms = int(time.time() * 1000)
+    with _state_lock:
+        expired = [
+            key
+            for key, value in _community_masque_recent_endpoints.items()
+            if int(value.get("expiresAt") or 0) <= now_ms
+        ]
+        for key in expired:
+            _community_masque_recent_endpoints.pop(key, None)
+            _community_masque_seen_endpoints.pop(key, None)
+        endpoints = list(_community_masque_recent_endpoints.values())[:128]
+    try:
+        _ensure_community_masque_discovery(_reticulum_config_dir)
+        query_data = json.dumps(
+            {"v": 1, "q": True}, separators=(",", ":")
+        ).encode("utf-8")
+        _community_masque_destination.announce(app_data=query_data)
+    except Exception:
+        pass
+    emit_resp(req_id, True, payload={"relays": endpoints})
 
 
 def handle_configure_developer_log_filter(
@@ -21552,6 +21729,7 @@ def ensure_started(config_dir: str):
         _announce_handler = PresenceAnnounceHandler(_destination.hash)
         RNS.Transport.register_announce_handler(_announce_handler)
         _ensure_community_stun_discovery(config_dir)
+        _ensure_community_masque_discovery(config_dir)
         ensure_transport_monitor_started()
         ensure_rns_callback_scheduler_monitor_started()
         ensure_audio_rtt_monitor_started()
@@ -27372,6 +27550,11 @@ def handle_qapp_rns_request(req_id: str, payload: Dict[str, Any]) -> None:
         manager_key = str(payload.get("managerKey") or "")
         destination = str(payload.get("destination") or "").lower()
         entry = _qapp_rns_entry(manager_key, destination)
+        logical_connection_id = str(payload.get("logicalConnectionId") or "")
+        if logical_connection_id:
+            with _state_lock:
+                if logical_connection_id not in entry.get("connections", set()):
+                    return _qapp_rns_error(req_id, "RNS_INVALID_CONNECTION")
         if not _qapp_rns_open_link(entry):
             return _qapp_rns_error(req_id, "RNS_LINK_TIMEOUT")
         timeout = min(120.0, max(1.0, float(payload.get("timeoutMs") or 30000) / 1000.0))
@@ -27438,6 +27621,8 @@ def handle_qapp_rns_request(req_id: str, payload: Dict[str, Any]) -> None:
             "encoding": "base64" if payload.get("encoding") == "base64" else "json",
             "payloadBase64": str(payload.get("payloadBase64") or ""),
         }
+        if logical_connection_id:
+            request_data["logicalConnectionId"] = logical_connection_id
         try:
             timeout_timer = threading.Timer(timeout + 1.0, request_failed)
             timeout_timer.daemon = True
@@ -27490,6 +27675,8 @@ def handle_command(message: Dict[str, Any]) -> None:
         handle_configure_community_stun(req_id, payload)
     elif action == "get_community_stun_endpoints":
         handle_get_community_stun_endpoints(req_id)
+    elif action == "get_community_masque_relays":
+        handle_get_community_masque_relays(req_id)
     elif action == "configure_developer_log_filter":
         handle_configure_developer_log_filter(req_id, payload)
     elif action == "stop":

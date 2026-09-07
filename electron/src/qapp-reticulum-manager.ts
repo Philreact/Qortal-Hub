@@ -16,6 +16,11 @@ export type QAppReticulumOwner = {
   service: string;
 };
 
+export type QAppReticulumConnectionOwnership =
+  | 'owned'
+  | 'not-owned'
+  | 'missing';
+
 export type QAppReticulumNativeEvent = {
   managerKey: string;
   connectionId?: string;
@@ -122,9 +127,17 @@ export class QAppReticulumManager extends EventEmitter {
       timeoutMs?: number;
       maxResponseBytes?: number;
       requestId?: string;
+      /** Main-process binding for reserved RPCs on an owned logical session. */
+      connectionId?: string;
     }
   ): Promise<unknown> {
     const destination = this.validateDestination(options.destination);
+    if (options.connectionId) {
+      const connection = this.requireOwned(owner, options.connectionId);
+      if (connection.destination !== destination) {
+        throw new QAppReticulumError('RNS_PERMISSION_DENIED');
+      }
+    }
     const path = String(options.path ?? '').trim();
     if (!path.startsWith('/') || path.length > 512) {
       throw new QAppReticulumError(
@@ -158,6 +171,7 @@ export class QAppReticulumManager extends EventEmitter {
           MAX_RPC_RESPONSE_BYTES
         ),
         requestId: String(options.requestId ?? randomUUID()),
+        logicalConnectionId: options.connectionId,
       });
       if (!result.ok || !result.payload) {
         throw new QAppReticulumError(result.code ?? 'RNS_REQUEST_TIMEOUT');
@@ -275,6 +289,29 @@ export class QAppReticulumManager extends EventEmitter {
     const key = ownerKey(owner);
     const ids = [...(this.connectionsByOwner.get(key) ?? [])];
     await Promise.allSettled(ids.map((id) => this.close(owner, id)));
+  }
+
+  connectionOwnership(
+    owner: QAppReticulumOwner,
+    connectionIdValue: unknown
+  ): QAppReticulumConnectionOwnership {
+    const connectionId =
+      typeof connectionIdValue === 'string' ? connectionIdValue : '';
+    const connection = this.connections.get(connectionId);
+    if (!connection) return 'missing';
+    if (connection.ownerKey !== ownerKey(owner)) return 'not-owned';
+    return connection.state === 'CONNECTED' ||
+      connection.state === 'RECONNECTING'
+      ? 'owned'
+      : 'missing';
+  }
+
+  /** Electron-main-only lookup used by reserved authenticated services. */
+  connectionDestination(
+    owner: QAppReticulumOwner,
+    connectionId: string
+  ): string {
+    return this.requireOwned(owner, connectionId).destination;
   }
 
   destroy(): void {

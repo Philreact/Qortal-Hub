@@ -15,7 +15,7 @@ const context = {
   isFromExtension: true,
   tabId: 42,
 };
-const owner = { name: 'ExampleApp', service: 'APP', tabId: '42' };
+const owner = { name: 'exampleapp', service: 'APP', tabId: '42' };
 
 describe('dedicated Q-App Reticulum request dispatch', () => {
   beforeEach(() => {
@@ -46,11 +46,10 @@ describe('dedicated Q-App Reticulum request dispatch', () => {
       dispatchQAppReticulumRequest(message, context)
     ).resolves.toEqual({ ok: true });
 
-    expect(authorizeRnsDestination).toHaveBeenCalledWith(
-      destination,
-      true,
-      { name: 'ExampleApp', tabId: 42 }
-    );
+    expect(authorizeRnsDestination).toHaveBeenCalledWith(destination, true, {
+      name: 'ExampleApp',
+      tabId: 42,
+    });
     expect(window.electronAPI.qappReticulumRequest).toHaveBeenCalledWith(
       owner,
       message
