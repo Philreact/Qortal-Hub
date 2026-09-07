@@ -61,12 +61,6 @@ COMMUNITY_STUN_IDENTITY_MAX_AGE_SECONDS = 24 * 60 * 60
 COMMUNITY_STUN_PORT = 47321
 COMMUNITY_MASQUE_ASPECT = "community-masque-relay"
 COMMUNITY_MASQUE_VERSION = "v1"
-COMMUNITY_MASQUE_IDENTITY_FILENAME = (
-    "community-masque-relay."
-    + hashlib.sha256(APP_NAMESPACE.encode("utf-8")).hexdigest()[:12]
-    + ".identity"
-)
-COMMUNITY_MASQUE_IDENTITY_MAX_AGE_SECONDS = 24 * 60 * 60
 disable_bootstrap = False
 _developer_logs_filtered = (
     str(os.environ.get("QORTAL_FILTER_DEVELOPER_LOGS", "1")).strip().lower()
@@ -9448,37 +9442,11 @@ class CommunityMasqueRelayAnnounceHandler:
             return
 
 
-def _ensure_community_masque_discovery(config_dir: str) -> None:
+def _replace_community_masque_destination() -> None:
     global _community_masque_identity, _community_masque_destination
-    global _community_masque_announce_handler
-    if _community_masque_announce_handler is None:
-        _community_masque_announce_handler = CommunityMasqueRelayAnnounceHandler()
-        RNS.Transport.register_announce_handler(_community_masque_announce_handler)
-    identity_path = os.path.join(config_dir, COMMUNITY_MASQUE_IDENTITY_FILENAME)
-    if _community_masque_destination is not None:
-        try:
-            age = time.time() - os.path.getmtime(identity_path)
-            if 0 <= age < COMMUNITY_MASQUE_IDENTITY_MAX_AGE_SECONDS:
-                return
-        except Exception:
-            pass
-    try:
-        age = time.time() - os.path.getmtime(identity_path)
-        if 0 <= age < COMMUNITY_MASQUE_IDENTITY_MAX_AGE_SECONDS:
-            identity = RNS.Identity.from_file(identity_path)
-        else:
-            identity = None
-    except Exception:
-        identity = None
-    if identity is None:
-        identity = RNS.Identity()
-        identity.to_file(identity_path)
-        try:
-            os.chmod(identity_path, 0o600)
-        except Exception:
-            pass
-    _community_masque_identity = identity
-    _community_masque_destination = RNS.Destination(
+    previous_destination = _community_masque_destination
+    identity = RNS.Identity()
+    destination = RNS.Destination(
         identity,
         RNS.Destination.IN,
         RNS.Destination.SINGLE,
@@ -9486,13 +9454,32 @@ def _ensure_community_masque_discovery(config_dir: str) -> None:
         COMMUNITY_MASQUE_ASPECT,
         COMMUNITY_MASQUE_VERSION,
     )
-    _community_masque_destination.set_packet_callback(
+    destination.set_packet_callback(
         _community_masque_announce_handler.received_packet
     )
-    _community_masque_local_hashes.append(_community_masque_destination.hash)
+    _community_masque_identity = identity
+    _community_masque_destination = destination
+    _community_masque_local_hashes.append(destination.hash)
+    if previous_destination is not None:
+        try:
+            RNS.Transport.deregister_destination(previous_destination)
+        except Exception:
+            pass
 
 
-def handle_get_community_masque_relays(req_id: str) -> None:
+def _ensure_community_masque_discovery(config_dir: str) -> None:
+    global _community_masque_identity, _community_masque_destination
+    global _community_masque_announce_handler
+    if _community_masque_announce_handler is None:
+        _community_masque_announce_handler = CommunityMasqueRelayAnnounceHandler()
+        RNS.Transport.register_announce_handler(_community_masque_announce_handler)
+    if _community_masque_destination is None:
+        _replace_community_masque_destination()
+
+
+def handle_get_community_masque_relays(
+    req_id: str, payload: Dict[str, Any]
+) -> None:
     now_ms = int(time.time() * 1000)
     with _state_lock:
         expired = [
@@ -9506,10 +9493,16 @@ def handle_get_community_masque_relays(req_id: str) -> None:
         endpoints = list(_community_masque_recent_endpoints.values())[:128]
     try:
         _ensure_community_masque_discovery(_reticulum_config_dir)
-        query_data = json.dumps(
-            {"v": 1, "q": True}, separators=(",", ":")
-        ).encode("utf-8")
-        _community_masque_destination.announce(app_data=query_data)
+        if payload.get("announce") is True:
+            # Each bounded discovery operation gets one fresh anonymous return
+            # destination. Reusing a prior destination causes Reticulum nodes
+            # to suppress the query as a repeated announce.
+            _replace_community_masque_destination()
+            query_data = json.dumps(
+                {"v": 1, "q": True}, separators=(",", ":")
+            ).encode("utf-8")
+            _community_masque_destination.announce(app_data=query_data)
+            log("MASQUE relay discovery query announced")
     except Exception:
         pass
     emit_resp(req_id, True, payload={"relays": endpoints})
@@ -27685,7 +27678,7 @@ def handle_command(message: Dict[str, Any]) -> None:
     elif action == "get_community_stun_endpoints":
         handle_get_community_stun_endpoints(req_id)
     elif action == "get_community_masque_relays":
-        handle_get_community_masque_relays(req_id)
+        handle_get_community_masque_relays(req_id, payload)
     elif action == "configure_developer_log_filter":
         handle_configure_developer_log_filter(req_id, payload)
     elif action == "stop":

@@ -6,7 +6,7 @@ import {
 } from './masque-relay-discovery';
 
 class BridgeStub extends EventEmitter {
-  getCommunityMasqueRelays = vi.fn(async () => []);
+  getCommunityMasqueRelays = vi.fn(async (_announce = false) => []);
 }
 
 const relay = {
@@ -66,7 +66,7 @@ describe('community MASQUE relay discovery', () => {
     });
   });
 
-  it('retries discovery while waiting for an announcement', async () => {
+  it('uses one fresh query and only polls the cache while waiting', async () => {
     const bridge = new BridgeStub();
     await expect(
       discoverCommunityMasqueRelay(bridge as never, {
@@ -74,7 +74,10 @@ describe('community MASQUE relay discovery', () => {
         timeoutMs: 100,
       })
     ).rejects.toThrow('MASQUE_RELAY_UNAVAILABLE');
-    expect(bridge.getCommunityMasqueRelays).toHaveBeenCalledTimes(2);
+    expect(bridge.getCommunityMasqueRelays).toHaveBeenCalledTimes(3);
+    expect(bridge.getCommunityMasqueRelays).toHaveBeenNthCalledWith(1, false);
+    expect(bridge.getCommunityMasqueRelays).toHaveBeenNthCalledWith(2, true);
+    expect(bridge.getCommunityMasqueRelays).toHaveBeenNthCalledWith(3, false);
   });
 
   it('allows loopback only for an explicit development override', () => {

@@ -3386,7 +3386,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     );
   }
 
-  async getCommunityMasqueRelays(): Promise<
+  async getCommunityMasqueRelays(announce = false): Promise<
     Array<{
       host: string;
       port: number;
@@ -3397,7 +3397,9 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
   > {
     await this.start();
     if (this.state !== 'ready') return [];
-    const resp = await this.sendCommand('get_community_masque_relays', {});
+    const resp = await this.sendCommand('get_community_masque_relays', {
+      announce,
+    });
     if (!resp.ok || !Array.isArray(resp.payload?.relays)) return [];
     return resp.payload.relays.filter(
       (value): value is {

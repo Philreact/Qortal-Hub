@@ -105,10 +105,17 @@ export async function discoverCommunityMasqueRelay(
       options.timeoutMs ?? MASQUE_RELAY_DISCOVERY_TIMEOUT_MS
     );
     const deadline = Date.now() + timeoutMs;
+    let queryAnnounced = false;
     while (candidates.size === 0) {
-      const cached = await bridge.getCommunityMasqueRelays();
+      const cached = await bridge.getCommunityMasqueRelays(false);
       for (const relay of cached) accept(relay);
       if (candidates.size > 0) break;
+      if (!queryAnnounced) {
+        queryAnnounced = true;
+        const discovered = await bridge.getCommunityMasqueRelays(true);
+        for (const relay of discovered) accept(relay);
+        if (candidates.size > 0) break;
+      }
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) break;
       await new Promise<void>((resolve) => {
