@@ -9378,6 +9378,12 @@ class CommunityMasqueRelayAnnounceHandler:
     def received_announce(self, destination_hash, announced_identity, app_data):
         if destination_hash in _community_masque_local_hashes:
             return
+        self.received_payload(app_data)
+
+    def received_packet(self, data, packet):
+        self.received_payload(data)
+
+    def received_payload(self, app_data):
         try:
             raw = bytes(app_data or b"")
             if not raw or len(raw) > 512:
@@ -9479,6 +9485,9 @@ def _ensure_community_masque_discovery(config_dir: str) -> None:
         APP_NAMESPACE,
         COMMUNITY_MASQUE_ASPECT,
         COMMUNITY_MASQUE_VERSION,
+    )
+    _community_masque_destination.set_packet_callback(
+        _community_masque_announce_handler.received_packet
     )
     _community_masque_local_hashes.append(_community_masque_destination.hash)
 
