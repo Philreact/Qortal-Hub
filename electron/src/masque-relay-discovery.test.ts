@@ -66,6 +66,17 @@ describe('community MASQUE relay discovery', () => {
     });
   });
 
+  it('retries discovery while waiting for an announcement', async () => {
+    const bridge = new BridgeStub();
+    await expect(
+      discoverCommunityMasqueRelay(bridge as never, {
+        now: () => 1_000_000,
+        timeoutMs: 100,
+      })
+    ).rejects.toThrow('MASQUE_RELAY_UNAVAILABLE');
+    expect(bridge.getCommunityMasqueRelays).toHaveBeenCalledTimes(2);
+  });
+
   it('allows loopback only for an explicit development override', () => {
     expect(
       validateCommunityMasqueRelay(

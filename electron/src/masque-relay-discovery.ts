@@ -2,7 +2,8 @@ import net from 'net';
 import type { ReticulumBridge } from './reticulum-bridge';
 import type { TrustedRelayConfig } from './quic-masque-transport';
 
-export const MASQUE_RELAY_DISCOVERY_TIMEOUT_MS = 2_500;
+export const MASQUE_RELAY_DISCOVERY_TIMEOUT_MS = 15_000;
+const MASQUE_RELAY_QUERY_INTERVAL_MS = 3_000;
 const MAX_LEASE_AHEAD_MS = 60 * 60_000;
 const MIN_REMAINING_LEASE_MS = 5_000;
 
@@ -99,14 +100,22 @@ export async function discoverCommunityMasqueRelay(
   const onRelay = (value: unknown) => accept(value);
   bridge.on('community-masque-relay', onRelay);
   try {
-    const cached = await bridge.getCommunityMasqueRelays();
-    for (const relay of cached) accept(relay);
-    if (candidates.size === 0) {
+    const timeoutMs = Math.max(
+      100,
+      options.timeoutMs ?? MASQUE_RELAY_DISCOVERY_TIMEOUT_MS
+    );
+    const deadline = Date.now() + timeoutMs;
+    while (candidates.size === 0) {
+      const cached = await bridge.getCommunityMasqueRelays();
+      for (const relay of cached) accept(relay);
+      if (candidates.size > 0) break;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(
-          resolve,
-          Math.max(100, options.timeoutMs ?? MASQUE_RELAY_DISCOVERY_TIMEOUT_MS)
-        );
+        const timer = setTimeout(() => {
+          wake = null;
+          resolve();
+        }, Math.min(MASQUE_RELAY_QUERY_INTERVAL_MS, remainingMs));
         timer.unref?.();
         wake = () => {
           clearTimeout(timer);
