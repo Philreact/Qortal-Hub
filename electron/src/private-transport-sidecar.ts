@@ -105,9 +105,16 @@ export function getPrivateTransportSidecarPath(): string {
     process.platform === 'win32'
       ? 'qortal-private-transport.exe'
       : 'qortal-private-transport';
-  const root = app.isPackaged ? process.resourcesPath : app.getAppPath();
+  if (app.isPackaged) {
+    return path.join(
+      process.resourcesPath,
+      'private-transport',
+      platformDirectory(),
+      executable
+    );
+  }
   return path.join(
-    root,
+    app.getAppPath(),
     'resources',
     'private-transport',
     platformDirectory(),

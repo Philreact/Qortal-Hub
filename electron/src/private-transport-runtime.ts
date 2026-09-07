@@ -1,4 +1,3 @@
-import { app } from 'electron';
 import net from 'net';
 import type { PrivateTransportFactory } from './private-channel-manager';
 import {
@@ -15,18 +14,15 @@ let prototypeSidecar: PrivateTransportSidecar | null = null;
 let sidecarShutdownPromise: Promise<void> | null = null;
 
 /**
- * Main-process-only prototype selection. Renderer/Q-App payloads are never
- * consulted and production builds deliberately remain on the mock transport.
+ * Main-process-only transport selection. Renderer/Q-App payloads are never
+ * consulted. Reticulum relay discovery is the normal production path.
  */
-export function getExperimentalPrivateTransportFactory(
+export function getPrivateTransportFactory(
   reticulumManager: QAppReticulumManager,
   reticulumBridgeProvider: () => ReticulumBridge | null = () => null,
   environment: NodeJS.ProcessEnv = process.env
 ): PrivateTransportFactory | undefined {
   const mode = environment.QORTAL_PRIVATE_TRANSPORT;
-  if (app.isPackaged || (mode !== 'masque' && mode !== 'masque-test')) {
-    return undefined;
-  }
   const explicitRelay =
     mode === 'masque-test' ? readTrustedRelayConfig(environment) : null;
   const bootstrapProvider = new ReticulumPrivateChannelBootstrapProvider(

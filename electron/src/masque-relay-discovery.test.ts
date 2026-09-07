@@ -49,6 +49,7 @@ describe('community MASQUE relay discovery', () => {
       relayAddress: '8.8.8.8:47322',
       relayServerName: 'relay.example',
       relayCertSha256: 'ab'.repeat(32),
+      localFallbackAddress: '127.0.0.1:47322',
     });
   });
 

@@ -129,5 +129,6 @@ export async function discoverCommunityMasqueRelay(
     relayAddress: `${host}:${selected.port}`,
     relayServerName: selected.serverName,
     relayCertSha256: selected.certSha256,
+    localFallbackAddress: `127.0.0.1:${selected.port}`,
   };
 }

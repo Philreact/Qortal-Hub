@@ -77,6 +77,6 @@ Python QUIC listener. Large-file framing and resumability remain out of scope.
 
 The operator-run relay is maintained as the separate `qortal-masque-relay`
 project. Hub contains only the client, Reticulum discovery, and private-channel
-coordination code. `QORTAL_PRIVATE_TRANSPORT=masque` selects discovered relays;
-`QORTAL_PRIVATE_TRANSPORT=masque-test` retains the explicit development
-override.
+coordination code. Discovered MASQUE relays are the default in development and
+packaged builds. `QORTAL_PRIVATE_TRANSPORT=masque-test` exists only for the
+explicit local test-relay override.

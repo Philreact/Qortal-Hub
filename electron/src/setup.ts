@@ -142,7 +142,7 @@ import {
   PrivateChannelManager,
 } from './private-channel-manager';
 import {
-  getExperimentalPrivateTransportFactory,
+  getPrivateTransportFactory,
   shutdownPrivateTransportSidecar,
 } from './private-transport-runtime';
 import { attachReticulumStatusBridgeEvents } from './reticulum-daemon';
@@ -2890,7 +2890,7 @@ function getPrivateChannelManager(): PrivateChannelManager {
   privateChannelManager = new PrivateChannelManager(
     (owner, connectionId) =>
       getQAppReticulumManager().connectionOwnership(owner, connectionId),
-    getExperimentalPrivateTransportFactory(
+    getPrivateTransportFactory(
       getQAppReticulumManager(),
       () => getReticulumBridge()
     )

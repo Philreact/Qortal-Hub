@@ -1,21 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
-  getExperimentalPrivateTransportFactory,
+  getPrivateTransportFactory,
   readTrustedRelayConfig,
 } from './private-transport-runtime';
 
 describe('private transport runtime selection', () => {
-  it('uses Reticulum discovery without requiring test relay variables', () => {
+  it('uses Reticulum discovery by default without a feature flag', () => {
     expect(
-      getExperimentalPrivateTransportFactory({} as never, () => null, {
-        QORTAL_PRIVATE_TRANSPORT: 'masque',
-      })
+      getPrivateTransportFactory({} as never, () => null, {})
     ).toBeTypeOf('function');
   });
 
   it('requires pinned relay values in explicit test mode', () => {
     expect(() =>
-      getExperimentalPrivateTransportFactory({} as never, () => null, {
+      getPrivateTransportFactory({} as never, () => null, {
         QORTAL_PRIVATE_TRANSPORT: 'masque-test',
       })
     ).toThrow('Incomplete MASQUE prototype configuration');

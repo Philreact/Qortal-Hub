@@ -16,6 +16,8 @@ export type TrustedRelayConfig = Readonly<{
   relayAddress: string;
   relayServerName: string;
   relayCertSha256: string;
+  /** Same-host fallback, protected by the advertised certificate pin. */
+  localFallbackAddress?: string;
 }>;
 export type TrustedRelayProvider = () => Promise<TrustedRelayConfig>;
 
@@ -49,19 +51,34 @@ export class QuicMasqueTransport implements PrivateTransport {
     try {
       const relay =
         typeof this.relay === 'function' ? await this.relay() : this.relay;
-      const opened = await this.sidecar.openPrivateSession({
-        relayAddress: relay.relayAddress,
-        relayServerName: relay.relayServerName,
-        relayCertSha256: relay.relayCertSha256,
-        backendAddress: bootstrap.backendTransportEndpoint,
-        backendServerName: bootstrap.backendTransportServerName,
-        backendCertSha256: bootstrap.backendTransportCertSha256,
-        logicalSessionId: bootstrap.logicalSessionId,
-        attachToken: bootstrap.attachToken,
-        nonce: bootstrap.nonce,
-        purpose: context.purpose,
-        ownerBindingHash: bootstrap.ownerBindingHash,
-      });
+      const openAt = (relayAddress: string) =>
+        this.sidecar.openPrivateSession({
+          relayAddress,
+          relayServerName: relay.relayServerName,
+          relayCertSha256: relay.relayCertSha256,
+          backendAddress: bootstrap.backendTransportEndpoint,
+          backendServerName: bootstrap.backendTransportServerName,
+          backendCertSha256: bootstrap.backendTransportCertSha256,
+          logicalSessionId: bootstrap.logicalSessionId,
+          attachToken: bootstrap.attachToken,
+          nonce: bootstrap.nonce,
+          purpose: context.purpose,
+          ownerBindingHash: bootstrap.ownerBindingHash,
+        });
+      let opened;
+      try {
+        opened = await openAt(relay.relayAddress);
+      } catch (error) {
+        if (
+          !(error instanceof PrivateTransportSidecarError) ||
+          error.code !== 'MASQUE_TUNNEL_FAILED' ||
+          !relay.localFallbackAddress ||
+          relay.localFallbackAddress === relay.relayAddress
+        ) {
+          throw error;
+        }
+        opened = await openAt(relay.localFallbackAddress);
+      }
       this.sessionId = opened.sessionId;
     } catch (error) {
       throw translateSidecarError(error);
