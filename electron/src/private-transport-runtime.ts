@@ -9,6 +9,10 @@ import { ReticulumPrivateChannelBootstrapProvider } from './private-channel-boot
 import type { QAppReticulumManager } from './qapp-reticulum-manager';
 import type { ReticulumBridge } from './reticulum-bridge';
 import { discoverCommunityMasqueRelay } from './masque-relay-discovery';
+import {
+  MoqMasqueTransport,
+  type MoqTransportEvent,
+} from './moq-masque-transport';
 
 let prototypeSidecar: PrivateTransportSidecar | null = null;
 let sidecarShutdownPromise: Promise<void> | null = null;
@@ -44,6 +48,37 @@ export function getPrivateTransportFactory(
         }),
       bootstrapProvider
     );
+}
+
+/**
+ * Trusted main-process generic MOQT transport. The capability-scoped Q-App
+ * manager owns instances and keeps relay/bootstrap details out of renderers.
+ */
+export function createMoqTransport(
+  emit: (event: MoqTransportEvent) => void,
+  reticulumManager: QAppReticulumManager,
+  reticulumBridgeProvider: () => ReticulumBridge | null = () => null,
+  environment: NodeJS.ProcessEnv = process.env
+): MoqMasqueTransport {
+  const explicitRelay =
+    environment.QORTAL_PRIVATE_TRANSPORT === 'masque-test'
+      ? readTrustedRelayConfig(environment)
+      : null;
+  prototypeSidecar ??= new PrivateTransportSidecar();
+  return new MoqMasqueTransport(
+    emit,
+    prototypeSidecar,
+    explicitRelay ??
+      (async () => {
+        const reticulumBridge = reticulumBridgeProvider();
+        if (!reticulumBridge) throw new Error('MASQUE_RELAY_UNAVAILABLE');
+        return discoverCommunityMasqueRelay(reticulumBridge, {
+          allowLoopback:
+            environment.QORTAL_PRIVATE_TRANSPORT_ALLOW_LOCAL_RELAY === '1',
+        });
+      }),
+    new ReticulumPrivateChannelBootstrapProvider(reticulumManager)
+  );
 }
 
 export function readTrustedRelayConfig(environment: NodeJS.ProcessEnv) {

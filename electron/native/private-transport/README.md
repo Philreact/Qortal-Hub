@@ -6,8 +6,8 @@ The sidecar carries authenticated inner QUIC through RFC 9298 CONNECT-UDP:
 Electron -> sidecar -> outer QUIC/HTTP3 -> MASQUE -> inner QUIC -> backend
 ```
 
-It opens no listening socket. `masque-go v0.4.0` supplies the CONNECT-UDP
-`net.PacketConn`; `quic-go v0.60.0` dials inner QUIC directly over it. There is
+It opens no listening socket. `masque-go v0.5.0` supplies the CONNECT-UDP
+`net.PacketConn`; `quic-go v0.62.0` dials inner QUIC directly over it. There is
 no direct backend dial or fallback.
 
 ## Authentication and bootstrap
@@ -59,12 +59,59 @@ QUIC to the relay. No nested-congestion tuning is attempted. Metrics include
 inner smoothed RTT, application bytes, datagram drops, stream errors, and
 connection errors; endpoints are excluded.
 
+## MoQT compatibility
+
+The MOQT compatibility spike pins `github.com/mengelbart/moqtransport` at commit
+`9eaf40a4dedd` (MOQT draft 18). The compatibility test in
+`internal/moqproof` establishes two real MOQT sessions over MASQUE-provided
+`net.PacketConn` instances. It blindly relays an opaque application object
+between the clients and verifies that the backend observes relay egress
+addresses. Keep MOQT behind the
+private-transport boundary; its wire version is not part of the Q-App API.
+
+The pinned source is selected from `third_party/moqtransport` using a Go
+`replace` directive. Its previously empty SendDatagram method now encodes
+OBJECT_DATAGRAM and sends it using QUIC DATAGRAM. Transport errors propagate;
+there is no retry or stream fallback. Provenance and patch scope are recorded
+in `third_party/moqtransport/QORTAL-PATCHES.md`.
+
+The production sidecar also owns a generic trusted MOQT client. It:
+
+- consumes the backend's authenticated, one-time `realtime` bootstrap;
+- establishes inner `moqt-18` QUIC only through CONNECT-UDP;
+- verifies the backend name and exact certificate pin;
+- accepts a bounded publication namespace and track instead of embedding any
+  application-specific room, participant, or content meaning;
+- publishes and receives only opaque application objects;
+- caps objects at 1024 bytes, namespace components at eight, and subscriptions
+  at 64; and
+- emits received objects only to the Electron main process.
+
+The sidecar does not capture, encode, encrypt, decrypt, sign, inspect, or play
+application content. Those responsibilities belong to the application using
+the generic transport. A capability-scoped Q-App API exposes only logical
+session open, track subscribe, opaque object publish, metrics, and close
+operations. It requires the existing `PRIVATE_DATA_CHANNEL` session permission,
+binds each MOQT session to the requesting Q-App and its owned Reticulum
+connection, and never returns backend endpoints, relay endpoints, credentials,
+or raw sockets.
+
+The opaque-object two-client test runs both subgroup-stream and datagram delivery.
+The datagram case deliberately loses the first object and verifies the next
+object arrives as a datagram, with no resend of the lost object. Oversized
+sends must return an error. These are local integration tests, not a completed
+Q-App/backend integration or a full MoQT interoperability audit.
+
+Run `go test ./...` here and in `third_party/moqtransport`. The latter
+includes upstream regression tests and byte-level datagram sender tests.
+
 ## Build and scope
 
-The module requires Go 1.25+ and was tested with Go 1.26.5.
+The module requires Go 1.26+. The normal build uses local Go when available and
+automatically falls back to `golang:1.26-bookworm` through Docker otherwise.
 
 ```
-QORTAL_GO_BINARY=/path/to/go npm run build:private-transport --prefix electron
+npm run build:private-transport --prefix electron
 QORTAL_GO_BINARY=/path/to/go npm run test:private-transport
 ```
 

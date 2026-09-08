@@ -125,9 +125,10 @@ describeIntegration('private transport sidecar integration', () => {
     await sidecar.start();
     expect(await sidecar.health()).toEqual({
       service: 'qortal-private-transport',
-      sidecarVersion: '0.2.0',
+      sidecarVersion: '0.4.0',
       protocolVersion: 2,
       innerAlpn: 'qortal-private/1',
+      moqAlpn: 'moqt-18',
     });
 
     const tunnelId = await sidecar.openMasqueTunnel(config);
@@ -196,7 +197,7 @@ describeIntegration('private transport sidecar integration', () => {
       let count = 0;
       readline.createInterface({ input: process.stdin }).on('line', (line) => {
         const request = JSON.parse(line);
-        if (count++ === 0) process.stdout.write(JSON.stringify({version:2,type:'response',requestId:request.requestId,ok:true,result:{service:'qortal-private-transport',sidecarVersion:'0.2.0',protocolVersion:2,innerAlpn:'qortal-private/1'}}) + '\\n');
+        if (count++ === 0) process.stdout.write(JSON.stringify({version:2,type:'response',requestId:request.requestId,ok:true,result:{service:'qortal-private-transport',sidecarVersion:'0.4.0',protocolVersion:2,innerAlpn:'qortal-private/1',moqAlpn:'moqt-18'}}) + '\\n');
         else process.stdout.write('{not-json\\n');
       });
     `;
@@ -231,5 +232,26 @@ describe('MASQUE prototype configuration boundary', () => {
 
   it('uses stable coded sidecar errors', () => {
     expect(new PrivateTransportSidecarError('TEST').code).toBe('TEST');
+  });
+
+  it('rejects invalid MOQT names and oversized objects before IPC', async () => {
+    const sidecar = new PrivateTransportSidecar();
+    await expect(
+      sidecar.openMoqSession({
+        relayAddress: '127.0.0.1:1',
+        relayServerName: 'relay',
+        relayCertSha256: '00'.repeat(32),
+        backendAddress: '127.0.0.1:2',
+        backendServerName: 'backend',
+        backendCertSha256: '11'.repeat(32),
+        logicalSessionId: 'logical',
+        attachToken: 'x'.repeat(32),
+        publicationNamespace: ['invalid component'],
+        publicationTrack: 'events',
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_MOQ_CONFIG' });
+    await expect(
+      sidecar.publishMoqObject('moq-session', new Uint8Array(1025))
+    ).rejects.toMatchObject({ code: 'MOQ_OBJECT_TOO_LARGE' });
   });
 });

@@ -89,6 +89,26 @@ async function invokePrivateChannel(
   throw error;
 }
 
+async function invokeMoqTransport(
+  ipcChannel: string,
+  ...args: unknown[]
+): Promise<unknown> {
+  const result = (await ipcRenderer.invoke(ipcChannel, ...args)) as
+    | { ok: true; value: unknown }
+    | { ok: false; error: { code?: string; message?: string } };
+  if (result.ok === true) return result.value;
+  const failure = result as {
+    ok: false;
+    error: { code?: string; message?: string };
+  };
+  const code = failure.error?.code || 'MOQ_ERROR';
+  const error = new Error(failure.error?.message || code) as Error & {
+    code?: string;
+  };
+  error.code = code;
+  throw error;
+}
+
 const hubP2pBootstrapIceServers = isDisabledLegacy
   ? []
   : buildBootstrapIceServers(parseHubBootstrapSeedsFromArgv());
@@ -731,6 +751,48 @@ try {
         callback(payload);
       ipcRenderer.on('privateChannel:event', listener);
       return () => ipcRenderer.removeListener('privateChannel:event', listener);
+    },
+    qappMoqOpen: (
+      owner,
+      rnsConnectionId,
+      publicationNamespace,
+      publicationTrack
+    ) =>
+      invokeMoqTransport(
+        'qappMoq:open',
+        owner,
+        rnsConnectionId,
+        publicationNamespace,
+        publicationTrack
+      ),
+    qappMoqSubscribe: (
+      owner,
+      sessionId,
+      subscriptionId,
+      namespace,
+      trackName
+    ) =>
+      invokeMoqTransport(
+        'qappMoq:subscribe',
+        owner,
+        sessionId,
+        subscriptionId,
+        namespace,
+        trackName
+      ),
+    qappMoqPublish: (owner, sessionId, payload) =>
+      invokeMoqTransport('qappMoq:publish', owner, sessionId, payload),
+    qappMoqMetrics: (owner, sessionId) =>
+      invokeMoqTransport('qappMoq:metrics', owner, sessionId),
+    qappMoqClose: (owner, sessionId) =>
+      invokeMoqTransport('qappMoq:close', owner, sessionId),
+    qappMoqCleanupOwner: (owner) =>
+      invokeMoqTransport('qappMoq:cleanupOwner', owner),
+    onQAppMoqEvent: (callback: (payload: unknown) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: unknown) =>
+        callback(payload);
+      ipcRenderer.on('qappMoq:event', listener);
+      return () => ipcRenderer.removeListener('qappMoq:event', listener);
     },
     qchatFileSelect: () =>
       ipcRenderer.invoke('reticulum:qchatFileSelect') as Promise<{

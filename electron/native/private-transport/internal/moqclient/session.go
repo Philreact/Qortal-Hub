@@ -1,0 +1,356 @@
+package moqclient
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/tls"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"regexp"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/mengelbart/moqtransport"
+	"github.com/mengelbart/moqtransport/quicmoq"
+	"github.com/quic-go/quic-go"
+	masqueclient "qortal.org/qortal-hub/private-transport/internal/masque"
+)
+
+const (
+	ALPN                   = "moqt-18"
+	MaxObjectBytes         = 1024
+	MaxSubscriptions       = 64
+	MaxNamespaceComponents = 8
+	defaultConnectTimeout  = 8 * time.Second
+	maxSafeJSONInteger     = uint64(1<<53 - 1)
+)
+
+var safeName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+type Config struct {
+	Relay                masqueclient.Config
+	BackendServerName    string
+	BackendCertSHA256    string
+	LogicalSessionID     string
+	AttachToken          string
+	PublicationNamespace []string
+	PublicationTrack     string
+	Timeout              time.Duration
+}
+
+type Event struct {
+	Kind           string
+	SubscriptionID string
+	Namespace      []string
+	TrackName      string
+	GroupID        uint64
+	ObjectID       uint64
+	Data           []byte
+	Code           string
+}
+
+type Metrics struct {
+	InnerRTTMillis int64  `json:"innerRttMillis"`
+	ObjectsSent    uint64 `json:"objectsSent"`
+	ObjectsRead    uint64 `json:"objectsReceived"`
+	BytesSent      uint64 `json:"bytesSent"`
+	BytesRead      uint64 `json:"bytesReceived"`
+	ObjectErrors   uint64 `json:"objectErrors"`
+}
+
+type publicationHandler struct {
+	namespace   [][]byte
+	track       string
+	publication chan *moqtransport.IncomingSubscribeRequest
+}
+
+func (h *publicationHandler) HandleGoAway(string) {}
+
+func (h *publicationHandler) HandleSubscribe(request *moqtransport.IncomingSubscribeRequest) {
+	if !equalNamespace(request.Namespace(), h.namespace) || string(request.Name()) != h.track {
+		request.Reject(moqtransport.RequestErrorCodeUnauthorized, "publication is not authorized")
+		return
+	}
+	request.Accept(1)
+	select {
+	case h.publication <- request:
+	default:
+		_ = request.Close()
+	}
+}
+
+type subscription struct {
+	namespace []string
+	track     string
+	request   *moqtransport.OutgoingSubscribeRequest
+}
+
+type Session struct {
+	tunnel      *masqueclient.Tunnel
+	conn        *quic.Conn
+	moq         *moqtransport.Session
+	publication *moqtransport.IncomingSubscribeRequest
+	onEvent     func(Event)
+
+	mu            sync.Mutex
+	subscriptions map[string]subscription
+	closed        atomic.Bool
+	nextObjectID  atomic.Uint64
+	objectsSent   atomic.Uint64
+	objectsRead   atomic.Uint64
+	bytesSent     atomic.Uint64
+	bytesRead     atomic.Uint64
+	objectErrors  atomic.Uint64
+}
+
+func Open(ctx context.Context, cfg Config, onEvent func(Event)) (*Session, error) {
+	if !validNamespace(cfg.PublicationNamespace) || !safeName.MatchString(cfg.PublicationTrack) ||
+		cfg.LogicalSessionID == "" || len(cfg.LogicalSessionID) > 512 ||
+		len(cfg.AttachToken) < 32 || len(cfg.AttachToken) > 128 {
+		return nil, errors.New("INVALID_MOQ_CONFIG")
+	}
+	pin, err := hex.DecodeString(cfg.BackendCertSHA256)
+	if err != nil || len(pin) != sha256.Size {
+		return nil, errors.New("INVALID_MOQ_CONFIG")
+	}
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = defaultConnectTimeout
+	}
+	openCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	tunnel, err := masqueclient.Open(openCtx, cfg.Relay)
+	if err != nil {
+		return nil, fmt.Errorf("MASQUE_TUNNEL_FAILED: %w", err)
+	}
+	fail := func(openErr error) (*Session, error) {
+		_ = tunnel.Close()
+		return nil, openErr
+	}
+	if tunnel.RemoteAddr() == nil {
+		return fail(errors.New("MOQ_QUIC_FAILED: missing proxied backend address"))
+	}
+	connection, err := quic.Dial(
+		openCtx,
+		tunnel.PacketConn(),
+		tunnel.RemoteAddr(),
+		backendTLSConfig(cfg.BackendServerName, pin),
+		&quic.Config{
+			EnableDatagrams:         true,
+			InitialPacketSize:       1200,
+			DisablePathMTUDiscovery: true,
+		},
+	)
+	if err != nil {
+		return fail(fmt.Errorf("MOQ_QUIC_FAILED: %w", err))
+	}
+	handler := &publicationHandler{
+		namespace: stringsToNamespace(cfg.PublicationNamespace),
+		track:     cfg.PublicationTrack, publication: make(chan *moqtransport.IncomingSubscribeRequest, 1),
+	}
+	moq, err := moqtransport.NewSession(
+		quicmoq.NewClient(connection), "attach/"+cfg.AttachToken,
+		moqtransport.WithHandler(handler),
+	)
+	if err != nil {
+		_ = connection.CloseWithError(1, "MOQT setup failed")
+		return fail(fmt.Errorf("MOQ_SESSION_FAILED: %w", err))
+	}
+	select {
+	case publication := <-handler.publication:
+		if !connection.ConnectionState().SupportsDatagrams.Remote {
+			moq.CloseWithError(1, "datagrams required")
+			return fail(errors.New("DATAGRAM_UNSUPPORTED"))
+		}
+		return &Session{
+			tunnel: tunnel, conn: connection, moq: moq, publication: publication,
+			onEvent: onEvent, subscriptions: make(map[string]subscription),
+		}, nil
+	case <-moq.Context().Done():
+		moq.CloseWithError(1, "MOQT attach failed")
+		return fail(errors.New("MOQ_ATTACH_FAILED"))
+	case <-openCtx.Done():
+		moq.CloseWithError(1, "MOQT attach timed out")
+		return fail(errors.New("MOQ_ATTACH_FAILED"))
+	}
+}
+
+func backendTLSConfig(serverName string, pin []byte) *tls.Config {
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13, NextProtos: []string{ALPN}, ServerName: serverName,
+		InsecureSkipVerify: true, // Replaced by the mandatory identity and leaf-pin checks below.
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return errors.New("backend certificate missing")
+			}
+			leaf := state.PeerCertificates[0]
+			if now := time.Now(); now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
+				return errors.New("backend certificate expired")
+			}
+			if err := leaf.VerifyHostname(serverName); err != nil {
+				return errors.New("backend certificate name mismatch")
+			}
+			observed := sha256.Sum256(leaf.Raw)
+			if subtle.ConstantTimeCompare(observed[:], pin) != 1 {
+				return errors.New("backend certificate pin mismatch")
+			}
+			return nil
+		},
+	}
+}
+
+func validNamespace(namespace []string) bool {
+	if len(namespace) == 0 || len(namespace) > MaxNamespaceComponents {
+		return false
+	}
+	total := 0
+	for _, component := range namespace {
+		if !safeName.MatchString(component) {
+			return false
+		}
+		total += len(component)
+	}
+	return total <= 512
+}
+
+func stringsToNamespace(namespace []string) [][]byte {
+	result := make([][]byte, len(namespace))
+	for index, component := range namespace {
+		result[index] = []byte(component)
+	}
+	return result
+}
+
+func equalNamespace(left, right [][]byte) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if string(left[index]) != string(right[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Session) Subscribe(subscriptionID string, namespace []string, track string) error {
+	if s.closed.Load() {
+		return errors.New("MOQ_SESSION_CLOSED")
+	}
+	if !safeName.MatchString(subscriptionID) || !validNamespace(namespace) || !safeName.MatchString(track) {
+		return errors.New("INVALID_MOQ_SUBSCRIPTION")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, found := s.subscriptions[subscriptionID]; found {
+		if equalStringNamespace(existing.namespace, namespace) && existing.track == track {
+			return nil
+		}
+		return errors.New("MOQ_SUBSCRIPTION_ID_REUSED")
+	}
+	if len(s.subscriptions) >= MaxSubscriptions {
+		return errors.New("MOQ_SUBSCRIPTION_LIMIT")
+	}
+	request, err := s.moq.Subscribe(s.moq.Context(), stringsToNamespace(namespace), track)
+	if err != nil {
+		return fmt.Errorf("MOQ_SUBSCRIBE_FAILED: %w", err)
+	}
+	entry := subscription{namespace: append([]string(nil), namespace...), track: track, request: request}
+	s.subscriptions[subscriptionID] = entry
+	go s.readSubscription(subscriptionID, entry)
+	return nil
+}
+
+func equalStringNamespace(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Session) PublishObject(payload []byte) error {
+	if s.closed.Load() {
+		return errors.New("MOQ_SESSION_CLOSED")
+	}
+	if len(payload) == 0 || len(payload) > MaxObjectBytes {
+		return errors.New("MOQ_OBJECT_TOO_LARGE")
+	}
+	objectID := s.nextObjectID.Add(1) - 1
+	err := s.publication.SendDatagram(moqtransport.Object{
+		GroupID: 0, ObjectID: objectID,
+		ForwardingPreference: moqtransport.ObjectForwardingPreferenceDatagram,
+		Payload:              append([]byte(nil), payload...),
+	})
+	if err != nil {
+		s.objectErrors.Add(1)
+		return fmt.Errorf("MOQ_SEND_FAILED: %w", err)
+	}
+	s.objectsSent.Add(1)
+	s.bytesSent.Add(uint64(len(payload)))
+	return nil
+}
+
+func (s *Session) readSubscription(subscriptionID string, entry subscription) {
+	for {
+		object, err := entry.request.ReadObject(s.moq.Context())
+		if err != nil {
+			if !s.closed.Load() {
+				s.objectErrors.Add(1)
+				s.emit(Event{Kind: "error", SubscriptionID: subscriptionID, Code: "MOQ_READ_FAILED"})
+			}
+			return
+		}
+		if len(object.Payload) == 0 || len(object.Payload) > MaxObjectBytes ||
+			object.GroupID > maxSafeJSONInteger || object.ObjectID > maxSafeJSONInteger {
+			s.objectErrors.Add(1)
+			continue
+		}
+		s.objectsRead.Add(1)
+		s.bytesRead.Add(uint64(len(object.Payload)))
+		s.emit(Event{
+			Kind: "object", SubscriptionID: subscriptionID,
+			Namespace: append([]string(nil), entry.namespace...), TrackName: entry.track,
+			GroupID: object.GroupID, ObjectID: object.ObjectID,
+			Data: append([]byte(nil), object.Payload...),
+		})
+	}
+}
+
+func (s *Session) Metrics() Metrics {
+	stats := s.conn.ConnectionStats()
+	return Metrics{
+		InnerRTTMillis: stats.SmoothedRTT.Milliseconds(),
+		ObjectsSent:    s.objectsSent.Load(), ObjectsRead: s.objectsRead.Load(),
+		BytesSent: s.bytesSent.Load(), BytesRead: s.bytesRead.Load(),
+		ObjectErrors: s.objectErrors.Load(),
+	}
+}
+
+func (s *Session) Close() error {
+	if !s.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	s.mu.Lock()
+	for _, entry := range s.subscriptions {
+		_ = entry.request.Close()
+	}
+	s.subscriptions = make(map[string]subscription)
+	s.mu.Unlock()
+	s.moq.CloseWithError(0, "closed")
+	time.Sleep(50 * time.Millisecond)
+	return s.tunnel.Close()
+}
+
+func (s *Session) emit(event Event) {
+	if s.onEvent != nil {
+		s.onEvent(event)
+	}
+}

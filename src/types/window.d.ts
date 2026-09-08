@@ -377,6 +377,28 @@ declare global {
       privateChannelClose?: (owner: any, channelId: unknown) => Promise<any>;
       privateChannelCleanupOwner?: (owner: any) => Promise<boolean>;
       onPrivateChannelEvent?: (callback: (payload: any) => void) => () => void;
+      qappMoqOpen?: (
+        owner: any,
+        rnsConnectionId: unknown,
+        publicationNamespace: unknown,
+        publicationTrack: unknown
+      ) => Promise<any>;
+      qappMoqSubscribe?: (
+        owner: any,
+        sessionId: unknown,
+        subscriptionId: unknown,
+        namespace: unknown,
+        trackName: unknown
+      ) => Promise<any>;
+      qappMoqPublish?: (
+        owner: any,
+        sessionId: unknown,
+        payload: unknown
+      ) => Promise<any>;
+      qappMoqMetrics?: (owner: any, sessionId: unknown) => Promise<any>;
+      qappMoqClose?: (owner: any, sessionId: unknown) => Promise<any>;
+      qappMoqCleanupOwner?: (owner: any) => Promise<any>;
+      onQAppMoqEvent?: (callback: (payload: any) => void) => () => void;
       /** Hidden audio-surface: proxy signing to the main shell (wallet key in-memory). */
       gcallProxySignPresenceMessage?: (
         payload: Record<string, unknown>

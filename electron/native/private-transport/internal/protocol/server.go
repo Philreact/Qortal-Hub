@@ -16,11 +16,12 @@ import (
 
 	"qortal.org/qortal-hub/private-transport/internal/innerquic"
 	masqueclient "qortal.org/qortal-hub/private-transport/internal/masque"
+	"qortal.org/qortal-hub/private-transport/internal/moqclient"
 )
 
 const (
 	Version                 = 2
-	SidecarVersion          = "0.2.0"
+	SidecarVersion          = "0.4.0"
 	MaxControlMessageBytes  = 64 * 1024
 	MaxBinaryMessageBytes   = innerquic.MaxReliablePayloadBytes
 	maxRememberedRequestIDs = 4096
@@ -46,27 +47,36 @@ type Response struct {
 	Error     *Error      `json:"error,omitempty"`
 }
 type Event struct {
-	Version      int    `json:"version"`
-	Type         string `json:"type"`
-	Event        string `json:"event"`
-	SessionID    string `json:"sessionId"`
-	MessageID    string `json:"messageId,omitempty"`
-	Code         string `json:"code,omitempty"`
-	BinaryLength int    `json:"binaryLength,omitempty"`
+	Version        int      `json:"version"`
+	Type           string   `json:"type"`
+	Event          string   `json:"event"`
+	SessionID      string   `json:"sessionId"`
+	MessageID      string   `json:"messageId,omitempty"`
+	SubscriptionID string   `json:"subscriptionId,omitempty"`
+	Namespace      []string `json:"namespace,omitempty"`
+	TrackName      string   `json:"trackName,omitempty"`
+	GroupID        uint64   `json:"groupId"`
+	ObjectID       uint64   `json:"objectId"`
+	Code           string   `json:"code,omitempty"`
+	BinaryLength   int      `json:"binaryLength,omitempty"`
 }
 
 type Server struct {
-	mu       sync.Mutex
-	tunnels  map[string]*masqueclient.Tunnel
-	sessions map[string]*innerquic.Session
-	seen     map[string]struct{}
-	seenIDs  []string
-	writeMu  sync.Mutex
-	emit     func(Event, []byte)
+	mu          sync.Mutex
+	tunnels     map[string]*masqueclient.Tunnel
+	sessions    map[string]*innerquic.Session
+	moqSessions map[string]*moqclient.Session
+	seen        map[string]struct{}
+	seenIDs     []string
+	writeMu     sync.Mutex
+	emit        func(Event, []byte)
 }
 
 func NewServer() *Server {
-	return &Server{tunnels: map[string]*masqueclient.Tunnel{}, sessions: map[string]*innerquic.Session{}, seen: map[string]struct{}{}}
+	return &Server{
+		tunnels: map[string]*masqueclient.Tunnel{}, sessions: map[string]*innerquic.Session{},
+		moqSessions: map[string]*moqclient.Session{}, seen: map[string]struct{}{},
+	}
 }
 
 func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) error {
@@ -172,7 +182,7 @@ func (s *Server) handleRequest(ctx context.Context, req Request, binary []byte) 
 	}
 	switch req.Operation {
 	case "health":
-		return success(req.RequestID, map[string]interface{}{"service": "qortal-private-transport", "sidecarVersion": SidecarVersion, "protocolVersion": Version, "innerAlpn": innerquic.ALPN}), false
+		return success(req.RequestID, map[string]interface{}{"service": "qortal-private-transport", "sidecarVersion": SidecarVersion, "protocolVersion": Version, "innerAlpn": innerquic.ALPN, "moqAlpn": moqclient.ALPN}), false
 	case "openMasqueTunnel":
 		return s.openTunnel(ctx, req), false
 	case "sendDatagram":
@@ -191,11 +201,181 @@ func (s *Server) handleRequest(ctx context.Context, req Request, binary []byte) 
 		return s.sessionMetrics(req), false
 	case "closePrivateSession":
 		return s.closePrivateSession(req), false
+	case "openMoqSession":
+		return s.openMoqSession(ctx, req), false
+	case "subscribeMoqTrack":
+		return s.subscribeMoqTrack(req), false
+	case "publishMoqObject":
+		return s.publishMoqObject(req, binary), false
+	case "moqSessionMetrics":
+		return s.moqSessionMetrics(req), false
+	case "closeMoqSession":
+		return s.closeMoqSession(req), false
 	case "shutdown":
 		return success(req.RequestID, map[string]bool{"shuttingDown": true}), true
 	default:
 		return failure(req.RequestID, "UNKNOWN_OPERATION", "unsupported operation"), false
 	}
+}
+
+type moqOpenParams struct {
+	RelayAddress         string   `json:"relayAddress"`
+	RelayServerName      string   `json:"relayServerName"`
+	RelayCertSHA256      string   `json:"relayCertSha256"`
+	BackendAddress       string   `json:"backendAddress"`
+	BackendServerName    string   `json:"backendServerName"`
+	BackendCertSHA256    string   `json:"backendCertSha256"`
+	LogicalSessionID     string   `json:"logicalSessionId"`
+	AttachToken          string   `json:"attachToken"`
+	PublicationNamespace []string `json:"publicationNamespace"`
+	PublicationTrack     string   `json:"publicationTrack"`
+	TimeoutMS            int      `json:"timeoutMs"`
+}
+
+func (s *Server) openMoqSession(ctx context.Context, req Request) Response {
+	var p moqOpenParams
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	sessionID, err := randomID("moq-")
+	if err != nil {
+		return failure(req.RequestID, "INTERNAL_ERROR", "failed to allocate MOQT session ID")
+	}
+	session, err := moqclient.Open(ctx, moqclient.Config{
+		Relay: masqueclient.Config{
+			RelayAddress: p.RelayAddress, RelayServerName: p.RelayServerName,
+			RelayCertSHA256: p.RelayCertSHA256, TargetAddress: p.BackendAddress,
+			Timeout: duration(p.TimeoutMS),
+		},
+		BackendServerName: p.BackendServerName, BackendCertSHA256: p.BackendCertSHA256,
+		LogicalSessionID: p.LogicalSessionID, AttachToken: p.AttachToken,
+		PublicationNamespace: p.PublicationNamespace, PublicationTrack: p.PublicationTrack,
+		Timeout: duration(p.TimeoutMS),
+	}, func(event moqclient.Event) { s.emitMoq(sessionID, event) })
+	if err != nil {
+		return failure(req.RequestID, moqErrorCode(err), "MOQT session establishment failed")
+	}
+	s.mu.Lock()
+	s.moqSessions[sessionID] = session
+	s.mu.Unlock()
+	return success(req.RequestID, map[string]interface{}{
+		"moqSessionId": sessionID, "logicalSessionId": p.LogicalSessionID,
+		"publicationNamespace": p.PublicationNamespace, "publicationTrack": p.PublicationTrack,
+		"applicationProtocol": moqclient.ALPN,
+	})
+}
+
+func moqErrorCode(err error) string {
+	text := err.Error()
+	if strings.Contains(text, "MASQUE_TUNNEL_FAILED") {
+		return "MASQUE_TUNNEL_FAILED"
+	}
+	if strings.Contains(text, "certificate") {
+		return "BACKEND_IDENTITY_MISMATCH"
+	}
+	for _, code := range []string{
+		"INVALID_MOQ_CONFIG", "MOQ_QUIC_FAILED", "MOQ_SESSION_FAILED",
+		"MOQ_ATTACH_FAILED", "DATAGRAM_UNSUPPORTED", "INVALID_MOQ_SUBSCRIPTION",
+		"MOQ_SUBSCRIBE_FAILED", "MOQ_SESSION_CLOSED", "MOQ_SUBSCRIPTION_LIMIT",
+		"MOQ_SUBSCRIPTION_ID_REUSED", "MOQ_OBJECT_TOO_LARGE", "MOQ_SEND_FAILED",
+	} {
+		if strings.Contains(text, code) {
+			return code
+		}
+	}
+	return "MOQ_SESSION_FAILED"
+}
+
+func (s *Server) emitMoq(sessionID string, event moqclient.Event) {
+	if s.emit == nil {
+		return
+	}
+	s.emit(Event{
+		Version: Version, Type: "event", Event: event.Kind, SessionID: sessionID,
+		SubscriptionID: event.SubscriptionID, Namespace: event.Namespace, TrackName: event.TrackName,
+		GroupID: event.GroupID, ObjectID: event.ObjectID, Code: event.Code,
+		BinaryLength: len(event.Data),
+	}, event.Data)
+}
+
+func (s *Server) subscribeMoqTrack(req Request) Response {
+	var p struct {
+		MoqSessionID   string   `json:"moqSessionId"`
+		SubscriptionID string   `json:"subscriptionId"`
+		Namespace      []string `json:"namespace"`
+		TrackName      string   `json:"trackName"`
+	}
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	session := s.getMoqSession(p.MoqSessionID)
+	if session == nil {
+		return failure(req.RequestID, "MOQ_SESSION_CLOSED", "MOQT session does not exist")
+	}
+	if err := session.Subscribe(p.SubscriptionID, p.Namespace, p.TrackName); err != nil {
+		return failure(req.RequestID, moqErrorCode(err), "MOQT subscription failed")
+	}
+	return success(req.RequestID, map[string]interface{}{
+		"subscribed": true, "subscriptionId": p.SubscriptionID,
+		"namespace": p.Namespace, "trackName": p.TrackName,
+	})
+}
+
+func (s *Server) publishMoqObject(req Request, binary []byte) Response {
+	var p struct {
+		MoqSessionID string `json:"moqSessionId"`
+	}
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	session := s.getMoqSession(p.MoqSessionID)
+	if session == nil {
+		return failure(req.RequestID, "MOQ_SESSION_CLOSED", "MOQT session does not exist")
+	}
+	if err := session.PublishObject(binary); err != nil {
+		return failure(req.RequestID, moqErrorCode(err), "MOQT object publish failed")
+	}
+	return success(req.RequestID, map[string]interface{}{
+		"accepted": true, "bytesSent": len(binary),
+	})
+}
+
+func (s *Server) moqSessionMetrics(req Request) Response {
+	var p struct {
+		MoqSessionID string `json:"moqSessionId"`
+	}
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	session := s.getMoqSession(p.MoqSessionID)
+	if session == nil {
+		return failure(req.RequestID, "MOQ_SESSION_CLOSED", "MOQT session does not exist")
+	}
+	return success(req.RequestID, session.Metrics())
+}
+
+func (s *Server) closeMoqSession(req Request) Response {
+	var p struct {
+		MoqSessionID string `json:"moqSessionId"`
+	}
+	if decodeParams(req.Params, &p) != nil {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	s.mu.Lock()
+	session := s.moqSessions[p.MoqSessionID]
+	delete(s.moqSessions, p.MoqSessionID)
+	s.mu.Unlock()
+	if session == nil {
+		return failure(req.RequestID, "MOQ_SESSION_CLOSED", "MOQT session does not exist")
+	}
+	_ = session.Close()
+	return success(req.RequestID, map[string]bool{"closed": true})
+}
+
+func (s *Server) getMoqSession(id string) *moqclient.Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.moqSessions[id]
 }
 
 type privateOpenParams struct {
@@ -406,9 +586,14 @@ func (s *Server) Close() {
 	s.mu.Lock()
 	ts := s.tunnels
 	ss := s.sessions
+	ms := s.moqSessions
 	s.tunnels = map[string]*masqueclient.Tunnel{}
 	s.sessions = map[string]*innerquic.Session{}
+	s.moqSessions = map[string]*moqclient.Session{}
 	s.mu.Unlock()
+	for _, x := range ms {
+		_ = x.Close()
+	}
 	for _, x := range ss {
 		_ = x.Close()
 	}

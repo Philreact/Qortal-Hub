@@ -435,7 +435,7 @@ export const AppViewer = forwardRef<HTMLIFrameElement, AppViewerProps>(
           tabIndex={-1}
           src={defaultUrl}
           sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-modals"
-          allow="fullscreen; clipboard-read; clipboard-write; screen-wake-lock"
+          allow="fullscreen; clipboard-read; clipboard-write; microphone; screen-wake-lock"
         ></iframe>
       </Box>
     );

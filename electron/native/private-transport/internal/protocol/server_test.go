@@ -39,6 +39,44 @@ func TestInnerErrorCodeDistinguishesRelayAndBackendCertificates(t *testing.T) {
 	}
 }
 
+func TestMoqErrorCodeDistinguishesRelayAndBackendCertificates(t *testing.T) {
+	if got := moqErrorCode(errors.New("MASQUE_TUNNEL_FAILED: relay certificate pin mismatch")); got != "MASQUE_TUNNEL_FAILED" {
+		t.Fatalf("relay error mapped to %q", got)
+	}
+	if got := moqErrorCode(errors.New("MOQ_QUIC_FAILED: backend certificate pin mismatch")); got != "BACKEND_IDENTITY_MISMATCH" {
+		t.Fatalf("backend error mapped to %q", got)
+	}
+}
+
+func TestMoqOperationsRejectUnknownSessions(t *testing.T) {
+	server := NewServer()
+	for index, request := range []string{
+		`{"version":2,"requestId":"subscribe","operation":"subscribeMoqTrack","params":{"moqSessionId":"missing","subscriptionId":"subscription-1","namespace":["qortal","apps"],"trackName":"realtime"}}`,
+		`{"version":2,"requestId":"publish","operation":"publishMoqObject","params":{"moqSessionId":"missing"}}`,
+		`{"version":2,"requestId":"metrics","operation":"moqSessionMetrics","params":{"moqSessionId":"missing"}}`,
+		`{"version":2,"requestId":"close","operation":"closeMoqSession","params":{"moqSessionId":"missing"}}`,
+	} {
+		response, shutdown := server.Handle(context.Background(), []byte(request))
+		if shutdown || response.OK || response.Error == nil || response.Error.Code != "MOQ_SESSION_CLOSED" {
+			t.Fatalf("request %d did not fail closed: %#v", index, response)
+		}
+	}
+}
+
+func TestAudioSpecificMoqOperationsAreNotAvailable(t *testing.T) {
+	for _, operation := range []string{
+		"openCallMediaSession", "subscribeCallMediaTrack", "publishCallMediaDatagram",
+		"setCallMediaSendKey", "setCallMediaReceiveKey", "removeCallMediaReceiveKey",
+		"publishCallAudioFrame", "callMediaSessionMetrics", "closeCallMediaSession",
+	} {
+		request := `{"version":2,"requestId":"old-` + operation + `","operation":"` + operation + `","params":{}}`
+		response, shutdown := NewServer().Handle(context.Background(), []byte(request))
+		if shutdown || response.OK || response.Error == nil || response.Error.Code != "UNKNOWN_OPERATION" {
+			t.Fatalf("operation %q did not fail closed: %#v", operation, response)
+		}
+	}
+}
+
 func TestDuplicateRequestIDFails(t *testing.T) {
 	server := NewServer()
 	request := []byte(`{"version":2,"requestId":"same","operation":"health"}`)

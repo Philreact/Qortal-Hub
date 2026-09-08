@@ -142,9 +142,11 @@ import {
   PrivateChannelManager,
 } from './private-channel-manager';
 import {
+  createMoqTransport,
   getPrivateTransportFactory,
   shutdownPrivateTransportSidecar,
 } from './private-transport-runtime';
+import { QAppMoqError, QAppMoqTransportManager } from './moq-transport-manager';
 import { attachReticulumStatusBridgeEvents } from './reticulum-daemon';
 import {
   startReticulumMeshCoordinator,
@@ -2843,6 +2845,8 @@ export function stopReticulumManagers(): void {
   stopPresenceManager();
   privateChannelManager?.destroy();
   privateChannelManager = null;
+  qAppMoqTransportManager?.destroy();
+  qAppMoqTransportManager = null;
   void shutdownPrivateTransportSidecar();
   qAppReticulumManager?.destroy();
   qAppReticulumManager = null;
@@ -2853,6 +2857,7 @@ export function stopReticulumManagers(): void {
 
 let qAppReticulumManager: QAppReticulumManager | null = null;
 let privateChannelManager: PrivateChannelManager | null = null;
+let qAppMoqTransportManager: QAppMoqTransportManager | null = null;
 let qAppReticulumBridge: ReturnType<typeof getReticulumBridge> = null;
 const qAppReticulumNativeListeners = new Set<
   (event: QAppReticulumNativeEvent) => void
@@ -2890,9 +2895,8 @@ function getPrivateChannelManager(): PrivateChannelManager {
   privateChannelManager = new PrivateChannelManager(
     (owner, connectionId) =>
       getQAppReticulumManager().connectionOwnership(owner, connectionId),
-    getPrivateTransportFactory(
-      getQAppReticulumManager(),
-      () => getReticulumBridge()
+    getPrivateTransportFactory(getQAppReticulumManager(), () =>
+      getReticulumBridge()
     )
   );
   privateChannelManager.on('event', (event) => {
@@ -2900,6 +2904,23 @@ function getPrivateChannelManager(): PrivateChannelManager {
     if (!win.isDestroyed()) win.webContents.send('privateChannel:event', event);
   });
   return privateChannelManager;
+}
+
+function getQAppMoqTransportManager(): QAppMoqTransportManager {
+  if (qAppMoqTransportManager) return qAppMoqTransportManager;
+  qAppMoqTransportManager = new QAppMoqTransportManager(
+    (owner, connectionId) =>
+      getQAppReticulumManager().connectionOwnership(owner, connectionId),
+    (emit) =>
+      createMoqTransport(emit, getQAppReticulumManager(), () =>
+        getReticulumBridge()
+      )
+  );
+  qAppMoqTransportManager.on('event', (event) => {
+    const win = myCapacitorApp.getMainWindow();
+    if (!win.isDestroyed()) win.webContents.send('qappMoq:event', event);
+  });
+  return qAppMoqTransportManager;
 }
 
 function validateQAppReticulumIpcSender(
@@ -2937,6 +2958,7 @@ ipcMain.handle(
   async (event, owner: QAppReticulumOwner, connectionId: string) => {
     validateQAppReticulumIpcSender(event);
     await privateChannelManager?.cleanupRnsConnection(owner, connectionId);
+    await qAppMoqTransportManager?.cleanupRnsConnection(owner, connectionId);
     await getQAppReticulumManager().close(owner, connectionId);
     return true;
   }
@@ -2946,8 +2968,108 @@ ipcMain.handle(
   async (event, owner: QAppReticulumOwner) => {
     validateQAppReticulumIpcSender(event);
     await privateChannelManager?.cleanupOwner(owner);
+    await qAppMoqTransportManager?.cleanupOwner(owner);
     await getQAppReticulumManager().cleanupOwner(owner);
     return true;
+  }
+);
+
+async function qAppMoqIpcResult<T>(
+  operation: () => Promise<T> | T
+): Promise<
+  | { ok: true; value: T }
+  | { ok: false; error: { code: string; message: string } }
+> {
+  try {
+    return { ok: true, value: await operation() };
+  } catch (error) {
+    const code = error instanceof QAppMoqError ? error.code : 'MOQ_ERROR';
+    return { ok: false, error: { code, message: code } };
+  }
+}
+
+ipcMain.handle(
+  'qappMoq:open',
+  async (
+    event,
+    owner: QAppReticulumOwner,
+    rnsConnectionId: unknown,
+    publicationNamespace: unknown,
+    publicationTrack: unknown
+  ) => {
+    validatePrivateChannelIpcSender(event);
+    return qAppMoqIpcResult(() =>
+      getQAppMoqTransportManager().open(
+        owner,
+        rnsConnectionId,
+        publicationNamespace,
+        publicationTrack
+      )
+    );
+  }
+);
+ipcMain.handle(
+  'qappMoq:subscribe',
+  async (
+    event,
+    owner: QAppReticulumOwner,
+    sessionId: unknown,
+    subscriptionId: unknown,
+    namespace: unknown,
+    trackName: unknown
+  ) => {
+    validatePrivateChannelIpcSender(event);
+    return qAppMoqIpcResult(() =>
+      getQAppMoqTransportManager().subscribe(
+        owner,
+        sessionId,
+        subscriptionId,
+        namespace,
+        trackName
+      )
+    );
+  }
+);
+ipcMain.handle(
+  'qappMoq:publish',
+  async (
+    event,
+    owner: QAppReticulumOwner,
+    sessionId: unknown,
+    payload: unknown
+  ) => {
+    validatePrivateChannelIpcSender(event);
+    return qAppMoqIpcResult(() =>
+      getQAppMoqTransportManager().publish(owner, sessionId, payload)
+    );
+  }
+);
+ipcMain.handle(
+  'qappMoq:metrics',
+  (event, owner: QAppReticulumOwner, sessionId: unknown) => {
+    validatePrivateChannelIpcSender(event);
+    return qAppMoqIpcResult(() =>
+      getQAppMoqTransportManager().metrics(owner, sessionId)
+    );
+  }
+);
+ipcMain.handle(
+  'qappMoq:close',
+  async (event, owner: QAppReticulumOwner, sessionId: unknown) => {
+    validatePrivateChannelIpcSender(event);
+    return qAppMoqIpcResult(() =>
+      getQAppMoqTransportManager().close(owner, sessionId)
+    );
+  }
+);
+ipcMain.handle(
+  'qappMoq:cleanupOwner',
+  async (event, owner: QAppReticulumOwner) => {
+    validatePrivateChannelIpcSender(event);
+    return qAppMoqIpcResult(async () => {
+      await qAppMoqTransportManager?.cleanupOwner(owner);
+      return true;
+    });
   }
 );
 

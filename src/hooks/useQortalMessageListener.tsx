@@ -25,6 +25,10 @@ import {
   dispatchQAppPrivateChannelRequest,
   isQAppPrivateChannelAction,
 } from '../qortal/qapp-private-channel-request';
+import {
+  dispatchQAppMoqRequest,
+  isQAppMoqAction,
+} from '../qortal/qapp-moq-request';
 import { normalizeQappIdentityContext } from '../qortal/qapp-identity';
 import { serializeQortalRequestError } from '../qortal/qortal-request-errors';
 
@@ -196,6 +200,11 @@ export const listOfAllQortalRequests = [
   'PRIVATE_CHANNEL_OPEN',
   'PRIVATE_CHANNEL_SEND',
   'PRIVATE_CHANNEL_STATUS',
+  'MOQ_OBJECT_PUBLISH',
+  'MOQ_SESSION_CLOSE',
+  'MOQ_SESSION_METRICS',
+  'MOQ_SESSION_OPEN',
+  'MOQ_TRACK_SUBSCRIBE',
   'ADD_FOREIGN_SERVER',
   'ADD_GROUP_ADMIN',
   'ADD_LIST_ITEMS',
@@ -312,6 +321,11 @@ export const UIQortalRequests = [
   'PRIVATE_CHANNEL_OPEN',
   'PRIVATE_CHANNEL_SEND',
   'PRIVATE_CHANNEL_STATUS',
+  'MOQ_OBJECT_PUBLISH',
+  'MOQ_SESSION_CLOSE',
+  'MOQ_SESSION_METRICS',
+  'MOQ_SESSION_OPEN',
+  'MOQ_TRACK_SUBSCRIBE',
   'ADD_FOREIGN_SERVER',
   'ADD_GROUP_ADMIN',
   'ADD_LIST_ITEMS',
@@ -792,17 +806,19 @@ export const useQortalMessageListener = (
           ? dispatchQAppReticulumRequest(message.payload, requestContext)
           : isQAppPrivateChannelAction(message?.action)
             ? dispatchQAppPrivateChannelRequest(message.payload, requestContext)
-            : window.sendMessage(
-                message.action,
-                message.payload,
-                timeout,
-                message.isExtension,
-                {
-                  name: appName,
-                  service: appService,
-                  tabId,
-                }
-              );
+            : isQAppMoqAction(message?.action)
+              ? dispatchQAppMoqRequest(message.payload, requestContext)
+              : window.sendMessage(
+                  message.action,
+                  message.payload,
+                  timeout,
+                  message.isExtension,
+                  {
+                    name: appName,
+                    service: appService,
+                    tabId,
+                  }
+                );
 
         // Store the promise for deduplication
         if (isDeduplicable) {
@@ -1064,6 +1080,39 @@ export const useQortalMessageListener = (
         targetOrigin
       );
     });
+    const unsubscribeMoq = api.onQAppMoqEvent?.((payload) => {
+      if (payload?.ownerKey !== expectedOwnerKey || !iframe.contentWindow)
+        return;
+      let targetOrigin: string;
+      try {
+        targetOrigin = new URL(iframe.src).origin;
+      } catch {
+        return;
+      }
+      iframe.contentWindow.postMessage(
+        {
+          action: payload.action,
+          sessionId: payload.sessionId,
+          ...(payload.action === 'MOQ_OBJECT'
+            ? {
+                subscriptionId: payload.subscriptionId,
+                namespace: payload.namespace,
+                trackName: payload.trackName,
+                groupId: payload.groupId,
+                objectId: payload.objectId,
+                payload: payload.payload,
+              }
+            : payload.action === 'MOQ_ERROR'
+              ? {
+                  subscriptionId: payload.subscriptionId,
+                  code: payload.code,
+                }
+              : { state: payload.state }),
+          requestedHandler: 'UI',
+        },
+        targetOrigin
+      );
+    });
     const handleLoad = () => {
       if (!hasLoadedFrameRef.current) {
         hasLoadedFrameRef.current = true;
@@ -1071,14 +1120,17 @@ export const useQortalMessageListener = (
       }
       void api.qappReticulumCleanupOwner?.(owner);
       void api.privateChannelCleanupOwner?.(owner);
+      void api.qappMoqCleanupOwner?.(owner);
     };
     iframe.addEventListener('load', handleLoad);
     return () => {
       unsubscribe?.();
       unsubscribePrivateChannel?.();
+      unsubscribeMoq?.();
       iframe.removeEventListener('load', handleLoad);
       void api.qappReticulumCleanupOwner?.(owner);
       void api.privateChannelCleanupOwner?.(owner);
+      void api.qappMoqCleanupOwner?.(owner);
     };
   }, [appName, appService, iframeRef, tabId]);
 

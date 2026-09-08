@@ -5,7 +5,18 @@ import { EventEmitter } from 'events';
 import path from 'path';
 
 export const PRIVATE_TRANSPORT_PROTOCOL_VERSION = 2;
-export const PRIVATE_TRANSPORT_SIDECAR_VERSION = '0.2.0';
+export const PRIVATE_TRANSPORT_SIDECAR_VERSION = '0.4.0';
+export const MAX_MOQ_OBJECT_BYTES = 1024;
+const MOQ_NAME = /^[A-Za-z0-9._-]{1,128}$/;
+
+function validMoqNamespace(namespace: readonly string[]): boolean {
+  return (
+    namespace.length >= 1 &&
+    namespace.length <= 8 &&
+    namespace.every((component) => MOQ_NAME.test(component)) &&
+    namespace.reduce((total, component) => total + component.length, 0) <= 512
+  );
+}
 const MAX_RESPONSE_LINE_BYTES = 64 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 7_000;
 
@@ -41,10 +52,37 @@ export type PrivateSessionConfig = Readonly<{
   timeoutMs?: number;
 }>;
 
+export type MoqSessionConfig = Readonly<{
+  relayAddress: string;
+  relayServerName: string;
+  relayCertSha256: string;
+  backendAddress: string;
+  backendServerName: string;
+  backendCertSha256: string;
+  logicalSessionId: string;
+  attachToken: string;
+  publicationNamespace: readonly string[];
+  publicationTrack: string;
+  timeoutMs?: number;
+}>;
+
+export type MoqSessionInfo = Readonly<{
+  moqSessionId: string;
+  logicalSessionId: string;
+  publicationNamespace: string[];
+  publicationTrack: string;
+  applicationProtocol: 'moqt-18';
+}>;
+
 export type PrivateTransportSidecarEvent = {
-  event: 'reliableMessage' | 'datagram' | 'error';
+  event: 'reliableMessage' | 'datagram' | 'object' | 'error';
   sessionId: string;
   messageId?: string;
+  subscriptionId?: string;
+  namespace?: string[];
+  trackName?: string;
+  groupId?: number;
+  objectId?: number;
   code?: string;
   data: Buffer;
 };
@@ -60,6 +98,11 @@ type SidecarOperation =
   | 'sendPrivateDatagram'
   | 'sessionMetrics'
   | 'closePrivateSession'
+  | 'openMoqSession'
+  | 'subscribeMoqTrack'
+  | 'publishMoqObject'
+  | 'moqSessionMetrics'
+  | 'closeMoqSession'
   | 'shutdown';
 
 type SidecarResponse = {
@@ -72,6 +115,11 @@ type SidecarResponse = {
   event?: unknown;
   sessionId?: unknown;
   messageId?: unknown;
+  subscriptionId?: unknown;
+  namespace?: unknown;
+  trackName?: unknown;
+  groupId?: unknown;
+  objectId?: unknown;
   code?: unknown;
   binaryLength?: unknown;
 };
@@ -154,6 +202,7 @@ export class PrivateTransportSidecar extends EventEmitter {
     sidecarVersion: string;
     protocolVersion: number;
     innerAlpn?: string;
+    moqAlpn?: string;
   }> {
     const result = await this.request('health', {});
     return result as {
@@ -161,6 +210,7 @@ export class PrivateTransportSidecar extends EventEmitter {
       sidecarVersion: string;
       protocolVersion: number;
       innerAlpn?: string;
+      moqAlpn?: string;
     };
   }
 
@@ -262,6 +312,84 @@ export class PrivateTransportSidecar extends EventEmitter {
     if (this.child) await this.request('closePrivateSession', { sessionId });
   }
 
+  async openMoqSession(config: MoqSessionConfig): Promise<MoqSessionInfo> {
+    if (
+      !validMoqNamespace(config.publicationNamespace) ||
+      !MOQ_NAME.test(config.publicationTrack)
+    ) {
+      throw new PrivateTransportSidecarError('INVALID_MOQ_CONFIG');
+    }
+    await this.start();
+    const result = (await this.request('openMoqSession', config)) as Record<
+      string,
+      unknown
+    >;
+    if (
+      typeof result?.moqSessionId !== 'string' ||
+      !result.moqSessionId.startsWith('moq-') ||
+      typeof result?.logicalSessionId !== 'string' ||
+      !Array.isArray(result?.publicationNamespace) ||
+      result.publicationNamespace.length !==
+        config.publicationNamespace.length ||
+      !result.publicationNamespace.every(
+        (component, index) => component === config.publicationNamespace[index]
+      ) ||
+      result?.publicationTrack !== config.publicationTrack ||
+      result?.applicationProtocol !== 'moqt-18'
+    ) {
+      throw new PrivateTransportSidecarError('MALFORMED_RESPONSE');
+    }
+    return result as MoqSessionInfo;
+  }
+
+  async subscribeMoqTrack(
+    moqSessionId: string,
+    subscriptionId: string,
+    namespace: readonly string[],
+    trackName: string
+  ): Promise<void> {
+    if (
+      !MOQ_NAME.test(subscriptionId) ||
+      !validMoqNamespace(namespace) ||
+      !MOQ_NAME.test(trackName)
+    ) {
+      throw new PrivateTransportSidecarError('INVALID_MOQ_SUBSCRIPTION');
+    }
+    await this.request('subscribeMoqTrack', {
+      moqSessionId,
+      subscriptionId,
+      namespace,
+      trackName,
+    });
+  }
+
+  async publishMoqObject(
+    moqSessionId: string,
+    payload: Uint8Array
+  ): Promise<void> {
+    if (payload.byteLength < 1 || payload.byteLength > MAX_MOQ_OBJECT_BYTES) {
+      throw new PrivateTransportSidecarError('MOQ_OBJECT_TOO_LARGE');
+    }
+    await this.request(
+      'publishMoqObject',
+      { moqSessionId },
+      undefined,
+      payload
+    );
+  }
+
+  async moqSessionMetrics(
+    moqSessionId: string
+  ): Promise<Record<string, number>> {
+    return (await this.request('moqSessionMetrics', {
+      moqSessionId,
+    })) as Record<string, number>;
+  }
+
+  async closeMoqSession(moqSessionId: string): Promise<void> {
+    if (this.child) await this.request('closeMoqSession', { moqSessionId });
+  }
+
   async shutdown(): Promise<void> {
     const child = this.child;
     if (!child) return;
@@ -314,7 +442,9 @@ export class PrivateTransportSidecar extends EventEmitter {
       if (
         health.service !== 'qortal-private-transport' ||
         health.sidecarVersion !== PRIVATE_TRANSPORT_SIDECAR_VERSION ||
-        health.protocolVersion !== PRIVATE_TRANSPORT_PROTOCOL_VERSION
+        health.protocolVersion !== PRIVATE_TRANSPORT_PROTOCOL_VERSION ||
+        health.innerAlpn !== 'qortal-private/1' ||
+        health.moqAlpn !== 'moqt-18'
       ) {
         throw new PrivateTransportSidecarError('SIDECAR_VERSION_MISMATCH');
       }
@@ -412,8 +542,15 @@ export class PrivateTransportSidecar extends EventEmitter {
         if (
           response.version !== PRIVATE_TRANSPORT_PROTOCOL_VERSION ||
           typeof response.event !== 'string' ||
-          !['reliableMessage', 'datagram', 'error'].includes(response.event) ||
+          !['reliableMessage', 'datagram', 'object', 'error'].includes(
+            response.event
+          ) ||
           typeof response.sessionId !== 'string' ||
+          (response.namespace !== undefined &&
+            (!Array.isArray(response.namespace) ||
+              !response.namespace.every(
+                (component) => typeof component === 'string'
+              ))) ||
           (response.binaryLength !== undefined &&
             (!Number.isInteger(response.binaryLength) ||
               (response.binaryLength as number) < 0 ||
@@ -428,6 +565,29 @@ export class PrivateTransportSidecar extends EventEmitter {
           messageId:
             typeof response.messageId === 'string'
               ? response.messageId
+              : undefined,
+          subscriptionId:
+            typeof response.subscriptionId === 'string'
+              ? response.subscriptionId
+              : undefined,
+          namespace: Array.isArray(response.namespace)
+            ? (response.namespace as string[])
+            : undefined,
+          trackName:
+            typeof response.trackName === 'string'
+              ? response.trackName
+              : undefined,
+          groupId:
+            typeof response.groupId === 'number' &&
+            Number.isSafeInteger(response.groupId) &&
+            response.groupId >= 0
+              ? response.groupId
+              : undefined,
+          objectId:
+            typeof response.objectId === 'number' &&
+            Number.isSafeInteger(response.objectId) &&
+            response.objectId >= 0
+              ? response.objectId
               : undefined,
           code: typeof response.code === 'string' ? response.code : undefined,
           binaryLength: Number(response.binaryLength ?? 0),

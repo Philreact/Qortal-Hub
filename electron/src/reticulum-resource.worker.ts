@@ -54,11 +54,20 @@ export type ReticulumResourceWorkerTask =
     };
 
 export type ReticulumResourceWorkerTaskInput =
-  | Omit<Extract<ReticulumResourceWorkerTask, { kind: 'finalize_resource' }>, 'id'>
+  | Omit<
+      Extract<ReticulumResourceWorkerTask, { kind: 'finalize_resource' }>,
+      'id'
+    >
   | Omit<Extract<ReticulumResourceWorkerTask, { kind: 'delete_paths' }>, 'id'>
   | Omit<Extract<ReticulumResourceWorkerTask, { kind: 'hash_file' }>, 'id'>
-  | Omit<Extract<ReticulumResourceWorkerTask, { kind: 'read_and_hash_file' }>, 'id'>
-  | Omit<Extract<ReticulumResourceWorkerTask, { kind: 'write_range_file' }>, 'id'>
+  | Omit<
+      Extract<ReticulumResourceWorkerTask, { kind: 'read_and_hash_file' }>,
+      'id'
+    >
+  | Omit<
+      Extract<ReticulumResourceWorkerTask, { kind: 'write_range_file' }>,
+      'id'
+    >
   | Omit<Extract<ReticulumResourceWorkerTask, { kind: 'inspect_paths' }>, 'id'>;
 
 export type ReticulumResourceWorkerResult =
@@ -186,7 +195,8 @@ export function writeReticulumResourceRange(
     while (remaining > 0) {
       const readSize = Math.min(buffer.length, remaining);
       const bytesRead = fs.readSync(source, buffer, 0, readSize, offset);
-      if (bytesRead <= 0) throw new Error('Unexpected EOF while reading resource range');
+      if (bytesRead <= 0)
+        throw new Error('Unexpected EOF while reading resource range');
       const slice = buffer.subarray(0, bytesRead);
       fs.writeSync(output, slice);
       hash.update(slice);
@@ -218,15 +228,20 @@ parentPort?.on('message', (task: ReticulumResourceWorkerTask) => {
     }
     if (task.kind === 'read_and_hash_file') {
       const { bytes, hash } = readAndHashReticulumResourceFile(task.path);
+      // Own the exact ArrayBuffer sent to the parent. Node Buffers may expose
+      // ArrayBufferLike (including pooled/shared backing), which is not a safe
+      // transferable and also fails Electron's Transferable contract.
+      const transferableBytes = new Uint8Array(bytes.byteLength);
+      transferableBytes.set(bytes);
       const result = {
         id: task.id,
         kind: task.kind,
         ok: true,
-        bytes,
+        bytes: transferableBytes,
         hash,
         durationMs: Date.now() - startedAt,
       } satisfies ReticulumResourceWorkerResult;
-      parentPort?.postMessage(result, [bytes.buffer]);
+      parentPort?.postMessage(result, [transferableBytes.buffer]);
       return;
     }
     if (task.kind === 'write_range_file') {
@@ -261,7 +276,8 @@ parentPort?.on('message', (task: ReticulumResourceWorkerTask) => {
             stat.isFile() &&
             stat.size === entry.expectedSize &&
             (entry.expectComplete ||
-              hashReticulumResourceFile(entry.assembledPath) === entry.expectedHash);
+              hashReticulumResourceFile(entry.assembledPath) ===
+                entry.expectedHash);
         } catch {
           assembledValid = false;
         }
