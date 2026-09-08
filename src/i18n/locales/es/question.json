@@ -13,6 +13,17 @@
   "deploy_at": "¿Desea implementar este AT?",
   "description": "descripción: {{ description }}",
   "download_file": "¿Desea descargar:",
+  "local_send": {
+    "changed": "La cartera, el nodo o los fondos disponibles han cambiado. Revisa el pago de nuevo.",
+    "declined": "Pago rechazado.",
+    "invalid": "No se puede preparar este pago de forma segura. Comprueba la dirección, el importe, el saldo, la comisión y la conexión al nodo.",
+    "native_body": "Cartera: {{wallet}}\n\nSalidas:\n{{outputs}}\n\nComisión de red: {{fee}}",
+    "native_title": "Confirmar pago de la cartera",
+    "pending": "Es necesario comprobar un pago anterior antes de enviar otro. Transacción: {{txId}}",
+    "recovery": "Un pago autorizado anteriormente sigue pendiente. ¿Volver a transmitir esa misma transacción? Esto no enviará el nuevo pago solicitado.",
+    "unknown": "Se desconoce el resultado de la transmisión. No vuelvas a enviar el pago. Comprueba la transacción {{txId}} en el historial de la cartera.",
+    "upgrade": "La firma local de transacciones de la cartera requiere versiones actualizadas de Qortal Core y Qortal Hub."
+  },
   "message": {
     "error": {
       "add_to_list": "no se pudo agregar a la lista",

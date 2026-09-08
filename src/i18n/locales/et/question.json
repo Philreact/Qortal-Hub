@@ -13,6 +13,17 @@
   "deploy_at": "kas sa soovid seda AT-d (automaatset tehingut) käivitada?",
   "description": "kirjeldus: {{ description }}",
   "download_file": "kas sa soovid allalaadida:",
+  "local_send": {
+    "changed": "Rahakott, sõlm või saadaolevad vahendid on muutunud. Vaata makse uuesti üle.",
+    "declined": "Makse tagasi lükatud.",
+    "invalid": "Makset ei saa turvaliselt ette valmistada. Kontrolli aadressi, summat, saldot, tasu ja ühendust sõlmega.",
+    "native_body": "Rahakott: {{wallet}}\n\nVäljundid:\n{{outputs}}\n\nVõrgutasu: {{fee}}",
+    "native_title": "Kinnita rahakoti makse",
+    "pending": "Enne uue makse saatmist tuleb eelmine makse üle kontrollida. Tehing: {{txId}}",
+    "recovery": "Varem kinnitatud makse on endiselt ootel. Kas edastada sama tehing uuesti võrku? See ei saada sinu taotletud uut makset.",
+    "unknown": "Edastamise tulemus pole teada. Ära saada uuesti. Kontrolli tehingut {{txId}} rahakoti ajaloos.",
+    "upgrade": "Rahakoti tehingute kohalik allkirjastamine nõuab Qortal Core’i ja Qortal Hubi uuendatud versioone."
+  },
   "message": {
     "error": {
       "add_to_list": "nimekirja lisamine ebaõnnestus",

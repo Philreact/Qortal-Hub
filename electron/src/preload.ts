@@ -1014,6 +1014,22 @@ try {
   });
 
   // Generic persistent store (persistent-store.json, in-memory cache + debounced writes in main)
+  contextBridge.exposeInMainWorld('foreignWalletSigner', {
+    importKeys: (keys: Record<string, unknown>) =>
+      ipcRenderer.invoke('foreignWalletSigner:import', keys),
+    publicKey: (coin: string) =>
+      ipcRenderer.invoke('foreignWalletSigner:publicKey', coin),
+    clear: () => ipcRenderer.invoke('foreignWalletSigner:clear'),
+    sign: (request: unknown, language: string) =>
+      ipcRenderer.invoke('foreignWalletSigner:sign', request, language),
+  });
+  contextBridge.exposeInMainWorld('foreignWalletJournal', {
+    get: (key: string) => ipcRenderer.invoke('foreignWalletJournal:get', key),
+    set: (key: string, value: string) =>
+      ipcRenderer.invoke('foreignWalletJournal:set', key, value),
+    delete: (key: string, txId: string) =>
+      ipcRenderer.invoke('foreignWalletJournal:delete', key, txId),
+  });
   contextBridge.exposeInMainWorld('appStorage', {
     get: async (key) => {
       return ipcRenderer.invoke('persistentStore:get', key);

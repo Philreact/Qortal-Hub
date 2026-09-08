@@ -13,6 +13,17 @@
   "deploy_at": "vuoi distribuire questo AT?",
   "description": "descrizione: {{ description }}",
   "download_file": "vuoi scaricare:",
+  "local_send": {
+    "changed": "Il portafoglio, il nodo o i fondi disponibili sono cambiati. Controlla nuovamente il pagamento.",
+    "declined": "Pagamento rifiutato.",
+    "invalid": "Impossibile preparare questo pagamento in sicurezza. Controlla indirizzo, importo, saldo, commissione e connessione al nodo.",
+    "native_body": "Portafoglio: {{wallet}}\n\nUscite:\n{{outputs}}\n\nCommissione di rete: {{fee}}",
+    "native_title": "Conferma il pagamento dal portafoglio",
+    "pending": "Un pagamento precedente deve essere verificato prima di inviarne un altro. Transazione: {{txId}}",
+    "recovery": "Un pagamento autorizzato in precedenza è ancora in sospeso. Vuoi ritrasmettere la stessa transazione? Il nuovo pagamento richiesto non verrà inviato.",
+    "unknown": "L’esito della trasmissione è sconosciuto. Non inviare di nuovo. Controlla la transazione {{txId}} nella cronologia del portafoglio.",
+    "upgrade": "La firma locale delle transazioni del portafoglio richiede versioni aggiornate di Qortal Core e Qortal Hub."
+  },
   "message": {
     "error": {
       "add_to_list": "impossibile aggiungere alla lista",

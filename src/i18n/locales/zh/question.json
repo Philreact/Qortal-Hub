@@ -13,6 +13,17 @@
   "deploy_at": "您想部署此AT吗？",
   "description": "描述：{{ description }}",
   "download_file": "您想下载以下内容：",
+  "local_send": {
+    "changed": "钱包、节点或可用资金已发生变化。请重新检查付款。",
+    "declined": "付款已拒绝。",
+    "invalid": "无法安全地准备此付款。请检查地址、金额、余额、手续费和节点连接。",
+    "native_body": "钱包：{{wallet}}\n\n输出：\n{{outputs}}\n\n网络手续费：{{fee}}",
+    "native_title": "确认钱包付款",
+    "pending": "发送下一笔付款前，需要核实之前的付款。交易：{{txId}}",
+    "recovery": "之前批准的付款仍在等待处理。是否重新广播同一笔交易？这不会发送您新请求的付款。",
+    "unknown": "广播结果未知。请勿再次发送。请在钱包历史记录中检查交易{{txId}}。",
+    "upgrade": "在本地签署钱包交易需要更新至新版Qortal Core和Qortal Hub。"
+  },
   "message": {
     "error": {
       "add_to_list": "添加到列表失败",

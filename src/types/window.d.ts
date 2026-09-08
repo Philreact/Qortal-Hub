@@ -84,6 +84,25 @@ declare global {
       isExtension?: unknown,
       appInfo?: unknown
     ) => Promise<unknown>;
+    foreignWalletSigner?: {
+      importKeys: (
+        keys: Record<string, unknown>
+      ) => Promise<Record<string, string>>;
+      publicKey: (coin: string) => Promise<string>;
+      clear: () => Promise<void>;
+      sign: (
+        request: import('../lib/foreign-wallet/desktop-engine').DesktopSignRequest,
+        language: string
+      ) => Promise<{
+        signed?: import('../lib/foreign-wallet/foreign-wallet-transaction').ForeignWalletSignedTransaction;
+        error?: 'invalid' | 'changed' | 'declined' | 'pending';
+      }>;
+    };
+    foreignWalletJournal?: {
+      get: (key: string) => Promise<string | null>;
+      set: (key: string, value: string) => Promise<void>;
+      delete: (key: string, txId: string) => Promise<void>;
+    };
     appStorage?: {
       get: (key: string) => Promise<unknown>;
       set: (key: string, value: unknown) => Promise<void>;

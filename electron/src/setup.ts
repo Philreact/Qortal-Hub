@@ -1,3 +1,10 @@
+import {
+  clearForeignWalletSigner,
+  importForeignWalletKeys,
+  foreignWalletPublicKey,
+  signForeignWalletPayment,
+} from './foreign-wallet-signer';
+import { createForeignWalletJournal } from './foreign-wallet-journal';
 import type { CapacitorElectronConfig } from '@capacitor-community/electron';
 import {
   CapElectronEventEmitter,
@@ -1707,6 +1714,76 @@ export function flushPersistentStore(): void {
 export function flushMiscPersistentStore(): void {
   miscPersistentStore.flush();
 }
+
+let foreignSignerOwner: number | null = null;
+function requireForeignWalletHost(event: Electron.IpcMainInvokeEvent) {
+  if (
+    !isMainShellSender(event.sender) ||
+    event.senderFrame !== event.sender.mainFrame
+  )
+    throw new Error('Wallet signer is restricted to the main frame');
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  if (!parent) throw new Error('Wallet window unavailable');
+  return parent;
+}
+ipcMain.handle('foreignWalletSigner:import', (event, keys) => {
+  requireForeignWalletHost(event);
+  const publicKeys = importForeignWalletKeys(keys);
+  foreignSignerOwner = event.sender.id;
+  return publicKeys;
+});
+ipcMain.handle('foreignWalletSigner:publicKey', (event, coin) => {
+  requireForeignWalletHost(event);
+  return foreignWalletPublicKey(coin);
+});
+ipcMain.handle('foreignWalletSigner:clear', (event) => {
+  requireForeignWalletHost(event);
+  clearForeignWalletSigner();
+});
+ipcMain.handle('foreignWalletSigner:sign', (event, request) => {
+  requireForeignWalletHost(event);
+  return signForeignWalletPayment(request);
+});
+app.on('before-quit', clearForeignWalletSigner);
+app.on('web-contents-created', (_event, contents) => {
+  const contentsId = contents.id;
+  const clearIfHost = () => {
+    if (foreignSignerOwner === contentsId) clearForeignWalletSigner();
+  };
+  contents.on(
+    'did-start-navigation',
+    (_event, _url, isInPlace, isMainFrame) => {
+      if (isMainFrame && !isInPlace) clearIfHost();
+    }
+  );
+  contents.on('render-process-gone', clearIfHost);
+  contents.on('destroyed', clearIfHost);
+});
+
+let foreignWalletJournal: ReturnType<typeof createForeignWalletJournal>;
+function getForeignWalletJournal(event: Electron.IpcMainInvokeEvent) {
+  if (
+    !isMainShellSender(event.sender) ||
+    event.senderFrame !== event.sender.mainFrame
+  )
+    throw new Error('Foreign wallet journal is restricted to the main frame');
+  return (foreignWalletJournal ??= createForeignWalletJournal(
+    path.join(app.getPath('appData'), 'qortal-hub', 'foreign-wallet-journal')
+  ));
+}
+ipcMain.handle('foreignWalletJournal:get', (event, key: string) =>
+  getForeignWalletJournal(event).get(key)
+);
+ipcMain.handle(
+  'foreignWalletJournal:set',
+  (event, key: string, value: string) =>
+    getForeignWalletJournal(event).set(key, value)
+);
+ipcMain.handle(
+  'foreignWalletJournal:delete',
+  (event, key: string, txId: string) =>
+    getForeignWalletJournal(event).delete(key, txId)
+);
 
 ipcMain.handle('persistentStore:get', async (_event, key: string) =>
   persistentStore.get(key)

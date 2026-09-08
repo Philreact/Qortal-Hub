@@ -255,20 +255,18 @@ export const clearAllQueues = () => {
 };
 
 export const getForeignKey = async (foreignBlockchain) => {
+  if (
+    ['BITCOIN', 'LITECOIN', 'DOGECOIN', 'DIGIBYTE', 'RAVENCOIN'].includes(
+      foreignBlockchain
+    )
+  ) {
+    throw new Error(i18n.t('question:local_send.upgrade'));
+  }
+
   const resKeyPair = await getKeyPair();
   const parsedData = resKeyPair;
 
   switch (foreignBlockchain) {
-    case 'LITECOIN':
-      return parsedData.ltcPrivateKey;
-    case 'DOGECOIN':
-      return parsedData.dogePrivateKey;
-    case 'BITCOIN':
-      return parsedData.btcPrivateKey;
-    case 'DIGIBYTE':
-      return parsedData.dgbPrivateKey;
-    case 'RAVENCOIN':
-      return parsedData.rvnPrivateKey;
     case 'PIRATECHAIN':
       return parsedData.arrrSeed58;
     default:

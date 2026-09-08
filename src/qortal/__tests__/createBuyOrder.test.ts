@@ -79,6 +79,12 @@ vi.mock('../../hooks/useQortalMessageListener', async () =>
   (await import('./common')).messageListenerFactory()
 );
 
+vi.mock('../local-trade-funding', () => ({
+  localTradeCoins: { LITECOIN: 'LTC' },
+  fundLocalTrades: vi.fn(),
+}));
+import { fundLocalTrades } from '../local-trade-funding';
+
 // ── Imports (after mocks) ────────────────────────────────────────────────────
 
 import { createBuyOrder } from '../get';
@@ -150,7 +156,14 @@ describe('createBuyOrder', () => {
     vi.mocked(createEndpoint).mockImplementation(
       async (path: string) => `http://localhost${path}`
     );
-    vi.mocked(createBuyOrderTx).mockResolvedValue({ success: true });
+    vi.mocked(fundLocalTrades).mockImplementation(
+      async (_offers, _coin, approve) => {
+        const permission = await approve({});
+        if (!permission?.accepted)
+          throw new Error('question:message.generic.user_declined_request');
+        return { success: true } as any;
+      }
+    );
   });
 
   afterEach(() => {
@@ -169,7 +182,10 @@ describe('createBuyOrder', () => {
 
     it('throws when foreignBlockchain is missing', async () => {
       await expect(
-        createBuyOrder({ crosschainAtInfo: [{ qortalAtAddress: AT_ADDRESS }] }, false)
+        createBuyOrder(
+          { crosschainAtInfo: [{ qortalAtAddress: AT_ADDRESS }] },
+          false
+        )
       ).rejects.toThrow('question:message.error.missing_fields');
     });
 
@@ -186,7 +202,9 @@ describe('createBuyOrder', () => {
     it('throws when the fetched AT has a different foreignBlockchain', async () => {
       vi.stubGlobal(
         'fetch',
-        makeFetch({ atData: { ...DEFAULT_AT_DATA, foreignBlockchain: 'BITCOIN' } })
+        makeFetch({
+          atData: { ...DEFAULT_AT_DATA, foreignBlockchain: 'BITCOIN' },
+        })
       );
 
       await expect(createBuyOrder(makeInput(), false)).rejects.toThrow(
@@ -202,17 +220,25 @@ describe('createBuyOrder', () => {
         vi.fn(async (url: string) => {
           if (url.includes('/crosschain/trade/')) {
             callCount++;
-            const blockchain =
-              callCount === 2 ? 'BITCOIN' : FOREIGN_BLOCKCHAIN;
+            const blockchain = callCount === 2 ? 'BITCOIN' : FOREIGN_BLOCKCHAIN;
             return {
               ok: true,
-              json: async () => ({ ...DEFAULT_AT_DATA, foreignBlockchain: blockchain }),
+              json: async () => ({
+                ...DEFAULT_AT_DATA,
+                foreignBlockchain: blockchain,
+              }),
             };
           }
           if (url.includes('/feerequired'))
-            return { ok: true, clone: () => ({ json: async () => UNLOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => UNLOCK_FEE_SATS }),
+            };
           if (url.includes('/feekb'))
-            return { ok: true, clone: () => ({ json: async () => LOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => LOCK_FEE_SATS }),
+            };
           throw new Error(`Unexpected URL: ${url}`);
         })
       );
@@ -234,22 +260,15 @@ describe('createBuyOrder', () => {
 
   // ── Fee-fetching errors ─────────────────────────────────────────────────────
 
-  describe('fee-fetching errors', () => {
-    it('propagates the error message when the fee endpoint returns non-ok', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async (url: string) => {
-          if (url.includes('/crosschain/trade/'))
-            return { ok: true, json: async () => DEFAULT_AT_DATA };
-          // Both fee endpoints fail
-          return { ok: false };
-        })
-      );
-
-      await expect(createBuyOrder(makeInput(), false)).rejects.toThrow(
-        'question:message.error.fetch_generic'
-      );
-    });
+  it('propagates a local funding preparation failure without using the legacy sender', async () => {
+    vi.stubGlobal('fetch', makeFetch());
+    vi.mocked(fundLocalTrades).mockRejectedValueOnce(
+      new Error('local signing unavailable')
+    );
+    await expect(createBuyOrder(makeInput(), false)).rejects.toThrow(
+      'local signing unavailable'
+    );
+    expect(createBuyOrderTx).not.toHaveBeenCalled();
   });
 
   // ── Permission guard ────────────────────────────────────────────────────────
@@ -268,7 +287,7 @@ describe('createBuyOrder', () => {
   // ── Successful flow ─────────────────────────────────────────────────────────
 
   describe('successful buy order', () => {
-    it('returns the result from createBuyOrderTx', async () => {
+    it('returns the local funding result', async () => {
       vi.stubGlobal('fetch', makeFetch());
       simulatePermission(true);
 
@@ -277,32 +296,28 @@ describe('createBuyOrder', () => {
       expect(result).toEqual({ success: true });
     });
 
-    it('passes the resolved crosschainAtInfo and foreignBlockchain to createBuyOrderTx', async () => {
+    it('routes validated offers to local signing', async () => {
       vi.stubGlobal('fetch', makeFetch());
       simulatePermission(true);
 
       await createBuyOrder(makeInput(), false);
 
-      expect(createBuyOrderTx).toHaveBeenCalledOnce();
-      expect(createBuyOrderTx).toHaveBeenCalledWith(
-        expect.objectContaining({
-          crosschainAtInfo: [DEFAULT_AT_DATA],
-          foreignBlockchain: FOREIGN_BLOCKCHAIN,
-          isGateway: false,
-        })
+      expect(fundLocalTrades).toHaveBeenCalledWith(
+        [DEFAULT_AT_DATA],
+        'LTC',
+        expect.any(Function)
       );
+      expect(createBuyOrderTx).not.toHaveBeenCalled();
     });
 
-    it('passes isGateway=true to createBuyOrderTx when on a gateway node', async () => {
+    it('refuses gateway trading without exposing the wallet key', async () => {
       vi.mocked(isRunningGateway).mockResolvedValue(true);
       vi.stubGlobal('fetch', makeFetch());
-      simulatePermission(true);
-
-      await createBuyOrder(makeInput(), false);
-
-      expect(createBuyOrderTx).toHaveBeenCalledWith(
-        expect.objectContaining({ isGateway: true })
+      await expect(createBuyOrder(makeInput(), false)).rejects.toThrow(
+        'question:message.error.gateway_non_qort_local_node'
       );
+      expect(fundLocalTrades).not.toHaveBeenCalled();
+      expect(createBuyOrderTx).not.toHaveBeenCalled();
     });
 
     it('aggregates crosschainAtInfo for multiple AT addresses', async () => {
@@ -319,9 +334,15 @@ describe('createBuyOrder', () => {
           if (url.includes(`/crosschain/trade/${AT_ADDRESS_2}`))
             return { ok: true, json: async () => at2 };
           if (url.includes('/feerequired'))
-            return { ok: true, clone: () => ({ json: async () => UNLOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => UNLOCK_FEE_SATS }),
+            };
           if (url.includes('/feekb'))
-            return { ok: true, clone: () => ({ json: async () => LOCK_FEE_SATS }) };
+            return {
+              ok: true,
+              clone: () => ({ json: async () => LOCK_FEE_SATS }),
+            };
           throw new Error(`Unexpected URL: ${url}`);
         })
       );
@@ -338,11 +359,9 @@ describe('createBuyOrder', () => {
         false
       );
 
-      const received = vi.mocked(createBuyOrderTx).mock.calls[0][0];
-      expect(received.crosschainAtInfo).toHaveLength(2);
-      expect(received.crosschainAtInfo).toEqual(
-        expect.arrayContaining([DEFAULT_AT_DATA, at2])
-      );
+      const received = vi.mocked(fundLocalTrades).mock.calls[0][0];
+      expect(received).toHaveLength(2);
+      expect(received).toEqual(expect.arrayContaining([DEFAULT_AT_DATA, at2]));
     });
 
     it('fetches the trade endpoint once per AT address', async () => {
