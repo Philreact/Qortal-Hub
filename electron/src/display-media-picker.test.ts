@@ -1,27 +1,25 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
-import { desktopCapturer, ipcMain } from 'electron';
+import { desktopCapturer, ipcMain, systemPreferences } from 'electron';
 import { installDisplayMediaPicker } from './display-media-picker';
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
-function fixture() {
+function fixture(platform: NodeJS.Platform = 'linux') {
   const bus = new EventEmitter();
   vi.spyOn(ipcMain, 'on').mockImplementation(((...args: any[]) =>
     bus.on(args[0], args[1])) as any);
   vi.spyOn(ipcMain, 'removeListener').mockImplementation(((...args: any[]) =>
     bus.removeListener(args[0], args[1])) as any);
-  const getSources = vi
-    .spyOn(desktopCapturer, 'getSources')
-    .mockResolvedValue([
-      {
-        id: 'screen:1',
-        name: 'Screen',
-        thumbnail: { toDataURL: () => 'data:image/png;base64,AA==' },
-      },
-    ] as any);
+  const getSources = vi.spyOn(desktopCapturer, 'getSources').mockResolvedValue([
+    {
+      id: 'screen:1',
+      name: 'Screen',
+      thumbnail: { toDataURL: () => 'data:image/png;base64,AA==' },
+    },
+  ] as any);
   let handler: any;
   const root = {};
   const frame = {
@@ -40,7 +38,7 @@ function fixture() {
     },
   };
   const window = { webContents, isDestroyed: () => false, once: vi.fn() };
-  installDisplayMediaPicker(window as any);
+  installDisplayMediaPicker(window as any, platform);
   const callback = vi.fn();
   const request = {
     frame,
@@ -68,6 +66,17 @@ function fixture() {
   };
 }
 
+it('reports missing macOS screen permission before denying capture', async () => {
+  vi.spyOn(systemPreferences, 'getMediaAccessStatus').mockReturnValue('denied');
+  const f = fixture('darwin');
+  f.send('display-media:authorize', { accepted: true });
+  await vi.waitFor(() => expect(f.callback).toHaveBeenCalledWith({}));
+  expect(f.getSources).not.toHaveBeenCalled();
+  expect(f.frame.executeJavaScript.mock.calls[0][0]).toContain(
+    'SCREEN_OS_PERMISSION_REQUIRED'
+  );
+});
+
 it('does not enumerate before approval and grants only the selected one-use source', async () => {
   const f = fixture();
   expect(f.getSources).not.toHaveBeenCalled();
@@ -89,6 +98,8 @@ it('does not enumerate before approval and grants only the selected one-use sour
   f.send('display-media:select', { sourceId: 'screen:1' });
   expect(f.callback).toHaveBeenCalledTimes(1);
   expect(f.bus.listenerCount('display-media:authorize')).toBe(0);
+  for (const [script] of f.frame.executeJavaScript.mock.calls)
+    expect(script).toContain('"requestedHandler":"UI"');
 });
 
 it('denies rejection without disclosing thumbnails', () => {

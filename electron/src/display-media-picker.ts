@@ -1,13 +1,17 @@
 import {
   desktopCapturer,
   ipcMain,
+  systemPreferences,
   type BrowserWindow,
   type DesktopCapturerSource,
 } from 'electron';
 import { randomUUID } from 'crypto';
 
 /** Permission-controlled OS bridge. Source selection UI lives in the requesting app. */
-export function installDisplayMediaPicker(window: BrowserWindow): void {
+export function installDisplayMediaPicker(
+  window: BrowserWindow,
+  platform: NodeJS.Platform = process.platform
+): void {
   let cancelPending: (() => void) | null = null;
   window.webContents.session.setDisplayMediaRequestHandler(
     (request, callback) => {
@@ -36,7 +40,9 @@ export function installDisplayMediaPicker(window: BrowserWindow): void {
       const deliver = (payload: unknown) =>
         frame
           .executeJavaScript(
-            `window.postMessage(${JSON.stringify(payload)}, window.location.origin);`
+            // Core's q-apps.js treats unmarked messages as RPC requests and
+            // tries to transfer a nonexistent reply port. These are UI events.
+            `window.dispatchEvent(new MessageEvent('message', { data: ${JSON.stringify({ ...(payload as object), requestedHandler: 'UI' })}, origin: window.location.origin, source: window }));`
           )
           .catch(() => undefined);
       const finish = (sourceId?: string) => {
@@ -87,14 +93,26 @@ export function installDisplayMediaPicker(window: BrowserWindow): void {
           return;
         }
         authorized = true;
-        void enumerate();
+        void enumerate().catch(() => finish());
       };
       const timer = setTimeout(() => finish(), 60_000);
       cancelPending = () => finish();
       ipcMain.on('display-media:select', selected);
       ipcMain.on('display-media:authorize', authorize);
-      const enumerate = () =>
-        desktopCapturer
+      const enumerate = async () => {
+        if (platform === 'darwin') {
+          const status = systemPreferences.getMediaAccessStatus('screen');
+          if (status === 'denied' || status === 'restricted') {
+            await deliver({
+              action: 'QAPP_SCREEN_CAPTURE_ERROR',
+              requestId,
+              code: 'SCREEN_OS_PERMISSION_REQUIRED',
+            });
+            finish();
+            return;
+          }
+        }
+        return desktopCapturer
           .getSources({
             types: ['screen', 'window'],
             thumbnailSize: { width: 240, height: 135 },
@@ -125,6 +143,7 @@ export function installDisplayMediaPicker(window: BrowserWindow): void {
             });
           })
           .catch(() => finish());
+      };
       // The random, one-use request ID is disclosed only to the requesting frame
       // after permission. Other Q-Apps cannot select a source for this request.
       window.webContents.send('display-media:request', {

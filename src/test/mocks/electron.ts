@@ -24,6 +24,10 @@ export const ipcMain = {
   removeHandler: () => undefined,
 };
 
+export const systemPreferences = {
+  getMediaAccessStatus: (_type: string) => 'granted',
+};
+
 export const desktopCapturer = {
   getSources: async (_options?: unknown): Promise<unknown[]> => [],
 };
