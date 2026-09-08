@@ -119,6 +119,20 @@ app.commandLine.appendSwitch(
   'BlockInsecurePrivateNetworkRequests'
 );
 
+// Chromium exposes AudioContext.setSinkId but gates the delegable permission
+// behind SpeakerSelection. Without it, cross-origin Q-Apps cannot select an
+// output even with allow="speaker-selection". Enable only this API feature;
+// normal frame policy and device permissions still apply.
+app.commandLine.appendSwitch(
+  'enable-blink-features',
+  Array.from(
+    new Set([
+      ...app.commandLine.getSwitchValue('enable-blink-features').split(',').filter(Boolean),
+      'SpeakerSelection',
+    ])
+  ).join(',')
+);
+
 // app.commandLine.appendSwitch('ignore-certificate-errors');
 
 // Graceful handling of unhandled errors. Route electron-unhandled logging
