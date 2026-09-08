@@ -30,6 +30,7 @@ import {
   isQAppMoqAction,
 } from '../qortal/qapp-moq-request';
 import { normalizeQappIdentityContext } from '../qortal/qapp-identity';
+import { dispatchQAppScreenCaptureRequest } from '../qortal/qapp-screen-capture-request';
 import { serializeQortalRequestError } from '../qortal/qortal-request-errors';
 
 export const saveFileInChunks = async (
@@ -192,6 +193,7 @@ export function openIndexedDB() {
 }
 
 export const listOfAllQortalRequests = [
+  'SCREEN_CAPTURE_SELECT',
   'RNS_CLOSE',
   'RNS_CONNECT',
   'RNS_REQUEST',
@@ -313,6 +315,7 @@ export const listOfAllQortalRequests = [
 ];
 
 export const UIQortalRequests = [
+  'SCREEN_CAPTURE_SELECT',
   'RNS_CLOSE',
   'RNS_CONNECT',
   'RNS_REQUEST',
@@ -808,6 +811,8 @@ export const useQortalMessageListener = (
             ? dispatchQAppPrivateChannelRequest(message.payload, requestContext)
             : isQAppMoqAction(message?.action)
               ? dispatchQAppMoqRequest(message.payload, requestContext)
+              : message?.action === 'SCREEN_CAPTURE_SELECT'
+                ? dispatchQAppScreenCaptureRequest(message.payload)
               : window.sendMessage(
                   message.action,
                   message.payload,
@@ -1113,14 +1118,19 @@ export const useQortalMessageListener = (
         targetOrigin
       );
     });
+    const cleanupOwner = () => {
+      // This single main-process operation owns cleanup across Reticulum,
+      // private channels, and MOQT. It is deliberately best-effort because a
+      // tab reload/close can race an Electron main-process restart.
+      const cleanup = api.qappReticulumCleanupOwner?.(owner);
+      if (cleanup) void cleanup.catch(() => undefined);
+    };
     const handleLoad = () => {
       if (!hasLoadedFrameRef.current) {
         hasLoadedFrameRef.current = true;
         return;
       }
-      void api.qappReticulumCleanupOwner?.(owner);
-      void api.privateChannelCleanupOwner?.(owner);
-      void api.qappMoqCleanupOwner?.(owner);
+      cleanupOwner();
     };
     iframe.addEventListener('load', handleLoad);
     return () => {
@@ -1128,9 +1138,7 @@ export const useQortalMessageListener = (
       unsubscribePrivateChannel?.();
       unsubscribeMoq?.();
       iframe.removeEventListener('load', handleLoad);
-      void api.qappReticulumCleanupOwner?.(owner);
-      void api.privateChannelCleanupOwner?.(owner);
-      void api.qappMoqCleanupOwner?.(owner);
+      cleanupOwner();
     };
   }, [appName, appService, iframeRef, tabId]);
 

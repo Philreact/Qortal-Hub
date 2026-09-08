@@ -38,12 +38,13 @@ export function getPrivateTransportFactory(
       emit,
       prototypeSidecar!,
       explicitRelay ??
-        (async () => {
+        (async (excludedRelayAddresses) => {
           const reticulumBridge = reticulumBridgeProvider();
           if (!reticulumBridge) throw new Error('MASQUE_RELAY_UNAVAILABLE');
           return discoverCommunityMasqueRelay(reticulumBridge, {
             allowLoopback:
               environment.QORTAL_PRIVATE_TRANSPORT_ALLOW_LOCAL_RELAY === '1',
+            excludeRelayAddresses: excludedRelayAddresses,
           });
         }),
       bootstrapProvider
@@ -69,12 +70,13 @@ export function createMoqTransport(
     emit,
     prototypeSidecar,
     explicitRelay ??
-      (async () => {
+      (async (excludedRelayAddresses) => {
         const reticulumBridge = reticulumBridgeProvider();
         if (!reticulumBridge) throw new Error('MASQUE_RELAY_UNAVAILABLE');
         return discoverCommunityMasqueRelay(reticulumBridge, {
           allowLoopback:
             environment.QORTAL_PRIVATE_TRANSPORT_ALLOW_LOCAL_RELAY === '1',
+          excludeRelayAddresses: excludedRelayAddresses,
         });
       }),
     new ReticulumPrivateChannelBootstrapProvider(reticulumManager)

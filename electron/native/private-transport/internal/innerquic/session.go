@@ -17,6 +17,21 @@ import (
 	masqueclient "qortal.org/qortal-hub/private-transport/internal/masque"
 )
 
+const (
+	privateKeepAlivePeriod = 15 * time.Second
+	privateMaxIdleTimeout  = 2 * time.Minute
+)
+
+func privateQUICConfig() *quic.Config {
+	return &quic.Config{
+		EnableDatagrams:         true,
+		InitialPacketSize:       InnerPacketSize,
+		DisablePathMTUDiscovery: true,
+		KeepAlivePeriod:         privateKeepAlivePeriod,
+		MaxIdleTimeout:          privateMaxIdleTimeout,
+	}
+}
+
 type Config struct {
 	Relay             masqueclient.Config
 	BackendServerName string
@@ -116,9 +131,13 @@ func Open(ctx context.Context, cfg Config, onEvent func(Event)) (*Session, error
 	if tunnel.RemoteAddr() == nil {
 		return fail(errors.New("INNER_QUIC_FAILED: missing proxied backend address"))
 	}
-	conn, err := quic.Dial(ctx, tunnel.PacketConn(), tunnel.RemoteAddr(), tlsConf, &quic.Config{
-		EnableDatagrams: true, InitialPacketSize: InnerPacketSize, DisablePathMTUDiscovery: true,
-	})
+	conn, err := quic.Dial(
+		ctx,
+		tunnel.PacketConn(),
+		tunnel.RemoteAddr(),
+		tlsConf,
+		privateQUICConfig(),
+	)
 	if err != nil {
 		return fail(fmt.Errorf("INNER_QUIC_FAILED: %w", err))
 	}

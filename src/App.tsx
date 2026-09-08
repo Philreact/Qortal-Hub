@@ -78,6 +78,7 @@ import {
 } from './utils/events';
 import { stopSharedEarbumpPlayback } from './components/Group/earbumpSharedAudio';
 import { Settings } from './components/Group/Settings';
+import { QAppScreenCapturePermission } from './components/Apps/QAppScreenCapturePermission';
 import { useRetrieveDataLocalStorage } from './hooks/useRetrieveDataLocalStorage.tsx';
 import { useQortalGetSaveSettings } from './hooks/useQortalGetSaveSettings.tsx';
 import {
@@ -2064,6 +2065,7 @@ function App() {
       }}
     >
       <CustomTitleBar rightNav={titleBarRightNav} />
+      <QAppScreenCapturePermission active={extState === 'authenticated' && isMainWindow} />
       {extState === 'authenticated' && isMainWindow && (
         <GlobalQortalNavBar
           desktopViewMode={desktopViewMode}

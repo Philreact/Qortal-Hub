@@ -20,6 +20,19 @@ import (
 
 const MaxDatagramBytes = 1200
 
+const (
+	tunnelKeepAlivePeriod = 15 * time.Second
+	tunnelMaxIdleTimeout  = 2 * time.Minute
+)
+
+func tunnelQUICConfig() *quic.Config {
+	return &quic.Config{
+		EnableDatagrams: true,
+		KeepAlivePeriod: tunnelKeepAlivePeriod,
+		MaxIdleTimeout:  tunnelMaxIdleTimeout,
+	}
+}
+
 type Config struct {
 	RelayAddress    string
 	RelayServerName string
@@ -103,9 +116,7 @@ func Open(ctx context.Context, cfg Config) (*Tunnel, error) {
 	}
 	transport := masque.Transport{
 		TLSClientConfig: tlsConfig,
-		QUICConfig: &quic.Config{
-			EnableDatagrams: true,
-		},
+		QUICConfig:      tunnelQUICConfig(),
 		// Pin the network destination as well as its certificate identity. This
 		// prevents a library change from resolving or substituting a hostname.
 		DialAddr: func(dialCtx context.Context, addr string, tlsConf *tls.Config, quicConf *quic.Config) (*quic.Conn, error) {

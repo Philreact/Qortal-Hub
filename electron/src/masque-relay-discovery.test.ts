@@ -66,6 +66,21 @@ describe('community MASQUE relay discovery', () => {
     });
   });
 
+  it('excludes a failed endpoint when selecting a replacement relay', async () => {
+    const bridge = new BridgeStub();
+    bridge.getCommunityMasqueRelays.mockResolvedValueOnce([
+      relay,
+      { ...relay, host: '1.1.1.1', certSha256: 'cd'.repeat(32) },
+    ]);
+    await expect(
+      discoverCommunityMasqueRelay(bridge as never, {
+        now: () => 1_000_000,
+        random: () => 0,
+        excludeRelayAddresses: new Set(['8.8.8.8:47322']),
+      })
+    ).resolves.toMatchObject({ relayAddress: '1.1.1.1:47322' });
+  });
+
   it('uses one fresh query and only polls the cache while waiting', async () => {
     const bridge = new BridgeStub();
     await expect(

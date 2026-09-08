@@ -30,8 +30,9 @@ const descriptor: PrivateBootstrapDescriptor = {
 };
 
 class FakeSidecar extends EventEmitter {
+  private opened = 0;
   openMoqSession = vi.fn(async (config) => ({
-    moqSessionId: 'moq-session',
+    moqSessionId: `moq-session${++this.opened === 1 ? '' : `-${this.opened}`}`,
     logicalSessionId: config.logicalSessionId,
     publicationNamespace: config.publicationNamespace,
     publicationTrack: config.publicationTrack,
@@ -167,5 +168,64 @@ describe('generic trusted MOQT transport', () => {
       code: 'MOQ_ATTACH_FAILED',
     });
     expect(sidecar.openMoqSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves to another relay with a fresh token and restores subscriptions', async () => {
+    const sidecar = new FakeSidecar();
+    let bootstrapNumber = 0;
+    const provider: PrivateChannelBootstrapProvider = {
+      getBootstrap: vi.fn(async () => ({
+        ...descriptor,
+        logicalSessionId: `logical-${++bootstrapNumber}`,
+        attachToken: `one-time-token-${bootstrapNumber}`,
+      })),
+    };
+    const relayProvider = vi.fn(async (excluded?: ReadonlySet<string>) => ({
+      relayAddress: excluded?.has('8.8.8.8:47322')
+        ? '1.1.1.1:47322'
+        : '8.8.8.8:47322',
+      relayServerName: 'relay.test',
+      relayCertSha256: '12'.repeat(32),
+    }));
+    const events: MoqTransportEvent[] = [];
+    const transport = new MoqMasqueTransport(
+      (event) => events.push(event),
+      sidecar as never,
+      relayProvider,
+      provider
+    );
+    await transport.open(context);
+    await transport.subscribe(
+      'subscription-1',
+      ['qortal', 'apps', 'sample', 'peer-456'],
+      'events'
+    );
+
+    sidecar.emit('event', {
+      event: 'error',
+      sessionId: 'moq-session',
+      code: 'MOQ_READ_FAILED',
+      subscriptionId: 'subscription-1',
+      data: Buffer.alloc(0),
+    });
+    await transport.publish(new Uint8Array([9]));
+
+    expect(
+      sidecar.openMoqSession.mock.calls.map(([config]) => config.relayAddress)
+    ).toEqual(['8.8.8.8:47322', '1.1.1.1:47322']);
+    expect(
+      sidecar.openMoqSession.mock.calls.map(([config]) => config.attachToken)
+    ).toEqual(['one-time-token-1', 'one-time-token-2']);
+    expect(sidecar.subscribeMoqTrack).toHaveBeenLastCalledWith(
+      'moq-session-2',
+      'subscription-1',
+      ['qortal', 'apps', 'sample', 'peer-456'],
+      'events'
+    );
+    expect(sidecar.publishMoqObject).toHaveBeenCalledWith(
+      'moq-session-2',
+      new Uint8Array([9])
+    );
+    expect(events).toEqual([]);
   });
 });

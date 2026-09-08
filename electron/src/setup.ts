@@ -26,6 +26,7 @@ import { dirname, join } from 'path';
 import { pipeline } from 'stream/promises';
 import { pathToFileURL } from 'url';
 import { materializeReticulumResourceForOpen } from './reticulum-resource-open';
+import { installDisplayMediaPicker } from './display-media-picker';
 import {
   DEV_LOGS_DISABLED_STORAGE_KEY,
   log as loggerLog,
@@ -1056,6 +1057,7 @@ export class ElectronCapacitorApp {
       },
     });
     this.mainWindowState.manage(this.MainWindow);
+    installDisplayMediaPicker(this.MainWindow);
     this.MainWindow.on('maximize', () => {
       this.MainWindow?.webContents.send('window:state-changed', true);
     });

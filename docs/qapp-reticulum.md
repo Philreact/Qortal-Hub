@@ -20,7 +20,14 @@ The host posts `RNS_MESSAGE` and `RNS_CONNECTION_STATE` events to the owning
 Q-App iframe. States are `CONNECTING`, `CONNECTED`, `RECONNECTING`,
 `DISCONNECTED`, `CLOSING`, `CLOSED`, and `ERROR`.
 
-The first operation for a destination in a tab displays a permission prompt.
+The first operation for a destination in a tab asks whether the app may connect
+to its backend and exchange data. This single approval also grants
+`PRIVATE_DATA_CHANNEL` for that app's tab, covering private channels and MoQ.
+The dialog does not expose transport names or destination hashes. Subsequent
+`SESSION_PERMISSIONS` requests for already-approved capabilities return without
+another dialog; unrelated capabilities still require approval. Account access
+and microphone permission remain separate.
+
 Permission and connections are isolated by trusted tab, service, application
 name, and destination. Closing or reloading the tab removes its logical
 connections. This initial version does not consume a destination declared in
@@ -117,3 +124,19 @@ Current limitations:
   messages and RPC bodies are bounded and are not suitable for large files.
 - Request cancellation and a bulk-priority scheduler are not exposed yet.
 - Application session/subscription resumption remains the Q-App/backend's job.
+## Generic Q-App screen capture
+
+Q-Apps may call `navigator.mediaDevices.getDisplayMedia({video: true, audio: false})`
+from a user gesture. Hub requests one-time capture permission before exposing any
+screen/window previews. After approval, it sends `QAPP_SCREEN_CAPTURE_SOURCES`
+directly to the requesting frame, containing a random one-use `requestId` and
+`sources: [{id, name, thumbnail}]`. The Q-App renders its own source picker and
+calls `qortalRequest({action: 'SCREEN_CAPTURE_SELECT', requestId, sourceId})`.
+Omitting `sourceId` cancels. Completion also emits `QAPP_SCREEN_CAPTURE_CANCEL`
+to dismiss any remaining picker. The original browser capture promise resolves
+to a local MediaStream; streams are never passed through IPC.
+
+Requests expire after 60 seconds. Native code validates the requesting frame,
+unchanged URL, approved source list, main-shell IPC sender, and one-use capability.
+Only one pending capture request is allowed. Hub does not encode, encrypt, or
+interpret this app's screen frames; application media logic stays in the Q-App.

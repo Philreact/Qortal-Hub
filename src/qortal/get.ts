@@ -116,10 +116,11 @@ import { getElectronPersistentStorage } from '../utils/electronPersistentStorage
 import { fileToBase64 } from '../utils/fileReading/index.ts';
 import { mimeToExtensionMap } from '../utils/memeTypes.ts';
 import { RequestQueueWithPromise } from '../utils/queue/queue.ts';
+import { normalizeQappIdentityContext } from './qapp-identity.ts';
 import {
-  normalizeQappIdentityContext,
-  qappReticulumSessionPermissionKey,
-} from './qapp-identity.ts';
+  createBackendPermissions,
+  unapprovedSessionPermissions,
+} from './qapp-backend-permission.ts';
 import utils from '../utils/utils.ts';
 import ShortUniqueId from 'short-unique-id';
 import {
@@ -460,7 +461,25 @@ function getFileFromContentScript(fileId) {
 
 const responseResolvers = new Map();
 const notificationPermissionResolvers = new Map();
-const rnsDestinationPermissions = new Set<string>();
+const backendPermissions = createBackendPermissions(
+  async (appInfo, isFromExtension) => {
+    const response = await getUserPermission(
+      {
+        text1: i18n.t('question:permission.backend_connection', {
+          appName: appInfo.name,
+        }),
+        text2: i18n.t('question:permission.backend_connection_description'),
+        confirmCheckbox: true,
+        confirmCheckboxLabel: i18n.t(
+          'question:permission.backend_connection_understand'
+        ),
+      },
+      isFromExtension
+    );
+    return response?.accepted === true;
+  },
+  (tabId, name, permissions) => setSessionPermissions(tabId, name, permissions)
+);
 
 function generatePermissionRequestId(): string {
   if (globalThis.crypto?.randomUUID) {
@@ -541,37 +560,18 @@ export const authorizeRnsDestination = async (
   if (appInfo?.tabId == null || !appInfo?.name) {
     throw new Error('RNS_PERMISSION_DENIED');
   }
-  const key = qappReticulumSessionPermissionKey(
-    appInfo.tabId,
-    appInfo.name,
-    normalized
-  );
-  if (rnsDestinationPermissions.has(key)) return normalized;
-  const response = await getUserPermission(
-    {
-      text1: i18n.t('question:permission.reticulum_destination', {
-        appName: appInfo.name,
-        destination: normalized,
-      }),
-      confirmCheckbox: true,
-      confirmCheckboxLabel: i18n.t(
-        'question:permission.reticulum_remote_backend_understand'
-      ),
-    },
+  await backendPermissions.authorize(
+    { tabId: appInfo.tabId, name: appInfo.name },
+    normalized,
     isFromExtension
   );
-  if (response?.accepted !== true) throw new Error('RNS_PERMISSION_DENIED');
-  rnsDestinationPermissions.add(key);
   return normalized;
 };
 
 export const clearRnsDestinationPermissionsByTabId = (
   tabId: string | number
 ) => {
-  const prefix = `${tabId}\u0000`;
-  for (const key of rnsDestinationPermissions) {
-    if (key.startsWith(prefix)) rnsDestinationPermissions.delete(key);
-  }
+  backendPermissions.clearByTabId(tabId);
 };
 
 export const getWhichUI = async () => {
@@ -702,12 +702,7 @@ export const signQappIdentityProof = async (
       i18n.t('auth:message.error.qapp_account_authentication_required')
     );
   }
-  const reticulumPermissionKey = qappReticulumSessionPermissionKey(
-    appInfo.tabId,
-    appInfo.name,
-    backendDestination
-  );
-  if (!rnsDestinationPermissions.has(reticulumPermissionKey))
+  if (!backendPermissions.has(appInfo, backendDestination))
     throw new Error('RNS_PERMISSION_DENIED');
   const wallet = await getSaveWallet();
   const account = {
@@ -871,6 +866,15 @@ export const sessionPermissions = async (data, isFromExtension, appInfo) => {
       );
     }
 
+    // RNS_CONNECT already approves private transport for this app's tab.
+    // Keep legacy SESSION_PERMISSIONS requests compatible without a second dialog.
+    const pendingPermissions = unapprovedSessionPermissions(
+      { tabId, name: appInfo.name },
+      permissions,
+      hasSessionPermission
+    );
+    if (pendingPermissions.length === 0) return true;
+
     const resPermission = await getUserPermission(
       {
         text1: i18n.t('question:permission.session_permissions', {
@@ -885,7 +889,7 @@ export const sessionPermissions = async (data, isFromExtension, appInfo) => {
         }),
         details: {
           type: 'sessionPermissions',
-          permissions,
+          permissions: pendingPermissions,
         },
         confirmCheckbox: true,
         confirmCheckboxLabel: i18n.t('question:permission.session_understand', {

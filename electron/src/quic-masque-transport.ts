@@ -19,19 +19,29 @@ export type TrustedRelayConfig = Readonly<{
   /** Same-host fallback, protected by the advertised certificate pin. */
   localFallbackAddress?: string;
 }>;
-export type TrustedRelayProvider = () => Promise<TrustedRelayConfig>;
+export type TrustedRelayProvider = (
+  excludedRelayAddresses?: ReadonlySet<string>
+) => Promise<TrustedRelayConfig>;
+
+const RECOVERY_DELAYS_MS = [0, 500, 2_000] as const;
+const FAILED_RELAY_COOLDOWN_MS = 60_000;
 
 const MAX_RELIABLE_BINARY_BYTES = 64 * 1024;
 const MAX_DATAGRAM_BINARY_BYTES = 1024;
 
 export class QuicMasqueTransport implements PrivateTransport {
   private sessionId: string | null = null;
+  private context: PrivateTransportContext | null = null;
+  private activeRelayAddress: string | null = null;
+  private lastAttemptedRelayAddress: string | null = null;
+  private recoveryPromise: Promise<string> | null = null;
+  private readonly failedRelayAddresses = new Map<string, number>();
   private closed = false;
   private readonly onSidecarEvent = (event: PrivateTransportSidecarEvent) =>
     this.handleSidecarEvent(event);
   private readonly onSidecarDeath = () => {
     if (!this.closed && this.sessionId) {
-      this.emit({ kind: 'error', code: 'TRANSPORT_CLOSED' });
+      void this.recover('TRANSPORT_CLOSED');
     }
   };
 
@@ -47,80 +57,75 @@ export class QuicMasqueTransport implements PrivateTransport {
 
   async open(context: PrivateTransportContext): Promise<void> {
     if (this.closed) throw new PrivateChannelError('TRANSPORT_CLOSED');
-    const bootstrap = await this.bootstrapProvider.getBootstrap(context);
+    this.context = context;
     try {
-      const relay =
-        typeof this.relay === 'function' ? await this.relay() : this.relay;
-      const openAt = (relayAddress: string) =>
-        this.sidecar.openPrivateSession({
-          relayAddress,
-          relayServerName: relay.relayServerName,
-          relayCertSha256: relay.relayCertSha256,
-          backendAddress: bootstrap.backendTransportEndpoint,
-          backendServerName: bootstrap.backendTransportServerName,
-          backendCertSha256: bootstrap.backendTransportCertSha256,
-          logicalSessionId: bootstrap.logicalSessionId,
-          attachToken: bootstrap.attachToken,
-          nonce: bootstrap.nonce,
-          purpose: context.purpose,
-          ownerBindingHash: bootstrap.ownerBindingHash,
-        });
-      let opened;
-      try {
-        opened = await openAt(relay.relayAddress);
-      } catch (error) {
-        if (
-          !(error instanceof PrivateTransportSidecarError) ||
-          error.code !== 'MASQUE_TUNNEL_FAILED' ||
-          !relay.localFallbackAddress ||
-          relay.localFallbackAddress === relay.relayAddress
-        ) {
-          throw error;
-        }
-        opened = await openAt(relay.localFallbackAddress);
-      }
-      this.sessionId = opened.sessionId;
+      await this.connect(context);
     } catch (error) {
       throw translateSidecarError(error);
     }
   }
 
   async sendReliable(message: PrivateTransportMessage): Promise<void> {
-    const sessionId = this.requireSession();
     const encoded = encodeApplicationData(message.data);
     if (encoded.length > MAX_RELIABLE_BINARY_BYTES) {
       throw new PrivateChannelError('MESSAGE_TOO_LARGE_FOR_TRANSPORT');
     }
     try {
+      const sessionId = await this.requireSession();
       await this.sidecar.sendPrivateReliable(
         sessionId,
         message.messageId,
         encoded
       );
     } catch (error) {
+      if (isRecoverableTransportError(error)) {
+        try {
+          const replacementSessionId = await this.recover(errorCode(error));
+          await this.sidecar.sendPrivateReliable(
+            replacementSessionId,
+            message.messageId,
+            encoded
+          );
+          return;
+        } catch (recoveryError) {
+          throw translateSidecarError(recoveryError);
+        }
+      }
       throw translateSidecarError(error);
     }
   }
 
   async sendDatagram(message: PrivateTransportMessage): Promise<void> {
-    const sessionId = this.requireSession();
     const encoded = encodeApplicationData(message.data);
     if (encoded.length > MAX_DATAGRAM_BINARY_BYTES) {
       throw new PrivateChannelError('MESSAGE_TOO_LARGE_FOR_TRANSPORT');
     }
     try {
+      const sessionId = await this.requireSession();
       await this.sidecar.sendPrivateDatagram(
         sessionId,
         message.messageId,
         encoded
       );
     } catch (error) {
+      if (isRecoverableTransportError(error)) {
+        try {
+          // Datagram delivery is intentionally best-effort. Recover the path,
+          // but do not replay a stale real-time packet on the replacement.
+          await this.recover(errorCode(error));
+          return;
+        } catch (recoveryError) {
+          throw translateSidecarError(recoveryError);
+        }
+      }
       throw translateSidecarError(error);
     }
   }
 
   async close(): Promise<void> {
     this.closed = true;
+    this.context = null;
+    this.recoveryPromise = null;
     const sessionId = this.sessionId;
     this.sessionId = null;
     this.sidecar.off('event', this.onSidecarEvent);
@@ -129,7 +134,8 @@ export class QuicMasqueTransport implements PrivateTransport {
       await this.sidecar.closePrivateSession(sessionId).catch(() => undefined);
   }
 
-  private requireSession(): string {
+  private async requireSession(): Promise<string> {
+    if (this.recoveryPromise) await this.recoveryPromise;
     if (this.closed || !this.sessionId)
       throw new PrivateChannelError('TRANSPORT_CLOSED');
     return this.sessionId;
@@ -138,6 +144,10 @@ export class QuicMasqueTransport implements PrivateTransport {
   private handleSidecarEvent(event: PrivateTransportSidecarEvent): void {
     if (event.sessionId !== this.sessionId || this.closed) return;
     if (event.event === 'error') {
+      if (isRecoverableCode(event.code)) {
+        void this.recover(event.code ?? 'TRANSPORT_CLOSED');
+        return;
+      }
       this.emit({ kind: 'error', code: event.code ?? 'TRANSPORT_ERROR' });
       return;
     }
@@ -156,6 +166,143 @@ export class QuicMasqueTransport implements PrivateTransport {
       this.emit({ kind: 'error', code: 'PROTOCOL_MISMATCH' });
     }
   }
+
+  private async connect(context: PrivateTransportContext): Promise<void> {
+    this.lastAttemptedRelayAddress = null;
+    const relay = await this.resolveRelay();
+    const bootstrap = await this.bootstrapProvider.getBootstrap(context);
+    const openAt = (relayAddress: string) =>
+      this.sidecar.openPrivateSession({
+        relayAddress,
+        relayServerName: relay.relayServerName,
+        relayCertSha256: relay.relayCertSha256,
+        backendAddress: bootstrap.backendTransportEndpoint,
+        backendServerName: bootstrap.backendTransportServerName,
+        backendCertSha256: bootstrap.backendTransportCertSha256,
+        logicalSessionId: bootstrap.logicalSessionId,
+        attachToken: bootstrap.attachToken,
+        nonce: bootstrap.nonce,
+        purpose: context.purpose,
+        ownerBindingHash: bootstrap.ownerBindingHash,
+      });
+    let opened;
+    this.lastAttemptedRelayAddress = relay.relayAddress;
+    try {
+      opened = await openAt(relay.relayAddress);
+    } catch (error) {
+      if (
+        !(error instanceof PrivateTransportSidecarError) ||
+        error.code !== 'MASQUE_TUNNEL_FAILED' ||
+        !relay.localFallbackAddress ||
+        relay.localFallbackAddress === relay.relayAddress
+      )
+        throw error;
+      opened = await openAt(relay.localFallbackAddress);
+    }
+    if (this.closed) {
+      await this.sidecar
+        .closePrivateSession(opened.sessionId)
+        .catch(() => undefined);
+      throw new PrivateChannelError('TRANSPORT_CLOSED');
+    }
+    this.sessionId = opened.sessionId;
+    this.activeRelayAddress = relay.relayAddress;
+  }
+
+  private resolveRelay(): Promise<TrustedRelayConfig> {
+    const now = Date.now();
+    for (const [address, failedAt] of this.failedRelayAddresses) {
+      if (now - failedAt >= FAILED_RELAY_COOLDOWN_MS)
+        this.failedRelayAddresses.delete(address);
+    }
+    const excluded = new Set(this.failedRelayAddresses.keys());
+    return typeof this.relay === 'function'
+      ? this.relay(excluded)
+      : Promise.resolve(this.relay);
+  }
+
+  private recover(_reason: string): Promise<string> {
+    if (this.closed)
+      return Promise.reject(new PrivateChannelError('TRANSPORT_CLOSED'));
+    if (this.recoveryPromise) return this.recoveryPromise;
+    const context = this.context;
+    if (!context)
+      return Promise.reject(new PrivateChannelError('TRANSPORT_CLOSED'));
+    if (this.activeRelayAddress)
+      this.failedRelayAddresses.set(this.activeRelayAddress, Date.now());
+    const oldSessionId = this.sessionId;
+    this.sessionId = null;
+    this.activeRelayAddress = null;
+    if (oldSessionId)
+      void this.sidecar
+        .closePrivateSession(oldSessionId)
+        .catch(() => undefined);
+    const recovery = (async (): Promise<string> => {
+      let lastError: unknown = new PrivateChannelError('TRANSPORT_CLOSED');
+      for (const delayMs of RECOVERY_DELAYS_MS) {
+        if (delayMs) await delay(delayMs);
+        if (this.closed) throw new PrivateChannelError('TRANSPORT_CLOSED');
+        try {
+          await this.connect(context);
+          if (!this.sessionId)
+            throw new PrivateChannelError('TRANSPORT_CLOSED');
+          return this.sessionId;
+        } catch (error) {
+          lastError = error;
+          if (this.lastAttemptedRelayAddress)
+            this.failedRelayAddresses.set(
+              this.lastAttemptedRelayAddress,
+              Date.now()
+            );
+          this.sessionId = null;
+          this.activeRelayAddress = null;
+          if (!isRecoverableTransportError(error)) break;
+        }
+      }
+      throw lastError;
+    })();
+    this.recoveryPromise = recovery;
+    void recovery
+      .catch((error) => {
+        if (!this.closed)
+          this.emit({ kind: 'error', code: translateSidecarError(error).code });
+      })
+      .finally(() => {
+        if (this.recoveryPromise === recovery) this.recoveryPromise = null;
+      });
+    return recovery;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorCode(error: unknown): string {
+  return error instanceof PrivateTransportSidecarError ||
+    error instanceof PrivateChannelError
+    ? error.code
+    : error instanceof Error
+      ? error.message
+      : 'TRANSPORT_ERROR';
+}
+
+function isRecoverableCode(code: string | undefined): boolean {
+  return (
+    code === 'INNER_QUIC_FAILED' ||
+    code === 'TRANSPORT_CLOSED' ||
+    code === 'MASQUE_TUNNEL_FAILED' ||
+    code === 'SIDECAR_EXITED' ||
+    code === 'SIDECAR_NOT_RUNNING' ||
+    code === 'SIDECAR_REQUEST_TIMEOUT' ||
+    code === 'SIDECAR_WRITE_FAILED' ||
+    code === 'MASQUE_RELAY_UNAVAILABLE' ||
+    code === 'BOOTSTRAP_FAILED'
+  );
+}
+
+function isRecoverableTransportError(error: unknown): boolean {
+  return isRecoverableCode(errorCode(error));
 }
 
 function encodeApplicationData(value: unknown): Buffer {

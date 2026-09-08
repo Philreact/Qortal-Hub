@@ -18,6 +18,8 @@ export type CommunityMasqueRelay = {
 export type MasqueRelayDiscoveryOptions = {
   timeoutMs?: number;
   allowLoopback?: boolean;
+  /** Relay endpoints already known to have failed for this logical session. */
+  excludeRelayAddresses?: ReadonlySet<string>;
   now?: () => number;
   random?: () => number;
 };
@@ -94,6 +96,8 @@ export async function discoverCommunityMasqueRelay(
   const accept = (value: unknown) => {
     const relay = validateCommunityMasqueRelay(value, options);
     if (!relay) return;
+    const host = net.isIP(relay.host) === 6 ? `[${relay.host}]` : relay.host;
+    if (options.excludeRelayAddresses?.has(`${host}:${relay.port}`)) return;
     candidates.set(`${relay.host}:${relay.port}:${relay.certSha256}`, relay);
     wake?.();
   };
@@ -119,10 +123,13 @@ export async function discoverCommunityMasqueRelay(
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) break;
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          wake = null;
-          resolve();
-        }, Math.min(MASQUE_RELAY_QUERY_INTERVAL_MS, remainingMs));
+        const timer = setTimeout(
+          () => {
+            wake = null;
+            resolve();
+          },
+          Math.min(MASQUE_RELAY_QUERY_INTERVAL_MS, remainingMs)
+        );
         timer.unref?.();
         wake = () => {
           clearTimeout(timer);

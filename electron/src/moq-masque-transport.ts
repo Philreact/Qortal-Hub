@@ -13,6 +13,8 @@ import type {
 import type { QAppReticulumOwner } from './qapp-reticulum-manager';
 
 const MOQ_NAME = /^[A-Za-z0-9._-]{1,128}$/;
+const RECOVERY_DELAYS_MS = [0, 500, 2_000] as const;
+const FAILED_RELAY_COOLDOWN_MS = 60_000;
 
 function validNamespace(namespace: readonly string[]): boolean {
   return (
@@ -48,12 +50,21 @@ export type MoqTransportEvent =
  */
 export class MoqMasqueTransport {
   private moqSessionId: string | null = null;
+  private context: MoqOpenContext | null = null;
+  private activeRelayAddress: string | null = null;
+  private lastAttemptedRelayAddress: string | null = null;
+  private recoveryPromise: Promise<string> | null = null;
+  private readonly failedRelayAddresses = new Map<string, number>();
+  private readonly subscriptions = new Map<
+    string,
+    { namespace: readonly string[]; trackName: string }
+  >();
   private closed = false;
   private readonly onSidecarEvent = (event: PrivateTransportSidecarEvent) =>
     this.handleSidecarEvent(event);
   private readonly onSidecarDeath = () => {
     if (!this.closed && this.moqSessionId) {
-      this.emit({ kind: 'error', code: 'MOQ_TRANSPORT_CLOSED' });
+      void this.recover('MOQ_TRANSPORT_CLOSED');
     }
   };
 
@@ -77,6 +88,12 @@ export class MoqMasqueTransport {
     ) {
       throw new PrivateTransportSidecarError('INVALID_MOQ_CONFIG');
     }
+    this.context = context;
+    await this.connect(context);
+  }
+
+  private async connect(context: MoqOpenContext): Promise<void> {
+    this.lastAttemptedRelayAddress = null;
     const relay = await this.resolveRelay();
     const bootstrapContext: PrivateTransportContext = {
       channelId: 'trusted-moq-transport',
@@ -93,6 +110,7 @@ export class MoqMasqueTransport {
     ) {
       throw new PrivateTransportSidecarError('UNSUPPORTED_MOQ_TRANSPORT');
     }
+    this.lastAttemptedRelayAddress = relay.relayAddress;
     const openAt = (relayAddress: string) =>
       this.sidecar.openMoqSession({
         relayAddress,
@@ -120,7 +138,31 @@ export class MoqMasqueTransport {
       }
       opened = await openAt(relay.localFallbackAddress);
     }
+    if (this.closed) {
+      await this.sidecar
+        .closeMoqSession(opened.moqSessionId)
+        .catch(() => undefined);
+      throw new PrivateTransportSidecarError('MOQ_SESSION_CLOSED');
+    }
     this.moqSessionId = opened.moqSessionId;
+    this.activeRelayAddress = relay.relayAddress;
+    try {
+      for (const [subscriptionId, subscription] of this.subscriptions) {
+        await this.sidecar.subscribeMoqTrack(
+          opened.moqSessionId,
+          subscriptionId,
+          subscription.namespace,
+          subscription.trackName
+        );
+      }
+    } catch (error) {
+      this.moqSessionId = null;
+      this.activeRelayAddress = null;
+      await this.sidecar
+        .closeMoqSession(opened.moqSessionId)
+        .catch(() => undefined);
+      throw error;
+    }
   }
 
   async subscribe(
@@ -135,28 +177,67 @@ export class MoqMasqueTransport {
     ) {
       throw new PrivateTransportSidecarError('INVALID_MOQ_SUBSCRIPTION');
     }
-    await this.sidecar.subscribeMoqTrack(
-      this.requireSession(),
-      subscriptionId,
-      namespace,
-      trackName
-    );
+    const subscription = { namespace: [...namespace], trackName };
+    this.subscriptions.set(subscriptionId, subscription);
+    try {
+      const sessionId = await this.requireSession();
+      await this.sidecar.subscribeMoqTrack(
+        sessionId,
+        subscriptionId,
+        namespace,
+        trackName
+      );
+    } catch (error) {
+      if (isRecoverableMoqError(error)) {
+        try {
+          // Recovery restores the subscription recorded above.
+          await this.recover(errorCode(error));
+          return;
+        } catch (recoveryError) {
+          this.subscriptions.delete(subscriptionId);
+          throw recoveryError;
+        }
+      }
+      this.subscriptions.delete(subscriptionId);
+      throw error;
+    }
   }
 
   async publish(payload: Uint8Array): Promise<void> {
     if (payload.byteLength < 1 || payload.byteLength > MAX_MOQ_OBJECT_BYTES) {
       throw new PrivateTransportSidecarError('MOQ_OBJECT_TOO_LARGE');
     }
-    await this.sidecar.publishMoqObject(this.requireSession(), payload);
+    try {
+      await this.sidecar.publishMoqObject(await this.requireSession(), payload);
+    } catch (error) {
+      if (isRecoverableMoqError(error)) {
+        // A media object is stale by the time a replacement path opens. Drop
+        // this object after recovery instead of creating an audible late frame.
+        await this.recover(errorCode(error));
+        return;
+      }
+      throw error;
+    }
   }
 
   async metrics(): Promise<Record<string, number>> {
-    return this.sidecar.moqSessionMetrics(this.requireSession());
+    try {
+      return await this.sidecar.moqSessionMetrics(await this.requireSession());
+    } catch (error) {
+      if (isRecoverableMoqError(error)) {
+        const replacementSessionId = await this.recover(errorCode(error));
+        return this.sidecar.moqSessionMetrics(replacementSessionId);
+      }
+      throw error;
+    }
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.context = null;
+    this.recoveryPromise = null;
+    this.subscriptions.clear();
     const moqSessionId = this.moqSessionId;
     this.moqSessionId = null;
     this.sidecar.off('event', this.onSidecarEvent);
@@ -167,10 +248,17 @@ export class MoqMasqueTransport {
   }
 
   private async resolveRelay(): Promise<TrustedRelayConfig> {
-    return typeof this.relay === 'function' ? this.relay() : this.relay;
+    const now = Date.now();
+    for (const [address, failedAt] of this.failedRelayAddresses) {
+      if (now - failedAt >= FAILED_RELAY_COOLDOWN_MS)
+        this.failedRelayAddresses.delete(address);
+    }
+    const excluded = new Set(this.failedRelayAddresses.keys());
+    return typeof this.relay === 'function' ? this.relay(excluded) : this.relay;
   }
 
-  private requireSession(): string {
+  private async requireSession(): Promise<string> {
+    if (this.recoveryPromise) await this.recoveryPromise;
     if (this.closed || !this.moqSessionId) {
       throw new PrivateTransportSidecarError('MOQ_SESSION_CLOSED');
     }
@@ -180,6 +268,10 @@ export class MoqMasqueTransport {
   private handleSidecarEvent(event: PrivateTransportSidecarEvent): void {
     if (event.sessionId !== this.moqSessionId || this.closed) return;
     if (event.event === 'error') {
+      if (isRecoverableMoqCode(event.code)) {
+        void this.recover(event.code ?? 'MOQ_TRANSPORT_CLOSED');
+        return;
+      }
       this.emit({
         kind: 'error',
         code: event.code ?? 'MOQ_TRANSPORT_ERROR',
@@ -214,4 +306,93 @@ export class MoqMasqueTransport {
       payload: new Uint8Array(event.data),
     });
   }
+
+  private recover(_reason: string): Promise<string> {
+    if (this.closed)
+      return Promise.reject(
+        new PrivateTransportSidecarError('MOQ_SESSION_CLOSED')
+      );
+    if (this.recoveryPromise) return this.recoveryPromise;
+    const context = this.context;
+    if (!context)
+      return Promise.reject(
+        new PrivateTransportSidecarError('MOQ_SESSION_CLOSED')
+      );
+    if (this.activeRelayAddress)
+      this.failedRelayAddresses.set(this.activeRelayAddress, Date.now());
+    const oldSessionId = this.moqSessionId;
+    this.moqSessionId = null;
+    this.activeRelayAddress = null;
+    if (oldSessionId)
+      void this.sidecar.closeMoqSession(oldSessionId).catch(() => undefined);
+    const recovery = (async (): Promise<string> => {
+      let lastError: unknown = new PrivateTransportSidecarError(
+        'MOQ_TRANSPORT_CLOSED'
+      );
+      for (const delayMs of RECOVERY_DELAYS_MS) {
+        if (delayMs) await delay(delayMs);
+        if (this.closed)
+          throw new PrivateTransportSidecarError('MOQ_SESSION_CLOSED');
+        try {
+          await this.connect(context);
+          if (!this.moqSessionId)
+            throw new PrivateTransportSidecarError('MOQ_SESSION_CLOSED');
+          return this.moqSessionId;
+        } catch (error) {
+          lastError = error;
+          if (this.lastAttemptedRelayAddress)
+            this.failedRelayAddresses.set(
+              this.lastAttemptedRelayAddress,
+              Date.now()
+            );
+          this.moqSessionId = null;
+          this.activeRelayAddress = null;
+          if (!isRecoverableMoqError(error)) break;
+        }
+      }
+      throw lastError;
+    })();
+    this.recoveryPromise = recovery;
+    void recovery
+      .catch((error) => {
+        if (!this.closed) this.emit({ kind: 'error', code: errorCode(error) });
+      })
+      .finally(() => {
+        if (this.recoveryPromise === recovery) this.recoveryPromise = null;
+      });
+    return recovery;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorCode(error: unknown): string {
+  return error instanceof PrivateTransportSidecarError
+    ? error.code
+    : error instanceof Error && /^[A-Z0-9_]{3,64}$/.test(error.message)
+      ? error.message
+      : 'MOQ_TRANSPORT_ERROR';
+}
+
+function isRecoverableMoqCode(code: string | undefined): boolean {
+  return (
+    code === 'MOQ_TRANSPORT_CLOSED' ||
+    code === 'MOQ_QUIC_FAILED' ||
+    code === 'MOQ_SESSION_CLOSED' ||
+    code === 'MOQ_READ_FAILED' ||
+    code === 'MOQ_SEND_FAILED' ||
+    code === 'MASQUE_TUNNEL_FAILED' ||
+    code === 'MASQUE_RELAY_UNAVAILABLE' ||
+    code === 'SIDECAR_EXITED' ||
+    code === 'SIDECAR_NOT_RUNNING' ||
+    code === 'SIDECAR_REQUEST_TIMEOUT' ||
+    code === 'SIDECAR_WRITE_FAILED' ||
+    code === 'BOOTSTRAP_FAILED'
+  );
+}
+
+function isRecoverableMoqError(error: unknown): boolean {
+  return isRecoverableMoqCode(errorCode(error));
 }

@@ -130,6 +130,10 @@ declare global {
       ) => () => void;
       onSystemLockRequested?: (callback: () => void) => () => void;
       getPlatform?: () => Promise<string>;
+      onDisplayMediaRequest?: (callback: (request: { requestId: string; origin: string }) => void) => () => void;
+      onDisplayMediaCancel?: (callback: (requestId: string) => void) => () => void;
+      selectDisplayMedia?: (requestId: string, sourceId?: string) => void;
+      authorizeDisplayMedia?: (requestId: string, accepted: boolean) => void;
       listScreenShareSources?: () => Promise<{
         success: boolean;
         error?: string;

@@ -489,6 +489,18 @@ try {
       return () => ipcRenderer.removeListener('system:lock-requested', handler);
     },
     getPlatform: () => ipcRenderer.invoke('window:getPlatform'),
+    onDisplayMediaRequest: (callback: (request: { requestId: string; origin: string }) => void) => {
+      const handler = (_event, request) => callback(request);
+      ipcRenderer.on('display-media:request', handler);
+      return () => ipcRenderer.removeListener('display-media:request', handler);
+    },
+    onDisplayMediaCancel: (callback: (requestId: string) => void) => {
+      const handler = (_event, requestId) => callback(requestId);
+      ipcRenderer.on('display-media:cancel', handler);
+      return () => ipcRenderer.removeListener('display-media:cancel', handler);
+    },
+    selectDisplayMedia: (requestId: string, sourceId?: string) => ipcRenderer.send('display-media:select', { requestId, sourceId }),
+    authorizeDisplayMedia: (requestId: string, accepted: boolean) => ipcRenderer.send('display-media:authorize', { requestId, accepted }),
     listScreenShareSources: () =>
       ipcRenderer.invoke('screenShare:listSources') as Promise<{
         success: boolean;

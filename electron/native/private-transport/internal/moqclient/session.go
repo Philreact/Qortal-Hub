@@ -26,9 +26,21 @@ const (
 	MaxNamespaceComponents = 8
 	defaultConnectTimeout  = 8 * time.Second
 	maxSafeJSONInteger     = uint64(1<<53 - 1)
+	mediaKeepAlivePeriod   = 15 * time.Second
+	mediaMaxIdleTimeout    = 2 * time.Minute
 )
 
 var safeName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+func mediaQUICConfig() *quic.Config {
+	return &quic.Config{
+		EnableDatagrams:         true,
+		InitialPacketSize:       1200,
+		DisablePathMTUDiscovery: true,
+		KeepAlivePeriod:         mediaKeepAlivePeriod,
+		MaxIdleTimeout:          mediaMaxIdleTimeout,
+	}
+}
 
 type Config struct {
 	Relay                masqueclient.Config
@@ -138,11 +150,7 @@ func Open(ctx context.Context, cfg Config, onEvent func(Event)) (*Session, error
 		tunnel.PacketConn(),
 		tunnel.RemoteAddr(),
 		backendTLSConfig(cfg.BackendServerName, pin),
-		&quic.Config{
-			EnableDatagrams:         true,
-			InitialPacketSize:       1200,
-			DisablePathMTUDiscovery: true,
-		},
+		mediaQUICConfig(),
 	)
 	if err != nil {
 		return fail(fmt.Errorf("MOQ_QUIC_FAILED: %w", err))
