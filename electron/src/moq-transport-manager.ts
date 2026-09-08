@@ -10,7 +10,10 @@ import type { MoqOpenContext, MoqTransportEvent } from './moq-masque-transport';
 export const QAPP_MOQ_LIMITS = Object.freeze({
   maxSessionsPerOwner: 2,
   maxSessionsGlobal: 16,
-  maxSubscriptionsPerSession: 64,
+  maxSubscriptionsPerSession: 128,
+  maxPublicationTracks: 8,
+  maxBatchObjects: 8,
+  maxQueuedBytesPerTrack: 16 * 1024,
   maxObjectBytes: 1024,
   maxQueuedBytesPerSession: 64 * 1024,
 });
@@ -33,7 +36,11 @@ export interface ManagedMoqTransport {
     namespace: readonly string[],
     trackName: string
   ): Promise<void>;
-  publish(payload: Uint8Array): Promise<void>;
+  publish(
+    payload: Uint8Array,
+    trackName?: string,
+    batch?: readonly Uint8Array[]
+  ): Promise<void>;
   metrics(): Promise<Record<string, number>>;
   close(): Promise<void>;
 }
@@ -51,6 +58,8 @@ type SessionRecord = {
   transport: ManagedMoqTransport;
   subscriptions: Set<string>;
   queuedBytes: number;
+  publicationTracks: readonly string[];
+  queuedByTrack: Map<string, number>;
   generation: number;
 };
 
@@ -88,10 +97,22 @@ export class QAppMoqTransportManager extends EventEmitter {
       publicationNamespaceValue,
       'INVALID_MOQ_CONFIG'
     );
-    const publicationTrack = requireName(
-      publicationTrackValue,
-      'INVALID_MOQ_CONFIG'
+    const trackValues = Array.isArray(publicationTrackValue)
+      ? publicationTrackValue
+      : [publicationTrackValue];
+    if (
+      !trackValues.length ||
+      trackValues.length > QAPP_MOQ_LIMITS.maxPublicationTracks
+    )
+      throw new QAppMoqError('INVALID_MOQ_CONFIG');
+    const publicationTracks = trackValues.map((value) =>
+      requireName(value, 'INVALID_MOQ_CONFIG')
     );
+    if (new Set(publicationTracks).size !== publicationTracks.length)
+      throw new QAppMoqError('INVALID_MOQ_CONFIG');
+    const publicationTrack = Array.isArray(publicationTrackValue)
+      ? publicationTracks
+      : publicationTracks[0];
     if (
       (this.sessionsByOwner.get(ownerKey)?.size ?? 0) >=
         QAPP_MOQ_LIMITS.maxSessionsPerOwner ||
@@ -114,6 +135,8 @@ export class QAppMoqTransportManager extends EventEmitter {
       transport,
       subscriptions: new Set(),
       queuedBytes: 0,
+      publicationTracks,
+      queuedByTrack: new Map(),
       generation,
     };
     this.sessions.set(sessionId, session);
@@ -183,27 +206,56 @@ export class QAppMoqTransportManager extends EventEmitter {
     payloadValue: unknown
   ) {
     const session = this.requireOwned(owner, sessionIdValue);
-    const payload = requirePayload(payloadValue);
+    const batchRequest =
+      payloadValue &&
+      typeof payloadValue === 'object' &&
+      'objects' in payloadValue
+        ? (payloadValue as { objects: unknown; trackName: unknown })
+        : null;
+    const track = batchRequest
+      ? requireName(batchRequest.trackName, 'INVALID_MOQ_CONFIG')
+      : session.publicationTracks[0];
+    if (!session.publicationTracks.includes(track))
+      throw new QAppMoqError('INVALID_MOQ_CONFIG');
     if (
-      session.queuedBytes + payload.byteLength >
-      QAPP_MOQ_LIMITS.maxQueuedBytesPerSession
+      batchRequest &&
+      (!Array.isArray(batchRequest.objects) ||
+        !batchRequest.objects.length ||
+        batchRequest.objects.length > QAPP_MOQ_LIMITS.maxBatchObjects)
+    )
+      throw new QAppMoqError('MOQ_OBJECT_TOO_LARGE');
+    const objects = batchRequest
+      ? (batchRequest.objects as unknown[]).map(requirePayload)
+      : [requirePayload(payloadValue)];
+    const bytes = objects.reduce((sum, payload) => sum + payload.byteLength, 0);
+    if (
+      session.queuedBytes + bytes > QAPP_MOQ_LIMITS.maxQueuedBytesPerSession ||
+      (session.queuedByTrack.get(track) ?? 0) + bytes >
+        QAPP_MOQ_LIMITS.maxQueuedBytesPerTrack
     ) {
       throw new QAppMoqError('MOQ_QUEUE_LIMIT');
     }
-    session.queuedBytes += payload.byteLength;
+    session.queuedBytes += bytes;
+    session.queuedByTrack.set(
+      track,
+      (session.queuedByTrack.get(track) ?? 0) + bytes
+    );
     try {
-      await session.transport.publish(payload);
+      if (batchRequest)
+        await session.transport.publish(objects[0], track, objects);
+      else await session.transport.publish(objects[0]);
       return {
         sessionId: session.sessionId,
         accepted: true as const,
-        bytes: payload.byteLength,
+        bytes,
       };
     } catch (error) {
       throw normalizeError(error, 'MOQ_SEND_FAILED');
     } finally {
-      session.queuedBytes = Math.max(
-        0,
-        session.queuedBytes - payload.byteLength
+      session.queuedBytes = Math.max(0, session.queuedBytes - bytes);
+      session.queuedByTrack.set(
+        track,
+        Math.max(0, (session.queuedByTrack.get(track) ?? 0) - bytes)
       );
     }
   }

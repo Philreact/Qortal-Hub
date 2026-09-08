@@ -30,6 +30,18 @@ func TestMalformedAndUnsupportedRequestsFailSafely(t *testing.T) {
 	}
 }
 
+func TestMoqBatchValidation(t *testing.T) {
+	objects, err := parseMoqBatch([]byte{0, 2, 1, 2, 0, 1, 3})
+	if err != nil || len(objects) != 2 || !bytes.Equal(objects[0], []byte{1, 2}) {
+		t.Fatal("valid batch rejected", err)
+	}
+	for _, invalid := range [][]byte{nil, {0}, {0, 0}, {0, 2, 1}, {4, 1}, bytes.Repeat([]byte{0, 1, 42}, 9)} {
+		if _, err = parseMoqBatch(invalid); err == nil {
+			t.Fatal("invalid batch accepted", invalid)
+		}
+	}
+}
+
 func TestInnerErrorCodeDistinguishesRelayAndBackendCertificates(t *testing.T) {
 	if got := innerErrorCode(errors.New("MASQUE_TUNNEL_FAILED: relay certificate pin mismatch")); got != "MASQUE_TUNNEL_FAILED" {
 		t.Fatalf("relay error mapped to %q", got)

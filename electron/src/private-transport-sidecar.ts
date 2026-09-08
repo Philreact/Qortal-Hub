@@ -5,7 +5,7 @@ import { EventEmitter } from 'events';
 import path from 'path';
 
 export const PRIVATE_TRANSPORT_PROTOCOL_VERSION = 2;
-export const PRIVATE_TRANSPORT_SIDECAR_VERSION = '0.4.0';
+export const PRIVATE_TRANSPORT_SIDECAR_VERSION = '0.5.0';
 export const MAX_MOQ_OBJECT_BYTES = 1024;
 const MOQ_NAME = /^[A-Za-z0-9._-]{1,128}$/;
 
@@ -62,7 +62,7 @@ export type MoqSessionConfig = Readonly<{
   logicalSessionId: string;
   attachToken: string;
   publicationNamespace: readonly string[];
-  publicationTrack: string;
+  publicationTrack: string | readonly string[];
   timeoutMs?: number;
 }>;
 
@@ -70,7 +70,7 @@ export type MoqSessionInfo = Readonly<{
   moqSessionId: string;
   logicalSessionId: string;
   publicationNamespace: string[];
-  publicationTrack: string;
+  publicationTrack: string | readonly string[];
   applicationProtocol: 'moqt-18';
 }>;
 
@@ -315,7 +315,11 @@ export class PrivateTransportSidecar extends EventEmitter {
   async openMoqSession(config: MoqSessionConfig): Promise<MoqSessionInfo> {
     if (
       !validMoqNamespace(config.publicationNamespace) ||
-      !MOQ_NAME.test(config.publicationTrack)
+      !(
+        typeof config.publicationTrack === 'string'
+          ? [config.publicationTrack]
+          : config.publicationTrack
+      ).every((track) => MOQ_NAME.test(track))
     ) {
       throw new PrivateTransportSidecarError('INVALID_MOQ_CONFIG');
     }
@@ -334,7 +338,8 @@ export class PrivateTransportSidecar extends EventEmitter {
       !result.publicationNamespace.every(
         (component, index) => component === config.publicationNamespace[index]
       ) ||
-      result?.publicationTrack !== config.publicationTrack ||
+      JSON.stringify(result?.publicationTrack) !==
+        JSON.stringify(config.publicationTrack) ||
       result?.applicationProtocol !== 'moqt-18'
     ) {
       throw new PrivateTransportSidecarError('MALFORMED_RESPONSE');
@@ -365,16 +370,40 @@ export class PrivateTransportSidecar extends EventEmitter {
 
   async publishMoqObject(
     moqSessionId: string,
-    payload: Uint8Array
+    payload: Uint8Array,
+    trackName?: string,
+    batch?: readonly Uint8Array[]
   ): Promise<void> {
     if (payload.byteLength < 1 || payload.byteLength > MAX_MOQ_OBJECT_BYTES) {
       throw new PrivateTransportSidecarError('MOQ_OBJECT_TOO_LARGE');
     }
+    let binary = payload;
+    if (batch) {
+      if (
+        !batch.length ||
+        batch.length > 8 ||
+        !trackName ||
+        !MOQ_NAME.test(trackName) ||
+        batch.some((item) => !item.length || item.length > MAX_MOQ_OBJECT_BYTES)
+      )
+        throw new PrivateTransportSidecarError('MOQ_OBJECT_TOO_LARGE');
+      binary = Buffer.concat(
+        batch.map((item) => {
+          const size = Buffer.alloc(2);
+          size.writeUInt16BE(item.length);
+          return Buffer.concat([size, Buffer.from(item)]);
+        })
+      );
+    }
     await this.request(
       'publishMoqObject',
-      { moqSessionId },
+      {
+        moqSessionId,
+        ...(trackName ? { trackName } : {}),
+        ...(batch ? { batched: true } : {}),
+      },
       undefined,
-      payload
+      binary
     );
   }
 

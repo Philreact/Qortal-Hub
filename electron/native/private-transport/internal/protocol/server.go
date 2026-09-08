@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,7 +22,7 @@ import (
 
 const (
 	Version                 = 2
-	SidecarVersion          = "0.4.0"
+	SidecarVersion          = "0.5.0"
 	MaxControlMessageBytes  = 64 * 1024
 	MaxBinaryMessageBytes   = innerquic.MaxReliablePayloadBytes
 	maxRememberedRequestIDs = 4096
@@ -219,23 +220,30 @@ func (s *Server) handleRequest(ctx context.Context, req Request, binary []byte) 
 }
 
 type moqOpenParams struct {
-	RelayAddress         string   `json:"relayAddress"`
-	RelayServerName      string   `json:"relayServerName"`
-	RelayCertSHA256      string   `json:"relayCertSha256"`
-	BackendAddress       string   `json:"backendAddress"`
-	BackendServerName    string   `json:"backendServerName"`
-	BackendCertSHA256    string   `json:"backendCertSha256"`
-	LogicalSessionID     string   `json:"logicalSessionId"`
-	AttachToken          string   `json:"attachToken"`
-	PublicationNamespace []string `json:"publicationNamespace"`
-	PublicationTrack     string   `json:"publicationTrack"`
-	TimeoutMS            int      `json:"timeoutMs"`
+	RelayAddress         string          `json:"relayAddress"`
+	RelayServerName      string          `json:"relayServerName"`
+	RelayCertSHA256      string          `json:"relayCertSha256"`
+	BackendAddress       string          `json:"backendAddress"`
+	BackendServerName    string          `json:"backendServerName"`
+	BackendCertSHA256    string          `json:"backendCertSha256"`
+	LogicalSessionID     string          `json:"logicalSessionId"`
+	AttachToken          string          `json:"attachToken"`
+	PublicationNamespace []string        `json:"publicationNamespace"`
+	PublicationTrack     json.RawMessage `json:"publicationTrack"`
+	TimeoutMS            int             `json:"timeoutMs"`
 }
 
 func (s *Server) openMoqSession(ctx context.Context, req Request) Response {
 	var p moqOpenParams
 	if decodeParams(req.Params, &p) != nil {
 		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
+	}
+	var track string
+	var tracks []string
+	if json.Unmarshal(p.PublicationTrack, &track) == nil {
+		tracks = []string{track}
+	} else if json.Unmarshal(p.PublicationTrack, &tracks) != nil || len(tracks) == 0 {
+		return failure(req.RequestID, "INVALID_PARAMS", "invalid publication tracks")
 	}
 	sessionID, err := randomID("moq-")
 	if err != nil {
@@ -249,7 +257,7 @@ func (s *Server) openMoqSession(ctx context.Context, req Request) Response {
 		},
 		BackendServerName: p.BackendServerName, BackendCertSHA256: p.BackendCertSHA256,
 		LogicalSessionID: p.LogicalSessionID, AttachToken: p.AttachToken,
-		PublicationNamespace: p.PublicationNamespace, PublicationTrack: p.PublicationTrack,
+		PublicationNamespace: p.PublicationNamespace, PublicationTrack: tracks[0], PublicationTracks: tracks,
 		Timeout: duration(p.TimeoutMS),
 	}, func(event moqclient.Event) { s.emitMoq(sessionID, event) })
 	if err != nil {
@@ -324,6 +332,8 @@ func (s *Server) subscribeMoqTrack(req Request) Response {
 func (s *Server) publishMoqObject(req Request, binary []byte) Response {
 	var p struct {
 		MoqSessionID string `json:"moqSessionId"`
+		TrackName    string `json:"trackName"`
+		Batched      bool   `json:"batched"`
 	}
 	if decodeParams(req.Params, &p) != nil {
 		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
@@ -332,12 +342,48 @@ func (s *Server) publishMoqObject(req Request, binary []byte) Response {
 	if session == nil {
 		return failure(req.RequestID, "MOQ_SESSION_CLOSED", "MOQT session does not exist")
 	}
-	if err := session.PublishObject(binary); err != nil {
-		return failure(req.RequestID, moqErrorCode(err), "MOQT object publish failed")
+	objects := [][]byte{binary}
+	if p.Batched {
+		var err error
+		objects, err = parseMoqBatch(binary)
+		if err != nil {
+			return failure(req.RequestID, "INVALID_PARAMS", "invalid object batch")
+		}
+	}
+	for _, object := range objects {
+		var err error
+		if p.TrackName == "" {
+			err = session.PublishObject(object)
+		} else {
+			err = session.PublishTrackObject(p.TrackName, object)
+		}
+		if err != nil {
+			return failure(req.RequestID, moqErrorCode(err), "MOQT object publish failed")
+		}
 	}
 	return success(req.RequestID, map[string]interface{}{
 		"accepted": true, "bytesSent": len(binary),
 	})
+}
+
+func parseMoqBatch(data []byte) ([][]byte, error) {
+	var objects [][]byte
+	for len(data) > 0 {
+		if len(data) < 2 || len(objects) >= 8 {
+			return nil, errors.New("invalid batch")
+		}
+		size := int(binary.BigEndian.Uint16(data[:2]))
+		data = data[2:]
+		if size == 0 || size > moqclient.MaxObjectBytes || size > len(data) {
+			return nil, errors.New("invalid batch")
+		}
+		objects = append(objects, data[:size])
+		data = data[size:]
+	}
+	if len(objects) == 0 {
+		return nil, errors.New("empty batch")
+	}
+	return objects, nil
 }
 
 func (s *Server) moqSessionMetrics(req Request) Response {

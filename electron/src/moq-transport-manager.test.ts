@@ -42,6 +42,72 @@ async function open(manager: QAppMoqTransportManager) {
 }
 
 describe('Q-App generic MOQT manager', () => {
+  it('isolates bounded publication batches by track and rejects undeclared tracks', async () => {
+    const { manager, transports } = setup();
+    const opened = await manager.open(
+      owner,
+      'rns-1',
+      ['example'],
+      ['fast', 'bulk']
+    );
+    const objects = [new Uint8Array([1]), new Uint8Array([2])];
+    await manager.publish(owner, opened.sessionId, {
+      trackName: 'bulk',
+      objects,
+    });
+    expect(transports[0].publish).toHaveBeenCalledWith(
+      objects[0],
+      'bulk',
+      objects
+    );
+    await expect(
+      manager.publish(owner, opened.sessionId, {
+        trackName: 'undeclared',
+        objects,
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_MOQ_CONFIG' });
+    await expect(
+      manager.publish(owner, opened.sessionId, {
+        trackName: 'bulk',
+        objects: Array(9).fill(objects[0]),
+      })
+    ).rejects.toMatchObject({ code: 'MOQ_OBJECT_TOO_LARGE' });
+    await expect(
+      manager.open(owner, 'rns-1', ['example'], ['same', 'same'])
+    ).rejects.toMatchObject({ code: 'INVALID_MOQ_CONFIG' });
+  });
+  it('reserves independent queue capacity when a bulk track is blocked', async () => {
+    const { manager, transports } = setup();
+    const opened = await manager.open(
+      owner,
+      'rns-1',
+      ['example'],
+      ['fast', 'bulk']
+    );
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    transports[0].publish.mockImplementation(() => blocked);
+    const request = {
+      trackName: 'bulk',
+      objects: Array.from({ length: 8 }, () => new Uint8Array(1024)),
+    };
+    const one = manager.publish(owner, opened.sessionId, request);
+    const two = manager.publish(owner, opened.sessionId, request);
+    await expect(
+      manager.publish(owner, opened.sessionId, request)
+    ).rejects.toMatchObject({ code: 'MOQ_QUEUE_LIMIT' });
+    transports[0].publish.mockImplementation(async () => undefined);
+    await expect(
+      manager.publish(owner, opened.sessionId, {
+        trackName: 'fast',
+        objects: [new Uint8Array([1])],
+      })
+    ).resolves.toMatchObject({ accepted: true });
+    release();
+    await Promise.all([one, two]);
+  });
   it('binds a session to the Q-App-owned Reticulum connection', async () => {
     const { manager, transports } = setup();
     const opened = await open(manager);

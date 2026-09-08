@@ -22,7 +22,7 @@ import (
 const (
 	ALPN                   = "moqt-18"
 	MaxObjectBytes         = 1024
-	MaxSubscriptions       = 64
+	MaxSubscriptions       = 128
 	MaxNamespaceComponents = 8
 	defaultConnectTimeout  = 8 * time.Second
 	maxSafeJSONInteger     = uint64(1<<53 - 1)
@@ -50,6 +50,7 @@ type Config struct {
 	AttachToken          string
 	PublicationNamespace []string
 	PublicationTrack     string
+	PublicationTracks    []string
 	Timeout              time.Duration
 }
 
@@ -76,17 +77,28 @@ type Metrics struct {
 type publicationHandler struct {
 	namespace   [][]byte
 	track       string
+	tracks      []string
 	publication chan *moqtransport.IncomingSubscribeRequest
 }
 
 func (h *publicationHandler) HandleGoAway(string) {}
 
 func (h *publicationHandler) HandleSubscribe(request *moqtransport.IncomingSubscribeRequest) {
-	if !equalNamespace(request.Namespace(), h.namespace) || string(request.Name()) != h.track {
+	alias := uint64(0)
+	tracks := h.tracks
+	if len(tracks) == 0 {
+		tracks = []string{h.track}
+	}
+	for index, track := range tracks {
+		if string(request.Name()) == track {
+			alias = uint64(index + 1)
+		}
+	}
+	if !equalNamespace(request.Namespace(), h.namespace) || alias == 0 {
 		request.Reject(moqtransport.RequestErrorCodeUnauthorized, "publication is not authorized")
 		return
 	}
-	request.Accept(1)
+	request.Accept(alias)
 	select {
 	case h.publication <- request:
 	default:
@@ -101,11 +113,13 @@ type subscription struct {
 }
 
 type Session struct {
-	tunnel      *masqueclient.Tunnel
-	conn        *quic.Conn
-	moq         *moqtransport.Session
-	publication *moqtransport.IncomingSubscribeRequest
-	onEvent     func(Event)
+	tunnel       *masqueclient.Tunnel
+	conn         *quic.Conn
+	moq          *moqtransport.Session
+	publication  *moqtransport.IncomingSubscribeRequest
+	publications map[string]*moqtransport.IncomingSubscribeRequest
+	defaultTrack string
+	onEvent      func(Event)
 
 	mu            sync.Mutex
 	subscriptions map[string]subscription
@@ -119,6 +133,21 @@ type Session struct {
 }
 
 func Open(ctx context.Context, cfg Config, onEvent func(Event)) (*Session, error) {
+	tracks := cfg.PublicationTracks
+	if len(tracks) == 0 {
+		tracks = []string{cfg.PublicationTrack}
+	}
+	if len(tracks) > 8 {
+		return nil, errors.New("INVALID_MOQ_CONFIG")
+	}
+	seen := map[string]bool{}
+	for _, track := range tracks {
+		if !safeName.MatchString(track) || seen[track] {
+			return nil, errors.New("INVALID_MOQ_CONFIG")
+		}
+		seen[track] = true
+	}
+	cfg.PublicationTrack = tracks[0]
 	if !validNamespace(cfg.PublicationNamespace) || !safeName.MatchString(cfg.PublicationTrack) ||
 		cfg.LogicalSessionID == "" || len(cfg.LogicalSessionID) > 512 ||
 		len(cfg.AttachToken) < 32 || len(cfg.AttachToken) > 128 {
@@ -157,7 +186,7 @@ func Open(ctx context.Context, cfg Config, onEvent func(Event)) (*Session, error
 	}
 	handler := &publicationHandler{
 		namespace: stringsToNamespace(cfg.PublicationNamespace),
-		track:     cfg.PublicationTrack, publication: make(chan *moqtransport.IncomingSubscribeRequest, 1),
+		track:     cfg.PublicationTrack, tracks: tracks, publication: make(chan *moqtransport.IncomingSubscribeRequest, len(tracks)),
 	}
 	moq, err := moqtransport.NewSession(
 		quicmoq.NewClient(connection), "attach/"+cfg.AttachToken,
@@ -167,23 +196,30 @@ func Open(ctx context.Context, cfg Config, onEvent func(Event)) (*Session, error
 		_ = connection.CloseWithError(1, "MOQT setup failed")
 		return fail(fmt.Errorf("MOQ_SESSION_FAILED: %w", err))
 	}
-	select {
-	case publication := <-handler.publication:
-		if !connection.ConnectionState().SupportsDatagrams.Remote {
-			moq.CloseWithError(1, "datagrams required")
-			return fail(errors.New("DATAGRAM_UNSUPPORTED"))
+	publications := make(map[string]*moqtransport.IncomingSubscribeRequest)
+	for len(publications) < len(tracks) {
+		select {
+		case publication := <-handler.publication:
+			if !connection.ConnectionState().SupportsDatagrams.Remote {
+				moq.CloseWithError(1, "datagrams required")
+				return fail(errors.New("DATAGRAM_UNSUPPORTED"))
+			}
+			name := string(publication.Name())
+			if publications[name] != nil {
+				_ = publication.Close()
+				continue
+			}
+			publications[name] = publication
+		case <-moq.Context().Done():
+			moq.CloseWithError(1, "MOQT attach failed")
+			return fail(errors.New("MOQ_ATTACH_FAILED"))
+		case <-openCtx.Done():
+			moq.CloseWithError(1, "MOQT attach timed out")
+			return fail(errors.New("MOQ_ATTACH_FAILED"))
 		}
-		return &Session{
-			tunnel: tunnel, conn: connection, moq: moq, publication: publication,
-			onEvent: onEvent, subscriptions: make(map[string]subscription),
-		}, nil
-	case <-moq.Context().Done():
-		moq.CloseWithError(1, "MOQT attach failed")
-		return fail(errors.New("MOQ_ATTACH_FAILED"))
-	case <-openCtx.Done():
-		moq.CloseWithError(1, "MOQT attach timed out")
-		return fail(errors.New("MOQ_ATTACH_FAILED"))
 	}
+	return &Session{tunnel: tunnel, conn: connection, moq: moq, publication: publications[tracks[0]],
+		publications: publications, defaultTrack: tracks[0], onEvent: onEvent, subscriptions: make(map[string]subscription)}, nil
 }
 
 func backendTLSConfig(serverName string, pin []byte) *tls.Config {
@@ -285,6 +321,10 @@ func equalStringNamespace(left, right []string) bool {
 }
 
 func (s *Session) PublishObject(payload []byte) error {
+	return s.PublishTrackObject(s.defaultTrack, payload)
+}
+
+func (s *Session) PublishTrackObject(track string, payload []byte) error {
 	if s.closed.Load() {
 		return errors.New("MOQ_SESSION_CLOSED")
 	}
@@ -292,7 +332,14 @@ func (s *Session) PublishObject(payload []byte) error {
 		return errors.New("MOQ_OBJECT_TOO_LARGE")
 	}
 	objectID := s.nextObjectID.Add(1) - 1
-	err := s.publication.SendDatagram(moqtransport.Object{
+	publication := s.publication
+	if s.publications != nil {
+		publication = s.publications[track]
+	}
+	if publication == nil {
+		return errors.New("INVALID_MOQ_CONFIG")
+	}
+	err := publication.SendDatagram(moqtransport.Object{
 		GroupID: 0, ObjectID: objectID,
 		ForwardingPreference: moqtransport.ObjectForwardingPreferenceDatagram,
 		Payload:              append([]byte(nil), payload...),

@@ -29,7 +29,7 @@ export type MoqOpenContext = Readonly<{
   owner: QAppReticulumOwner;
   rnsConnectionId: string;
   publicationNamespace: readonly string[];
-  publicationTrack: string;
+  publicationTrack: string | readonly string[];
 }>;
 
 export type MoqTransportEvent =
@@ -84,7 +84,11 @@ export class MoqMasqueTransport {
     }
     if (
       !validNamespace(context.publicationNamespace) ||
-      !MOQ_NAME.test(context.publicationTrack)
+      !(
+        typeof context.publicationTrack === 'string'
+          ? [context.publicationTrack]
+          : context.publicationTrack
+      ).every((track) => MOQ_NAME.test(track))
     ) {
       throw new PrivateTransportSidecarError('INVALID_MOQ_CONFIG');
     }
@@ -203,18 +207,30 @@ export class MoqMasqueTransport {
     }
   }
 
-  async publish(payload: Uint8Array): Promise<void> {
+  async publish(
+    payload: Uint8Array,
+    trackName?: string,
+    batch?: readonly Uint8Array[]
+  ): Promise<void> {
     if (payload.byteLength < 1 || payload.byteLength > MAX_MOQ_OBJECT_BYTES) {
       throw new PrivateTransportSidecarError('MOQ_OBJECT_TOO_LARGE');
     }
     try {
-      await this.sidecar.publishMoqObject(await this.requireSession(), payload);
+      const sessionId = await this.requireSession();
+      if (batch)
+        await this.sidecar.publishMoqObject(
+          sessionId,
+          payload,
+          trackName,
+          batch
+        );
+      else await this.sidecar.publishMoqObject(sessionId, payload);
     } catch (error) {
       if (isRecoverableMoqError(error)) {
         // A media object is stale by the time a replacement path opens. Drop
         // this object after recovery instead of creating an audible late frame.
         await this.recover(errorCode(error));
-        return;
+        throw new PrivateTransportSidecarError('MOQ_SEND_FAILED');
       }
       throw error;
     }

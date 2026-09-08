@@ -98,6 +98,7 @@ func TestSessionTransportsOpaqueMOQTObjectOnlyThroughMasque(t *testing.T) {
 	attachToken := "integration-one-time-token-000000000000"
 	publicationNamespace := []string{"qortal", "apps", "sample", "publisher-123"}
 	publicationTrack := "realtime-data"
+	tracks := []string{publicationTrack, "auxiliary", "status"}
 	backendSource := make(chan string, 1)
 	backendErrors := make(chan error, 1)
 	go func() {
@@ -121,27 +122,33 @@ func TestSessionTransportsOpaqueMOQTObjectOnlyThroughMasque(t *testing.T) {
 			backendErrors <- context.Canceled
 			return
 		}
-		source, subscribeErr := session.Subscribe(ctx, stringsToNamespace(publicationNamespace), publicationTrack)
-		if subscribeErr != nil {
-			backendErrors <- subscribeErr
-			return
+		sources := make([]*moqtransport.OutgoingSubscribeRequest, 0, len(tracks))
+		for _, track := range tracks {
+			source, subscribeErr := session.Subscribe(ctx, stringsToNamespace(publicationNamespace), track)
+			if subscribeErr != nil {
+				backendErrors <- subscribeErr
+				return
+			}
+			sources = append(sources, source)
 		}
-		object, readErr := source.ReadObject(ctx)
-		if readErr != nil {
-			backendErrors <- readErr
-			return
-		}
-		var downstream *moqtransport.IncomingSubscribeRequest
-		select {
-		case downstream = <-handler.subscriptions:
-		case <-ctx.Done():
-			backendErrors <- ctx.Err()
-			return
-		}
-		downstream.Accept(2)
-		if sendErr := downstream.SendDatagram(*object); sendErr != nil {
-			backendErrors <- sendErr
-			return
+		for index, source := range sources {
+			object, readErr := source.ReadObject(ctx)
+			if readErr != nil {
+				backendErrors <- readErr
+				return
+			}
+			var downstream *moqtransport.IncomingSubscribeRequest
+			select {
+			case downstream = <-handler.subscriptions:
+			case <-ctx.Done():
+				backendErrors <- ctx.Err()
+				return
+			}
+			downstream.Accept(uint64(index + 10))
+			if sendErr := downstream.SendDatagram(*object); sendErr != nil {
+				backendErrors <- sendErr
+				return
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}()
@@ -155,30 +162,32 @@ func TestSessionTransportsOpaqueMOQTObjectOnlyThroughMasque(t *testing.T) {
 		},
 		BackendServerName: "moq-backend", BackendCertSHA256: integrationCertificatePin(t, backendCertificate),
 		LogicalSessionID: "logical-session", AttachToken: attachToken,
-		PublicationNamespace: publicationNamespace, PublicationTrack: publicationTrack, Timeout: 5 * time.Second,
+		PublicationNamespace: publicationNamespace, PublicationTrack: publicationTrack, PublicationTracks: tracks, Timeout: 5 * time.Second,
 	}, func(event Event) { events <- event })
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	if err = session.Subscribe("self-subscription", publicationNamespace, publicationTrack); err != nil {
-		t.Fatal(err)
-	}
-	payload := []byte("opaque-application-object")
-	if err = session.PublishObject(payload); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case event := <-events:
-		if event.Kind != "object" || event.SubscriptionID != "self-subscription" ||
-			event.TrackName != publicationTrack || !equalStringNamespace(event.Namespace, publicationNamespace) ||
-			!bytes.Equal(event.Data, payload) {
-			t.Fatalf("unexpected MOQT event: %#v", event)
+	for _, publicationTrack := range tracks {
+		if err = session.Subscribe("self-"+publicationTrack, publicationNamespace, publicationTrack); err != nil {
+			t.Fatal(err)
 		}
-	case err = <-backendErrors:
-		t.Fatal(err)
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for relayed object")
+		payload := []byte("opaque-application-object/" + publicationTrack)
+		if err = session.PublishTrackObject(publicationTrack, payload); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case event := <-events:
+			if event.Kind != "object" || event.SubscriptionID != "self-"+publicationTrack ||
+				event.TrackName != publicationTrack || !equalStringNamespace(event.Namespace, publicationNamespace) ||
+				!bytes.Equal(event.Data, payload) {
+				t.Fatalf("unexpected MOQT event: %#v", event)
+			}
+		case err = <-backendErrors:
+			t.Fatal(err)
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for relayed object")
+		}
 	}
 	var observedBackendSource, observedRelayEgress string
 	select {
