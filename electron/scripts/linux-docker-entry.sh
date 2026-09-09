@@ -4,6 +4,36 @@ set -euo pipefail
 
 BUILD_ARCH="${QORTAL_LINUX_DOCKER_ARCH:-x64}"
 BUILD_PROFILE="${QORTAL_LINUX_DOCKER_PROFILE:-full}"
+WORKSPACE_OWNER_UID="$(stat -c %u /workspace)"
+WORKSPACE_OWNER_GID="$(stat -c %g /workspace)"
+
+restore_host_ownership() {
+  if [[ ! "${WORKSPACE_OWNER_UID}" =~ ^[0-9]+$ || ! "${WORKSPACE_OWNER_GID}" =~ ^[0-9]+$ ]]; then
+    echo "Skipping ownership restoration: workspace owner is invalid." >&2
+    return
+  fi
+
+  local generated_paths=(
+    /workspace/dist
+    /workspace/electron/build
+    /workspace/electron/dist
+    /workspace/electron/resources/__pycache__
+    /workspace/electron/resources/private-transport
+    /workspace/electron/resources/reticulum
+  )
+  local existing_paths=()
+  local generated_path
+  for generated_path in "${generated_paths[@]}"; do
+    [[ -e "${generated_path}" ]] && existing_paths+=("${generated_path}")
+  done
+  if (( ${#existing_paths[@]} > 0 )); then
+    chown -R "${WORKSPACE_OWNER_UID}:${WORKSPACE_OWNER_GID}" "${existing_paths[@]}"
+  fi
+}
+
+# The repository is a host bind mount while this container runs as root.
+# Always return generated files to the invoking user, including after failures.
+trap restore_host_ownership EXIT
 
 case "${BUILD_ARCH}:${BUILD_PROFILE}" in
   x64:full)

@@ -33,6 +33,7 @@ export class ForeignSendError extends Error {
       | 'upgrade'
       | 'changed'
       | 'pending'
+      | 'confirming'
       | 'unknown'
       | 'declined',
     public txId?: string
@@ -58,7 +59,107 @@ export type SendDependencies = {
   readPending: () => Promise<PendingSend | null>;
   writePending: (entry: PendingSend | null) => Promise<void>;
 };
+type ReconciliationDependencies = Pick<
+  SendDependencies,
+  'post' | 'stillValid' | 'readPending' | 'writePending'
+>;
+export type ForeignTransactionState =
+  | 'none'
+  | 'unknown'
+  | 'mempool'
+  | 'confirmed'
+  | 'busy';
 const busy = new Set<string>();
+
+async function withWalletLock<T>(
+  lock: string,
+  unavailable: () => T | Promise<T>,
+  action: () => Promise<T>
+): Promise<T> {
+  const run = async () => {
+    if (busy.has(lock)) return unavailable();
+    busy.add(lock);
+    try {
+      return await action();
+    } finally {
+      busy.delete(lock);
+    }
+  };
+  if (typeof navigator !== 'undefined' && navigator.locks)
+    return navigator.locks.request(lock, { ifAvailable: true }, (held) =>
+      held ? run() : unavailable()
+    );
+  return run();
+}
+
+function normalizeTransactionStatus(
+  value: unknown,
+  coin: ForeignWalletCoin,
+  expectedChainId: string,
+  txId: string
+): 'UNKNOWN' | 'MEMPOOL' | 'CONFIRMED' {
+  const response = value as Record<string, unknown>;
+  if (
+    !response ||
+    response.version !== 1 ||
+    response.currencyCode !== coin ||
+    response.activeNetwork !== 'MAIN' ||
+    response.chainId !== expectedChainId ||
+    response.txId !== txId ||
+    !['UNKNOWN', 'MEMPOOL', 'CONFIRMED'].includes(response.status as string)
+  )
+    throw new ForeignSendError('invalid');
+  return response.status as 'UNKNOWN' | 'MEMPOOL' | 'CONFIRMED';
+}
+
+async function transactionStatus(
+  coin: ForeignWalletCoin,
+  expectedChainId: string,
+  txId: string,
+  post: SendDependencies['post']
+) {
+  return normalizeTransactionStatus(
+    await post(
+      `/crosschain/${coin.toLowerCase()}/wallet/public/transaction-status`,
+      {
+        expectedChainId,
+        txId,
+      }
+    ),
+    coin,
+    expectedChainId,
+    txId
+  );
+}
+
+export async function reconcilePendingForeignCoin(
+  coin: ForeignWalletCoin,
+  xpub: string,
+  deps: ReconciliationDependencies
+): Promise<ForeignTransactionState> {
+  walletFingerprint(xpub, coin);
+  const expectedChainId = getForeignWalletMainnetChainId(coin);
+  return withWalletLock(
+    `${coin}:${xpub}`,
+    () => 'busy',
+    async () => {
+      const pending = await deps.readPending();
+      if (!pending) return 'none';
+      const status = await transactionStatus(
+        coin,
+        expectedChainId,
+        pending.txId,
+        deps.post
+      );
+      if (status === 'CONFIRMED') {
+        if (!(await deps.stillValid())) return 'unknown';
+        await deps.writePending(null);
+        return 'confirmed';
+      }
+      return status === 'MEMPOOL' ? 'mempool' : 'unknown';
+    }
+  );
+}
 export function atomicAmount(raw: unknown): bigint {
   // Existing q-apps pass numbers; accept their decimal spelling without multiplying floats.
   const text =
@@ -109,34 +210,30 @@ export async function sendForeignCoin(
   const expectedChainId = getForeignWalletMainnetChainId(coin);
   const lock = `${coin}:${xpub}`;
   // Reject overlapping sends across tabs as well as within this process.
-  const run = async () => {
-    if (busy.has(lock)) throw new ForeignSendError('pending');
-    busy.add(lock);
-    try {
-      return await execute();
-    } finally {
-      busy.delete(lock);
-    }
-  };
-  if (typeof navigator !== 'undefined' && navigator.locks)
-    return navigator.locks.request(lock, { ifAvailable: true }, (held) => {
-      if (!held) throw new ForeignSendError('pending');
-      return run();
-    });
-  return run();
+  return withWalletLock(
+    lock,
+    () => {
+      throw new ForeignSendError('pending');
+    },
+    execute
+  );
 
   async function execute() {
-    const pending = await deps.readPending();
+    let pending = await deps.readPending();
     if (pending) {
-      // A timeout is not evidence of failure. Only the exact txid in wallet history
-      // clears a reservation; never automatically construct another payment.
-      const history = await deps.post(
-        `/crosschain/${coin.toLowerCase()}/wallettransactions`,
-        xpub
+      const status = await transactionStatus(
+        coin,
+        expectedChainId,
+        pending.txId,
+        deps.post
       );
-      if (!Array.isArray(history))
-        throw new ForeignSendError('pending', pending.txId);
-      if (!history.some((tx) => tx?.txHash === pending.txId)) {
+      if (status === 'CONFIRMED') {
+        if (!(await deps.stillValid())) throw new ForeignSendError('changed');
+        await deps.writePending(null);
+        pending = null;
+      } else if (status === 'MEMPOOL') {
+        throw new ForeignSendError('confirming', pending.txId);
+      } else {
         if (
           pending.rawTransactionHex &&
           deps.approveRecovery &&
@@ -185,15 +282,6 @@ export async function sendForeignCoin(
       return context;
     };
     const context = await read();
-    if (pending) {
-      if (
-        context.utxos.some((input) =>
-          pending.outpoints.includes(`${input.txHash}:${input.txPos}`)
-        )
-      )
-        throw new ForeignSendError('pending', pending.txId);
-      await deps.writePending(null);
-    }
 
     if (request.sendMax && request.amount !== undefined)
       throw new ForeignSendError('invalid');

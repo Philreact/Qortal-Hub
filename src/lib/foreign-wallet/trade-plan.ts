@@ -4,6 +4,7 @@ import { validateForeignWalletRecipient } from './foreign-wallet-transaction';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { ripemd160 } from '@noble/hashes/ripemd160';
 import { sha256 } from '@noble/hashes/sha256';
+import Base58 from '../../encryption/Base58';
 // Pure validation before any signing: bind outputs to the selected ATs and HTLC terms.
 export function validateLocalTradePlan(
   plans: any,
@@ -31,14 +32,10 @@ export function validateLocalTradePlan(
       !/^[a-f0-9]{40}$/.test(plan.hashOfSecret)
     )
       throw new Error('Invalid trade terms');
-    // Core's trade API serializes byte[] as base64. Check the actual seller key hash.
+    // Qortal's API adapter serializes byte[] values as Base58 strings.
     const seller =
       typeof offer.creatorForeignPKH === 'string'
-        ? bytesToHex(
-            Uint8Array.from(atob(offer.creatorForeignPKH), (c) =>
-              c.charCodeAt(0)
-            )
-          )
+        ? bytesToHex(Base58.decode(offer.creatorForeignPKH))
         : bytesToHex(Uint8Array.from(offer.creatorForeignPKH || []));
     if (!/^[a-f0-9]{40}$/.test(seller)) throw new Error('Invalid seller');
     const lock = new Uint8Array(4);

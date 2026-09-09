@@ -9382,8 +9382,15 @@ class CommunityMasqueRelayAnnounceHandler:
             raw = bytes(app_data or b"")
             if not raw or len(raw) > 512:
                 return
-            value = json.loads(raw.decode("utf-8"))
-            if not isinstance(value, dict) or int(value.get("v") or 0) != 1:
+            if raw[0] in (2, 3):
+                from masque_discovery_codec import decode
+                value = decode(raw)
+            else:
+                value = json.loads(raw.decode("utf-8"))
+                # V2 is accepted only through the signature-verifying codec.
+                if not isinstance(value, dict) or value.get("v") != 1:
+                    return
+            if not isinstance(value, dict) or int(value.get("v") or 0) not in (1, 2, 3):
                 return
             if value.get("q") is True:
                 return
@@ -9417,7 +9424,19 @@ class CommunityMasqueRelayAnnounceHandler:
                 if len(_community_masque_event_times) >= 60:
                     return
                 seen_at = _community_masque_seen_endpoints.get(endpoint_key, 0.0)
-                if received_at - seen_at < 30.0:
+                previous = _community_masque_recent_endpoints.get(endpoint_key)
+                if previous and previous.get("protocolVersion", 1) >= 2:
+                    if value.get("v", 1) < previous.get("protocolVersion") or value.get("relayIdentity") != previous.get("relayIdentity"):
+                        return
+                    if value.get("v") == previous.get("protocolVersion") and expires_at * 1000 <= previous.get("expiresAt", 0):
+                        return
+                policy_changed = previous and (
+                    previous.get("protocolVersion") != value.get("v") or
+                    previous.get("ticketKeyId") != value.get("ticketKeyId") or
+                    previous.get("accessMode") != value.get("accessMode", "public") or
+                    previous.get("allowedGroupIds") != value.get("allowedGroupIds", [])
+                )
+                if received_at - seen_at < 30.0 and not policy_changed:
                     return
                 endpoint = {
                     "host": host,
@@ -9425,6 +9444,12 @@ class CommunityMasqueRelayAnnounceHandler:
                     "serverName": server_name,
                     "certSha256": cert_sha256,
                     "expiresAt": expires_at * 1000,
+                    "protocolVersion": value.get("v", 1),
+                    "relayIdentity": value.get("relayIdentity"),
+                    "ticketIdentity": value.get("ticketIdentity"),
+                    "ticketKeyId": value.get("ticketKeyId"),
+                    "accessMode": value.get("accessMode", "public"),
+                    "allowedGroupIds": value.get("allowedGroupIds", []),
                 }
                 _community_masque_seen_endpoints[endpoint_key] = received_at
                 _community_masque_recent_endpoints[endpoint_key] = endpoint
@@ -27644,6 +27669,52 @@ def handle_qapp_rns_request(req_id: str, payload: Dict[str, Any]) -> None:
         _qapp_rns_error(req_id, "RNS_REQUEST_TIMEOUT")
 
 
+_relay_ticket_slots = threading.BoundedSemaphore(4)
+
+def handle_relay_ticket_request(req_id, payload):
+    # Dedicated bounded worker: never block QApp/media or control schedulers.
+    if not _relay_ticket_slots.acquire(blocking=False):
+        emit_resp(req_id, False, error="RELAY_BUSY")
+        return
+    def run():
+        link = None
+        try:
+            key = bytes.fromhex(str(payload.get("identity") or ""))
+            path = payload.get("path")
+            data = json.dumps(payload.get("data"), separators=(",", ":")).encode()
+            if len(key) != 64 or path not in ("/catalog", "/challenge", "/issue") or len(data) > 8192:
+                raise ValueError("RELAY_PROOF_INVALID")
+            identity = RNS.Identity(create_keys=False)
+            identity.load_public_key(key)
+            destination = RNS.Destination(identity, RNS.Destination.OUT, RNS.Destination.SINGLE, APP_NAMESPACE, COMMUNITY_MASQUE_ASPECT, COMMUNITY_MASQUE_VERSION)
+            deadline = time.monotonic() + 15
+            if not RNS.Transport.has_path(destination.hash):
+                RNS.Transport.request_path(destination.hash)
+                while not RNS.Transport.has_path(destination.hash) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+            established = threading.Event()
+            link = RNS.Link(destination, established_callback=lambda _: established.set())
+            if not established.wait(max(0, deadline-time.monotonic())):
+                raise ValueError("RELAY_AUTH_UNAVAILABLE")
+            done = threading.Event()
+            result = []
+            def response(receipt):
+                result.append(receipt.get_response())
+                done.set()
+            link.request(path, data=data, response_callback=response, failed_callback=lambda _: done.set(), timeout=10, max_response_size=8192)
+            if not done.wait(11) or not result or not isinstance(result[0], dict) or len(json.dumps(result[0])) > 8192:
+                raise ValueError("RELAY_AUTH_UNAVAILABLE")
+            emit_resp(req_id, True, payload=result[0])
+        except Exception as exc:
+            code = str(exc)
+            emit_resp(req_id, False, error=code if code.startswith("RELAY_") else "RELAY_AUTH_UNAVAILABLE")
+        finally:
+            if link is not None:
+                try: link.teardown()
+                except Exception: pass
+            _relay_ticket_slots.release()
+    threading.Thread(target=run, daemon=True, name="relay-ticket").start()
+
 def handle_command(message: Dict[str, Any]) -> None:
     req_id = str(message.get("id") or "")
     action = message.get("action")
@@ -27661,6 +27732,8 @@ def handle_command(message: Dict[str, Any]) -> None:
 
     if action == "start":
         handle_start(req_id, payload)
+    elif action == "relay_ticket_request":
+        handle_relay_ticket_request(req_id, payload)
     elif action == "publish_presence":
         handle_publish_presence(req_id, payload)
     elif action == "clear_presence_cache":

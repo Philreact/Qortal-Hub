@@ -13,6 +13,13 @@ import {
 } from './private-transport-sidecar';
 
 export type TrustedRelayConfig = Readonly<{
+  protocolVersion?: number;
+  relayIdentity?: string;
+  ticketIdentity?: string;
+  ticketKeyId?: string;
+  accessMode?: 'public' | 'groups';
+  allowedGroupIds?: number[];
+  preparedRelay?: string;
   relayAddress: string;
   relayServerName: string;
   relayCertSha256: string;
@@ -59,7 +66,25 @@ export class QuicMasqueTransport implements PrivateTransport {
     if (this.closed) throw new PrivateChannelError('TRANSPORT_CLOSED');
     this.context = context;
     try {
-      await this.connect(context);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await this.connect(context);
+          break;
+        } catch (error) {
+          if (
+            attempt >= 2 ||
+            !this.lastAttemptedRelayAddress ||
+            !isRecoverableTransportError(error) ||
+            this.closed
+          )
+            throw error;
+          if (this.lastAttemptedRelayAddress)
+            this.failedRelayAddresses.set(
+              this.lastAttemptedRelayAddress,
+              Date.now()
+            );
+        }
+      }
     } catch (error) {
       throw translateSidecarError(error);
     }
@@ -169,10 +194,17 @@ export class QuicMasqueTransport implements PrivateTransport {
 
   private async connect(context: PrivateTransportContext): Promise<void> {
     this.lastAttemptedRelayAddress = null;
-    const relay = await this.resolveRelay();
-    const bootstrap = await this.bootstrapProvider.getBootstrap(context);
+    let [relay, bootstrap] = await Promise.all([
+      this.resolveRelay(),
+      this.bootstrapProvider.getBootstrap(context),
+    ]);
+    // Discovery/authentication can outlast a short-lived backend credential.
+    // Refresh before sending it; a real backend rejection remains terminal.
+    if (bootstrap.expiresAt < Date.now() + 5_000)
+      bootstrap = await this.bootstrapProvider.getBootstrap(context);
     const openAt = (relayAddress: string) =>
       this.sidecar.openPrivateSession({
+        preparedRelay: relay.preparedRelay,
         relayAddress,
         relayServerName: relay.relayServerName,
         relayCertSha256: relay.relayCertSha256,
@@ -289,6 +321,13 @@ function errorCode(error: unknown): string {
 
 function isRecoverableCode(code: string | undefined): boolean {
   return (
+    code === 'RELAY_CONNECT_FAILED' ||
+    code === 'RELAY_CONNECTION_CLOSED' ||
+    code === 'RELAY_TARGET_DENIED' ||
+    code === 'RELAY_FULL' ||
+    code === 'RELAY_AUTH_REQUIRED' ||
+    code === 'RELAY_ACCESS_DENIED' ||
+    code === 'RELAY_MEMBERSHIP_UNAVAILABLE' ||
     code === 'INNER_QUIC_FAILED' ||
     code === 'TRANSPORT_CLOSED' ||
     code === 'MASQUE_TUNNEL_FAILED' ||
@@ -339,6 +378,15 @@ function translateSidecarError(error: unknown): PrivateChannelError {
         ? error.message
         : 'TRANSPORT_ERROR';
   const allowed = new Set([
+    'RELAY_NO_ELIGIBLE_RELAY',
+    'RELAY_ACCESS_DENIED',
+    'RELAY_PROOF_INVALID',
+    'RELAY_MEMBERSHIP_UNAVAILABLE',
+    'RELAY_TARGET_DENIED',
+    'RELAY_FULL',
+    'RELAY_AUTH_REQUIRED',
+    'RELAY_CONNECTION_CLOSED',
+    'RELAY_CONNECT_FAILED',
     'BACKEND_IDENTITY_MISMATCH',
     'MASQUE_TUNNEL_FAILED',
     'MASQUE_RELAY_UNAVAILABLE',

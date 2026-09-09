@@ -16,6 +16,10 @@
       "to": "reticulum/presence_bridge.py"
     },
     {
+      "from": "resources/masque_discovery_codec.py",
+      "to": "reticulum/masque_discovery_codec.py"
+    },
+    {
       "from": "resources/qortal_python_diagnostics.py",
       "to": "reticulum/qortal_python_diagnostics.py"
     },
@@ -45,6 +49,7 @@
       "filter": [
         "**/*",
         "!presence_bridge.py",
+        "!masque_discovery_codec.py",
         "!qortal_python_diagnostics.py",
         "!sitecustomize.py",
         "!qortalland_games.py",

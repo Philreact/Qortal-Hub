@@ -71,6 +71,46 @@ const context = {
 };
 
 describe('generic trusted MOQT transport', () => {
+  it.each([
+    ['RELAY_ACCESS_DENIED', true],
+    ['RELAY_MEMBERSHIP_UNAVAILABLE', true],
+    ['ATTACH_TOKEN_REJECTED', false],
+    ['MOQ_ATTACH_FAILED', false],
+    ['BACKEND_IDENTITY_MISMATCH', false],
+  ] as const)(
+    'distinguishes %s from backend authentication rejection',
+    async (code, retry) => {
+      const { sidecar, transport } = setup();
+      sidecar.openMoqSession.mockRejectedValueOnce(
+        new PrivateTransportSidecarError(code)
+      );
+      if (retry) await transport.open(context);
+      else
+        await expect(transport.open(context)).rejects.toMatchObject({ code });
+      expect(sidecar.openMoqSession).toHaveBeenCalledTimes(retry ? 2 : 1);
+      await transport.close();
+    }
+  );
+  it('refreshes credentials that almost expired while relay discovery ran', async () => {
+    const { sidecar, provider, transport } = setup();
+    vi.mocked(provider.getBootstrap)
+      .mockResolvedValueOnce({
+        ...descriptor,
+        expiresAt: Date.now() + 1_000,
+        attachToken: 'old',
+      })
+      .mockResolvedValueOnce({
+        ...descriptor,
+        expiresAt: Date.now() + 30_000,
+        attachToken: 'fresh',
+      });
+    await transport.open(context);
+    expect(provider.getBootstrap).toHaveBeenCalledTimes(2);
+    expect(sidecar.openMoqSession).toHaveBeenCalledWith(
+      expect.objectContaining({ attachToken: 'fresh' })
+    );
+    await transport.close();
+  });
   it('uses an authenticated realtime bootstrap and transports opaque objects', async () => {
     const { sidecar, provider, transport } = setup();
     await transport.open(context);

@@ -93,7 +93,7 @@ class Fixture {
 
 integration('Step 3 inner QUIC through MASQUE', () => {
   beforeAll(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qortal-step3-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-step3-test-'));
     sidecarBinary = path.join(tempDir, 'sidecar');
     fixtureBinary = path.join(tempDir, 'fixture');
     const root = path.join(

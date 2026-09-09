@@ -217,6 +217,25 @@ bytes, and requires the Electrum server to return the transaction ID calculated
 from those bytes. It returns that transaction ID to Hub. A broadcast response is
 an acknowledgement, not a blockchain confirmation.
 
+### Exact transaction status
+
+```http
+POST /crosschain/{btc|ltc|doge|dgb|rvn}/wallet/public/transaction-status
+Content-Type: application/json
+```
+
+```json
+{
+  "expectedChainId": "bip122:<mainnet genesis identifier>",
+  "txId": "<transaction ID>"
+}
+```
+
+This lightweight endpoint looks up only the transaction Hub already signed. It
+does not receive the wallet xpub or private key. Core returns `UNKNOWN`,
+`MEMPOOL` or `CONFIRMED`, together with the exact coin, network, chain ID and
+transaction ID so Hub can reject a response for the wrong chain or transaction.
+
 ### Local trade preparation
 
 ```http
@@ -330,12 +349,20 @@ to arbitrate concurrent application instances. Browser and Android use local
 storage and Web Locks where available. Overlapping sends for the same wallet and
 coin are rejected rather than queued.
 
-Hub keeps a reservation after a successful broadcast acknowledgement until
-wallet history sees the transaction and the inputs disappear from discovery. If
-the outcome remains uncertain, the next send can offer to rebroadcast only the
-exact saved bytes with explicit permission. Recovery never builds a replacement
-transaction and never reports an older recovered payment as success for a new
-request.
+Hub keeps a reservation after a successful broadcast acknowledgement. It checks
+the exact transaction on login, when the selected Core changes, when the window
+regains focus, every minute while the wallet is unlocked, and before another
+send. A confirmed transaction clears the reservation automatically. If this
+happens during a new send, that send continues to its normal payment approval.
+An unconfirmed mempool transaction remains reserved and blocks a new payment.
+
+If a Core reports `UNKNOWN`, Hub keeps the reservation because a newly selected
+or out-of-sync Core might simply not have seen the transaction yet. The next
+send can offer to rebroadcast only the exact saved bytes with explicit
+permission. Recovery never builds a replacement transaction and never reports
+an older recovered payment as success for a new request. Changing Core aborts
+an in-flight automatic check, and the result is ignored unless the same wallet
+and Core are still selected.
 
 Corrupt journal entries, old entries without saved bytes, expired trade-funding
 transactions and abandoned desktop lock files fail closed and require manual
@@ -408,6 +435,7 @@ Typical failures include:
   approval/signing flow;
 - `declined`: the user rejected Hub's normal permission request;
 - `pending`: another send is active or a previous transaction remains reserved;
+- `confirming`: the prior payment is in the mempool and remains reserved;
 - `unknown`: broadcast outcome is uncertain, so the exact transaction remains
   journaled for safe recovery;
 - `invalid`: input, response, address, amount, fee or signed transaction
@@ -439,8 +467,9 @@ The main Hub components are:
 
 The main Core components are:
 
-- `LocalWalletSupport`: public wallet discovery and signed-byte broadcast;
-- `ForeignWalletRequest`: discovery and broadcast request model;
+- `LocalWalletSupport`: public wallet discovery, exact transaction status and
+  signed-byte broadcast;
+- `ForeignWalletRequest`: discovery, status and broadcast request model;
 - the five `CrossChain*Resource` classes: coin-specific endpoint exposure;
 - `LocalTradeFunding`: durable local trade preparation and progression;
 - `CrossChainTradeBotResource`: local funding endpoint;

@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { base58check } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha256';
 import { ripemd160 } from '@noble/hashes/ripemd160';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import { foreignCoins } from './foreign-wallets';
 import { validateLocalTradePlan } from './trade-plan';
+import Base58 from '../../encryption/Base58';
 
 describe('trade funding validation', () => {
   for (const coin of foreignCoins)
@@ -14,9 +15,7 @@ describe('trade funding validation', () => {
         receivingAddress: 'QORT',
         expectedForeignAmount: '1',
         tradeTimeout: 60,
-        creatorForeignPKH: btoa(
-          String.fromCharCode(...new Uint8Array(20).fill(3))
-        ),
+        creatorForeignPKH: Base58.encode(new Uint8Array(20).fill(3)),
       };
       const lockTime = Math.floor(Date.now() / 1000) + 3600;
       const time = new Uint8Array(4);
@@ -57,10 +56,40 @@ describe('trade funding validation', () => {
       expect(() =>
         validateLocalTradePlan(
           [plan],
-          [{ ...offer, creatorForeignPKH: btoa('x'.repeat(20)) }],
+          [{ ...offer, creatorForeignPKH: 'not-valid-base58-0' }],
           coin,
           'QORT'
         )
       ).toThrow();
     });
+
+  it('accepts the Base58 seller key hash returned by the live Core API', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1788958554000);
+    const offer = {
+      qortalAtAddress: 'AQyL6gfcJ6vbmN7thDii3h3di5Mq7u1uZ4',
+      expectedForeignAmount: '0.04350000',
+      tradeTimeout: 120,
+      creatorForeignPKH: '3TuTyu7byeYxS4Ly4pJGepauRZet',
+    };
+    const plan = {
+      atAddress: offer.qortalAtAddress,
+      receivingAddress: 'QORT',
+      address: '31kxF481xPMfR5H6bdMib5XUu8mYC9e6JH',
+      amount: '4352730',
+      fundingReserve: '2730',
+      lockTime: 1788965754,
+      refundPublicKeyHash: 'c04caa54b7a5251dcb0597da62e586101048d6b9',
+      hashOfSecret: 'a1d75bb7ed909f700bb25be919e4b6cba31f07e1',
+      redeemScript:
+        '7dada97614c04caa54b7a5251dcb0597da62e586101048d6b9876375047a73a16ab16714b0da988370168d62ea7968d7f0a38ff8a10098f588a914a1d75bb7ed909f700bb25be919e4b6cba31f07e18768',
+    };
+
+    try {
+      expect(validateLocalTradePlan([plan], [offer], 'LTC', 'QORT')).toEqual([
+        { address: plan.address, value: 4352730n },
+      ]);
+    } finally {
+      now.mockRestore();
+    }
+  });
 });

@@ -18,6 +18,11 @@ const relay = {
 };
 
 describe('community MASQUE relay discovery', () => {
+  it('validates v3 service identities and ticket key commitments', () => {
+    const value={...relay,protocolVersion:3,relayIdentity:'cd'.repeat(32),ticketIdentity:'ef'.repeat(32)+'cd'.repeat(32),ticketKeyId:'12'.repeat(32),accessMode:'groups',allowedGroupIds:[1144]};
+    expect(validateCommunityMasqueRelay(value,{now:()=>1_000_000})).toEqual(value);
+    for(const invalid of [{...value,ticketKeyId:'bad'},{...value,ticketIdentity:'ab'.repeat(64)},{...value,allowedGroupIds:[]}])expect(validateCommunityMasqueRelay(invalid,{now:()=>1_000_000})).toBeNull();
+  });
   it('validates a pinned literal endpoint with a bounded lease', () => {
     expect(
       validateCommunityMasqueRelay(relay, { now: () => 1_000_000 })

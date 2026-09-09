@@ -155,6 +155,11 @@ import {
   shutdownPrivateTransportSidecar,
 } from './private-transport-runtime';
 import { QAppMoqError, QAppMoqTransportManager } from './moq-transport-manager';
+import {
+  configureRelaySigner,
+  setRelayAccount,
+  setRelayGroups,
+} from './relay-access-coordinator';
 import { attachReticulumStatusBridgeEvents } from './reticulum-daemon';
 import {
   startReticulumMeshCoordinator,
@@ -2970,6 +2975,11 @@ function getQAppReticulumManager(): QAppReticulumManager {
 }
 
 function getPrivateChannelManager(): PrivateChannelManager {
+  configureRelaySigner(
+    signReticulumChatControlFields,
+    readRelayWalletAddress,
+    readRelayGroupHints
+  );
   if (privateChannelManager) return privateChannelManager;
   privateChannelManager = new PrivateChannelManager(
     (owner, connectionId) =>
@@ -2986,6 +2996,11 @@ function getPrivateChannelManager(): PrivateChannelManager {
 }
 
 function getQAppMoqTransportManager(): QAppMoqTransportManager {
+  configureRelaySigner(
+    signReticulumChatControlFields,
+    readRelayWalletAddress,
+    readRelayGroupHints
+  );
   if (qAppMoqTransportManager) return qAppMoqTransportManager;
   qAppMoqTransportManager = new QAppMoqTransportManager(
     (owner, connectionId) =>
@@ -3527,6 +3542,46 @@ function scheduleReticulumOverlayStateSyncRetry(
     void syncReticulumOverlayStateToBridge(manager, attempt + 1, sequence);
   }, delay);
   reticulumOverlaySyncRetryTimer.unref?.();
+}
+
+async function readRelayGroupHints(address: string): Promise<number[] | null> {
+  const main = myCapacitorApp.getMainWindow();
+  if (
+    !main ||
+    main.isDestroyed() ||
+    !isRendererMainFrameReady(main.webContents)
+  )
+    return null;
+  const result = await main.webContents.executeJavaScript(
+    `(async () => {
+    const result = await window.sendMessage('getRelayGroupHints', {address:${JSON.stringify(address)}}, 3000);
+    return result?.groups ?? null;
+  })()`,
+    true
+  );
+  return Array.isArray(result) &&
+    result.length <= 4096 &&
+    result.every((id) => Number.isInteger(id) && id > 0 && id <= 2147483647)
+    ? result
+    : null;
+}
+
+async function readRelayWalletAddress(): Promise<string> {
+  const main = myCapacitorApp.getMainWindow();
+  if (
+    !main ||
+    main.isDestroyed() ||
+    !isRendererMainFrameReady(main.webContents)
+  )
+    return '';
+  const result = await main.webContents.executeJavaScript(
+    `(async () => {
+    const result = await window.sendMessage('getWalletInfo', {}, 5000);
+    return result?.hasKeyPair && typeof result?.walletInfo?.address0 === 'string' ? result.walletInfo.address0 : '';
+  })()`,
+    true
+  );
+  return typeof result === 'string' ? result : '';
 }
 
 async function signReticulumChatControlFields(
@@ -4382,6 +4437,11 @@ ipcMain.handle(
       return { success: false, error: 'Account session changed' };
     }
     manager.setLocalGroupMemberships(Array.isArray(groupIds) ? groupIds : []);
+    setRelayGroups(
+      (Array.isArray(groupIds) ? groupIds : []).map((value) =>
+        typeof value === 'number' ? value : Number(value.groupId)
+      )
+    );
     return { success: true };
   }
 );
@@ -4450,6 +4510,7 @@ ipcMain.handle(
 );
 
 ipcMain.handle('reticulumChat:clearLocalAccountState', async () => {
+  setRelayAccount('', true);
   reticulumLocalAccountLifecycleGeneration += 1;
   // These managers live for the lifetime of the main process too. Clear their
   // account routing at the same explicit logout boundary so a later login

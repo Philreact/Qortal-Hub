@@ -22,7 +22,7 @@ import (
 
 const (
 	Version                 = 2
-	SidecarVersion          = "0.5.0"
+	SidecarVersion          = "0.7.0"
 	MaxControlMessageBytes  = 64 * 1024
 	MaxBinaryMessageBytes   = innerquic.MaxReliablePayloadBytes
 	maxRememberedRequestIDs = 4096
@@ -81,6 +81,10 @@ func NewServer() *Server {
 }
 
 func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) error {
+	ctx, cancel := context.WithCancel(ctx)
+	var preparations sync.WaitGroup
+	slots := make(chan struct{}, 4)
+	defer func() { cancel(); preparations.Wait(); masqueclient.CloseAllRelays() }()
 	reader := bufio.NewReaderSize(input, 4096)
 	s.emit = func(event Event, binary []byte) { s.write(output, event, binary) }
 	defer s.Close()
@@ -109,6 +113,21 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 		if _, err := io.ReadFull(reader, binary); err != nil {
 			s.write(output, failure(req.RequestID, "MALFORMED_BINARY_FRAME", "truncated binary frame"), nil)
 			return nil
+		}
+		if req.Operation == "prepareRelay" || req.Operation == "authorizeRelay" {
+			select {
+			case slots <- struct{}{}:
+				preparations.Add(1)
+				go func(req Request) {
+					defer preparations.Done()
+					defer func() { <-slots }()
+					response, _ := s.handleRequest(ctx, req, nil)
+					s.write(output, response, nil)
+				}(req)
+			default:
+				s.write(output, failure(req.RequestID, "RELAY_BUSY", "relay preparation capacity reached"), nil)
+			}
+			continue
 		}
 		response, shutdown := s.handleRequest(ctx, req, binary)
 		s.write(output, response, nil)
@@ -182,6 +201,8 @@ func (s *Server) handleRequest(ctx context.Context, req Request, binary []byte) 
 		return failure(req.RequestID, "DUPLICATE_REQUEST_ID", "requestId was already used"), false
 	}
 	switch req.Operation {
+	case "prepareRelay", "authorizeRelay", "closeRelay", "clearRelays", "prepareRelayTickets", "finalizeRelayTickets":
+		return s.relayOperation(ctx, req), false
 	case "health":
 		return success(req.RequestID, map[string]interface{}{"service": "qortal-private-transport", "sidecarVersion": SidecarVersion, "protocolVersion": Version, "innerAlpn": innerquic.ALPN, "moqAlpn": moqclient.ALPN}), false
 	case "openMasqueTunnel":
@@ -220,6 +241,7 @@ func (s *Server) handleRequest(ctx context.Context, req Request, binary []byte) 
 }
 
 type moqOpenParams struct {
+	PreparedRelay        string          `json:"preparedRelay"`
 	RelayAddress         string          `json:"relayAddress"`
 	RelayServerName      string          `json:"relayServerName"`
 	RelayCertSHA256      string          `json:"relayCertSha256"`
@@ -251,7 +273,8 @@ func (s *Server) openMoqSession(ctx context.Context, req Request) Response {
 	}
 	session, err := moqclient.Open(ctx, moqclient.Config{
 		Relay: masqueclient.Config{
-			RelayAddress: p.RelayAddress, RelayServerName: p.RelayServerName,
+			PreparedRelay: p.PreparedRelay,
+			RelayAddress:  p.RelayAddress, RelayServerName: p.RelayServerName,
 			RelayCertSHA256: p.RelayCertSHA256, TargetAddress: p.BackendAddress,
 			Timeout: duration(p.TimeoutMS),
 		},
@@ -274,6 +297,9 @@ func (s *Server) openMoqSession(ctx context.Context, req Request) Response {
 }
 
 func moqErrorCode(err error) string {
+	if code := relayErrorCode(err); code != "" {
+		return code
+	}
 	text := err.Error()
 	if strings.Contains(text, "MASQUE_TUNNEL_FAILED") {
 		return "MASQUE_TUNNEL_FAILED"
@@ -425,6 +451,7 @@ func (s *Server) getMoqSession(id string) *moqclient.Session {
 }
 
 type privateOpenParams struct {
+	PreparedRelay     string `json:"preparedRelay"`
 	RelayAddress      string `json:"relayAddress"`
 	RelayServerName   string `json:"relayServerName"`
 	RelayCertSHA256   string `json:"relayCertSha256"`
@@ -448,7 +475,7 @@ func (s *Server) openPrivateSession(ctx context.Context, req Request) Response {
 	if err != nil {
 		return failure(req.RequestID, "INTERNAL_ERROR", "failed to allocate session ID")
 	}
-	session, err := innerquic.Open(ctx, innerquic.Config{Relay: masqueclient.Config{RelayAddress: p.RelayAddress, RelayServerName: p.RelayServerName, RelayCertSHA256: p.RelayCertSHA256, TargetAddress: p.BackendAddress, Timeout: duration(p.TimeoutMS)}, BackendServerName: p.BackendServerName, BackendCertSHA256: p.BackendCertSHA256, LogicalSessionID: p.LogicalSessionID, AttachToken: p.AttachToken, Nonce: p.Nonce, Purpose: p.Purpose, OwnerBindingHash: p.OwnerBindingHash, Timeout: duration(p.TimeoutMS)}, func(e innerquic.Event) { s.emitInner(sessionID, e) })
+	session, err := innerquic.Open(ctx, innerquic.Config{Relay: masqueclient.Config{PreparedRelay: p.PreparedRelay, RelayAddress: p.RelayAddress, RelayServerName: p.RelayServerName, RelayCertSHA256: p.RelayCertSHA256, TargetAddress: p.BackendAddress, Timeout: duration(p.TimeoutMS)}, BackendServerName: p.BackendServerName, BackendCertSHA256: p.BackendCertSHA256, LogicalSessionID: p.LogicalSessionID, AttachToken: p.AttachToken, Nonce: p.Nonce, Purpose: p.Purpose, OwnerBindingHash: p.OwnerBindingHash, Timeout: duration(p.TimeoutMS)}, func(e innerquic.Event) { s.emitInner(sessionID, e) })
 	if err != nil {
 		return failure(req.RequestID, innerErrorCode(err), "private session establishment failed")
 	}
@@ -459,6 +486,9 @@ func (s *Server) openPrivateSession(ctx context.Context, req Request) Response {
 	return success(req.RequestID, map[string]interface{}{"sessionId": sessionID, "innerQuicConnectionId": innerID, "logicalSessionId": p.LogicalSessionID, "transportGeneration": 1})
 }
 func innerErrorCode(err error) string {
+	if code := relayErrorCode(err); code != "" {
+		return code
+	}
 	text := err.Error()
 	for _, code := range []string{"ATTACH_TOKEN_REJECTED", "DATAGRAM_UNSUPPORTED", "SESSION_ATTACH_FAILED", "MASQUE_TUNNEL_FAILED"} {
 		if strings.Contains(text, code) {
@@ -548,6 +578,7 @@ func (s *Server) getSession(id string) *innerquic.Session {
 // Step 2 tunnel operations remain for regression tests.
 func (s *Server) openTunnel(ctx context.Context, req Request) Response {
 	var p struct {
+		PreparedRelay   string `json:"preparedRelay"`
 		RelayAddress    string `json:"relayAddress"`
 		RelayServerName string `json:"relayServerName"`
 		RelayCertSHA256 string `json:"relayCertSha256"`
@@ -557,7 +588,7 @@ func (s *Server) openTunnel(ctx context.Context, req Request) Response {
 	if decodeParams(req.Params, &p) != nil {
 		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
 	}
-	t, err := masqueclient.Open(ctx, masqueclient.Config{RelayAddress: p.RelayAddress, RelayServerName: p.RelayServerName, RelayCertSHA256: p.RelayCertSHA256, TargetAddress: p.TargetAddress, Timeout: duration(p.TimeoutMS)})
+	t, err := masqueclient.Open(ctx, masqueclient.Config{PreparedRelay: p.PreparedRelay, RelayAddress: p.RelayAddress, RelayServerName: p.RelayServerName, RelayCertSHA256: p.RelayCertSHA256, TargetAddress: p.TargetAddress, Timeout: duration(p.TimeoutMS)})
 	if err != nil {
 		return failure(req.RequestID, "MASQUE_OPEN_FAILED", "failed to open authenticated MASQUE tunnel")
 	}
@@ -648,6 +679,8 @@ func (s *Server) Close() {
 	}
 }
 func (s *Server) rememberRequestID(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, ok := s.seen[id]; ok {
 		return true
 	}

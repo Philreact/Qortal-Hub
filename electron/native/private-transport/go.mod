@@ -5,6 +5,7 @@ go 1.26.0
 replace github.com/mengelbart/moqtransport => ./third_party/moqtransport
 
 require (
+	github.com/cloudflare/circl v1.6.5
 	github.com/mengelbart/moqtransport v0.5.1-0.20260831154657-9eaf40a4dedd
 	github.com/quic-go/masque-go v0.5.0
 	github.com/quic-go/quic-go v0.62.0

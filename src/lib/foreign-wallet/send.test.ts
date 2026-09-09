@@ -13,7 +13,12 @@ import {
   walletPublicKey,
 } from './foreign-wallets';
 import { buildForeignWalletSignedTransaction } from './foreign-wallet-transaction';
-import { sendForeignCoin, atomicAmount, type PendingSend } from './send';
+import {
+  sendForeignCoin,
+  reconcilePendingForeignCoin,
+  atomicAmount,
+  type PendingSend,
+} from './send';
 import { getForeignWalletMainnetChainId } from './foreign-wallet-spend-context';
 import PhraseWallet from '../../utils/generateWallet/phrase-wallet';
 
@@ -84,6 +89,21 @@ function fixture(coin: (typeof foreignCoins)[number]) {
     ],
   };
   return { xprv, original, leaf, input, context };
+}
+
+function transactionStatus(
+  coin: (typeof foreignCoins)[number],
+  txId: string,
+  status: 'UNKNOWN' | 'MEMPOOL' | 'CONFIRMED'
+) {
+  return {
+    version: 1,
+    currencyCode: coin,
+    activeNetwork: 'MAIN',
+    chainId: getForeignWalletMainnetChainId(coin),
+    txId,
+    status,
+  };
 }
 
 describe('local foreign wallet signing', () => {
@@ -188,7 +208,7 @@ describe('local foreign wallet signing', () => {
     ).rejects.toThrow('disk failure');
     expect(broadcasts).toBe(0);
   });
-  it('retains a reservation after acknowledgement until read servers observe the spend', async () => {
+  it('retains a reservation while the exact transaction is in the mempool', async () => {
     const { xprv, leaf, context } = fixture('LTC');
     let pending: PendingSend = null;
     const deps = {
@@ -198,11 +218,11 @@ describe('local foreign wallet signing', () => {
       writePending: async (value: PendingSend) => {
         pending = value;
       },
-      post: async (path: string) =>
+      post: async (path: string, body: any) =>
         path.endsWith('/send/broadcast')
           ? pending.txId
-          : path.endsWith('wallettransactions')
-            ? [{ txHash: pending.txId }]
+          : path.endsWith('transaction-status')
+            ? transactionStatus('LTC', body.txId, 'MEMPOOL')
             : context,
     };
     const req = {
@@ -214,9 +234,51 @@ describe('local foreign wallet signing', () => {
     const txId = await sendForeignCoin(req, deps);
     expect(pending.txId).toBe(txId);
     await expect(sendForeignCoin(req, deps)).rejects.toMatchObject({
-      code: 'pending',
+      code: 'confirming',
+      txId,
     });
     expect(pending.txId).toBe(txId);
+  });
+  it('clears a confirmed old payment and asks normally about the current one', async () => {
+    const { xprv, leaf, context } = fixture('LTC');
+    let pending: PendingSend = null;
+    let status: 'UNKNOWN' | 'CONFIRMED' = 'UNKNOWN';
+    const approve = vi
+      .fn<() => Promise<boolean>>()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const post = vi.fn(async (path: string, body: any) => {
+      if (path.endsWith('/send/broadcast')) return pending.txId;
+      if (path.endsWith('transaction-status'))
+        return transactionStatus('LTC', body.txId, status);
+      return context;
+    });
+    const deps = {
+      approve,
+      stillValid: async () => true,
+      readPending: async () => pending,
+      writePending: async (value: PendingSend) => {
+        pending = value;
+      },
+      post,
+    };
+    const req = {
+      coin: 'LTC' as const,
+      xprv,
+      amount: '1',
+      recipient: leaf.address,
+    };
+    const previousTxId = await sendForeignCoin(req, deps);
+    status = 'CONFIRMED';
+
+    await expect(sendForeignCoin(req, deps)).rejects.toMatchObject({
+      code: 'declined',
+    });
+    expect(pending).toBeNull();
+    expect(approve).toHaveBeenCalledTimes(2);
+    expect(
+      post.mock.calls.filter(([path]) => path.endsWith('/send/broadcast'))
+    ).toHaveLength(1);
   });
   it('rejects forged amounts and previous transactions', () => {
     const { xprv, leaf, input } = fixture('LTC');
@@ -263,7 +325,8 @@ describe('local foreign wallet signing', () => {
       post: async (path: string, body: unknown) => {
         bodies.push(JSON.stringify(body));
         if (path.endsWith('spend-context')) return context;
-        if (path.endsWith('wallettransactions')) return [];
+        if (path.endsWith('transaction-status'))
+          return transactionStatus('LTC', pending.txId, 'UNKNOWN');
         broadcasts++;
         throw new Error('timeout');
       },
@@ -319,7 +382,8 @@ it('recovers only the identical persisted bytes and never reports an old payment
     },
     post: async (path: string, body: any) => {
       if (path.endsWith('spend-context')) return context;
-      if (path.endsWith('wallettransactions')) return [];
+      if (path.endsWith('transaction-status'))
+        return transactionStatus('LTC', pending.txId, 'UNKNOWN');
       sent.push(body);
       if (!allowBroadcast) throw new Error('lost connection');
       return pending.txId;
@@ -353,7 +417,9 @@ it('rejects corrupt recovery bytes and respects expired trade funding deadlines'
     outputs: [{ address: leaf.address, value: 999990000n }],
   });
   const approveRecovery = vi.fn(async () => true);
-  const post = vi.fn(async (_path: string) => []);
+  const post = vi.fn(async (_path: string, body: any) =>
+    transactionStatus('LTC', body.txId, 'UNKNOWN')
+  );
   for (const entry of [
     { txId: 'a'.repeat(64), rawTransactionHex: signed.rawTransactionHex },
     {
@@ -381,9 +447,95 @@ it('rejects corrupt recovery bytes and respects expired trade funding deadlines'
   }
   expect(approveRecovery).not.toHaveBeenCalled();
   expect(
-    post.mock.calls.every(([path]) => path.endsWith('wallettransactions'))
+    post.mock.calls.every(([path]) => path.endsWith('transaction-status'))
   ).toBe(true);
 });
+
+it('background reconciliation clears only a confirmed exact transaction', async () => {
+  const { xprv } = fixture('LTC');
+  const xpub = walletPublicKey(xprv, 'LTC');
+  const txId = 'a'.repeat(64);
+  let pending: PendingSend = {
+    txId,
+    outpoints: [`${'b'.repeat(64)}:0`],
+  };
+  const writePending = vi.fn(async (value: PendingSend) => {
+    pending = value;
+  });
+  const state = await reconcilePendingForeignCoin('LTC', xpub, {
+    stillValid: async () => true,
+    readPending: async () => pending,
+    writePending,
+    post: async (_path, body: any) =>
+      transactionStatus('LTC', body.txId, 'CONFIRMED'),
+  });
+  expect(state).toBe('confirmed');
+  expect(pending).toBeNull();
+  expect(writePending).toHaveBeenCalledWith(null);
+});
+
+it.each(['UNKNOWN', 'MEMPOOL'] as const)(
+  'background reconciliation keeps a %s transaction reserved',
+  async (status) => {
+    const { xprv } = fixture('LTC');
+    const xpub = walletPublicKey(xprv, 'LTC');
+    const pending: PendingSend = {
+      txId: 'a'.repeat(64),
+      outpoints: [`${'b'.repeat(64)}:0`],
+    };
+    const writePending = vi.fn();
+    expect(
+      await reconcilePendingForeignCoin('LTC', xpub, {
+        stillValid: async () => true,
+        readPending: async () => pending,
+        writePending,
+        post: async (_path, body: any) =>
+          transactionStatus('LTC', body.txId, status),
+      })
+    ).toBe(status.toLowerCase());
+    expect(writePending).not.toHaveBeenCalled();
+  }
+);
+
+it('does not clear a confirmed reservation after the wallet or Core changes', async () => {
+  const { xprv } = fixture('LTC');
+  const xpub = walletPublicKey(xprv, 'LTC');
+  const pending: PendingSend = {
+    txId: 'a'.repeat(64),
+    outpoints: [`${'b'.repeat(64)}:0`],
+  };
+  const writePending = vi.fn();
+  expect(
+    await reconcilePendingForeignCoin('LTC', xpub, {
+      stillValid: async () => false,
+      readPending: async () => pending,
+      writePending,
+      post: async (_path, body: any) =>
+        transactionStatus('LTC', body.txId, 'CONFIRMED'),
+    })
+  ).toBe('unknown');
+  expect(writePending).not.toHaveBeenCalled();
+});
+
+it('rejects a transaction-status response for a different transaction', async () => {
+  const { xprv } = fixture('LTC');
+  const xpub = walletPublicKey(xprv, 'LTC');
+  const pending: PendingSend = {
+    txId: 'a'.repeat(64),
+    outpoints: [`${'b'.repeat(64)}:0`],
+  };
+  const writePending = vi.fn();
+  await expect(
+    reconcilePendingForeignCoin('LTC', xpub, {
+      stillValid: async () => true,
+      readPending: async () => pending,
+      writePending,
+      post: async () => transactionStatus('LTC', 'c'.repeat(64), 'CONFIRMED'),
+    })
+  ).rejects.toMatchObject({ code: 'invalid' });
+  expect(writePending).not.toHaveBeenCalled();
+});
+
 it('plans with only a public key when using the isolated signer', async () => {
   const { xprv, leaf, context } = fixture('LTC');
   let pending: PendingSend = null;

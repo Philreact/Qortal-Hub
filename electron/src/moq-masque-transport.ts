@@ -93,12 +93,30 @@ export class MoqMasqueTransport {
       throw new PrivateTransportSidecarError('INVALID_MOQ_CONFIG');
     }
     this.context = context;
-    await this.connect(context);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.connect(context);
+        break;
+      } catch (error) {
+        if (
+          attempt >= 2 ||
+          !this.lastAttemptedRelayAddress ||
+          !isRecoverableMoqError(error) ||
+          this.closed
+        )
+          throw error;
+        if (this.lastAttemptedRelayAddress)
+          this.failedRelayAddresses.set(
+            this.lastAttemptedRelayAddress,
+            Date.now()
+          );
+      }
+    }
   }
 
   private async connect(context: MoqOpenContext): Promise<void> {
     this.lastAttemptedRelayAddress = null;
-    const relay = await this.resolveRelay();
+    const relayPromise = this.resolveRelay();
     const bootstrapContext: PrivateTransportContext = {
       channelId: 'trusted-moq-transport',
       rnsConnectionId: context.rnsConnectionId,
@@ -106,8 +124,12 @@ export class MoqMasqueTransport {
       generation: 1,
       owner: context.owner,
     };
-    const bootstrap =
-      await this.bootstrapProvider.getBootstrap(bootstrapContext);
+    let [relay, bootstrap] = await Promise.all([
+      relayPromise,
+      this.bootstrapProvider.getBootstrap(bootstrapContext),
+    ]);
+    if (bootstrap.expiresAt < Date.now() + 5_000)
+      bootstrap = await this.bootstrapProvider.getBootstrap(bootstrapContext);
     if (
       bootstrap.applicationProtocol !== 'moqt-18' ||
       bootstrap.supportedFeatures.moqt !== true
@@ -117,6 +139,7 @@ export class MoqMasqueTransport {
     this.lastAttemptedRelayAddress = relay.relayAddress;
     const openAt = (relayAddress: string) =>
       this.sidecar.openMoqSession({
+        preparedRelay: relay.preparedRelay,
         relayAddress,
         relayServerName: relay.relayServerName,
         relayCertSha256: relay.relayCertSha256,
@@ -394,6 +417,13 @@ function errorCode(error: unknown): string {
 
 function isRecoverableMoqCode(code: string | undefined): boolean {
   return (
+    code === 'RELAY_CONNECT_FAILED' ||
+    code === 'RELAY_CONNECTION_CLOSED' ||
+    code === 'RELAY_TARGET_DENIED' ||
+    code === 'RELAY_FULL' ||
+    code === 'RELAY_AUTH_REQUIRED' ||
+    code === 'RELAY_ACCESS_DENIED' ||
+    code === 'RELAY_MEMBERSHIP_UNAVAILABLE' ||
     code === 'MOQ_TRANSPORT_CLOSED' ||
     code === 'MOQ_QUIC_FAILED' ||
     code === 'MOQ_SESSION_CLOSED' ||

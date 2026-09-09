@@ -92,6 +92,10 @@ func startFixture() (*fixture, map[string]string, error) {
 	template := uritemplate.MustNew("https://" + relayAddress + "/.well-known/masque/udp/{target_host}/{target_port}/")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/masque/udp/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Qortal-Relay-Control") == "authorize" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		req, parseErr := masque.ParseProxyRequest(r, template)
 		if parseErr != nil || req.Target != f.targetAddress {
 			w.WriteHeader(http.StatusBadRequest)

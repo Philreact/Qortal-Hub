@@ -202,6 +202,7 @@ type BridgeCmdFrame = {
     | 'configure_community_stun'
     | 'get_community_stun_endpoints'
     | 'get_community_masque_relays'
+    | 'relay_ticket_request'
     | 'configure_developer_log_filter'
     | 'stop'
     | 'send_call'
@@ -3386,6 +3387,13 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     );
   }
 
+  async relayTicketRequest(identity: string, path: string, data: Record<string, unknown>): Promise<Record<string, any>> {
+    await this.start();
+    const result = await this.sendCommand('relay_ticket_request', { identity, path, data });
+    if (!result.ok || result.payload?.error) throw new Error(String(result.payload?.error || result.error || 'RELAY_AUTH_UNAVAILABLE'));
+    return result.payload ?? {};
+  }
+
   async getCommunityMasqueRelays(announce = false): Promise<
     Array<{
       host: string;
@@ -4052,7 +4060,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
     const frame: BridgeCmdFrame = { type: 'cmd', action, id, payload };
     const wire = JSON.stringify(frame) + '\n';
     const timeoutMs =
-      action === 'qapp_rns_connect'
+      action === 'relay_ticket_request' ? 28_000 : action === 'qapp_rns_connect'
         ? 45_000
         : action === 'qapp_rns_request'
           ? Math.min(

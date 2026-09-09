@@ -5,8 +5,14 @@ import { EventEmitter } from 'events';
 import path from 'path';
 
 export const PRIVATE_TRANSPORT_PROTOCOL_VERSION = 2;
-export const PRIVATE_TRANSPORT_SIDECAR_VERSION = '0.5.0';
+export const PRIVATE_TRANSPORT_SIDECAR_VERSION = '0.7.0';
 export const MAX_MOQ_OBJECT_BYTES = 1024;
+export type PreparedRelay = {
+  handle: string;
+  ready: boolean;
+  challenge?: Record<string, unknown>;
+  expiresAt?: number;
+};
 const MOQ_NAME = /^[A-Za-z0-9._-]{1,128}$/;
 
 function validMoqNamespace(namespace: readonly string[]): boolean {
@@ -38,6 +44,7 @@ export type MasqueTestConfig = Readonly<{
 }>;
 
 export type PrivateSessionConfig = Readonly<{
+  preparedRelay?: string;
   relayAddress: string;
   relayServerName: string;
   relayCertSha256: string;
@@ -53,6 +60,7 @@ export type PrivateSessionConfig = Readonly<{
 }>;
 
 export type MoqSessionConfig = Readonly<{
+  preparedRelay?: string;
   relayAddress: string;
   relayServerName: string;
   relayCertSha256: string;
@@ -88,6 +96,12 @@ export type PrivateTransportSidecarEvent = {
 };
 
 type SidecarOperation =
+  | 'prepareRelay'
+  | 'authorizeRelay'
+  | 'closeRelay'
+  | 'clearRelays'
+  | 'prepareRelayTickets'
+  | 'finalizeRelayTickets'
   | 'health'
   | 'openMasqueTunnel'
   | 'sendDatagram'
@@ -212,6 +226,75 @@ export class PrivateTransportSidecar extends EventEmitter {
       innerAlpn?: string;
       moqAlpn?: string;
     };
+  }
+
+  async prepareRelayTickets(descriptor: Record<string, unknown>) {
+    await this.start();
+    return (await this.request('prepareRelayTickets', { descriptor })) as {
+      handle: string;
+      blinded: string[];
+    };
+  }
+  async finalizeRelayTickets(handle: string, signatures: string[]) {
+    return (await this.request('finalizeRelayTickets', {
+      handle,
+      signatures,
+    })) as { tickets: string[]; expiresAt: number };
+  }
+  async prepareRelay(config: {
+    relayAddress: string;
+    relayServerName: string;
+    relayCertSha256: string;
+    legacyRelay?: boolean;
+  }) {
+    await this.start();
+    return this.validatePreparedRelay(
+      await this.request(
+        'prepareRelay',
+        {
+          relayAddress: config.relayAddress,
+          relayServerName: config.relayServerName,
+          relayCertSha256: config.relayCertSha256,
+          legacyRelay: config.legacyRelay === true,
+        },
+        6_000
+      )
+    );
+  }
+  async authorizeRelay(handle: string, proof = '', renew = false) {
+    return this.validatePreparedRelay(
+      await this.request(
+        'authorizeRelay',
+        { handle, proof, renew: renew || !!proof },
+        9_000
+      )
+    );
+  }
+  private validatePreparedRelay(value: unknown): PreparedRelay {
+    const r = value as PreparedRelay;
+    if (
+      !r ||
+      typeof r.handle !== 'string' ||
+      !/^[a-f0-9]{48}$/.test(r.handle) ||
+      typeof r.ready !== 'boolean' ||
+      (r.expiresAt !== undefined &&
+        (!Number.isSafeInteger(r.expiresAt) || r.expiresAt <= Date.now())) ||
+      (r.challenge !== undefined &&
+        (!r.challenge ||
+          typeof r.challenge !== 'object' ||
+          Array.isArray(r.challenge) ||
+          JSON.stringify(r.challenge).length > 1024)) ||
+      (!r.ready && !r.challenge) ||
+      (r.ready && r.challenge)
+    )
+      throw new PrivateTransportSidecarError('MALFORMED_RESPONSE');
+    return r;
+  }
+  async closeRelay(handle: string) {
+    if (this.child) await this.request('closeRelay', { handle });
+  }
+  async clearRelays() {
+    if (this.child) await this.request('clearRelays', {});
   }
 
   async openMasqueTunnel(config: MasqueTestConfig): Promise<string> {

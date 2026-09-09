@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
+	"sync"
 	"time"
 
 	masque "github.com/quic-go/masque-go"
@@ -34,6 +36,8 @@ func tunnelQUICConfig() *quic.Config {
 }
 
 type Config struct {
+	PreparedRelay   string
+	LegacyRelay     bool
 	RelayAddress    string
 	RelayServerName string
 	RelayCertSHA256 string
@@ -42,7 +46,9 @@ type Config struct {
 }
 
 type Tunnel struct {
-	conn net.PacketConn
+	conn      net.PacketConn
+	onClose   func()
+	closeOnce sync.Once
 }
 
 // PacketConn is the only packet path exposed to the inner QUIC transport.
@@ -58,6 +64,9 @@ func (t *Tunnel) RemoteAddr() net.Addr {
 }
 
 func Open(ctx context.Context, cfg Config) (*Tunnel, error) {
+	if cfg.PreparedRelay != "" {
+		return openPrepared(ctx, cfg)
+	}
 	relay, err := parseLiteralAddrPort("relayAddress", cfg.RelayAddress)
 	if err != nil {
 		return nil, err
@@ -126,8 +135,11 @@ func Open(ctx context.Context, cfg Config) (*Tunnel, error) {
 			return quic.DialAddr(dialCtx, relayAddress, tlsConf, quicConf)
 		},
 	}
-	conn, _, err := transport.Dial(req)
+	conn, response, err := transport.Dial(req)
 	if err != nil {
+		if response != nil {
+			return nil, responseError(response)
+		}
 		return nil, fmt.Errorf("open CONNECT-UDP tunnel: %w", err)
 	}
 	return &Tunnel{conn: conn}, nil
@@ -164,4 +176,60 @@ func (t *Tunnel) Receive(timeout time.Duration) ([]byte, error) {
 	return append([]byte(nil), buf[:n]...), nil
 }
 
-func (t *Tunnel) Close() error { return t.conn.Close() }
+func (t *Tunnel) Close() error {
+	err := t.conn.Close()
+	t.closeOnce.Do(func() {
+		if t.onClose != nil {
+			t.onClose()
+		}
+	})
+	return err
+}
+
+func responseError(response *http.Response) error {
+	code := response.Header.Get("Qortal-Relay-Error")
+	switch code {
+	case "RELAY_ACCESS_DENIED", "RELAY_PROOF_INVALID", "RELAY_AUTH_REQUIRED", "RELAY_MEMBERSHIP_UNAVAILABLE", "RELAY_TARGET_DENIED", "RELAY_FULL", "RELAY_AUTH_RATE_LIMITED", "RELAY_AUTH_UNAVAILABLE":
+		return errors.New(code)
+	}
+	return errors.New("RELAY_PROTOCOL_UNSUPPORTED")
+}
+
+// Authenticated QUIC application close codes preserve rejection semantics
+// even when an immediate revocation closes before its HTTP response arrives.
+func relayConnectionError(err error) error {
+	var applicationError *quic.ApplicationError
+	if errors.As(err, &applicationError) {
+		switch applicationError.ErrorCode {
+		case 0x515201:
+			return errors.New("RELAY_ACCESS_DENIED")
+		case 0x515202:
+			return errors.New("RELAY_AUTH_REQUIRED")
+		case 0x515203:
+			return errors.New("RELAY_FULL")
+		}
+	}
+	return errors.New("RELAY_CONNECT_FAILED")
+}
+
+func pinnedRelayTLS(cfg Config) (*tls.Config, string, error) {
+	relay, err := parseLiteralAddrPort("relayAddress", cfg.RelayAddress)
+	if err != nil {
+		return nil, "", err
+	}
+	pin, err := hex.DecodeString(cfg.RelayCertSHA256)
+	if err != nil || len(pin) != 32 || cfg.RelayServerName == "" {
+		return nil, "", errors.New("INVALID_RELAY_CONFIG")
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{http3.NextProtoH3}, ServerName: cfg.RelayServerName, InsecureSkipVerify: true, VerifyConnection: func(s tls.ConnectionState) error {
+		if len(s.PeerCertificates) == 0 {
+			return errors.New("RELAY_CERTIFICATE_INVALID")
+		}
+		leaf := s.PeerCertificates[0]
+		hash := sha256.Sum256(leaf.Raw)
+		if time.Now().Before(leaf.NotBefore) || time.Now().After(leaf.NotAfter) || leaf.VerifyHostname(cfg.RelayServerName) != nil || subtle.ConstantTimeCompare(hash[:], pin) != 1 {
+			return errors.New("RELAY_CERTIFICATE_INVALID")
+		}
+		return nil
+	}}, relay.String(), nil
+}

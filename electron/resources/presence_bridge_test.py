@@ -9791,5 +9791,51 @@ class PresenceBridgePinnedCallPeersTest(unittest.TestCase):
         )
 
 
+class MasqueSignedDiscoveryTest(unittest.TestCase):
+    def setUp(self):
+        self.bridge = load_bridge()
+        self.handler = self.bridge.CommunityMasqueRelayAnnounceHandler()
+
+    def test_unsigned_json_cannot_claim_v2(self):
+        value = {"v": 2, "h": "8.8.8.8", "p": 47322, "s": "relay.test", "c": "ab" * 32,
+                 "x": int(time.time()) + 600, "relayIdentity": "cd" * 32,
+                 "accessMode": "groups", "allowedGroupIds": [1144]}
+        self.handler.received_payload(json.dumps(value).encode())
+        self.assertEqual(self.bridge._community_masque_recent_endpoints, {})
+
+    def test_v3_preserves_service_identity_and_key_and_rejects_downgrade(self):
+        from masque_discovery_codec import encode
+        identity = RNS.Identity()
+        expiry = int(time.time()) + 600
+        def packet(key=None):
+            return encode(identity, "8.8.8.8", 47322, "relay.test", "ab"*32, expiry, "groups", [1144], key)
+        with mock.patch.object(self.bridge, "emit_event"):
+            self.handler.received_payload(packet("cd"*32))
+            value=list(self.bridge._community_masque_recent_endpoints.values())[0]
+            self.assertEqual(value["protocolVersion"],3)
+            self.assertEqual(value["ticketIdentity"],identity.get_public_key().hex())
+            self.assertEqual(value["ticketKeyId"],"cd"*32)
+            self.handler.received_payload(packet())
+            self.assertEqual(list(self.bridge._community_masque_recent_endpoints.values())[0]["protocolVersion"],3)
+            # A new key commitment must not be lost to endpoint debouncing.
+            expiry += 1
+            self.handler.received_payload(packet("ef"*32))
+            self.assertEqual(list(self.bridge._community_masque_recent_endpoints.values())[0]["ticketKeyId"],"ef"*32)
+
+    def test_signed_direct_response_is_verified_and_not_downgraded(self):
+        from masque_discovery_codec import encode
+        identity = RNS.Identity()
+        expiry = int(time.time()) + 600
+        packet = encode(identity, "8.8.8.8", 47322, "relay.test", "ab" * 32, expiry, "groups", [1144])
+        with mock.patch.object(self.bridge, "emit_event"):
+            self.handler.received_packet(packet, None)
+            values = list(self.bridge._community_masque_recent_endpoints.values())
+            self.assertEqual(len(values), 1)
+            self.assertEqual(values[0]["allowedGroupIds"], [1144])
+            self.handler.received_payload(json.dumps({"v": 1, "h": "8.8.8.8", "p": 47322,
+                "s": "relay.test", "c": "ab" * 32, "x": expiry + 1}).encode())
+            self.assertEqual(list(self.bridge._community_masque_recent_endpoints.values())[0]["protocolVersion"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

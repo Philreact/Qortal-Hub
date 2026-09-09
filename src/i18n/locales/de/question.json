@@ -15,11 +15,13 @@
   "download_file": "Möchten Sie herunterladen:",
   "local_send": {
     "changed": "Wallet, Node oder verfügbare Mittel haben sich geändert. Prüfe die Zahlung erneut.",
+    "confirming": "Ihre vorherige Zahlung wartet noch auf die Netzwerkbestätigung. Transaktion: {{txId}}. Es wurde keine neue Zahlung gesendet.",
     "declined": "Zahlung abgelehnt.",
     "invalid": "Diese Zahlung kann nicht sicher vorbereitet werden. Prüfe Adresse, Betrag, Guthaben, Gebühr und Node-Verbindung.",
     "native_body": "Wallet: {{wallet}}\n\nAusgänge:\n{{outputs}}\n\nNetzwerkgebühr: {{fee}}",
     "native_title": "Wallet-Zahlung bestätigen",
     "pending": "Eine frühere Zahlung muss abgeglichen werden, bevor eine weitere gesendet werden kann. Transaktion: {{txId}}",
+    "previous": "Ihre vorherige Zahlung wurde gesendet. Transaktion: {{txId}}. Starten Sie eine neue Zahlung, wenn Sie erneut senden möchten.",
     "recovery": "Eine zuvor genehmigte Zahlung ist noch ausstehend. Soll dieselbe Transaktion erneut übertragen werden? Die neu angeforderte Zahlung wird dabei nicht gesendet.",
     "unknown": "Das Ergebnis der Übertragung ist unbekannt. Nicht erneut senden. Prüfe Transaktion {{txId}} im Wallet-Verlauf.",
     "upgrade": "Das lokale Signieren von Wallet-Transaktionen erfordert aktuelle Versionen von Qortal Core und Qortal Hub."

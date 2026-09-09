@@ -13,10 +13,12 @@ import { bytesToHex } from '@noble/hashes/utils';
 import {
   decimalAmount,
   ForeignSendError,
+  reconcilePendingForeignCoin,
   sendForeignCoin,
   type PendingSend,
 } from '../lib/foreign-wallet/send';
 import {
+  foreignCoins,
   walletPublicKey,
   type ForeignWalletCoin,
 } from '../lib/foreign-wallet/foreign-wallets';
@@ -25,6 +27,142 @@ export class LocalWalletError extends Error {
   constructor(code: string, txId = '') {
     super(i18n.t(`question:local_send.${code}`, { txId }));
   }
+}
+
+function parsePendingSend(raw: string | null | undefined): PendingSend | null {
+  if (raw === null || raw === undefined) return null;
+  let value: Record<string, unknown>;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new ForeignSendError('pending');
+  }
+  if (
+    !value ||
+    !/^[a-f0-9]{64}$/.test(value.txId as string) ||
+    !Array.isArray(value.outpoints) ||
+    value.outpoints.length < 1 ||
+    value.outpoints.length > 1000 ||
+    value.outpoints.some(
+      (p: unknown) =>
+        typeof p !== 'string' || !/^[a-f0-9]{64}:[0-9]{1,10}$/.test(p)
+    ) ||
+    (value.rawTransactionHex !== undefined &&
+      (typeof value.rawTransactionHex !== 'string' ||
+        value.rawTransactionHex.length > 400000 ||
+        !/^(?:[a-f0-9]{2})+$/.test(value.rawTransactionHex))) ||
+    (value.broadcastBefore !== undefined &&
+      (!Number.isSafeInteger(value.broadcastBefore) ||
+        (value.broadcastBefore as number) <= 0))
+  )
+    throw new ForeignSendError('pending');
+  return value as PendingSend;
+}
+
+async function fetchWalletEndpoint(
+  path: string,
+  body: unknown,
+  stillValid: () => Promise<boolean>,
+  timeoutMs: number,
+  signal?: AbortSignal
+) {
+  if (!(await stillValid())) throw new ForeignSendError('changed');
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(abort, timeoutMs);
+  try {
+    if (signal?.aborted) controller.abort();
+    const response = await fetch(await createEndpoint(path), {
+      method: 'POST',
+      headers: {
+        'Content-Type':
+          typeof body === 'string' ? 'text/plain' : 'application/json',
+      },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (response.status === 404 || response.status === 405)
+      throw new ForeignSendError('upgrade');
+    if (!response.ok) throw new ForeignSendError('invalid');
+    const text = await readBoundedWalletResponse(response, 20 * 1024 * 1024);
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abort);
+  }
+}
+
+/** Reconciles saved sends without signing, broadcasting, or asking permission. */
+export async function reconcilePendingLocalForeignCoinSends(
+  signal?: AbortSignal
+) {
+  if (
+    signal?.aborted ||
+    (window.appStorage &&
+      (!window.foreignWalletJournal || !window.foreignWalletSigner))
+  )
+    return;
+  const keys = await getKeyPair();
+  const wallet = await getSaveWallet();
+  await Promise.allSettled(
+    foreignCoins.map(async (coin) => {
+      if (signal?.aborted) return;
+      const xprv = keys[`${coin.toLowerCase()}PrivateKey`];
+      const xpub = window.foreignWalletSigner
+        ? await window.foreignWalletSigner.publicKey(coin)
+        : walletPublicKey(xprv, coin);
+      if (
+        window.foreignWalletSigner &&
+        keys[`${coin.toLowerCase()}PublicKey`] !== xpub
+      )
+        return;
+      const fingerprint = bytesToHex(sha256(new TextEncoder().encode(xpub)));
+      const storageKey = `foreign-send-v1:${coin}:${fingerprint}`;
+      let pendingTxId: string;
+      const statusPath = `/crosschain/${coin.toLowerCase()}/wallet/public/transaction-status`;
+      const endpoint = await createEndpoint(statusPath);
+      const stillValid = async () => {
+        try {
+          return (
+            !signal?.aborted &&
+            (await getSaveWallet()).address0 === wallet.address0 &&
+            (window.foreignWalletSigner
+              ? (await window.foreignWalletSigner.publicKey(coin)) === xpub &&
+                (await getKeyPair())[`${coin.toLowerCase()}PublicKey`] === xpub
+              : (await getKeyPair())[`${coin.toLowerCase()}PrivateKey`] ===
+                xprv) &&
+            (await createEndpoint(statusPath)) === endpoint
+          );
+        } catch {
+          return false;
+        }
+      };
+      await reconcilePendingForeignCoin(coin, xpub, {
+        stillValid,
+        readPending: async () => {
+          const raw = window.foreignWalletJournal
+            ? await window.foreignWalletJournal.get(storageKey)
+            : localStorage.getItem(storageKey);
+          const pending = parsePendingSend(raw);
+          pendingTxId = pending?.txId;
+          return pending;
+        },
+        writePending: async (entry) => {
+          if (entry) throw new ForeignSendError('invalid');
+          if (window.foreignWalletJournal)
+            await window.foreignWalletJournal.delete(storageKey, pendingTxId);
+          else localStorage.removeItem(storageKey);
+        },
+        post: (path, body) =>
+          fetchWalletEndpoint(path, body, stillValid, 20_000, signal),
+      });
+    })
+  );
 }
 
 /** The app's private key is used only by the local signer, never by post(). */
@@ -130,29 +268,9 @@ export async function sendLocalForeignCoin(
           const raw = window.foreignWalletJournal
             ? await window.foreignWalletJournal.get(storageKey)
             : localStorage.getItem(storageKey);
-          if (raw === null || raw === undefined) return null;
-          const value = JSON.parse(raw);
-          if (
-            !value ||
-            !/^[a-f0-9]{64}$/.test(value.txId) ||
-            !Array.isArray(value.outpoints) ||
-            value.outpoints.length < 1 ||
-            value.outpoints.length > 1000 ||
-            value.outpoints.some(
-              (p: unknown) =>
-                typeof p !== 'string' || !/^[a-f0-9]{64}:[0-9]{1,10}$/.test(p)
-            ) ||
-            (value.rawTransactionHex !== undefined &&
-              (typeof value.rawTransactionHex !== 'string' ||
-                value.rawTransactionHex.length > 400000 ||
-                !/^(?:[a-f0-9]{2})+$/.test(value.rawTransactionHex))) ||
-            (value.broadcastBefore !== undefined &&
-              (!Number.isSafeInteger(value.broadcastBefore) ||
-                value.broadcastBefore <= 0))
-          )
-            throw new ForeignSendError('pending');
-          pendingTxId = value.txId;
-          return value as PendingSend;
+          const pending = parsePendingSend(raw);
+          pendingTxId = pending?.txId;
+          return pending;
         },
         writePending: async (entry) => {
           if (window.foreignWalletJournal) {
@@ -168,34 +286,7 @@ export async function sendLocalForeignCoin(
           else localStorage.removeItem(storageKey);
         },
         post: async (path, body) => {
-          if (!(await stillValid())) throw new ForeignSendError('changed');
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 90000);
-          try {
-            const response = await fetch(await createEndpoint(path), {
-              method: 'POST',
-              headers: {
-                'Content-Type':
-                  typeof body === 'string' ? 'text/plain' : 'application/json',
-              },
-              body: typeof body === 'string' ? body : JSON.stringify(body),
-              signal: controller.signal,
-            });
-            if (response.status === 404 || response.status === 405)
-              throw new ForeignSendError('upgrade');
-            if (!response.ok) throw new ForeignSendError('invalid');
-            const text = await readBoundedWalletResponse(
-              response,
-              20 * 1024 * 1024
-            );
-            try {
-              return JSON.parse(text);
-            } catch {
-              return text;
-            }
-          } finally {
-            clearTimeout(timeout);
-          }
+          return fetchWalletEndpoint(path, body, stillValid, 90_000);
         },
         approve: async (plan) =>
           (

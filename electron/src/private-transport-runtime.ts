@@ -8,13 +8,14 @@ import { QuicMasqueTransport } from './quic-masque-transport';
 import { ReticulumPrivateChannelBootstrapProvider } from './private-channel-bootstrap';
 import type { QAppReticulumManager } from './qapp-reticulum-manager';
 import type { ReticulumBridge } from './reticulum-bridge';
-import { discoverCommunityMasqueRelay } from './masque-relay-discovery';
+import { RelayAccessCoordinator } from './relay-access-coordinator';
 import {
   MoqMasqueTransport,
   type MoqTransportEvent,
 } from './moq-masque-transport';
 
 let prototypeSidecar: PrivateTransportSidecar | null = null;
+let relayCoordinator: RelayAccessCoordinator | null = null;
 let sidecarShutdownPromise: Promise<void> | null = null;
 
 /**
@@ -33,6 +34,7 @@ export function getPrivateTransportFactory(
     reticulumManager
   );
   prototypeSidecar ??= new PrivateTransportSidecar();
+  relayCoordinator ??= new RelayAccessCoordinator(prototypeSidecar);
   return (emit) =>
     new QuicMasqueTransport(
       emit,
@@ -41,11 +43,11 @@ export function getPrivateTransportFactory(
         (async (excludedRelayAddresses) => {
           const reticulumBridge = reticulumBridgeProvider();
           if (!reticulumBridge) throw new Error('MASQUE_RELAY_UNAVAILABLE');
-          return discoverCommunityMasqueRelay(reticulumBridge, {
-            allowLoopback:
-              environment.QORTAL_PRIVATE_TRANSPORT_ALLOW_LOCAL_RELAY === '1',
-            excludeRelayAddresses: excludedRelayAddresses,
-          });
+          return relayCoordinator!.select(
+            reticulumBridge,
+            excludedRelayAddresses,
+            environment.QORTAL_PRIVATE_TRANSPORT_ALLOW_LOCAL_RELAY === '1'
+          );
         }),
       bootstrapProvider
     );
@@ -66,6 +68,7 @@ export function createMoqTransport(
       ? readTrustedRelayConfig(environment)
       : null;
   prototypeSidecar ??= new PrivateTransportSidecar();
+  relayCoordinator ??= new RelayAccessCoordinator(prototypeSidecar);
   return new MoqMasqueTransport(
     emit,
     prototypeSidecar,
@@ -73,11 +76,11 @@ export function createMoqTransport(
       (async (excludedRelayAddresses) => {
         const reticulumBridge = reticulumBridgeProvider();
         if (!reticulumBridge) throw new Error('MASQUE_RELAY_UNAVAILABLE');
-        return discoverCommunityMasqueRelay(reticulumBridge, {
-          allowLoopback:
-            environment.QORTAL_PRIVATE_TRANSPORT_ALLOW_LOCAL_RELAY === '1',
-          excludeRelayAddresses: excludedRelayAddresses,
-        });
+        return relayCoordinator!.select(
+          reticulumBridge,
+          excludedRelayAddresses,
+          environment.QORTAL_PRIVATE_TRANSPORT_ALLOW_LOCAL_RELAY === '1'
+        );
       }),
     new ReticulumPrivateChannelBootstrapProvider(reticulumManager)
   );
@@ -101,6 +104,8 @@ export function readTrustedRelayConfig(environment: NodeJS.ProcessEnv) {
 export async function shutdownPrivateTransportSidecar(): Promise<void> {
   if (sidecarShutdownPromise) return sidecarShutdownPromise;
   const sidecar = prototypeSidecar;
+  relayCoordinator?.dispose();
+  relayCoordinator = null;
   prototypeSidecar = null;
   if (!sidecar) return;
   sidecarShutdownPromise = sidecar.shutdown().finally(() => {

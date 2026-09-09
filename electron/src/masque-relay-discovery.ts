@@ -8,6 +8,12 @@ const MAX_LEASE_AHEAD_MS = 60 * 60_000;
 const MIN_REMAINING_LEASE_MS = 5_000;
 
 export type CommunityMasqueRelay = {
+  protocolVersion?: number;
+  relayIdentity?: string;
+  ticketIdentity?: string;
+  ticketKeyId?: string;
+  accessMode?: 'public' | 'groups';
+  allowedGroupIds?: number[];
   host: string;
   port: number;
   serverName: string;
@@ -55,6 +61,47 @@ export function validateCommunityMasqueRelay(
   ) {
     return null;
   }
+  if (candidate.protocolVersion === 2 || candidate.protocolVersion === 3) {
+    if (
+      candidate.protocolVersion === 3 &&
+      (!/^[a-f0-9]{128}$/.test(candidate.ticketIdentity ?? '') ||
+        !/^[a-f0-9]{64}$/.test(candidate.ticketKeyId ?? '') ||
+        candidate.ticketIdentity?.slice(64) !== candidate.relayIdentity)
+    )
+      return null;
+    if (
+      !/^[a-f0-9]{64}$/.test(candidate.relayIdentity ?? '') ||
+      !['public', 'groups'].includes(candidate.accessMode ?? '') ||
+      !Array.isArray(candidate.allowedGroupIds) ||
+      candidate.allowedGroupIds.length > 16 ||
+      candidate.allowedGroupIds.some(
+        (id) => !Number.isInteger(id) || id <= 0 || id > 2147483647
+      ) ||
+      new Set(candidate.allowedGroupIds).size !==
+        candidate.allowedGroupIds.length ||
+      (candidate.accessMode === 'groups') !==
+        candidate.allowedGroupIds.length > 0
+    )
+      return null;
+    return {
+      host,
+      port,
+      serverName,
+      certSha256,
+      expiresAt,
+      protocolVersion: candidate.protocolVersion,
+      ticketIdentity: candidate.ticketIdentity,
+      ticketKeyId: candidate.ticketKeyId,
+      relayIdentity: candidate.relayIdentity,
+      accessMode: candidate.accessMode,
+      allowedGroupIds: candidate.allowedGroupIds,
+    };
+  }
+  if (
+    candidate.protocolVersion !== undefined &&
+    candidate.protocolVersion !== 1
+  )
+    return null;
   return { host, port, serverName, certSha256, expiresAt };
 }
 
@@ -149,6 +196,12 @@ export async function discoverCommunityMasqueRelay(
   const host =
     net.isIP(selected.host) === 6 ? `[${selected.host}]` : selected.host;
   return {
+    protocolVersion: selected.protocolVersion,
+    ticketIdentity: selected.ticketIdentity,
+    ticketKeyId: selected.ticketKeyId,
+    relayIdentity: selected.relayIdentity,
+    accessMode: selected.accessMode,
+    allowedGroupIds: selected.allowedGroupIds,
     relayAddress: `${host}:${selected.port}`,
     relayServerName: selected.serverName,
     relayCertSha256: selected.certSha256,

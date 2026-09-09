@@ -79,7 +79,7 @@ const describeIntegration = goAvailable ? describe.sequential : describe.skip;
 describeIntegration('private transport sidecar integration', () => {
   beforeAll(() => {
     temporaryDirectory = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'qortal-private-transport-')
+      path.join(os.tmpdir(), 'hub-private-transport-test-')
     );
     sidecarBinary = path.join(temporaryDirectory, 'qortal-private-transport');
     fixtureBinary = path.join(
@@ -125,7 +125,7 @@ describeIntegration('private transport sidecar integration', () => {
     await sidecar.start();
     expect(await sidecar.health()).toEqual({
       service: 'qortal-private-transport',
-      sidecarVersion: '0.5.0',
+      sidecarVersion: '0.7.0',
       protocolVersion: 2,
       innerAlpn: 'qortal-private/1',
       moqAlpn: 'moqt-18',
@@ -144,6 +144,25 @@ describeIntegration('private transport sidecar integration', () => {
     await sidecar.shutdown();
     expect(sidecar.isRunning()).toBe(false);
     await fixture.close();
+  }, 20_000);
+
+  it('prepares and reuses a relay without forwarding any backend traffic', async () => {
+    const fixture = new FixtureProcess();
+    const config = await fixture.startup();
+    const sidecar = new PrivateTransportSidecar({ command: sidecarBinary });
+    try {
+      const result = await sidecar.prepareRelay(config);
+      expect(result.ready).toBe(true);
+      expect(await sidecar.authorizeRelay(result.handle)).toEqual(result);
+      expect((await fixture.command<FixtureStats>('stats')).echoCount).toBe(0);
+      await sidecar.closeRelay(result.handle);
+      await expect(sidecar.authorizeRelay(result.handle)).rejects.toMatchObject(
+        { code: 'RELAY_CONNECTION_CLOSED' }
+      );
+    } finally {
+      await sidecar.shutdown();
+      await fixture.close();
+    }
   }, 20_000);
 
   it('fails closed on a certificate pin mismatch', async () => {
@@ -197,7 +216,7 @@ describeIntegration('private transport sidecar integration', () => {
       let count = 0;
       readline.createInterface({ input: process.stdin }).on('line', (line) => {
         const request = JSON.parse(line);
-        if (count++ === 0) process.stdout.write(JSON.stringify({version:2,type:'response',requestId:request.requestId,ok:true,result:{service:'qortal-private-transport',sidecarVersion:'0.5.0',protocolVersion:2,innerAlpn:'qortal-private/1',moqAlpn:'moqt-18'}}) + '\\n');
+        if (count++ === 0) process.stdout.write(JSON.stringify({version:2,type:'response',requestId:request.requestId,ok:true,result:{service:'qortal-private-transport',sidecarVersion:'0.7.0',protocolVersion:2,innerAlpn:'qortal-private/1',moqAlpn:'moqt-18'}}) + '\\n');
         else process.stdout.write('{not-json\\n');
       });
     `;

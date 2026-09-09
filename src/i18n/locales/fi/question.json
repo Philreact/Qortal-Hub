@@ -15,11 +15,13 @@
   "download_file": "haluatko ladata:",
   "local_send": {
     "changed": "Lompakko, solmu tai käytettävissä olevat varat ovat muuttuneet. Tarkista maksu uudelleen.",
+    "confirming": "Edellinen maksusi odottaa vielä verkon vahvistusta. Tapahtuma: {{txId}}. Uutta maksua ei lähetetty.",
     "declined": "Maksu hylätty.",
     "invalid": "Maksua ei voi valmistella turvallisesti. Tarkista osoite, summa, saldo, siirtomaksu ja yhteys solmuun.",
     "native_body": "Lompakko: {{wallet}}\n\nUlostulot:\n{{outputs}}\n\nVerkkomaksu: {{fee}}",
     "native_title": "Vahvista lompakon maksu",
     "pending": "Aiempi maksu on tarkistettava ennen uuden lähettämistä. Tapahtuma: {{txId}}",
+    "previous": "Edellinen maksusi lähetettiin. Tapahtuma: {{txId}}. Aloita uusi maksu, jos haluat lähettää uudelleen.",
     "recovery": "Aiemmin hyväksytty maksu on yhä odottamassa. Lähetetäänkö sama tapahtuma uudelleen verkkoon? Tämä ei lähetä pyytämääsi uutta maksua.",
     "unknown": "Lähetyksen tulos on tuntematon. Älä lähetä uudelleen. Tarkista tapahtuma {{txId}} lompakon historiasta.",
     "upgrade": "Lompakon tapahtumien paikallinen allekirjoittaminen edellyttää päivitettyjä Qortal Core- ja Qortal Hub -versioita."

@@ -15,11 +15,13 @@
   "download_file": "você gostaria de baixar:",
   "local_send": {
     "changed": "A carteira, o nó ou os fundos disponíveis mudaram. Revise o pagamento novamente.",
+    "confirming": "O seu pagamento anterior ainda aguarda confirmação da rede. Transação: {{txId}}. Nenhum novo pagamento foi enviado.",
     "declined": "Pagamento recusado.",
     "invalid": "Não foi possível preparar este pagamento com segurança. Verifique o endereço, o valor, o saldo, a taxa e a conexão com o nó.",
     "native_body": "Carteira: {{wallet}}\n\nSaídas:\n{{outputs}}\n\nTaxa de rede: {{fee}}",
     "native_title": "Confirmar pagamento da carteira",
     "pending": "É necessário verificar um pagamento anterior antes de enviar outro. Transação: {{txId}}",
+    "previous": "O seu pagamento anterior foi enviado. Transação: {{txId}}. Inicie um novo pagamento se quiser enviar novamente.",
     "recovery": "Um pagamento autorizado anteriormente ainda está pendente. Retransmitir essa mesma transação? Isto não enviará o novo pagamento solicitado.",
     "unknown": "O resultado da transmissão é desconhecido. Não envie novamente. Verifique a transação {{txId}} no histórico da carteira.",
     "upgrade": "A assinatura local de transações da carteira requer versões atualizadas do Qortal Core e do Qortal Hub."

@@ -1,5 +1,7 @@
 import { beforeEach, afterEach, it, expect, vi } from 'vitest';
 import { HDKey } from '@scure/bip32';
+import { sha256 } from '@noble/hashes/sha256';
+import { bytesToHex } from '@noble/hashes/utils';
 vi.mock('../background/background', () => ({
   getKeyPair: vi.fn(),
   getSaveWallet: vi.fn(),
@@ -15,8 +17,11 @@ import {
   getSaveWallet,
   createEndpoint,
 } from '../background/background';
-import { sendForeignCoin } from '../lib/foreign-wallet/send';
-import { sendLocalForeignCoin } from './foreign-coin-send';
+import { ForeignSendError, sendForeignCoin } from '../lib/foreign-wallet/send';
+import {
+  reconcilePendingLocalForeignCoinSends,
+  sendLocalForeignCoin,
+} from './foreign-coin-send';
 
 beforeEach(() => {
   const key = HDKey.fromMasterSeed(new Uint8Array(32).fill(5));
@@ -102,6 +107,55 @@ it('does not post after the selected wallet changes', async () => {
     'question:local_send.changed'
   );
   expect(fetch).not.toHaveBeenCalled();
+});
+
+it('reports when an earlier payment is still awaiting confirmation', async () => {
+  vi.mocked(sendForeignCoin).mockRejectedValue(
+    new ForeignSendError('confirming', 'a'.repeat(64))
+  );
+  await expect(sendLocalForeignCoin({ coin: 'LTC' }, vi.fn())).rejects.toThrow(
+    'question:local_send.confirming'
+  );
+});
+
+it('automatically clears a confirmed journal entry without exposing wallet keys', async () => {
+  const keys = await getKeyPair();
+  const xpub = HDKey.fromExtendedKey(keys.ltcPrivateKey).publicExtendedKey;
+  const fingerprint = bytesToHex(sha256(new TextEncoder().encode(xpub)));
+  const storageKey = `foreign-send-v1:LTC:${fingerprint}`;
+  const txId = 'a'.repeat(64);
+  localStorage.setItem(
+    storageKey,
+    JSON.stringify({ txId, outpoints: [`${'b'.repeat(64)}:0`] })
+  );
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url, init) => {
+      const body = JSON.parse(init.body as string);
+      return Response.json({
+        version: 1,
+        currencyCode: 'LTC',
+        activeNetwork: 'MAIN',
+        chainId: 'bip122:12a765e31ffd4059bada1e25190f6e98',
+        txId: body.txId,
+        status: 'CONFIRMED',
+      });
+    })
+  );
+
+  await reconcilePendingLocalForeignCoinSends();
+
+  expect(localStorage.getItem(storageKey)).toBeNull();
+  expect(fetch).toHaveBeenCalledOnce();
+  const requestBody = (vi.mocked(fetch).mock.calls[0][1] as RequestInit).body;
+  expect(requestBody).toBe(
+    JSON.stringify({
+      expectedChainId: 'bip122:12a765e31ffd4059bada1e25190f6e98',
+      txId,
+    })
+  );
+  expect(requestBody).not.toContain(keys.ltcPrivateKey);
+  expect(requestBody).not.toContain(xpub);
 });
 
 it('routes desktop signing through native IPC without passing a private key', async () => {

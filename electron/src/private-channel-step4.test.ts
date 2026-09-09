@@ -152,7 +152,7 @@ integration('Step 4 real backend bootstrap and attachment', () => {
 
   beforeAll(() => {
     temporaryDirectory = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'qortal-step4-')
+      path.join(os.tmpdir(), 'hub-step4-test-')
     );
     sidecarBinary = path.join(temporaryDirectory, 'private-transport-sidecar');
     relayBinary = path.join(temporaryDirectory, 'private-transport-relay');
