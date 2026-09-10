@@ -310,6 +310,93 @@ describe('local foreign wallet signing', () => {
     for (const raw of [0, -1, NaN, Infinity, '1e3', '0.000000001', 0.000000001])
       expect(() => atomicAmount(raw)).toThrow();
   });
+  it('honors an explicit fee below the Core recommendation', async () => {
+    const { xprv, leaf, context } = fixture('LTC');
+    const approve = vi.fn(async () => false);
+
+    await expect(
+      sendForeignCoin(
+        {
+          coin: 'LTC',
+          xprv,
+          amount: '0.07',
+          recipient: leaf.address,
+          fee: '0.00000009',
+        },
+        {
+          post: async () => context,
+          stillValid: async () => true,
+          approve,
+          readPending: async () => null,
+          writePending: vi.fn(),
+        }
+      )
+    ).rejects.toMatchObject({ code: 'declined' });
+    expect(approve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amount: 7000000n,
+        feePerByte: 9n,
+      })
+    );
+  });
+  it('keeps an explicit fee when the Core recommendation changes', async () => {
+    const { xprv, leaf, context } = fixture('LTC');
+    let pending: PendingSend = null;
+    let reads = 0;
+    const post = vi.fn(async (path: string) => {
+      if (path.endsWith('/send/broadcast')) return pending.txId;
+      reads++;
+      return reads === 1
+        ? context
+        : { ...context, recommendedFeePerByte: '11' };
+    });
+
+    const txId = await sendForeignCoin(
+      {
+        coin: 'LTC',
+        xprv,
+        amount: '0.07',
+        recipient: leaf.address,
+        fee: '0.00000009',
+      },
+      {
+        post,
+        stillValid: async () => true,
+        approve: async () => true,
+        readPending: async () => null,
+        writePending: async (value) => {
+          pending = value;
+        },
+      }
+    );
+
+    expect(txId).toBe(pending.txId);
+    expect(post).toHaveBeenCalledTimes(3);
+  });
+  it('still rejects an explicit fee above the local safety ceiling', async () => {
+    const { xprv, leaf, context } = fixture('LTC');
+    const approve = vi.fn(async () => true);
+
+    await expect(
+      sendForeignCoin(
+        {
+          coin: 'LTC',
+          xprv,
+          amount: '0.07',
+          recipient: leaf.address,
+          fee: '0.00020001',
+        },
+        {
+          post: async () => context,
+          stillValid: async () => true,
+          approve,
+          readPending: async () => null,
+          writePending: vi.fn(),
+        }
+      )
+    ).rejects.toThrow('Wallet fee policy exceeded');
+    expect(approve).not.toHaveBeenCalled();
+  });
   it('retains ambiguous broadcasts and never sends the key to Core', async () => {
     const { xprv, leaf, context } = fixture('LTC');
     let pending: PendingSend = null;

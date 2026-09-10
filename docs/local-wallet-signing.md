@@ -99,8 +99,10 @@ sequenceDiagram
 ```
 
 Hub refreshes the spend context after approval. If the wallet, selected node,
-fee recommendation, inputs, outputs or trade intent changed during approval, Hub
-stops instead of signing stale information.
+inputs, outputs or trade intent changed during approval, Hub stops instead of
+signing stale information. A changed fee recommendation also stops a payment
+that relies on that recommendation, but it does not replace a fee explicitly
+supplied by the caller.
 
 ## Q-App compatibility
 
@@ -151,10 +153,10 @@ rate for each supported network, expressed per 1,000 bytes. The public spend
 context exposes this as an integer atomic-unit rate per byte, rounded upward.
 
 Hub uses that rate when the request omits `fee`. If the request supplies a custom
-rate, Hub currently requires it to be at least Core's configured rate and no more
-than ten times that rate. Independent per-coin ceilings limit the rate and total
-fee. Hub calculates the fee from the actual transaction plan and displays the
-planned fee in its normal permission prompt.
+positive rate, Hub honors it as the previous Core send flow did. Independent
+per-coin ceilings still limit the rate and total fee. Hub calculates the fee
+from the actual transaction plan and displays the planned fee in its normal
+permission prompt.
 
 The value is a configured recommendation, not a live mempool estimate. A future
 fee-estimation change can improve that recommendation without changing where the

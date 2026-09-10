@@ -289,11 +289,6 @@ export async function sendForeignCoin(
       request.fee === undefined
         ? context.recommendedFeePerByte
         : atomicAmount(request.fee);
-    if (
-      fee < context.recommendedFeePerByte ||
-      fee > context.recommendedFeePerByte * 10n
-    )
-      throw new ForeignSendError('invalid');
     const cache = createForeignWalletPreviousTransactionCache();
     const planFor = (state: typeof context) =>
       planForeignWalletSpend({
@@ -317,7 +312,8 @@ export async function sendForeignCoin(
     if (!(await deps.stillValid())) throw new ForeignSendError('changed');
     const after = await read();
     if (
-      context.recommendedFeePerByte !== after.recommendedFeePerByte ||
+      (request.fee === undefined &&
+        context.recommendedFeePerByte !== after.recommendedFeePerByte) ||
       context.minimumNonDustOutput !== after.minimumNonDustOutput ||
       snapshot(planFor(after)) !== snapshot(plan)
     )
