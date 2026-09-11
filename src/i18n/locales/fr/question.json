@@ -219,6 +219,13 @@
   "sats_per_kb": "{{ amount }} sats par KB",
   "server_host": "hôte : {{ host }}",
   "server_type": "type : {{ type }}",
+  "stream_save": {
+    "choose": "Choisir un emplacement",
+    "detail": "App : {{app}}\nNom de fichier suggéré : {{filename}}\nTaille déclarée : {{size}} octets\n\nCes informations proviennent de l’app. Hub ne peut vérifier ni le contenu ni la sécurité du fichier. Cette autorisation ne vaut que pour cet enregistrement.",
+    "failed": "Le fichier n’a pas pu être enregistré. Veuillez réessayer.",
+    "title": "Enregistrer un fichier sur votre appareil",
+    "unavailable": "L’enregistrement progressif des fichiers nécessite une version de bureau à jour de Qortal Hub."
+  },
   "to_group": "à : groupe {{ group_id }}",
   "to_recipient": "à : {{ recipient }}",
   "total_locking_fee": "frais de verrouillage totaux :",

@@ -219,6 +219,13 @@
   "sats_per_kb": "{{ amount }} sats／KB",
   "server_host": "ホスト：{{ host }}",
   "server_type": "タイプ：{{ type }}",
+  "stream_save": {
+    "choose": "保存先を選択",
+    "detail": "アプリ：{{app}}\n提案されたファイル名：{{filename}}\n申告サイズ：{{size}} バイト\n\nこれらの情報はアプリから提供されています。Hubは内容やファイルの安全性を確認できません。この許可は今回の保存にのみ適用されます。",
+    "failed": "ファイルを保存できませんでした。もう一度お試しください。",
+    "title": "デバイスにファイルを保存",
+    "unavailable": "ファイルの逐次保存には、最新のデスクトップ版Qortal Hubが必要です。"
+  },
   "to_group": "宛先：グループ {{ group_id }}",
   "to_recipient": "宛先：{{ recipient }}",
   "total_locking_fee": "ロック手数料合計：",

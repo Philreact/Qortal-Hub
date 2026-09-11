@@ -736,6 +736,7 @@ try {
       ipcRenderer.on('qappReticulum:event', listener);
       return () => ipcRenderer.removeListener('qappReticulum:event', listener);
     },
+    qappFileSave: (owner, request) => ipcRenderer.invoke('qappFileSave:request', owner, request),
     privateChannelOpen: (owner, rnsConnectionId, purpose) =>
       invokePrivateChannel(
         'privateChannel:open',

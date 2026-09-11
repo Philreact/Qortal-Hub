@@ -219,6 +219,13 @@
   "sats_per_kb": "{{ amount }} sats por KB",
   "server_host": "host: {{ host }}",
   "server_type": "tipo: {{ type }}",
+  "stream_save": {
+    "choose": "Elegir ubicación",
+    "detail": "App: {{app}}\nNombre sugerido: {{filename}}\nTamaño declarado: {{size}} bytes\n\nLa app proporciona estos datos. Hub no puede verificar el contenido ni si el archivo es seguro. Este permiso solo se aplica a este guardado.",
+    "failed": "No se pudo guardar el archivo. Inténtalo de nuevo.",
+    "title": "Guardar un archivo en tu dispositivo",
+    "unavailable": "El guardado progresivo de archivos requiere una versión de escritorio actualizada de Qortal Hub."
+  },
   "to_group": "a: grupo {{ group_id }}",
   "to_recipient": "a: {{ recipient }}",
   "total_locking_fee": "cuota total de bloqueo:",

@@ -219,6 +219,13 @@
   "sats_per_kb": "{{ amount }} sats per KB",
   "server_host": "host: {{ host }}",
   "server_type": "tipo: {{ type }}",
+  "stream_save": {
+    "choose": "Scegli posizione",
+    "detail": "App: {{app}}\nNome file suggerito: {{filename}}\nDimensione dichiarata: {{size}} byte\n\nQuesti dati sono forniti dall’app. Hub non può verificare il contenuto o la sicurezza del file. Questa autorizzazione vale solo per questo salvataggio.",
+    "failed": "Impossibile salvare il file. Riprova.",
+    "title": "Salva un file sul tuo dispositivo",
+    "unavailable": "Il salvataggio progressivo dei file richiede una versione desktop aggiornata di Qortal Hub."
+  },
   "to_group": "a: gruppo {{ group_id }}",
   "to_recipient": "a: {{ recipient }}",
   "total_locking_fee": "commissione totale di blocco:",

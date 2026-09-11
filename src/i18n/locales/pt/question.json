@@ -219,6 +219,13 @@
   "sats_per_kb": "{{ amount }} sats por KB",
   "server_host": "servidor: {{ host }}",
   "server_type": "tipo: {{ type }}",
+  "stream_save": {
+    "choose": "Escolher localização",
+    "detail": "App: {{app}}\nNome de ficheiro sugerido: {{filename}}\nTamanho declarado: {{size}} bytes\n\nEstes dados são fornecidos pela app. O Hub não pode verificar o conteúdo nem se o ficheiro é seguro. Esta permissão aplica-se apenas a esta gravação.",
+    "failed": "Não foi possível guardar o ficheiro. Tente novamente.",
+    "title": "Guardar um ficheiro no seu dispositivo",
+    "unavailable": "A gravação progressiva de ficheiros requer uma versão de computador atualizada do Qortal Hub."
+  },
   "to_group": "para: grupo {{ group_id }}",
   "to_recipient": "para: {{ recipient }}",
   "total_locking_fee": "taxa de bloqueio total:",

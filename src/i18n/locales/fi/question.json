@@ -219,6 +219,13 @@
   "sats_per_kb": "{{ amount }} sats per kt",
   "server_host": "isäntä: {{ host }}",
   "server_type": "tyyppi: {{ type }}",
+  "stream_save": {
+    "choose": "Valitse sijainti",
+    "detail": "Sovellus: {{app}}\nEhdotettu tiedostonimi: {{filename}}\nIlmoitettu koko: {{size}} tavua\n\nSovellus antaa nämä tiedot. Hub ei voi tarkistaa sisältöä tai tiedoston turvallisuutta. Tämä lupa koskee vain tätä tallennusta.",
+    "failed": "Tiedostoa ei voitu tallentaa. Yritä uudelleen.",
+    "title": "Tallenna tiedosto laitteellesi",
+    "unavailable": "Tiedostojen tallentaminen osissa edellyttää Qortal Hubin päivitettyä työpöytäversiota."
+  },
   "to_group": "vastaanottaja: ryhmä {{ group_id }}",
   "to_recipient": "vastaanottaja: {{ recipient }}",
   "total_locking_fee": "lukitusmaksu yhteensä:",

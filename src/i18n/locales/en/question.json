@@ -219,6 +219,13 @@
   "sats_per_kb": "{{ amount }} sats per KB",
   "server_host": "host: {{ host }}",
   "server_type": "type: {{ type }}",
+  "stream_save": {
+    "choose": "Choose location",
+    "detail": "App: {{app}}\nSuggested filename: {{filename}}\nDeclared size: {{size}} bytes\n\nThese details are supplied by the app. Hub cannot verify the contents or whether the file is safe. This permission applies only to this save.",
+    "failed": "The file could not be saved. Please try again.",
+    "title": "Save a file to your device",
+    "unavailable": "Streaming file saves require an updated desktop version of Qortal Hub."
+  },
   "to_group": "to: group {{ group_id }}",
   "to_recipient": "to: {{ recipient }}",
   "total_locking_fee": "total Locking Fee:",

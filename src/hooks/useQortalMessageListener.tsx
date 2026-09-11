@@ -31,6 +31,10 @@ import {
 } from '../qortal/qapp-moq-request';
 import { normalizeQappIdentityContext } from '../qortal/qapp-identity';
 import { dispatchQAppScreenCaptureRequest } from '../qortal/qapp-screen-capture-request';
+import {
+  dispatchQAppFileSaveRequest,
+  isQAppFileSaveAction,
+} from '../qortal/qapp-file-save-request';
 import { serializeQortalRequestError } from '../qortal/qortal-request-errors';
 
 export const saveFileInChunks = async (
@@ -193,6 +197,10 @@ export function openIndexedDB() {
 }
 
 export const listOfAllQortalRequests = [
+  'FILE_SAVE_OPEN',
+  'FILE_SAVE_WRITE',
+  'FILE_SAVE_FINISH',
+  'FILE_SAVE_ABORT',
   'SCREEN_CAPTURE_SELECT',
   'RNS_CLOSE',
   'RNS_CONNECT',
@@ -315,6 +323,10 @@ export const listOfAllQortalRequests = [
 ];
 
 export const UIQortalRequests = [
+  'FILE_SAVE_OPEN',
+  'FILE_SAVE_WRITE',
+  'FILE_SAVE_FINISH',
+  'FILE_SAVE_ABORT',
   'SCREEN_CAPTURE_SELECT',
   'RNS_CLOSE',
   'RNS_CONNECT',
@@ -805,25 +817,30 @@ export const useQortalMessageListener = (
           isFromExtension: message.isExtension,
           tabId,
         };
-        const requestPromise = isQAppReticulumAction(message?.action)
-          ? dispatchQAppReticulumRequest(message.payload, requestContext)
-          : isQAppPrivateChannelAction(message?.action)
-            ? dispatchQAppPrivateChannelRequest(message.payload, requestContext)
-            : isQAppMoqAction(message?.action)
-              ? dispatchQAppMoqRequest(message.payload, requestContext)
-              : message?.action === 'SCREEN_CAPTURE_SELECT'
-                ? dispatchQAppScreenCaptureRequest(message.payload)
-              : window.sendMessage(
-                  message.action,
+        const requestPromise = isQAppFileSaveAction(message?.action)
+          ? dispatchQAppFileSaveRequest(message.payload, requestContext)
+          : isQAppReticulumAction(message?.action)
+            ? dispatchQAppReticulumRequest(message.payload, requestContext)
+            : isQAppPrivateChannelAction(message?.action)
+              ? dispatchQAppPrivateChannelRequest(
                   message.payload,
-                  timeout,
-                  message.isExtension,
-                  {
-                    name: appName,
-                    service: appService,
-                    tabId,
-                  }
-                );
+                  requestContext
+                )
+              : isQAppMoqAction(message?.action)
+                ? dispatchQAppMoqRequest(message.payload, requestContext)
+                : message?.action === 'SCREEN_CAPTURE_SELECT'
+                  ? dispatchQAppScreenCaptureRequest(message.payload)
+                  : window.sendMessage(
+                      message.action,
+                      message.payload,
+                      timeout,
+                      message.isExtension,
+                      {
+                        name: appName,
+                        service: appService,
+                        tabId,
+                      }
+                    );
 
         // Store the promise for deduplication
         if (isDeduplicable) {
@@ -1119,6 +1136,9 @@ export const useQortalMessageListener = (
       );
     });
     const cleanupOwner = () => {
+      void api
+        .qappFileSave?.(owner, { action: 'FILE_SAVE_CLEANUP' })
+        .catch(() => undefined);
       // This single main-process operation owns cleanup across Reticulum,
       // private channels, and MOQT. It is deliberately best-effort because a
       // tab reload/close can race an Electron main-process restart.

@@ -219,6 +219,13 @@
   "sats_per_kb": "{{ amount }} Sats pro KB",
   "server_host": "Host: {{ host }}",
   "server_type": "Typ: {{ type }}",
+  "stream_save": {
+    "choose": "Speicherort wählen",
+    "detail": "App: {{app}}\nVorgeschlagener Dateiname: {{filename}}\nAngegebene Größe: {{size}} Bytes\n\nDiese Angaben stammen von der App. Hub kann weder den Inhalt noch die Sicherheit der Datei prüfen. Diese Erlaubnis gilt nur für diesen Speichervorgang.",
+    "failed": "Die Datei konnte nicht gespeichert werden. Bitte versuche es erneut.",
+    "title": "Datei auf deinem Gerät speichern",
+    "unavailable": "Zum schrittweisen Speichern von Dateien wird eine aktuelle Desktop-Version von Qortal Hub benötigt."
+  },
   "to_group": "an: Gruppe {{ group_id }}",
   "to_recipient": "an: {{ recipient }}",
   "total_locking_fee": "Gesamte Sperrgebühr:",

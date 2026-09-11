@@ -219,6 +219,13 @@
   "sats_per_kb": "{{ amount }} satsi per KB",
   "server_host": "host: {{ host }}",
   "server_type": "tüüp: {{ type }}",
+  "stream_save": {
+    "choose": "Vali asukoht",
+    "detail": "Rakendus: {{app}}\nSoovitatud failinimi: {{filename}}\nMärgitud suurus: {{size}} baiti\n\nNeed andmed pärinevad rakendusest. Hub ei saa kontrollida sisu ega faili ohutust. See luba kehtib ainult selle salvestamise kohta.",
+    "failed": "Faili ei saanud salvestada. Palun proovi uuesti.",
+    "title": "Faili salvestamine seadmesse",
+    "unavailable": "Failide järkjärguline salvestamine nõuab Qortal Hubi uuendatud töölauaversiooni."
+  },
   "to_group": "vastuvõtja: rühm {{ group_id }}",
   "to_recipient": "vastuvõtja: {{ recipient }}",
   "total_locking_fee": "lukustustasu kokku:",

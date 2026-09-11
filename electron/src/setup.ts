@@ -5,6 +5,7 @@ import {
   signForeignWalletPayment,
 } from './foreign-wallet-signer';
 import { createForeignWalletJournal } from './foreign-wallet-journal';
+import { QAppFileSaves, SaveError } from './qapp-file-save';
 import type { CapacitorElectronConfig } from '@capacitor-community/electron';
 import {
   CapElectronEventEmitter,
@@ -3026,6 +3027,66 @@ function validateQAppReticulumIpcSender(
   }
 }
 
+let qappFileSaves: QAppFileSaves;
+function fileSaves() {
+  return (qappFileSaves ??= new QAppFileSaves(join(app.getPath('userData'), 'file-save-journal')));
+}
+void app.whenReady().then(() => fileSaves().initialize()).catch(() => undefined);
+function saveOwner(owner: any) {
+  if (!owner || !['tabId', 'name', 'service'].every(key =>
+    typeof owner[key] === 'string' && owner[key].length > 0 && owner[key].length <= 256))
+    throw new SaveError('SAVE_INVALID_REQUEST');
+  return JSON.stringify([owner.tabId, owner.name, owner.service]);
+}
+ipcMain.handle('qappFileSave:request', async (event, owner, request) => {
+  if (!isMainShellSender(event.sender) || event.senderFrame !== event.sender.mainFrame)
+    return { error: 'SAVE_PERMISSION_DENIED' };
+  try {
+    const key = saveOwner(owner);
+    const manager = fileSaves();
+    switch (request?.action) {
+      case 'FILE_SAVE_OPEN':
+        return await manager.open(key, request.filename, request.size, async (filename, _size, checkLive) => {
+          const labels = request.labels;
+          if (!labels || !['title', 'detail', 'allow', 'cancel'].every(k =>
+            typeof labels[k] === 'string' && labels[k].length <= 2048))
+            throw new SaveError('SAVE_INVALID_REQUEST');
+          const win = myCapacitorApp.getMainWindow();
+          const permission = await dialog.showMessageBox(win, {
+            type: 'question', message: labels.title, detail: labels.detail,
+            buttons: [labels.cancel, labels.allow], defaultId: 0, cancelId: 0,
+            noLink: true,
+          });
+          if (permission.response !== 1) return undefined;
+          checkLive();
+          const result = await dialog.showSaveDialog(win, {
+            defaultPath: filename, title: labels.title,
+            properties: ['showOverwriteConfirmation', 'createDirectory'],
+          });
+          return result.canceled ? undefined : result.filePath;
+        });
+      case 'FILE_SAVE_WRITE': return await manager.write(key, request.saveId, request.offset, request.data);
+      case 'FILE_SAVE_FINISH': return await manager.finish(key, request.saveId);
+      case 'FILE_SAVE_ABORT': return await manager.abort(key, request.saveId);
+      case 'FILE_SAVE_CLEANUP': await manager.cleanup(key); return { aborted: true };
+      default: throw new SaveError('SAVE_INVALID_REQUEST');
+    }
+  } catch (error) {
+    // Never expose OS errors containing filesystem paths to a QApp.
+    return { error: error instanceof SaveError ? error.message : 'SAVE_IO_ERROR' };
+  }
+});
+setInterval(() => { void qappFileSaves?.expire(); }, 30_000).unref();
+app.on('before-quit', () => { void qappFileSaves?.cleanup(); });
+app.on('web-contents-created', (_event, contents) => {
+  const cleanup = () => { if (isMainShellSender(contents)) void qappFileSaves?.cleanup(); };
+  contents.on('render-process-gone', cleanup);
+  contents.on('destroyed', cleanup);
+  contents.on('did-start-navigation', (_e, _url, inPlace, mainFrame) => {
+    if (mainFrame && !inPlace) cleanup();
+  });
+});
+
 ipcMain.handle(
   'qappReticulum:request',
   async (event, owner: QAppReticulumOwner, options) => {
@@ -4510,6 +4571,7 @@ ipcMain.handle(
 );
 
 ipcMain.handle('reticulumChat:clearLocalAccountState', async () => {
+  await qappFileSaves?.cleanup();
   setRelayAccount('', true);
   reticulumLocalAccountLifecycleGeneration += 1;
   // These managers live for the lifetime of the main process too. Clear their

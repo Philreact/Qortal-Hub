@@ -219,6 +219,13 @@
   "sats_per_kb": "{{ amount }} sats / KB",
   "server_host": "主机：{{ host }}",
   "server_type": "类型：{{ type }}",
+  "stream_save": {
+    "choose": "选择位置",
+    "detail": "应用：{{app}}\n建议的文件名：{{filename}}\n声明的大小：{{size}} 字节\n\n这些信息由应用提供。Hub 无法验证内容或文件是否安全。此权限仅适用于本次保存。",
+    "failed": "无法保存文件，请重试。",
+    "title": "将文件保存到设备",
+    "unavailable": "流式保存文件需要更新后的 Qortal Hub 桌面版。"
+  },
   "to_group": "发送至群组：{{ group_id }}",
   "to_recipient": "发送至：{{ recipient }}",
   "total_locking_fee": "总锁仓费用：",

@@ -384,6 +384,7 @@ declare global {
       ) => Promise<boolean>;
       qappReticulumCleanupOwner?: (owner: any) => Promise<boolean>;
       onQAppReticulumEvent?: (callback: (payload: any) => void) => () => void;
+      qappFileSave?: (owner: any, request: any) => Promise<any>;
       privateChannelOpen?: (
         owner: any,
         rnsConnectionId: unknown,
