@@ -395,7 +395,8 @@ declare global {
         channelId: unknown,
         lane: unknown,
         messageId: unknown,
-        data: unknown
+        data: unknown,
+        streamOptions?: unknown
       ) => Promise<any>;
       privateChannelStatus?: (owner: any, channelId: unknown) => Promise<any>;
       privateChannelClose?: (owner: any, channelId: unknown) => Promise<any>;

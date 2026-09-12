@@ -62,7 +62,10 @@ type Session struct {
 	conn             *quic.Conn
 	stream           *quic.Stream
 	onEvent          func(Event)
-	writeMu          sync.Mutex
+	reliableWriter   *boundedFrameWriter
+	streamsMu        sync.Mutex
+	streams          map[string]*reliableLane
+	reliableStreams  bool
 	closed           atomic.Bool
 	appSent          atomic.Uint64
 	appReceived      atomic.Uint64
@@ -80,6 +83,7 @@ type attachMetadata struct {
 	OwnerBindingHash string `json:"ownerBindingHash"`
 }
 type attachedMetadata struct {
+	ReliableStreams     bool   `json:"reliableStreams"`
 	OK                  bool   `json:"ok"`
 	LogicalSessionID    string `json:"logicalSessionId"`
 	TransportGeneration int    `json:"transportGeneration"`
@@ -147,6 +151,14 @@ func Open(ctx context.Context, cfg Config, onEvent func(Event)) (*Session, error
 		_ = tunnel.Close()
 		return nil, fmt.Errorf("SESSION_ATTACH_FAILED: %w", err)
 	}
+	// Dial's context does not bound subsequent stream reads or writes.
+	deadline, _ := ctx.Deadline()
+	_ = stream.SetDeadline(deadline)
+	stopAttach := context.AfterFunc(ctx, func() {
+		stream.CancelRead(1)
+		stream.CancelWrite(1)
+	})
+	defer stopAttach()
 	metadata, err := Metadata(attachMetadata{ProtocolVersion: ProtocolVersion, LogicalSessionID: cfg.LogicalSessionID, AttachToken: cfg.AttachToken, Nonce: cfg.Nonce, Purpose: cfg.Purpose, OwnerBindingHash: cfg.OwnerBindingHash})
 	if err != nil {
 		_ = conn.CloseWithError(1, "attach failed")
@@ -178,7 +190,14 @@ func Open(ctx context.Context, cfg Config, onEvent func(Event)) (*Session, error
 		_ = tunnel.Close()
 		return nil, errors.New("DATAGRAM_UNSUPPORTED")
 	}
-	s := &Session{tunnel: tunnel, conn: conn, stream: stream, onEvent: onEvent}
+	if !stopAttach() || ctx.Err() != nil {
+		_ = conn.CloseWithError(1, "attach timed out")
+		return fail(errors.New("SESSION_ATTACH_FAILED"))
+	}
+	_ = stream.SetDeadline(time.Time{})
+	s := &Session{tunnel: tunnel, conn: conn, stream: stream, onEvent: onEvent,
+		reliableWriter: newBoundedFrameWriter(stream), reliableStreams: attached.ReliableStreams,
+		streams: make(map[string]*reliableLane)}
 	go s.readReliable()
 	go s.readDatagrams()
 	go s.watchConnection()
@@ -193,9 +212,7 @@ func (s *Session) SendReliable(messageID string, data []byte) error {
 		return errors.New("FRAME_TOO_LARGE")
 	}
 	metadata, _ := Metadata(messageMetadata{MessageID: messageID})
-	s.writeMu.Lock()
-	err := WriteFrame(s.stream, Frame{Type: FrameReliable, Metadata: metadata, Payload: data})
-	s.writeMu.Unlock()
+	err := s.reliableWriter.write(Frame{Type: FrameReliable, Metadata: metadata, Payload: data}, 5*time.Second)
 	if err == nil {
 		s.appSent.Add(uint64(len(data)))
 	} else {
@@ -237,10 +254,14 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) readReliable() {
+	s.readReliableStream(s.stream, true)
+}
+
+func (s *Session) readReliableStream(stream *quic.Stream, primary bool) {
 	for {
-		frame, err := ReadFrame(s.stream)
+		frame, err := ReadFrame(stream)
 		if err != nil {
-			if !s.closed.Load() {
+			if primary && !s.closed.Load() {
 				s.streamErrors.Add(1)
 				s.emit(Event{Kind: "error", Code: "STREAM_ERROR"})
 			}
@@ -248,13 +269,17 @@ func (s *Session) readReliable() {
 		}
 		if frame.Type != FrameReliable {
 			s.streamErrors.Add(1)
-			s.emit(Event{Kind: "error", Code: "PROTOCOL_MISMATCH"})
+			if primary {
+				s.emit(Event{Kind: "error", Code: "PROTOCOL_MISMATCH"})
+			}
 			return
 		}
 		var metadata messageMetadata
 		if json.Unmarshal(frame.Metadata, &metadata) != nil || metadata.MessageID == "" {
 			s.streamErrors.Add(1)
-			s.emit(Event{Kind: "error", Code: "PROTOCOL_MISMATCH"})
+			if primary {
+				s.emit(Event{Kind: "error", Code: "PROTOCOL_MISMATCH"})
+			}
 			return
 		}
 		s.appReceived.Add(uint64(len(frame.Payload)))

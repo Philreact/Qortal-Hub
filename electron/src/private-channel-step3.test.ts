@@ -555,6 +555,16 @@ describe('private bootstrap validation', () => {
       expect.objectContaining({ code: 'BOOTSTRAP_EXPIRED' })
     );
   });
+  it('reports a duplicate attachment explicitly but sanitizes unknown backend errors', () => {
+    expect(() =>
+      validate({ error: { code: 'transport_already_attached' } })
+    ).toThrowError(
+      expect.objectContaining({ code: 'TRANSPORT_ALREADY_ATTACHED' })
+    );
+    expect(() =>
+      validate({ error: { code: 'untrusted backend text' } })
+    ).toThrowError(expect.objectContaining({ code: 'BOOTSTRAP_FAILED' }));
+  });
   it('rejects wrong RNS/owner binding and reuse', () => {
     expect(() =>
       validate({ ...base, backendRnsDestination: 'f'.repeat(32) })

@@ -90,6 +90,8 @@ export function validatePrivateBootstrapDescriptor(
   }
   const d = value as Record<string, unknown>;
   if (d.error && typeof d.error === 'object') {
+    if ((d.error as { code?: unknown }).code === 'transport_already_attached')
+      throw new PrivateChannelError('TRANSPORT_ALREADY_ATTACHED');
     throw new PrivateChannelError('BOOTSTRAP_FAILED');
   }
   if (d.version !== PRIVATE_BOOTSTRAP_VERSION) {

@@ -94,7 +94,8 @@ describe('Q-App private channel request dispatch', () => {
       'private-1',
       'reliable',
       'message-1',
-      data
+      data,
+      undefined
     );
     expect(window.electronAPI.privateChannelStatus).toHaveBeenCalledWith(
       owner,

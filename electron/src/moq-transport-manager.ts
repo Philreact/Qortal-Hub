@@ -29,6 +29,11 @@ export class QAppMoqError extends Error {
   }
 }
 
+export type MoqDeliveryPolicy = Readonly<{
+  priority: number;
+  maxQueueAgeMillis: number;
+}>;
+
 export interface ManagedMoqTransport {
   open(context: MoqOpenContext): Promise<void>;
   subscribe(
@@ -39,7 +44,8 @@ export interface ManagedMoqTransport {
   publish(
     payload: Uint8Array,
     trackName?: string,
-    batch?: readonly Uint8Array[]
+    batch?: readonly Uint8Array[],
+    delivery?: MoqDeliveryPolicy
   ): Promise<void>;
   metrics(): Promise<Record<string, number>>;
   close(): Promise<void>;
@@ -210,7 +216,11 @@ export class QAppMoqTransportManager extends EventEmitter {
       payloadValue &&
       typeof payloadValue === 'object' &&
       'objects' in payloadValue
-        ? (payloadValue as { objects: unknown; trackName: unknown })
+        ? (payloadValue as {
+            objects: unknown;
+            trackName: unknown;
+            delivery?: unknown;
+          })
         : null;
     const track = batchRequest
       ? requireName(batchRequest.trackName, 'INVALID_MOQ_CONFIG')
@@ -227,6 +237,19 @@ export class QAppMoqTransportManager extends EventEmitter {
     const objects = batchRequest
       ? (batchRequest.objects as unknown[]).map(requirePayload)
       : [requirePayload(payloadValue)];
+    const delivery = batchRequest?.delivery as MoqDeliveryPolicy | undefined;
+    if (
+      delivery !== undefined &&
+      (!delivery ||
+        typeof delivery !== 'object' ||
+        !Number.isInteger(delivery.priority) ||
+        delivery.priority < 0 ||
+        delivery.priority > 2 ||
+        !Number.isInteger(delivery.maxQueueAgeMillis) ||
+        delivery.maxQueueAgeMillis < 10 ||
+        delivery.maxQueueAgeMillis > 2000)
+    )
+      throw new QAppMoqError('INVALID_MOQ_CONFIG');
     const bytes = objects.reduce((sum, payload) => sum + payload.byteLength, 0);
     if (
       session.queuedBytes + bytes > QAPP_MOQ_LIMITS.maxQueuedBytesPerSession ||
@@ -242,7 +265,7 @@ export class QAppMoqTransportManager extends EventEmitter {
     );
     try {
       if (batchRequest)
-        await session.transport.publish(objects[0], track, objects);
+        await session.transport.publish(objects[0], track, objects, delivery);
       else await session.transport.publish(objects[0]);
       return {
         sessionId: session.sessionId,

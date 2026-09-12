@@ -66,6 +66,7 @@ type Event struct {
 }
 
 type Metrics struct {
+	moqtransport.DeliveryMetrics
 	InnerRTTMillis int64  `json:"innerRttMillis"`
 	ObjectsSent    uint64 `json:"objectsSent"`
 	ObjectsRead    uint64 `json:"objectsReceived"`
@@ -325,11 +326,55 @@ func (s *Session) PublishObject(payload []byte) error {
 }
 
 func (s *Session) PublishTrackObject(track string, payload []byte) error {
+	return s.PublishTrackObjectWithPolicy(track, payload, moqtransport.DeliveryPolicy{Priority: 1, MaxQueueAgeMillis: 200})
+}
+
+func (s *Session) PublishTrackObjectWithPolicy(track string, payload []byte, policy moqtransport.DeliveryPolicy) error {
+	return s.PublishTrackBatch(track, [][]byte{payload}, policy)
+}
+
+func (s *Session) PublishTrackBatch(track string, objects [][]byte, policy moqtransport.DeliveryPolicy) error {
+	if track == "" {
+		track = s.defaultTrack
+	}
+	if len(objects) < 1 || len(objects) > 8 || !policy.Valid() {
+		return errors.New("INVALID_MOQ_CONFIG")
+	}
+	for _, payload := range objects {
+		if len(payload) < 1 || len(payload) > MaxObjectBytes {
+			return errors.New("MOQ_OBJECT_TOO_LARGE")
+		}
+	}
+	var pending []<-chan error
+	for _, payload := range objects {
+		completion, err := s.queueTrackObject(track, payload, policy)
+		if err != nil {
+			return err
+		}
+		pending = append(pending, completion)
+	}
+	for index, completion := range pending {
+		select {
+		case err := <-completion:
+			if err != nil {
+				s.objectErrors.Add(1)
+				return err
+			}
+			s.objectsSent.Add(1)
+			s.bytesSent.Add(uint64(len(objects[index])))
+		case <-s.moq.Context().Done():
+			return errors.New("MOQ_SESSION_CLOSED")
+		}
+	}
+	return nil
+}
+
+func (s *Session) queueTrackObject(track string, payload []byte, policy moqtransport.DeliveryPolicy) (<-chan error, error) {
 	if s.closed.Load() {
-		return errors.New("MOQ_SESSION_CLOSED")
+		return nil, errors.New("MOQ_SESSION_CLOSED")
 	}
 	if len(payload) == 0 || len(payload) > MaxObjectBytes {
-		return errors.New("MOQ_OBJECT_TOO_LARGE")
+		return nil, errors.New("MOQ_OBJECT_TOO_LARGE")
 	}
 	objectID := s.nextObjectID.Add(1) - 1
 	publication := s.publication
@@ -337,20 +382,18 @@ func (s *Session) PublishTrackObject(track string, payload []byte) error {
 		publication = s.publications[track]
 	}
 	if publication == nil {
-		return errors.New("INVALID_MOQ_CONFIG")
+		return nil, errors.New("INVALID_MOQ_CONFIG")
 	}
-	err := publication.SendDatagram(moqtransport.Object{
+	completion, err := publication.ScheduleDatagramResult(moqtransport.Object{
 		GroupID: 0, ObjectID: objectID,
 		ForwardingPreference: moqtransport.ObjectForwardingPreferenceDatagram,
 		Payload:              append([]byte(nil), payload...),
-	})
+	}, policy)
 	if err != nil {
 		s.objectErrors.Add(1)
-		return fmt.Errorf("MOQ_SEND_FAILED: %w", err)
+		return nil, fmt.Errorf("MOQ_SEND_FAILED: %w", err)
 	}
-	s.objectsSent.Add(1)
-	s.bytesSent.Add(uint64(len(payload)))
-	return nil
+	return completion, nil
 }
 
 func (s *Session) readSubscription(subscriptionID string, entry subscription) {
@@ -382,8 +425,9 @@ func (s *Session) readSubscription(subscriptionID string, entry subscription) {
 func (s *Session) Metrics() Metrics {
 	stats := s.conn.ConnectionStats()
 	return Metrics{
-		InnerRTTMillis: stats.SmoothedRTT.Milliseconds(),
-		ObjectsSent:    s.objectsSent.Load(), ObjectsRead: s.objectsRead.Load(),
+		DeliveryMetrics: s.moq.DeliveryMetrics(),
+		InnerRTTMillis:  stats.SmoothedRTT.Milliseconds(),
+		ObjectsSent:     s.objectsSent.Load(), ObjectsRead: s.objectsRead.Load(),
 		BytesSent: s.bytesSent.Load(), BytesRead: s.bytesRead.Load(),
 		ObjectErrors: s.objectErrors.Load(),
 	}

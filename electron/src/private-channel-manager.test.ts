@@ -52,6 +52,54 @@ class BlockingTransport implements PrivateTransport {
 }
 
 describe('PrivateChannelManager', () => {
+  it('bounds one stream without consuming the control stream queue and validates options', async () => {
+    const transport = new BlockingTransport();
+    const manager = new PrivateChannelManager(ownership, () => transport);
+    const channel = await manager.open(alice, aliceRns, 'file-transfer');
+    await expect(
+      manager.send(
+        alice,
+        channel.channelId,
+        'reliable',
+        'invalid',
+        {},
+        { streamKey: '../bad' }
+      )
+    ).rejects.toMatchObject({ code: 'INVALID_STREAM_OPTIONS' });
+    const sends = [0, 1, 2].map((i) =>
+      manager.send(
+        alice,
+        channel.channelId,
+        'reliable',
+        `bulk-${i}`,
+        new Uint8Array(64 * 1024),
+        { streamKey: 'bulk' }
+      )
+    );
+    await expect(
+      manager.send(
+        alice,
+        channel.channelId,
+        'reliable',
+        'overflow',
+        new Uint8Array(1),
+        { streamKey: 'bulk' }
+      )
+    ).rejects.toMatchObject({ code: 'QUEUE_LIMIT_REACHED' });
+    const control = manager.send(
+      alice,
+      channel.channelId,
+      'reliable',
+      'control',
+      { ping: true },
+      { streamKey: 'control' }
+    );
+    expect(transport.sendReliable).toHaveBeenLastCalledWith(
+      expect.objectContaining({ streamKey: 'control' })
+    );
+    transport.releases.forEach((release) => release());
+    await Promise.all([...sends, control]);
+  });
   it('opens an owner-scoped mock channel with an opaque unique handle', async () => {
     const manager = new PrivateChannelManager(ownership);
     const first = await manager.open(alice, aliceRns, 'game');

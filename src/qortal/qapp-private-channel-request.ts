@@ -95,7 +95,8 @@ export async function dispatchQAppPrivateChannelRequest(
         message.channelId,
         message.lane,
         message.messageId,
-        message.data
+        message.data,
+        message.streamOptions
       );
     case 'PRIVATE_CHANNEL_STATUS':
       if (!api.privateChannelStatus) {

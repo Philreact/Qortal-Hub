@@ -233,7 +233,8 @@ export class MoqMasqueTransport {
   async publish(
     payload: Uint8Array,
     trackName?: string,
-    batch?: readonly Uint8Array[]
+    batch?: readonly Uint8Array[],
+    delivery?: { priority: number; maxQueueAgeMillis: number }
   ): Promise<void> {
     if (payload.byteLength < 1 || payload.byteLength > MAX_MOQ_OBJECT_BYTES) {
       throw new PrivateTransportSidecarError('MOQ_OBJECT_TOO_LARGE');
@@ -245,7 +246,8 @@ export class MoqMasqueTransport {
           sessionId,
           payload,
           trackName,
-          batch
+          batch,
+          delivery
         );
       else await this.sidecar.publishMoqObject(sessionId, payload);
     } catch (error) {

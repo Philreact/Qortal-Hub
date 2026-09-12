@@ -744,14 +744,22 @@ try {
         rnsConnectionId,
         purpose
       ),
-    privateChannelSend: (owner, channelId, lane, messageId, data) =>
+    privateChannelSend: (
+      owner,
+      channelId,
+      lane,
+      messageId,
+      data,
+      streamOptions
+    ) =>
       invokePrivateChannel(
         'privateChannel:send',
         owner,
         channelId,
         lane,
         messageId,
-        data
+        data,
+        streamOptions
       ),
     privateChannelStatus: (owner, channelId) =>
       invokePrivateChannel('privateChannel:status', owner, channelId),

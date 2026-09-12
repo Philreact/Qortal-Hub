@@ -100,7 +100,9 @@ export class QuicMasqueTransport implements PrivateTransport {
       await this.sidecar.sendPrivateReliable(
         sessionId,
         message.messageId,
-        encoded
+        encoded,
+        message.streamKey,
+        message.endStream
       );
     } catch (error) {
       if (isRecoverableTransportError(error)) {
@@ -109,7 +111,9 @@ export class QuicMasqueTransport implements PrivateTransport {
           await this.sidecar.sendPrivateReliable(
             replacementSessionId,
             message.messageId,
-            encoded
+            encoded,
+            message.streamKey,
+            message.endStream
           );
           return;
         } catch (recoveryError) {
@@ -372,12 +376,17 @@ function decodeApplicationData(value: Buffer): unknown {
 
 function translateSidecarError(error: unknown): PrivateChannelError {
   const code =
-    error instanceof PrivateTransportSidecarError
+    error instanceof PrivateTransportSidecarError ||
+    error instanceof PrivateChannelError
       ? error.code
       : error instanceof Error && error.message === 'MASQUE_RELAY_UNAVAILABLE'
         ? error.message
         : 'TRANSPORT_ERROR';
   const allowed = new Set([
+    'STREAM_LIMIT_REACHED',
+    'RELIABLE_STREAM_FAILED',
+    'RELIABLE_STREAMS_UNSUPPORTED',
+    'TRANSPORT_ALREADY_ATTACHED',
     'RELAY_NO_ELIGIBLE_RELAY',
     'RELAY_ACCESS_DENIED',
     'RELAY_PROOF_INVALID',

@@ -5,7 +5,7 @@ import { EventEmitter } from 'events';
 import path from 'path';
 
 export const PRIVATE_TRANSPORT_PROTOCOL_VERSION = 2;
-export const PRIVATE_TRANSPORT_SIDECAR_VERSION = '0.7.0';
+export const PRIVATE_TRANSPORT_SIDECAR_VERSION = '0.9.1';
 export const MAX_MOQ_OBJECT_BYTES = 1024;
 export type PreparedRelay = {
   handle: string;
@@ -361,11 +361,13 @@ export class PrivateTransportSidecar extends EventEmitter {
   async sendPrivateReliable(
     sessionId: string,
     messageId: string,
-    data: Buffer
+    data: Buffer,
+    streamKey?: string,
+    endStream?: boolean
   ): Promise<void> {
     await this.request(
       'sendPrivateReliable',
-      { sessionId, messageId },
+      { sessionId, messageId, streamKey, endStream },
       undefined,
       data
     );
@@ -455,7 +457,8 @@ export class PrivateTransportSidecar extends EventEmitter {
     moqSessionId: string,
     payload: Uint8Array,
     trackName?: string,
-    batch?: readonly Uint8Array[]
+    batch?: readonly Uint8Array[],
+    delivery?: { priority: number; maxQueueAgeMillis: number }
   ): Promise<void> {
     if (payload.byteLength < 1 || payload.byteLength > MAX_MOQ_OBJECT_BYTES) {
       throw new PrivateTransportSidecarError('MOQ_OBJECT_TOO_LARGE');
@@ -484,6 +487,7 @@ export class PrivateTransportSidecar extends EventEmitter {
         moqSessionId,
         ...(trackName ? { trackName } : {}),
         ...(batch ? { batched: true } : {}),
+        ...(delivery ? { delivery } : {}),
       },
       undefined,
       binary

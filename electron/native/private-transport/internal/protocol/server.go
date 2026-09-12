@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/mengelbart/moqtransport"
 	"io"
 	"strings"
 	"sync"
@@ -22,13 +23,30 @@ import (
 
 const (
 	Version                 = 2
-	SidecarVersion          = "0.7.0"
+	SidecarVersion          = "0.9.1"
 	MaxControlMessageBytes  = 64 * 1024
 	MaxBinaryMessageBytes   = innerquic.MaxReliablePayloadBytes
 	maxRememberedRequestIDs = 4096
 )
 
+// Dispatch and execution must decode the same complete schema. The decoder
+// rejects unknown fields, so a routing-only subset rejects valid requests.
+type privateSendParams struct {
+	SessionID string `json:"sessionId"`
+	MessageID string `json:"messageId"`
+	StreamKey string `json:"streamKey"`
+	EndStream bool   `json:"endStream"`
+}
+
+type moqPublishParams struct {
+	MoqSessionID string                       `json:"moqSessionId"`
+	TrackName    string                       `json:"trackName"`
+	Batched      bool                         `json:"batched"`
+	Delivery     *moqtransport.DeliveryPolicy `json:"delivery"`
+}
+
 type Request struct {
+	receivedAt   time.Time
 	Version      int             `json:"version"`
 	RequestID    string          `json:"requestId"`
 	Operation    string          `json:"operation"`
@@ -87,6 +105,10 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 	defer func() { cancel(); preparations.Wait(); masqueclient.CloseAllRelays() }()
 	reader := bufio.NewReaderSize(input, 4096)
 	s.emit = func(event Event, binary []byte) { s.write(output, event, binary) }
+	var reliableSends reliableDispatcher
+	var moqSends reliableDispatcher
+	defer moqSends.workers.Wait()
+	defer reliableSends.workers.Wait()
 	defer s.Close()
 	for {
 		line, err := readControlLine(reader)
@@ -113,6 +135,43 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 		if _, err := io.ReadFull(reader, binary); err != nil {
 			s.write(output, failure(req.RequestID, "MALFORMED_BINARY_FRAME", "truncated binary frame"), nil)
 			return nil
+		}
+		req.receivedAt = time.Now()
+		if req.Operation == "publishMoqObject" {
+			var p moqPublishParams
+			if decodeParams(req.Params, &p) != nil || len(p.MoqSessionID) > 128 || len(p.TrackName) > 128 {
+				s.write(output, failure(req.RequestID, "INVALID_PARAMS", "invalid publication params"), nil)
+				continue
+			}
+			if !moqSends.submit(p.MoqSessionID+"\x00"+p.TrackName, len(binary), func(ready bool) {
+				if !ready {
+					s.write(output, failure(req.RequestID, "MOQ_OBJECT_EXPIRED", "publication queue timed out"), nil)
+					return
+				}
+				response, _ := s.handleRequest(ctx, req, binary)
+				s.write(output, response, nil)
+			}) {
+				s.write(output, failure(req.RequestID, "MOQ_QUEUE_LIMIT", "publication capacity reached"), nil)
+			}
+			continue
+		}
+		if req.Operation == "sendPrivateReliable" {
+			var p privateSendParams
+			if decodeParams(req.Params, &p) != nil || len(p.SessionID) > 128 || len(p.StreamKey) > 96 {
+				s.write(output, failure(req.RequestID, "INVALID_PARAMS", "invalid stream params"), nil)
+				continue
+			}
+			if !reliableSends.submit(p.SessionID+"\x00"+p.StreamKey, len(binary), func(ready bool) {
+				if !ready {
+					s.write(output, failure(req.RequestID, "RELIABLE_STREAM_FAILED", "stream queue timed out"), nil)
+					return
+				}
+				response, _ := s.handleRequest(ctx, req, binary)
+				s.write(output, response, nil)
+			}) {
+				s.write(output, failure(req.RequestID, "STREAM_LIMIT_REACHED", "stream send capacity reached"), nil)
+			}
+			continue
 		}
 		if req.Operation == "prepareRelay" || req.Operation == "authorizeRelay" {
 			select {
@@ -308,6 +367,7 @@ func moqErrorCode(err error) string {
 		return "BACKEND_IDENTITY_MISMATCH"
 	}
 	for _, code := range []string{
+		"MOQ_QUEUE_LIMIT", "MOQ_OBJECT_EXPIRED",
 		"INVALID_MOQ_CONFIG", "MOQ_QUIC_FAILED", "MOQ_SESSION_FAILED",
 		"MOQ_ATTACH_FAILED", "DATAGRAM_UNSUPPORTED", "INVALID_MOQ_SUBSCRIPTION",
 		"MOQ_SUBSCRIBE_FAILED", "MOQ_SESSION_CLOSED", "MOQ_SUBSCRIPTION_LIMIT",
@@ -356,11 +416,7 @@ func (s *Server) subscribeMoqTrack(req Request) Response {
 }
 
 func (s *Server) publishMoqObject(req Request, binary []byte) Response {
-	var p struct {
-		MoqSessionID string `json:"moqSessionId"`
-		TrackName    string `json:"trackName"`
-		Batched      bool   `json:"batched"`
-	}
+	var p moqPublishParams
 	if decodeParams(req.Params, &p) != nil {
 		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
 	}
@@ -376,16 +432,21 @@ func (s *Server) publishMoqObject(req Request, binary []byte) Response {
 			return failure(req.RequestID, "INVALID_PARAMS", "invalid object batch")
 		}
 	}
-	for _, object := range objects {
-		var err error
-		if p.TrackName == "" {
-			err = session.PublishObject(object)
-		} else {
-			err = session.PublishTrackObject(p.TrackName, object)
-		}
-		if err != nil {
-			return failure(req.RequestID, moqErrorCode(err), "MOQT object publish failed")
-		}
+	policy := moqtransport.DeliveryPolicy{Priority: 1, MaxQueueAgeMillis: 200}
+	if p.Delivery != nil {
+		policy = *p.Delivery
+	}
+	if !policy.Valid() {
+		return failure(req.RequestID, "INVALID_MOQ_CONFIG", "invalid delivery policy")
+	}
+	if !req.receivedAt.IsZero() {
+		policy.MaxQueueAgeMillis -= int(time.Since(req.receivedAt).Milliseconds())
+	}
+	if policy.MaxQueueAgeMillis < 10 {
+		return failure(req.RequestID, "MOQ_OBJECT_EXPIRED", "publication deadline exceeded")
+	}
+	if err := session.PublishTrackBatch(p.TrackName, objects, policy); err != nil {
+		return failure(req.RequestID, moqErrorCode(err), "MOQT object publish failed")
 	}
 	return success(req.RequestID, map[string]interface{}{
 		"accepted": true, "bytesSent": len(binary),
@@ -510,10 +571,7 @@ func (s *Server) emitInner(sessionID string, e innerquic.Event) {
 	s.emit(Event{Version: Version, Type: "event", Event: e.Kind, SessionID: sessionID, MessageID: e.MessageID, Code: e.Code, BinaryLength: len(e.Data)}, e.Data)
 }
 func (s *Server) sendPrivate(req Request, binary []byte, reliable bool) Response {
-	var p struct {
-		SessionID string `json:"sessionId"`
-		MessageID string `json:"messageId"`
-	}
+	var p privateSendParams
 	if decodeParams(req.Params, &p) != nil {
 		return failure(req.RequestID, "INVALID_PARAMS", "invalid params")
 	}
@@ -526,12 +584,24 @@ func (s *Server) sendPrivate(req Request, binary []byte, reliable bool) Response
 	}
 	var err error
 	if reliable {
-		err = session.SendReliable(p.MessageID, binary)
+		if p.StreamKey != "" {
+			err = session.SendReliableStream(p.StreamKey, p.MessageID, binary, p.EndStream)
+		} else {
+			err = session.SendReliable(p.MessageID, binary)
+		}
 	} else {
 		err = session.SendDatagram(p.MessageID, binary)
 	}
 	if err != nil {
 		code := "TRANSPORT_SEND_FAILED"
+		for _, streamCode := range []string{"STREAM_LIMIT_REACHED", "RELIABLE_STREAM_FAILED", "RELIABLE_STREAMS_UNSUPPORTED", "TRANSPORT_CLOSED"} {
+			if err.Error() == streamCode {
+				code = streamCode
+			}
+		}
+		if errors.Is(err, innerquic.ErrReliableWriteFailed) {
+			code = "TRANSPORT_CLOSED"
+		}
 		if strings.Contains(err.Error(), "large") || strings.Contains(err.Error(), "invalid") {
 			code = "FRAME_TOO_LARGE"
 		}

@@ -20,6 +20,7 @@ export const PRIVATE_CHANNEL_LIMITS = Object.freeze({
 });
 
 export const PRIVATE_CHANNEL_FEATURES = Object.freeze({
+  reliableStreams: true,
   reliableMessages: true,
   datagrams: true,
   maxMessageBytes: PRIVATE_CHANNEL_LIMITS.maxMessageBytes,
@@ -35,6 +36,8 @@ export class PrivateChannelError extends Error {
 }
 
 export type PrivateTransportMessage = {
+  streamKey?: string;
+  endStream?: boolean;
   lane: PrivateChannelLane;
   messageId: string;
   data: unknown;
@@ -187,6 +190,7 @@ function validateJsonValue(
 }
 
 export class PrivateChannelManager extends EventEmitter {
+  private readonly queuedBytesByStream = new Map<string, number>();
   private readonly channels = new Map<string, ChannelRecord>();
   private readonly channelsByOwner = new Map<string, Set<string>>();
   private readonly queuedBytesByOwner = new Map<string, number>();
@@ -289,7 +293,8 @@ export class PrivateChannelManager extends EventEmitter {
     channelIdValue: unknown,
     laneValue: unknown,
     messageIdValue: unknown,
-    data: unknown
+    data: unknown,
+    streamOptions?: unknown
   ): Promise<{ channelId: string; messageId: string; accepted: true }> {
     const channelId = this.validateChannelId(channelIdValue);
     const channel = this.requireOwned(owner, channelId, true);
@@ -320,10 +325,32 @@ export class PrivateChannelManager extends EventEmitter {
       throw new PrivateChannelError('QUEUE_LIMIT_REACHED');
     }
 
+    const lane = laneValue as PrivateChannelLane;
+    let streamKey: string | undefined;
+    let endStream: boolean | undefined;
+    if (streamOptions !== undefined) {
+      const o = streamOptions as { streamKey?: unknown; endStream?: unknown };
+      if (
+        !o ||
+        typeof o !== 'object' ||
+        Array.isArray(o) ||
+        lane !== 'reliable' ||
+        typeof o.streamKey !== 'string' ||
+        !/^[A-Za-z0-9._-]{1,96}$/.test(o.streamKey) ||
+        (o.endStream !== undefined && typeof o.endStream !== 'boolean')
+      )
+        throw new PrivateChannelError('INVALID_STREAM_OPTIONS');
+      streamKey = o.streamKey;
+      endStream = o.endStream === true;
+    }
+    const message = { lane, messageId, data, streamKey, endStream };
+    const queueKey = `${channelId}\0${streamKey ?? ''}`;
+    const streamBytes = this.queuedBytesByStream.get(queueKey) ?? 0;
+    if (streamKey && streamBytes + size > 192 * 1024)
+      throw new PrivateChannelError('QUEUE_LIMIT_REACHED');
+    this.queuedBytesByStream.set(queueKey, streamBytes + size);
     channel.queuedBytes += size;
     this.queuedBytesByOwner.set(channel.ownerKey, ownerQueued + size);
-    const lane = laneValue as PrivateChannelLane;
-    const message = { lane, messageId, data };
     try {
       if (lane === 'reliable') await channel.transport.sendReliable(message);
       else await channel.transport.sendDatagram(message);
@@ -332,6 +359,13 @@ export class PrivateChannelManager extends EventEmitter {
       if (error instanceof PrivateChannelError) throw error;
       throw new PrivateChannelError('CHANNEL_SEND_FAILED');
     } finally {
+      const remainingStream = Math.max(
+        0,
+        (this.queuedBytesByStream.get(queueKey) ?? 0) - size
+      );
+      if (remainingStream)
+        this.queuedBytesByStream.set(queueKey, remainingStream);
+      else this.queuedBytesByStream.delete(queueKey);
       channel.queuedBytes = Math.max(0, channel.queuedBytes - size);
       const remaining = Math.max(
         0,

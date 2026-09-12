@@ -39,6 +39,7 @@ if str(os.environ.get("QORTAL_PYTHON_DIAGNOSTICS", "")).strip().lower() in {
         pass
 
 import RNS
+from RNS.Buffer import RawChannelWriter
 from RNS.vendor import umsgpack
 
 _BRIDGE_RESOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1170,6 +1171,9 @@ _qapp_close_write_dispatcher = _BoundedKeyedSendDispatcher(
 _qapp_close_coordinator_slots = threading.BoundedSemaphore(
     _QAPP_CLOSE_WRITE_MAX_PENDING
 )
+_qapp_stream_write_dispatcher = _BoundedKeyedSendDispatcher(
+    "qapp-stream", 8, 64, 0.25
+)
 _rns_overlay_callback_pending_keys: set[str] = set()
 _rns_packet_dispatcher_missing_logged = False
 _latest_land_state_lock = threading.Lock()
@@ -2241,6 +2245,7 @@ def _start_packet_send_dispatchers() -> None:
     _control_packet_send_dispatcher.start()
     _realtime_packet_send_dispatcher.start()
     _qapp_close_write_dispatcher.start()
+    _qapp_stream_write_dispatcher.start()
     log(
         "[presence_bridge] target=reticulum-packet-send-dispatcher started "
         f"control_workers={_CONTROL_PACKET_SEND_WORKERS} "
@@ -2253,6 +2258,7 @@ def _stop_packet_send_dispatchers() -> None:
     _control_packet_send_dispatcher.stop()
     _realtime_packet_send_dispatcher.stop()
     _qapp_close_write_dispatcher.stop()
+    _qapp_stream_write_dispatcher.stop()
 
 
 def _stop_scheduler_workers() -> None:
@@ -27008,6 +27014,7 @@ _QAPP_RNS_MAX_QUEUE = int(os.environ.get("QORTAL_QAPP_RNS_MAX_UNACKED", 64))
 _QAPP_RNS_MAX_QUEUE_BYTES = int(os.environ.get("QORTAL_QAPP_RNS_MAX_QUEUE_BYTES", 2 * 1024 * 1024))
 _QAPP_RNS_IDLE_SECONDS = float(os.environ.get("QORTAL_QAPP_RNS_IDLE_SECONDS", 300))
 _QAPP_RNS_ACK_TIMEOUT_SECONDS = float(os.environ.get("QORTAL_QAPP_RNS_ACK_TIMEOUT_SECONDS", 120))
+_QAPP_RNS_WRITE_TIMEOUT_SECONDS = 10.0
 _QAPP_RNS_CLOSE_WRITE_TIMEOUT_SECONDS = max(
     0.1,
     float(os.environ.get("QORTAL_QAPP_RNS_CLOSE_WRITE_TIMEOUT_SECONDS", 10.0)),
@@ -27029,25 +27036,74 @@ def _qapp_rns_frame(frame_type: int, message_id: int, payload: bytes = b"") -> b
     return _QAPP_RNS_HEADER.pack(_QAPP_RNS_VERSION, frame_type, message_id, len(payload)) + payload
 
 
-def _qapp_rns_write(entry: Dict[str, Any], frame: bytes) -> bool:
-    writer = entry.get("writer")
-    if writer is None or entry.get("established") is not True:
-        return False
-    with entry["write_lock"]:
-        offset = 0
-        deadline = time.monotonic() + 10.0
-        while offset < len(frame):
-            if entry.get("writer") is not writer or time.monotonic() >= deadline:
+def _qapp_rns_write(entry: Dict[str, Any], frame: bytes, *, expected_link: Any = None) -> bool:
+    # Capture the physical stream before dispatch. A delayed old write must
+    # never acquire the writer (or lock) of a replacement Link.
+    with _state_lock:
+        writer = entry.get("writer")
+        link = entry.get("link")
+        if expected_link is not None and link is not expected_link:
+            return False
+        generation = entry.get("generation")
+        write_lock = entry.get("write_lock")
+        if writer is None or entry.get("established") is not True:
+            return False
+    cancelled = threading.Event()
+
+    def current() -> bool:
+        return (
+            not cancelled.is_set()
+            and entry.get("writer") is writer
+            and entry.get("generation") == generation
+            and entry.get("established") is True
+        )
+
+    def write() -> bool:
+        deadline = time.monotonic() + _QAPP_RNS_WRITE_TIMEOUT_SECONDS
+        if not write_lock.acquire(timeout=_QAPP_RNS_WRITE_TIMEOUT_SECONDS):
+            return False
+        try:
+            offset = 0
+            while offset < len(frame):
+                if not current() or time.monotonic() >= deadline:
+                    return False
+                written = int(writer.write(frame[offset:]) or 0)
+                if written <= 0:
+                    cancelled.wait(0.01)
+                    continue
+                offset += written
+            if not current():
                 return False
-            written = writer.write(frame[offset:])
-            written = int(written or 0)
-            if written <= 0:
-                time.sleep(0.01)
-                continue
-            offset += written
-        writer.flush()
-    entry["last_used"] = time.time()
-    return True
+            # RawChannelWriter has no buffered bytes: flush is a no-op. The
+            # outer deadline also bounds unexpected blocking in RNS itself.
+            writer.flush()
+            return current()
+        finally:
+            write_lock.release()
+
+    status, result, error = _qapp_stream_write_dispatcher.submit_and_wait(
+        f"{id(entry)}:{id(writer)}:{generation}",
+        _QAPP_RNS_WRITE_TIMEOUT_SECONDS,
+        write,
+    )
+    cancelled.set()
+    if status == "completed" and result is True and not error:
+        entry["last_used"] = time.time()
+        return True
+    log(
+        "[presence_bridge] target=qapp-rns stream_write_failed "
+        f"destination={entry.get('destination')} reason={status}"
+    )
+    # No bytes were attempted for a rejected queued job. Do not reset a
+    # healthy connection merely because the bounded pool is busy.
+    if status in ("completed", "exception", "send_timeout"):
+        with _state_lock:
+            if entry.get("writer") is writer and entry.get("generation") == generation:
+                if link is not None and entry.get("link") is link:
+                    _qapp_rns_closed(entry["managerKey"], generation, link)
+        if link is not None:
+            _teardown_reticulum_link_bounded(link, "target=qapp-rns stream_write_failed")
+    return False
 
 
 def _qapp_rns_teardown_failed_close(
@@ -27084,7 +27140,7 @@ def _qapp_rns_schedule_close_write(entry: Dict[str, Any], frame: bytes) -> None:
             status, result, error = _qapp_close_write_dispatcher.submit_and_wait(
                 manager_key,
                 _QAPP_RNS_CLOSE_WRITE_TIMEOUT_SECONDS,
-                lambda: _qapp_rns_write(entry, frame),
+                lambda: _qapp_rns_write(entry, frame, expected_link=link),
             )
             if status == "completed" and result is True and not error:
                 return
@@ -27160,17 +27216,12 @@ def _qapp_rns_schedule_keepalive(entry: Dict[str, Any]) -> None:
                 message_id = int(entry["next_message_id"])
                 entry["next_message_id"] = (message_id + 1) & 0xffffffffffffffff
             payload = json.dumps({"type": "PING"}, separators=(",", ":")).encode("utf-8")
-            if not _qapp_rns_write(
+            _qapp_rns_write(
                 entry,
                 _qapp_rns_frame(_QAPP_RNS_CONTROL, message_id, payload),
-            ):
-                link = entry.get("link")
-                if link is not None:
-                    try:
-                        link.teardown()
-                    except Exception:
-                        pass
-                return
+            )
+            # A busy pool can reject a keepalive before any bytes are sent.
+            # Retry at the next interval if the Link is still established.
             _qapp_rns_schedule_keepalive(entry)
 
         timer = threading.Timer(_QAPP_RNS_KEEPALIVE_SECONDS, keepalive)
@@ -27244,6 +27295,7 @@ def _qapp_rns_handle_frame(entry: Dict[str, Any], frame_type: int, message_id: i
 
 def _qapp_rns_reader(entry: Dict[str, Any], generation: int) -> None:
     reader = entry.get("reader")
+    link = entry.get("link")
     buffered = bytearray()
     try:
         while entry.get("generation") == generation and entry.get("established") is True:
@@ -27257,6 +27309,8 @@ def _qapp_rns_reader(entry: Dict[str, Any], generation: int) -> None:
             if len(buffered) > _QAPP_RNS_MAX_FRAME * 2:
                 raise ValueError("receive buffer exceeded")
             while len(buffered) >= _QAPP_RNS_HEADER.size:
+                if entry.get("generation") != generation or entry.get("reader") is not reader:
+                    return
                 version, frame_type, message_id, payload_len = _QAPP_RNS_HEADER.unpack_from(buffered)
                 if (
                     version != _QAPP_RNS_VERSION
@@ -27272,12 +27326,8 @@ def _qapp_rns_reader(entry: Dict[str, Any], generation: int) -> None:
                 _qapp_rns_handle_frame(entry, frame_type, message_id, payload)
     except Exception as exc:
         log(f"[presence_bridge] target=qapp-rns protocol_error destination={entry.get('destination')} error={type(exc).__name__}")
-        link = entry.get("link")
         if link is not None:
-            try:
-                link.teardown()
-            except Exception:
-                pass
+            _teardown_reticulum_link_bounded(link, "target=qapp-rns reader_failed")
 
 
 def _qapp_rns_established(manager_key: str, generation: int, link) -> None:
@@ -27293,16 +27343,22 @@ def _qapp_rns_established(manager_key: str, generation: int, link) -> None:
         entry["establishing"] = False
         entry["reconnect_attempt"] = 0
         channel = link.get_channel()
-        entry["writer"] = RNS.Buffer.create_writer(_QAPP_RNS_STREAM_ID, channel)
+        # BufferedWriter.flush spins indefinitely when RawChannelWriter.write
+        # returns zero for a full RNS channel window. Drive raw partial writes
+        # ourselves so congestion and failures remain bounded.
+        entry["writer"] = RawChannelWriter(_QAPP_RNS_STREAM_ID, channel)
+        entry["write_lock"] = threading.Lock()
         entry["reader"] = RNS.Buffer.create_reader(_QAPP_RNS_STREAM_ID, channel)
         entry["established_event"].set()
         unacked = [value["frame"] for _, value in sorted(entry["unacked"].items())]
     threading.Thread(target=_qapp_rns_reader, args=(entry, generation), daemon=True, name="qapp-rns-reader").start()
     _qapp_rns_schedule_keepalive(entry)
     for frame in unacked:
-        if not _qapp_rns_write(entry, frame):
-            break
-    _qapp_rns_emit_state(entry, "CONNECTED")
+        if not _qapp_rns_write(entry, frame, expected_link=link):
+            return
+    with _state_lock:
+        if entry.get("link") is link and entry.get("generation") == generation and entry.get("established") is True:
+            _qapp_rns_emit_state(entry, "CONNECTED")
 
 
 def _qapp_rns_schedule_reconnect(entry: Dict[str, Any]) -> None:
@@ -27534,7 +27590,13 @@ def handle_qapp_rns_send(req_id: str, payload: Dict[str, Any]) -> None:
         entry["unacked"][message_id] = {"frame": frame, "created": time.time(), "timer": timer}
         entry["queued_bytes"] += len(frame)
         timer.start()
-    _qapp_rns_write(entry, frame)
+    if not _qapp_rns_write(entry, frame):
+        with _state_lock:
+            removed = entry["unacked"].pop(message_id, None)
+            if removed is not None:
+                removed["timer"].cancel()
+                entry["queued_bytes"] = max(0, entry["queued_bytes"] - len(frame))
+        return _qapp_rns_error(req_id, "RNS_SEND_QUEUE_FULL")
     emit_resp(req_id, True, payload={"messageId": str(message_id)})
 
 

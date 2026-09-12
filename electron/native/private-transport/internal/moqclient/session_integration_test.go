@@ -145,7 +145,7 @@ func TestSessionTransportsOpaqueMOQTObjectOnlyThroughMasque(t *testing.T) {
 				return
 			}
 			downstream.Accept(uint64(index + 10))
-			if sendErr := downstream.SendDatagram(*object); sendErr != nil {
+			if sendErr := downstream.SendScheduledDatagram(*object, moqtransport.DeliveryPolicy{Priority: index % 3, MaxQueueAgeMillis: 200}); sendErr != nil {
 				backendErrors <- sendErr
 				return
 			}

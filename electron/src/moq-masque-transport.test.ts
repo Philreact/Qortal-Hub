@@ -71,6 +71,26 @@ const context = {
 };
 
 describe('generic trusted MOQT transport', () => {
+  it.each(['MOQ_QUEUE_LIMIT', 'MOQ_OBJECT_EXPIRED'])(
+    'does not reconnect for expected delivery pressure: %s',
+    async (code) => {
+      const { transport, sidecar } = setup();
+      await transport.open(context);
+      sidecar.publishMoqObject.mockRejectedValueOnce(
+        new PrivateTransportSidecarError(code)
+      );
+      await expect(
+        transport.publish(
+          new Uint8Array([1]),
+          'realtime-data',
+          [new Uint8Array([1])],
+          { priority: 0, maxQueueAgeMillis: 120 }
+        )
+      ).rejects.toMatchObject({ code });
+      expect(sidecar.openMoqSession).toHaveBeenCalledTimes(1);
+      await transport.close();
+    }
+  );
   it.each([
     ['RELAY_ACCESS_DENIED', true],
     ['RELAY_MEMBERSHIP_UNAVAILABLE', true],

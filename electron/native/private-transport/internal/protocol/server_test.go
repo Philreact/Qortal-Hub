@@ -9,6 +9,46 @@ import (
 	"testing"
 )
 
+func TestServeDispatchUsesCompleteSendSchemas(t *testing.T) {
+	tests := []struct{ name, operation, params, want string }{
+		{"legacy reliable", "sendPrivateReliable", `{"sessionId":"missing","messageId":"request-1"}`, "TRANSPORT_CLOSED"},
+		{"keyed reliable", "sendPrivateReliable", `{"sessionId":"missing","messageId":"request-1","streamKey":"file-control","endStream":false}`, "TRANSPORT_CLOSED"},
+		{"final reliable", "sendPrivateReliable", `{"sessionId":"missing","messageId":"request-1","streamKey":"upload-1","endStream":true}`, "TRANSPORT_CLOSED"},
+		{"legacy moq", "publishMoqObject", `{"moqSessionId":"missing"}`, "MOQ_SESSION_CLOSED"},
+		{"batch moq", "publishMoqObject", `{"moqSessionId":"missing","trackName":"opaque","batched":true}`, "MOQ_SESSION_CLOSED"},
+		{"scheduled moq", "publishMoqObject", `{"moqSessionId":"missing","trackName":"opaque","batched":true,"delivery":{"priority":0,"maxQueueAgeMillis":120}}`, "MOQ_SESSION_CLOSED"},
+		{"unknown reliable field", "sendPrivateReliable", `{"sessionId":"missing","messageId":"request-1","typo":true}`, "INVALID_PARAMS"},
+		{"unknown moq field", "publishMoqObject", `{"moqSessionId":"missing","trackName":"opaque","typo":true}`, "INVALID_PARAMS"},
+		{"unknown delivery field", "publishMoqObject", `{"moqSessionId":"missing","delivery":{"priority":0,"maxQueueAgeMillis":120,"typo":true}}`, "INVALID_PARAMS"},
+		{"wrong reliable type", "sendPrivateReliable", `{"sessionId":"missing","messageId":"request-1","endStream":"true"}`, "INVALID_PARAMS"},
+		{"wrong moq type", "publishMoqObject", `{"moqSessionId":"missing","batched":"true"}`, "INVALID_PARAMS"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Use the actual line+binary IPC reader, not Handle(), which bypasses the
+			// dispatcher. Missing sessions prove valid requests reached execution while
+			// keeping this test independent of network availability and credentials.
+			req := Request{Version: Version, RequestID: "test", Operation: tt.operation, Params: json.RawMessage(tt.params), BinaryLength: 3}
+			line, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := append(append(line, '\n'), 0, 1, 42)
+			var output bytes.Buffer
+			if err := NewServer().Serve(context.Background(), bytes.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+			var response Response
+			if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &response); err != nil {
+				t.Fatal(err, string(output.Bytes()))
+			}
+			if response.Error == nil || response.Error.Code != tt.want {
+				t.Fatalf("got %#v; want %s", response, tt.want)
+			}
+		})
+	}
+}
+
 func TestMalformedAndUnsupportedRequestsFailSafely(t *testing.T) {
 	tests := []struct {
 		name string

@@ -104,6 +104,16 @@ Q-App backend traffic is isolated from Hub control traffic and from its own real
 
 Each class is deterministically sharded by Q-App owner and backend destination. Once an RPC link is established, waiting for its response is callback-driven; it does not occupy a scheduler worker. The Electron manager additionally caps pending RPCs and logical connections both per Q-App owner and globally so one Q-App—or many malfunctioning owners—cannot exhaust shared bridge capacity.
 
+Q-App stream sends use raw partial writes, not Python `BufferedWriter`: the
+Reticulum raw writer can return zero while its channel window is full, which
+can make buffered `flush()` spin indefinitely. Sends have a ten-second deadline
+and run in a bounded pool (eight workers, 64 pending jobs), isolated from the
+Q-App scheduler. A failed or stalled write detaches its physical Link and
+schedules the existing reconnect flow. Every new stream gets a new write lock;
+late writes and reader failures remain tied to the old Link. Queue pressure
+alone does not reset a healthy Link. Failed sends return an error and release
+their pending acknowledgement reservation instead of reporting success.
+
 ### Mesh Coordinator — `reticulum-mesh.ts`
 
 Handles hub-to-hub mesh networking, separate from the TLS P2P layer (`p2p-network.ts`).

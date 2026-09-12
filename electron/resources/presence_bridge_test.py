@@ -111,6 +111,69 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
         self.assertTrue(writer.flushed)
         self.assertEqual(self.bridge._QAPP_RNS_STREAM_ID, 7)
 
+    def test_full_channel_window_expires_without_blocking_later_writes(self):
+        entry = {
+            "writer": mock.Mock(write=mock.Mock(return_value=0)),
+            "established": True, "write_lock": threading.Lock(),
+        }
+        with mock.patch.object(self.bridge, "_QAPP_RNS_WRITE_TIMEOUT_SECONDS", 0.05):
+            started = time.monotonic()
+            self.assertFalse(self.bridge._qapp_rns_write(entry, b"auth"))
+            self.assertLess(time.monotonic() - started, 0.5)
+        entry["writer"] = mock.Mock(write=mock.Mock(side_effect=lambda data: len(data)))
+        self.assertTrue(self.bridge._qapp_rns_write(entry, b"next"))
+
+    def test_blocked_stream_is_detached_and_replacement_uses_its_own_lock(self):
+        started = threading.Event()
+        release = threading.Event()
+        completed = threading.Event()
+        def blocked(_data):
+            started.set()
+            release.wait(2)
+            completed.set()
+            return 1
+        old_link = mock.Mock()
+        entry = self.bridge._qapp_rns_entry("blocked-stream-test", "00" * 16)
+        entry.update(writer=mock.Mock(write=blocked), established=True,
+                     link=old_link, generation=1, connections={"logical"})
+        try:
+            with mock.patch.object(self.bridge, "_QAPP_RNS_WRITE_TIMEOUT_SECONDS", 0.05), mock.patch.object(
+                self.bridge, "_qapp_rns_schedule_reconnect"
+            ) as reconnect, mock.patch.object(self.bridge, "emit_event"):
+                before = time.monotonic()
+                self.assertFalse(self.bridge._qapp_rns_write(entry, b"old"))
+                self.assertTrue(started.is_set())
+                self.assertLess(time.monotonic() - before, 0.5)
+                self.assertIsNone(entry["link"])
+                self.assertFalse(entry["established"])
+                reconnect.assert_called_once_with(entry)
+            new_link = mock.Mock()
+            new_writer = mock.Mock(write=mock.Mock(side_effect=lambda data: len(data)))
+            entry.update(writer=new_writer, write_lock=threading.Lock(),
+                         link=new_link, generation=2, established=True)
+            self.assertTrue(self.bridge._qapp_rns_write(entry, b"new"))
+            release.set()
+            self.assertTrue(completed.wait(0.5))
+            new_writer.write.assert_called_once_with(b"new")
+            new_link.teardown.assert_not_called()
+            old_link.teardown.assert_called_once()
+        finally:
+            release.set()
+            self.bridge._qapp_rns_entries.pop("blocked-stream-test", None)
+
+    def test_waiting_for_stream_lock_has_a_deadline(self):
+        lock = threading.Lock()
+        lock.acquire()
+        entry = {"writer": mock.Mock(), "established": True, "write_lock": lock}
+        try:
+            with mock.patch.object(self.bridge, "_QAPP_RNS_WRITE_TIMEOUT_SECONDS", 0.05):
+                before = time.monotonic()
+                self.assertFalse(self.bridge._qapp_rns_write(entry, b"auth"))
+                self.assertLess(time.monotonic() - before, 0.5)
+            entry["writer"].write.assert_not_called()
+        finally:
+            lock.release()
+
     def test_active_realtime_connection_sends_internal_keepalive(self):
         timers = []
         writes = []
@@ -262,6 +325,7 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
             "link": mock.Mock(),
         }
         self.bridge._qapp_rns_entries[entry["managerKey"]] = entry
+        original_link = entry["link"]
         try:
             teardown_called = threading.Event()
             with mock.patch.object(self.bridge, "emit_resp"), mock.patch.object(
@@ -278,7 +342,9 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
 
                 self.assertEqual(entry["connections"], set())
                 self.assertTrue(teardown_called.wait(0.5))
-                teardown.assert_called_once_with(entry, entry["link"], "exception")
+                teardown.assert_called_once_with(entry, original_link, "completed")
+                original_link.teardown.assert_called_once()
+                self.assertFalse(entry["established"])
         finally:
             self.bridge._qapp_rns_entries.pop(entry["managerKey"], None)
 
@@ -286,7 +352,7 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
         write_started = threading.Event()
         release_write = threading.Event()
 
-        def stalled_write(_entry, _frame):
+        def stalled_write(_entry, _frame, **_kwargs):
             write_started.set()
             release_write.wait(1.0)
             return True
@@ -360,6 +426,16 @@ class QAppReticulumV1CompatibilityTest(unittest.TestCase):
             )
 
         teardown.assert_not_called()
+
+    def test_delayed_close_cannot_write_to_replacement_stream(self):
+        old_link = mock.Mock()
+        new_link = mock.Mock()
+        writer = mock.Mock()
+        entry = {"writer": writer, "link": new_link, "established": True,
+                 "generation": 2, "write_lock": threading.Lock()}
+        self.assertFalse(self.bridge._qapp_rns_write(entry, b"old-close", expected_link=old_link))
+        writer.write.assert_not_called()
+        new_link.teardown.assert_not_called()
 
     def test_rpc_response_callback_extracts_request_receipt_response(self):
         emitted = []

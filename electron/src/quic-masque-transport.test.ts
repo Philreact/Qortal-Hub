@@ -6,6 +6,7 @@ import {
   type PrivateSessionConfig,
 } from './private-transport-sidecar';
 import { QuicMasqueTransport } from './quic-masque-transport';
+import { PrivateChannelError } from './private-channel-manager';
 
 class SidecarStub extends EventEmitter {
   attempts: PrivateSessionConfig[] = [];
@@ -32,6 +33,33 @@ class RecoveringSidecarStub extends EventEmitter {
 }
 
 describe('QUIC MASQUE transport', () => {
+  it('preserves duplicate-connection rejection without retrying relays', async () => {
+    const sidecar = new RecoveringSidecarStub();
+    const getBootstrap = vi.fn(async () => {
+      throw new PrivateChannelError('TRANSPORT_ALREADY_ATTACHED');
+    });
+    const relay = vi.fn(async () => ({
+      relayAddress: '8.8.8.8:47322',
+      relayServerName: 'relay.test',
+      relayCertSha256: 'ab'.repeat(32),
+    }));
+    const transport = new QuicMasqueTransport(
+      vi.fn(),
+      sidecar as never,
+      relay,
+      { getBootstrap }
+    );
+    await expect(
+      transport.open({
+        owner: { tabId: 'tab', name: 'app', service: 'APP' },
+        rnsConnectionId: 'rns',
+        purpose: 'file-transfer',
+      })
+    ).rejects.toMatchObject({ code: 'TRANSPORT_ALREADY_ATTACHED' });
+    expect(getBootstrap).toHaveBeenCalledTimes(1);
+    expect(sidecar.attempts).toHaveLength(0);
+    await transport.close();
+  });
   it('falls back to the pinned same-host relay when public NAT hairpinning fails', async () => {
     const sidecar = new SidecarStub();
     const bootstrapProvider: PrivateChannelBootstrapProvider = {
@@ -132,7 +160,9 @@ describe('QUIC MASQUE transport', () => {
     expect(sidecar.sendPrivateReliable).toHaveBeenCalledWith(
       'native-2',
       'after-recovery',
-      expect.any(Buffer)
+      expect.any(Buffer),
+      undefined,
+      undefined
     );
     expect(events).not.toHaveBeenCalled();
   });

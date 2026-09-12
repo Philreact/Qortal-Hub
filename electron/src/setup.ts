@@ -3276,11 +3276,19 @@ ipcMain.handle(
     channelId: unknown,
     lane: unknown,
     messageId: unknown,
-    data: unknown
+    data: unknown,
+    streamOptions?: unknown
   ) => {
     validatePrivateChannelIpcSender(event);
     return privateChannelIpcResult(() =>
-      getPrivateChannelManager().send(owner, channelId, lane, messageId, data)
+      getPrivateChannelManager().send(
+        owner,
+        channelId,
+        lane,
+        messageId,
+        data,
+        streamOptions
+      )
     );
   }
 );

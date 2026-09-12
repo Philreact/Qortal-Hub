@@ -42,6 +42,40 @@ async function open(manager: QAppMoqTransportManager) {
 }
 
 describe('Q-App generic MOQT manager', () => {
+  it('validates opaque delivery policy before admission and forwards it unchanged', async () => {
+    const { manager, transports } = setup();
+    const opened = await manager.open(owner, 'rns-1', ['opaque'], ['live']);
+    const objects = [new Uint8Array([1])];
+    for (const delivery of [
+      null,
+      {},
+      { priority: -1, maxQueueAgeMillis: 100 },
+      { priority: 3, maxQueueAgeMillis: 100 },
+      { priority: 0, maxQueueAgeMillis: Infinity },
+      { priority: 0, maxQueueAgeMillis: 2001 },
+    ]) {
+      await expect(
+        manager.publish(owner, opened.sessionId, {
+          trackName: 'live',
+          objects,
+          delivery,
+        })
+      ).rejects.toMatchObject({ code: 'INVALID_MOQ_CONFIG' });
+    }
+    expect(transports[0].publish).not.toHaveBeenCalled();
+    const delivery = { priority: 0, maxQueueAgeMillis: 120 };
+    await manager.publish(owner, opened.sessionId, {
+      trackName: 'live',
+      objects,
+      delivery,
+    });
+    expect(transports[0].publish).toHaveBeenCalledWith(
+      objects[0],
+      'live',
+      objects,
+      delivery
+    );
+  });
   it('isolates bounded publication batches by track and rejects undeclared tracks', async () => {
     const { manager, transports } = setup();
     const opened = await manager.open(
@@ -58,7 +92,8 @@ describe('Q-App generic MOQT manager', () => {
     expect(transports[0].publish).toHaveBeenCalledWith(
       objects[0],
       'bulk',
-      objects
+      objects,
+      undefined
     );
     await expect(
       manager.publish(owner, opened.sessionId, {
