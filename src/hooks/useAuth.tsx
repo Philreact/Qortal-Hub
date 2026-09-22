@@ -437,10 +437,13 @@ export const useAuth = () => {
           },
           TIME_MINUTES_2_IN_MILLISECONDS
         )
-        .then((response) => {
+        .then(async (response) => {
           if (response && !response.error) {
             saveLastAuthenticatedWalletAddress(rawWallet?.address0);
             setAuthenticatePassword('');
+            await window.electronAPI
+              ?.hideHubAfterQAppAuthentication?.()
+              .catch(() => false);
             setExtstate('authenticated');
             setWalletToBeDecryptedError('');
             window.sendMessage('startNotificationCheck').catch(() => {});

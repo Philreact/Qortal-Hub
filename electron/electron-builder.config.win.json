@@ -6,6 +6,10 @@
   "asar": true,
   "extraResources": [
     {
+      "from": "resources/remove-qapp-launchers.ps1",
+      "to": "remove-qapp-launchers.ps1"
+    },
+    {
       "from": "resources/private-transport",
       "to": "private-transport",
       "filter": ["**/qortal-private-transport.exe"]

@@ -918,6 +918,12 @@
       "title": "Qortal Hubへようこそ"
     }
   },
+  "qonnect_four": {
+    "os_invitation_title": "Qonnect Fourへの招待",
+    "os_invited_you": "{{requester}}があなたを対戦に招待しました。",
+    "os_opponent_moved": "{{opponent}}が手を打ちました。",
+    "os_your_turn_title": "Qonnect Fourであなたの番です"
+  },
   "subscription": {
     "actions_badge_one": "{{count}} 件",
     "actions_badge_other": "{{count}} 件",

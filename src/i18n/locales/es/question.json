@@ -138,6 +138,8 @@
     }
   },
   "name": "nombre: {{ name }}",
+  "notification_show_invalid": "Proporciona un mensaje y, si incluyes un enlace, que dirija a esta Q-App.",
+  "notification_show_permission_required": "Permite las notificaciones de esta Q-App antes de mostrar avisos de escritorio.",
   "option": "opción: {{ option }}",
   "options": "opciones: {{ optionList }}",
   "permission": {
@@ -174,7 +176,7 @@
     "leave_group": "¿Deseas permitir que esta aplicación abandone el siguiente grupo?",
     "list_hosted_data": "¿Deseas permitir que esta aplicación obtenga una lista de tus datos alojados?",
     "lock_tab": "¿Das permiso para que la pestaña de esta aplicación sea bloqueada?",
-    "notification": "¿permitir que esta app te envíe notificaciones del Hub?",
+    "notification": "¿permitir que esta app te envíe notificaciones del Hub y del escritorio?",
     "notification_allow": "permitir",
     "notification_dont_allow": "no permitir",
     "notification_title": "notificaciones de {{ appName }}",

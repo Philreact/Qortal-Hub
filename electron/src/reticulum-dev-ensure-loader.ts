@@ -36,7 +36,7 @@ try:
     import RNS
     dist = md.distribution("rns")
     direct = dist.read_text("direct_url.json") or ""
-    raise SystemExit(0 if "${RETICULUM_REQUIRED_SOURCE}" in direct else 1)
+    raise SystemExit(0 if "${RETICULUM_REQUIRED_SOURCE}".lower() in direct.lower() else 1)
 except Exception:
     raise SystemExit(1)
 `;
@@ -164,12 +164,13 @@ export async function runDevReticulumEnsureIfNeeded(): Promise<boolean> {
     },
   });
 
-  await win.loadURL(
-    'data:text/html;charset=utf-8,' + encodeURIComponent(loaderHtml())
-  );
   win.once('ready-to-show', () => {
     win.show();
   });
+  await win.loadURL(
+    'data:text/html;charset=utf-8,' + encodeURIComponent(loaderHtml())
+  );
+  if (!win.isDestroyed() && !win.isVisible()) win.show();
 
   const electronRoot = path.join(__dirname, '..', '..');
   const script = path.join(electronRoot, 'scripts', 'ensure-reticulum-for-dev.mjs');

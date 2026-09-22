@@ -918,6 +918,12 @@
       "title": "مرحبًا بك في Qortal Hub"
     }
   },
+  "qonnect_four": {
+    "os_invitation_title": "دعوة إلى Qonnect Four",
+    "os_invited_you": "دعاك {{requester}} للعب.",
+    "os_opponent_moved": "قام {{opponent}} بحركته.",
+    "os_your_turn_title": "دورك في Qonnect Four"
+  },
   "subscription": {
     "actions_badge_one": "{{count}} إجراء",
     "actions_badge_other": "{{count}} إجراءات",

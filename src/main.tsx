@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import './utils/configureDomPurify';
 import App from './App.tsx';
+import { QAppHost } from './components/Apps/QAppHost.tsx';
 import '../src/styles/index.css';
 import './messaging/MessagesToBackground.tsx';
 import { MessageQueueProvider } from './messaging/MessageQueueContext.tsx';
@@ -13,7 +14,11 @@ createRoot(document.getElementById('root')!).render(
     <ThemeProvider>
       <CssBaseline />
       <MessageQueueProvider>
-        <App />
+        {new URLSearchParams(window.location.search).has('qappHost') ? (
+          <QAppHost />
+        ) : (
+          <App />
+        )}
       </MessageQueueProvider>
     </ThemeProvider>
   </>

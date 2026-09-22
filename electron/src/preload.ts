@@ -441,6 +441,88 @@ const subscribeToReticulumChatReadiness = (
 try {
   // Expose Electron API
   contextBridge.exposeInMainWorld('electronAPI', {
+    isQAppHost: windowRole === 'qapp-host',
+    setLaunchAccountIdentity: (identity) =>
+      ipcRenderer.invoke('hubLaunch:setAccountIdentity', identity),
+    qappShortcutStatus: (app) => ipcRenderer.invoke('qappShortcut:status', app),
+    installQAppShortcut: (app, baseUrl: string) =>
+      ipcRenderer.invoke('qappShortcut:install', app, baseUrl),
+    removeQAppShortcut: (app) => ipcRenderer.invoke('qappShortcut:remove', app),
+    openQAppWindow: (app, baseUrl: string) =>
+      ipcRenderer.invoke('qappHost:open', app, baseUrl),
+    getQAppHostConfig: () => ipcRenderer.invoke('qappHost:getConfig'),
+    setQAppHostThemeMode: (mode: 'light' | 'dark') =>
+      ipcRenderer.invoke('qappHost:setThemeMode', mode),
+    openTabFromQAppHost: (tab) => ipcRenderer.invoke('qappHost:openTab', tab),
+    onQAppHostOpenTab: (callback) => {
+      const handler = (_event, tab) => callback(tab);
+      ipcRenderer.on('qappHost:openTab', handler);
+      return () => ipcRenderer.removeListener('qappHost:openTab', handler);
+    },
+    onQAppHostNavigate: (callback) => {
+      const handler = (_event, app) => callback(app);
+      ipcRenderer.on('qappHost:navigate', handler);
+      return () => ipcRenderer.removeListener('qappHost:navigate', handler);
+    },
+    onQAppHostThemeMode: (callback: (mode: 'light' | 'dark') => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, mode: unknown) => {
+        if (mode === 'light' || mode === 'dark') callback(mode);
+      };
+      ipcRenderer.on('qappHost:themeMode', handler);
+      return () => ipcRenderer.removeListener('qappHost:themeMode', handler);
+    },
+    onQAppHostClosed: (callback: (tabId: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, tabId: string) =>
+        callback(tabId);
+      ipcRenderer.on('qappHost:closed', handler);
+      return () => ipcRenderer.removeListener('qappHost:closed', handler);
+    },
+    closeAllQAppWindows: () => ipcRenderer.invoke('qappHost:closeAll'),
+    requestFromQAppHost: (action, payload, timeout, isExtension) =>
+      ipcRenderer.invoke(
+        'qappHost:request',
+        action,
+        payload,
+        timeout,
+        isExtension
+      ),
+    onQAppHostRequest: (callback) => {
+      const handler = (_event, request) => callback(request);
+      ipcRenderer.on('qappHost:request', handler);
+      return () => ipcRenderer.removeListener('qappHost:request', handler);
+    },
+    respondToQAppHostRequest: (requestId: string, result: unknown) =>
+      ipcRenderer.send('qappHost:respond', requestId, result),
+    requestQAppHostPermission: (hostRequestId: string, payload: unknown) =>
+      ipcRenderer.invoke('qappHost:permissionPrompt', hostRequestId, payload),
+    takePendingQAppLaunches: () =>
+      ipcRenderer.invoke('qappLaunch:takePending') as Promise<
+        Array<{
+          service: 'APP';
+          name: string;
+          identifier?: string;
+          path?: string;
+        }>
+      >,
+    completePendingQAppLaunch: (app) =>
+      ipcRenderer.invoke('qappLaunch:complete', app) as Promise<boolean>,
+    hideHubAfterQAppAuthentication: () =>
+      ipcRenderer.invoke(
+        'qappLaunch:hideHubAfterAuthentication'
+      ) as Promise<boolean>,
+    showHubAfterQAppLaunchFailure: () =>
+      ipcRenderer.invoke('qappLaunch:openFailed') as Promise<boolean>,
+    onQAppHubShellLock: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('qappLaunch:lockHubShell', handler);
+      return () =>
+        ipcRenderer.removeListener('qappLaunch:lockHubShell', handler);
+    },
+    onQAppLaunchPending: (callback: () => void) => {
+      const handler = () => callback();
+      ipcRenderer.on('qappLaunch:pending', handler);
+      return () => ipcRenderer.removeListener('qappLaunch:pending', handler);
+    },
     openExternal: (url: string) => {
       if (typeof url !== 'string') {
         return;
@@ -468,6 +550,14 @@ try {
     windowMaximize: () => ipcRenderer.invoke('window:maximize'),
     windowClose: () => ipcRenderer.invoke('window:close'),
     focusWindow: () => ipcRenderer.invoke('window:focus'),
+    showOsNotification: (request: unknown) =>
+      ipcRenderer.invoke('osNotification:show', request) as Promise<boolean>,
+    onOsNotificationOpened: (callback: (clickId: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, clickId: string) =>
+        callback(clickId);
+      ipcRenderer.on('osNotification:opened', handler);
+      return () => ipcRenderer.removeListener('osNotification:opened', handler);
+    },
     getWindowState: () =>
       ipcRenderer
         .invoke('window:isMaximized')
@@ -489,7 +579,9 @@ try {
       return () => ipcRenderer.removeListener('system:lock-requested', handler);
     },
     getPlatform: () => ipcRenderer.invoke('window:getPlatform'),
-    onDisplayMediaRequest: (callback: (request: { requestId: string; origin: string }) => void) => {
+    onDisplayMediaRequest: (
+      callback: (request: { requestId: string; origin: string }) => void
+    ) => {
       const handler = (_event, request) => callback(request);
       ipcRenderer.on('display-media:request', handler);
       return () => ipcRenderer.removeListener('display-media:request', handler);
@@ -499,8 +591,10 @@ try {
       ipcRenderer.on('display-media:cancel', handler);
       return () => ipcRenderer.removeListener('display-media:cancel', handler);
     },
-    selectDisplayMedia: (requestId: string, sourceId?: string) => ipcRenderer.send('display-media:select', { requestId, sourceId }),
-    authorizeDisplayMedia: (requestId: string, accepted: boolean) => ipcRenderer.send('display-media:authorize', { requestId, accepted }),
+    selectDisplayMedia: (requestId: string, sourceId?: string) =>
+      ipcRenderer.send('display-media:select', { requestId, sourceId }),
+    authorizeDisplayMedia: (requestId: string, accepted: boolean) =>
+      ipcRenderer.send('display-media:authorize', { requestId, accepted }),
     listScreenShareSources: () =>
       ipcRenderer.invoke('screenShare:listSources') as Promise<{
         success: boolean;
@@ -732,15 +826,15 @@ try {
       ipcRenderer.invoke('qappReticulum:cleanupOwner', owner),
     qappGuestPrepare: (owner, url: string, isDevMode: boolean) =>
       ipcRenderer.invoke('qappGuest:prepare', owner, url, isDevMode),
-    qappGuestRelease: (owner) =>
-      ipcRenderer.invoke('qappGuest:release', owner),
+    qappGuestRelease: (owner) => ipcRenderer.invoke('qappGuest:release', owner),
     onQAppReticulumEvent: (callback: (payload: unknown) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: unknown) =>
         callback(payload);
       ipcRenderer.on('qappReticulum:event', listener);
       return () => ipcRenderer.removeListener('qappReticulum:event', listener);
     },
-    qappFileSave: (owner, request) => ipcRenderer.invoke('qappFileSave:request', owner, request),
+    qappFileSave: (owner, request) =>
+      ipcRenderer.invoke('qappFileSave:request', owner, request),
     privateChannelOpen: (owner, rnsConnectionId, purpose) =>
       invokePrivateChannel(
         'privateChannel:open',

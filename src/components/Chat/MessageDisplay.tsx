@@ -39,7 +39,14 @@ export const extractComponents = (url: string) => {
     const parts = basePart.split('/');
     const service = parts[0].toUpperCase();
     parts.shift();
-    const name = parts[0];
+    let name = parts[0];
+    try {
+      name = decodeURIComponent(name);
+    } catch {
+      // Keep literal percent signs in names that are not URI encoded.
+    }
+    if (name.includes('/') || [...name].some((char) => char.charCodeAt(0) < 32))
+      return null;
     parts.shift();
 
     const params = new URLSearchParams(queryString);

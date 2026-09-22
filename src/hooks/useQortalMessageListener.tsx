@@ -36,6 +36,7 @@ import {
   isQAppFileSaveAction,
 } from '../qortal/qapp-file-save-request';
 import { serializeQortalRequestError } from '../qortal/qortal-request-errors';
+import { isQAppHostBackendAction } from '../qortal/qapp-host-request';
 
 export const saveFileInChunks = async (
   blob: Blob,
@@ -287,6 +288,7 @@ export const listOfAllQortalRequests = [
   'NOTIFICATION_MARK_SEEN',
   'NOTIFICATION_PERMISSION',
   'NOTIFICATION_REMOVE',
+  'NOTIFICATION_SHOW',
   'OPEN_NEW_TAB',
   'OPEN_USER_LOOKUP',
   'PLAY_ENCRYPTED_MEDIA',
@@ -392,6 +394,7 @@ export const UIQortalRequests = [
   'NOTIFICATION_MARK_SEEN',
   'NOTIFICATION_PERMISSION',
   'NOTIFICATION_REMOVE',
+  'NOTIFICATION_SHOW',
   'OPEN_NEW_TAB',
   'OPEN_USER_LOOKUP',
   'PLAY_ENCRYPTED_MEDIA',
@@ -803,7 +806,17 @@ export const useQortalMessageListener = (
           isFromExtension: message.isExtension,
           tabId,
         };
-        const requestPromise = isQAppFileSaveAction(message?.action)
+        const hostBackendRequest =
+          window.electronAPI?.isQAppHost &&
+          isQAppHostBackendAction(message?.action);
+        const requestPromise = hostBackendRequest
+          ? window.sendMessage(
+              message.action,
+              message.payload,
+              timeout,
+              message.isExtension
+            )
+          : isQAppFileSaveAction(message?.action)
           ? dispatchQAppFileSaveRequest(message.payload, requestContext)
           : isQAppReticulumAction(message?.action)
             ? dispatchQAppReticulumRequest(message.payload, requestContext)
@@ -824,6 +837,7 @@ export const useQortalMessageListener = (
                       {
                         name: appName,
                         service: appService,
+                        identifier: appIdentifier,
                         tabId,
                       }
                     );
@@ -987,9 +1001,28 @@ export const useQortalMessageListener = (
           event.ports[0].postMessage({ result: true, error: null });
         }
       } else if (event?.data?.action === 'SET_TAB' && !isDevMode) {
-        executeEvent('addTab', {
-          data: event?.data?.payload,
-        });
+        if (window.electronAPI?.isQAppHost) {
+          try {
+            await window.electronAPI.openTabFromQAppHost?.(
+              event?.data?.payload
+            );
+          } catch (error) {
+            event.ports?.[0]?.postMessage({
+              result: null,
+              error: {
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : 'QAPP_INVALID_REQUEST',
+              },
+            });
+            return;
+          }
+        } else {
+          executeEvent('addTab', {
+            data: event?.data?.payload,
+          });
+        }
         const reply = {
           action: 'SET_TAB_SUCCESS',
           requestedHandler: 'UI',
@@ -1005,7 +1038,8 @@ export const useQortalMessageListener = (
 
     const nativeView = nativeGuestActive ? nativeViewRef?.current : null;
     const nativeListener = (event) => {
-      if (event.target !== nativeView || event.channel !== 'qapp:request') return;
+      if (event.target !== nativeView || event.channel !== 'qapp:request')
+        return;
       const request = event.args?.[0];
       if (
         typeof request?.documentId !== 'string' ||
@@ -1014,7 +1048,8 @@ export const useQortalMessageListener = (
         request.requestId < 1 ||
         !request.data ||
         typeof request.data !== 'object'
-      ) return;
+      )
+        return;
       const port = {
         postMessage: (result) => {
           if (nativeView.isConnected)
@@ -1112,7 +1147,7 @@ export const useQortalMessageListener = (
       unsubscribePrivateChannel?.();
       unsubscribeMoq?.();
     };
-  }, [appName, appService, tabId, nativeGuestActive]);
+  }, [appName, appService, appIdentifier, tabId, nativeGuestActive]);
 
   return { path, history, resetHistory, changeCurrentIndex };
 };

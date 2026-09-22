@@ -138,6 +138,8 @@
     }
   },
   "name": "nimi: {{ name }}",
+  "notification_show_invalid": "Lisa sõnum ja soovi korral link sellele Q-rakendusele.",
+  "notification_show_permission_required": "Enne töölauateavituste kuvamist luba selle Q-rakenduse teavitused.",
   "option": "valik: {{ option }}",
   "options": "valikud: {{ optionList }}",
   "permission": {
@@ -174,7 +176,7 @@
     "leave_group": "kas sa annad sellele rakendusele loa lahkuda järgmisest rühmast?",
     "list_hosted_data": "kas sa annad sellele rakendusele loa kätte saada nimekirja sinu majutatud andmetest?",
     "lock_tab": "Kas annad loa selle rakenduse vahelehe lukustamiseks?",
-    "notification": "kas lubad sellel rakendusel saata sulle Hubi teavitusi?",
+    "notification": "kas lubad sellel rakendusel saata sulle Hubi ja töölaua teavitusi?",
     "notification_allow": "luba",
     "notification_dont_allow": "ära luba",
     "notification_title": "{{ appName }} teavitused",

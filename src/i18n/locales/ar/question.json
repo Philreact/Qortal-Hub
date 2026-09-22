@@ -138,6 +138,8 @@
     }
   },
   "name": "الاسم: {{ name }}",
+  "notification_show_invalid": "قدّم رسالة، وإذا أضفت رابطًا فيجب أن يشير إلى هذا التطبيق من Qortal.",
+  "notification_show_permission_required": "اسمح بإشعارات هذا التطبيق من Qortal قبل عرض تنبيهات سطح المكتب.",
   "option": "الخيار: {{ option }}",
   "options": "الخيارات: {{ optionList }}",
   "permission": {
@@ -174,7 +176,7 @@
     "leave_group": "هل تسمح للتطبيق بمغادرة الجروب الآتي؟",
     "list_hosted_data": "هل تسمح للتطبيق بجلب قائمة ملفاتك المضيفة؟",
     "lock_tab": "هل تمنح الإذن بقفل علامة تبويب هذا التطبيق؟",
-    "notification": "السماح لهذا التطبيق بإرسال إشعارات الـ Hub إليك؟",
+    "notification": "السماح لهذا التطبيق بإرسال إشعارات Hub وإشعارات سطح المكتب إليك؟",
     "notification_allow": "السماح",
     "notification_dont_allow": "عدم السماح",
     "notification_title": "إشعارات {{ appName }}",

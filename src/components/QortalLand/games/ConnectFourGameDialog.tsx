@@ -19,6 +19,8 @@ import {
   useMediaQuery,
 } from '@mui/material';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { showOsNotification } from '../../../utils/osNotification';
 import {
   CONNECT_FOUR_COLUMNS,
   CONNECT_FOUR_ROWS,
@@ -156,6 +158,7 @@ export function ConnectFourGameDialog({
   onTyping,
   resolvePlayerName,
 }: Props) {
+  const { t } = useTranslation('group');
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const [focusedColumn, setFocusedColumn] = useState<number | null>(null);
   const [shakeNonce, setShakeNonce] = useState(0);
@@ -257,17 +260,14 @@ export function ConnectFourGameDialog({
       playSound('turn');
       if (document.hidden) {
         if (originalTitleRef.current === null) originalTitleRef.current = document.title;
-        document.title = '● Your turn — Qonnect Four';
-        try {
-          if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification('Your turn in Qonnect Four', {
-              body: `${opponentName} has moved.`,
-              silent: true,
-            });
-          }
-        } catch {
-          // Window-title feedback remains available when notifications are blocked.
-        }
+        document.title = `● ${t('group:qonnect_four.os_your_turn_title')}`;
+        void showOsNotification({
+          title: t('group:qonnect_four.os_your_turn_title'),
+          body: t('group:qonnect_four.os_opponent_moved', {
+            opponent: opponentName,
+          }),
+          silent: true,
+        }).catch(() => undefined);
       }
     }
     previousTurnRef.current = localTurn;
@@ -275,7 +275,7 @@ export function ConnectFourGameDialog({
       document.title = originalTitleRef.current;
       originalTitleRef.current = null;
     }
-  }, [localTurn, opponentName, playSound, state?.ply]);
+  }, [localTurn, opponentName, playSound, state?.ply, t]);
 
   useEffect(() => {
     const incomingId = match?.phase === 'incoming' ? match.matchId : '';
@@ -283,17 +283,14 @@ export function ConnectFourGameDialog({
       playSound('turn');
       if (document.hidden) {
         if (originalTitleRef.current === null) originalTitleRef.current = document.title;
-        document.title = '● Qonnect Four invitation';
-        try {
-          if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification('Qonnect Four invitation', {
-              body: `${requesterLabel} invited you to play.`,
-              silent: true,
-            });
-          }
-        } catch {
-          // The modal and window title remain available when notifications are blocked.
-        }
+        document.title = `● ${t('group:qonnect_four.os_invitation_title')}`;
+        void showOsNotification({
+          title: t('group:qonnect_four.os_invitation_title'),
+          body: t('group:qonnect_four.os_invited_you', {
+            requester: requesterLabel,
+          }),
+          silent: true,
+        }).catch(() => undefined);
       }
     }
     previousInviteRef.current = incomingId;
@@ -301,7 +298,7 @@ export function ConnectFourGameDialog({
       document.title = originalTitleRef.current;
       originalTitleRef.current = null;
     }
-  }, [localTurn, match?.matchId, match?.phase, playSound, requesterLabel]);
+  }, [localTurn, match?.matchId, match?.phase, playSound, requesterLabel, t]);
 
   useEffect(() => () => {
     if (originalTitleRef.current !== null) document.title = originalTitleRef.current;

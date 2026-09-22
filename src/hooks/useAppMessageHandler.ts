@@ -78,11 +78,39 @@ export function useAppMessageHandler(
           }
         }
       } else if (message.action === 'NOTIFICATION_PERMISSION_REQUEST') {
-        executeEvent('show-notification-permission', {
-          requestId: message.requestId,
-          appInfo: message.appInfo,
-          payload: message.payload,
-        });
+        if (typeof message.appInfo?.hostRequestId === 'string') {
+          void window.electronAPI
+            ?.requestQAppHostPermission?.(
+              message.appInfo.hostRequestId,
+              message.payload
+            )
+            .then((result) => {
+              window.postMessage(
+                {
+                  action: 'NOTIFICATION_PERMISSION_RESPONSE',
+                  requestId: message.requestId,
+                  result: result ?? { accepted: false },
+                },
+                window.location.origin
+              );
+            })
+            .catch(() => {
+              window.postMessage(
+                {
+                  action: 'NOTIFICATION_PERMISSION_RESPONSE',
+                  requestId: message.requestId,
+                  result: { accepted: false },
+                },
+                window.location.origin
+              );
+            });
+        } else {
+          executeEvent('show-notification-permission', {
+            requestId: message.requestId,
+            appInfo: message.appInfo,
+            payload: message.payload,
+          });
+        }
       } else if (
         message.action === 'QORTAL_REQUEST_PERMISSION' &&
         message?.isFromExtension &&

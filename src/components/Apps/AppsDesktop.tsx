@@ -35,6 +35,8 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import { clearSessionPermissionsByTabId } from '../../qortal/qortal-requests';
+import { clearRnsDestinationPermissionsByTabId } from '../../qortal/get';
+import { dispatchQAppHostRequest } from '../../qortal/qapp-host-request';
 import {
   APPS_HORIZONTAL_TAB_HEIGHT_PX,
   AppsHorizontalTabAddButton,
@@ -73,6 +75,7 @@ import {
 import { publishEditTargetAtom } from '../../atoms/appsAtoms';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
+import { appLockedAtom } from '../../atoms/presence';
 import {
   TIME_MINUTES_2_IN_MILLISECONDS,
   TIME_MINUTES_20_IN_MILLISECONDS,
@@ -213,6 +216,7 @@ export const AppsDesktop = ({
   const theme = useTheme();
   const navigationController = useAtomValue(navigationControllerAtom);
   const userInfo = useAtomValue(userInfoAtom);
+  const appLocked = useAtomValue(appLockedAtom);
   const publishEditTarget = useAtomValue(publishEditTargetAtom);
   const setPublishEditTarget = useSetAtom(publishEditTargetAtom);
   const myName = userInfo?.name;
@@ -788,7 +792,7 @@ export const AppsDesktop = ({
     }
     if (tabs.length >= MAX_OPEN_APP_TABS) {
       setInfoSnack({
-        message: 'Maximum number of tabs reached. Close one to open another.',
+        message: t('core:message.error.app_tab_limit_reached'),
         type: 'warning',
       });
       setOpenSnack(true);
@@ -869,11 +873,139 @@ export const AppsDesktop = ({
     };
   }, [tabs]);
 
+  useEffect(() => {
+    const launchApi = window.electronAPI;
+    if (appLocked || !launchApi?.takePendingQAppLaunches) return;
+    let active = true;
+    let consuming = false;
+    let rerun = false;
+    let retries = 0;
+    let retryTimer: number | null = null;
+    const consume = async () => {
+      if (consuming) {
+        rerun = true;
+        return;
+      }
+      consuming = true;
+      try {
+        const launches = await launchApi.takePendingQAppLaunches?.();
+        if (!active) return;
+        let failed = false;
+        for (const app of launches ?? []) {
+          try {
+            if (
+              !launchApi.openQAppWindow ||
+              !launchApi.completePendingQAppLaunch
+            )
+              throw new Error('QAPP_WINDOW_UNAVAILABLE');
+            await launchApi.openQAppWindow(app, getBaseApiReact());
+            if (!(await launchApi.completePendingQAppLaunch(app)))
+              throw new Error('QAPP_LAUNCH_NOT_ACKNOWLEDGED');
+          } catch {
+            failed = true;
+          }
+        }
+        if (failed && retries < 2 && active) {
+          retries += 1;
+          retryTimer = window.setTimeout(() => {
+            retryTimer = null;
+            void consume();
+          }, 1_500);
+        } else if (failed) {
+          await launchApi.showHubAfterQAppLaunchFailure?.().catch(() => false);
+          setInfoSnack({
+            message: t('core:message.error.generic'),
+            type: 'error',
+          });
+          setOpenSnack(true);
+        } else {
+          retries = 0;
+        }
+      } catch {
+        // An older Electron main process may not have this handler yet.
+      } finally {
+        consuming = false;
+        if (rerun && active) {
+          rerun = false;
+          void consume();
+        }
+      }
+    };
+    const unsubscribe = launchApi.onQAppLaunchPending?.(() => {
+      void consume();
+    });
+    void consume();
+    return () => {
+      active = false;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      unsubscribe?.();
+    };
+  }, [appLocked]);
+
+  useEffect(
+    () =>
+      window.electronAPI?.onQAppHostOpenTab?.((tab) => {
+        executeEvent('addTab', { data: tab });
+      }),
+    []
+  );
+
+  useEffect(
+    () =>
+      window.electronAPI?.onQAppHostClosed?.((tabId) => {
+        clearSessionPermissionsByTabId(tabId);
+        clearRnsDestinationPermissionsByTabId(tabId);
+      }),
+    []
+  );
+
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api?.onQAppHostRequest) return;
+    return api.onQAppHostRequest(async (request) => {
+      if (appLocked || !userInfo?.address) {
+        api.respondToQAppHostRequest?.(request.requestId, {
+          error: 'QAPP_HOST_UNAVAILABLE',
+        });
+        return;
+      }
+      try {
+        const result = await dispatchQAppHostRequest(request);
+        api.respondToQAppHostRequest?.(request.requestId, result);
+      } catch (error) {
+        api.respondToQAppHostRequest?.(request.requestId, {
+          error: error instanceof Error ? error.message : 'QAPP_REQUEST_FAILED',
+          ...(error && typeof error === 'object' && 'code' in error
+            ? { code: error.code }
+            : {}),
+        });
+      }
+    });
+  }, [appLocked, userInfo?.address]);
+
+  useEffect(() => {
+    if (appLocked || !userInfo?.address) {
+      void window.electronAPI?.closeAllQAppWindows?.().catch(() => {
+        // An updated renderer can briefly run against an older Electron main
+        // process, which has no handler for this cleanup request.
+      });
+    }
+  }, [appLocked, userInfo?.address]);
+
+  useEffect(
+    () => () => {
+      void window.electronAPI?.closeAllQAppWindows?.().catch(() => {
+        // Best-effort cleanup when the main process predates this IPC handler.
+      });
+    },
+    []
+  );
+
   const addDevTabFunc = (e) => {
     const data = e.detail?.data;
     if (tabs.length >= MAX_OPEN_APP_TABS) {
       setInfoSnack({
-        message: 'Maximum number of tabs reached. Close one to open another.',
+        message: t('core:message.error.app_tab_limit_reached'),
         type: 'warning',
       });
       setOpenSnack(true);

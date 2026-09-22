@@ -918,6 +918,12 @@
       "title": "Tervetuloa Qortal Hubiin"
     }
   },
+  "qonnect_four": {
+    "os_invitation_title": "Kutsu Qonnect Fouriin",
+    "os_invited_you": "{{requester}} kutsui sinut pelaamaan.",
+    "os_opponent_moved": "{{opponent}} teki siirtonsa.",
+    "os_your_turn_title": "Sinun vuorosi Qonnect Fourissa"
+  },
   "subscription": {
     "actions_badge_one": "{{count}} toimenpide",
     "actions_badge_other": "{{count}} toimenpidettä",

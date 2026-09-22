@@ -138,6 +138,8 @@
     }
   },
   "name": "nimi: {{ name }}",
+  "notification_show_invalid": "Anna viesti ja halutessasi linkki tähän Q-sovellukseen.",
+  "notification_show_permission_required": "Salli tämän Q-sovelluksen ilmoitukset ennen työpöytähälytysten näyttämistä.",
   "option": "vaihtoehto: {{ option }}",
   "options": "vaihtoehdot: {{ optionList }}",
   "permission": {
@@ -174,7 +176,7 @@
     "leave_group": "annatko tälle sovellukselle luvan poistua seuraavasta ryhmästä?",
     "list_hosted_data": "annatko tälle sovellukselle luvan saada luettelon isännöimistäsi tiedoista?",
     "lock_tab": "Sallitko tämän sovelluksen välilehden lukitsemisen?",
-    "notification": "sallitko tämän sovelluksen lähettää sinulle Hub-ilmoituksia?",
+    "notification": "sallitko tämän sovelluksen lähettää sinulle Hub- ja työpöytäilmoituksia?",
     "notification_allow": "salli",
     "notification_dont_allow": "älä salli",
     "notification_title": "{{ appName }}-ilmoitukset",

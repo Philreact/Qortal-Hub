@@ -138,6 +138,8 @@
     }
   },
   "name": "nome: {{ name }}",
+  "notification_show_invalid": "Forneça uma mensagem e, se incluir um link, use um link para este Q-App.",
+  "notification_show_permission_required": "Permita as notificações deste Q-App antes de mostrar alertas na área de trabalho.",
   "option": "opção: {{ option }}",
   "options": "opções: {{ optionList }}",
   "permission": {
@@ -174,7 +176,7 @@
     "leave_group": "você dá permissão para que este aplicativo saia do seguinte grupo?",
     "list_hosted_data": "você dá permissão para que este aplicativo obtenha uma lista dos seus dados hospedados?",
     "lock_tab": "Você concede permissão para que a aba deste aplicativo seja bloqueada?",
-    "notification": "permitir que este aplicativo envie notificações do Hub?",
+    "notification": "permitir que este aplicativo envie notificações do Hub e da área de trabalho?",
     "notification_allow": "permitir",
     "notification_dont_allow": "não permitir",
     "notification_title": "notificações de {{ appName }}",

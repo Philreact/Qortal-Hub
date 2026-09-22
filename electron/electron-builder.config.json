@@ -7,6 +7,14 @@
 
   "extraResources": [
     {
+      "from": "resources/remove-qapp-launchers.ps1",
+      "to": "remove-qapp-launchers.ps1"
+    },
+    {
+      "from": "resources/remove-qapp-launchers-mac.sh",
+      "to": "remove-qapp-launchers-mac.sh"
+    },
+    {
       "from": "resources/private-transport",
       "to": "private-transport",
       "filter": ["**/qortal-private-transport", "**/qortal-private-transport.exe"]
@@ -76,6 +84,7 @@
     "build/src/reticulum-media.worker.js"
   ],
   "nsis": {
+    "include": "resources/qapp-uninstall.nsh",
     "allowElevation": true,
     "oneClick": false,
     "allowToChangeInstallationDirectory": true
@@ -109,7 +118,8 @@
   },
   "deb": {
     "artifactName": "Qortal-Hub-Setup.${ext}",
-    "synopsis": "Qortal Hub for Linux"
+    "synopsis": "Qortal Hub for Linux",
+    "afterRemove": "scripts/after-remove-debian.sh"
   },
   "appImage": {
     "artifactName": "Qortal-Hub.${ext}"

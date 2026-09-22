@@ -138,6 +138,8 @@
     }
   },
   "name": "名称：{{ name }}",
+  "notification_show_invalid": "请提供消息；如包含链接，链接必须指向此 Q-App。",
+  "notification_show_permission_required": "显示桌面提醒前，请先允许此 Q-App 发送通知。",
   "option": "选项：{{ option }}",
   "options": "选项列表：{{ optionList }}",
   "permission": {
@@ -174,7 +176,7 @@
     "leave_group": "是否允许该应用退出以下群组？",
     "list_hosted_data": "是否允许该应用获取您托管的数据列表？",
     "lock_tab": "是否允许锁定此应用的标签页？",
-    "notification": "是否允许此应用向你发送 Hub 通知？",
+    "notification": "是否允许此应用发送 Hub 和桌面通知？",
     "notification_allow": "允许",
     "notification_dont_allow": "不允许",
     "notification_title": "{{ appName }} 通知",

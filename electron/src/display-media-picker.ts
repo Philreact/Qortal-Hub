@@ -13,20 +13,24 @@ const pendingCaptureByWindow = new WeakMap<BrowserWindow, () => void>();
 
 /** Permission-controlled OS bridge. Source selection UI lives in the requesting app. */
 export function installDisplayMediaPicker(
-  window: BrowserWindow,
+  defaultWindow: BrowserWindow,
   platform: NodeJS.Platform = process.platform,
-  targetSession: Session = window.webContents.session,
+  targetSession: Session = defaultWindow.webContents.session,
   isAuthorizedGuest: (contents: Electron.WebContents) => boolean = () => false,
   resolveContents: (
     frame: Electron.WebFrameMain
   ) => Electron.WebContents | undefined = (frame) =>
-    webContents.fromFrame(frame)
+    webContents.fromFrame(frame),
+  resolveWindow: (
+    contents: Electron.WebContents | undefined
+  ) => BrowserWindow = () => defaultWindow
 ): void {
   targetSession.setDisplayMediaRequestHandler((request, callback) => {
     const frame = request.frame;
+    const resolvedContents = frame ? resolveContents(frame) : undefined;
+    const window = resolveWindow(resolvedContents);
     const isShellFrame = frame?.top === window.webContents.mainFrame;
-    const contents =
-      frame && !isShellFrame ? resolveContents(frame) : undefined;
+    const contents = frame && !isShellFrame ? resolvedContents : undefined;
     const isGuestFrame =
       contents?.getType() === 'webview' &&
       frame?.top === contents.mainFrame &&
@@ -71,6 +75,7 @@ export function installDisplayMediaPicker(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      window.removeListener('closed', onWindowClosed);
       ipcMain.removeListener('display-media:select', selected);
       ipcMain.removeListener('display-media:authorize', authorize);
       pendingCaptureByWindow.delete(window);
@@ -121,6 +126,8 @@ export function installDisplayMediaPicker(
       void enumerate().catch(() => finish());
     };
     const timer = setTimeout(() => finish(), 60_000);
+    const onWindowClosed = () => finish();
+    window.once('closed', onWindowClosed);
     pendingCaptureByWindow.set(window, () => finish());
     ipcMain.on('display-media:select', selected);
     ipcMain.on('display-media:authorize', authorize);
@@ -176,5 +183,7 @@ export function installDisplayMediaPicker(
       origin: request.securityOrigin,
     });
   });
-  window.once('closed', () => pendingCaptureByWindow.get(window)?.());
+  defaultWindow.once('closed', () =>
+    pendingCaptureByWindow.get(defaultWindow)?.()
+  );
 }

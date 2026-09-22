@@ -918,6 +918,12 @@
       "title": "欢迎使用Qortal Hub"
     }
   },
+  "qonnect_four": {
+    "os_invitation_title": "Qonnect Four邀请",
+    "os_invited_you": "{{requester}}邀请你一起玩。",
+    "os_opponent_moved": "{{opponent}}已落子。",
+    "os_your_turn_title": "轮到你在Qonnect Four中落子了"
+  },
   "subscription": {
     "actions_badge_one": "{{count}} 项操作",
     "actions_badge_other": "{{count}} 项操作",

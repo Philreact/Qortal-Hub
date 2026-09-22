@@ -138,6 +138,8 @@
     }
   },
   "name": "名前：{{ name }}",
+  "notification_show_invalid": "メッセージを入力し、リンクを含める場合はこのQ-Appへのリンクを指定してください。",
+  "notification_show_permission_required": "デスクトップ通知を表示する前に、このQ-Appの通知を許可してください。",
   "option": "オプション：{{ option }}",
   "options": "オプション一覧：{{ optionList }}",
   "permission": {
@@ -174,7 +176,7 @@
     "leave_group": "このアプリに次のグループを退出することを許可しますか？",
     "list_hosted_data": "このアプリにホストされたデータの一覧を取得することを許可しますか？",
     "lock_tab": "このアプリのタブをロックすることを許可しますか？",
-    "notification": "このアプリにHubの通知を送ることを許可しますか？",
+    "notification": "このアプリがHubとデスクトップの通知を送信することを許可しますか？",
     "notification_allow": "許可",
     "notification_dont_allow": "許可しない",
     "notification_title": "{{ appName }}の通知",
