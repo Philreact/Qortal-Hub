@@ -133,6 +133,125 @@ declare global {
       onProgress?: (cb: (p: unknown) => void) => () => void;
     };
     electronAPI?: {
+      setLaunchAccountIdentity?: (identity: {
+        name?: string;
+        address?: string;
+        avatarUrl?: string;
+      }) => Promise<void>;
+      qappShortcutStatus?: (app: {
+        service: 'APP';
+        name: string;
+        identifier?: string;
+      }) => Promise<{ supported: boolean; installed: boolean }>;
+      installQAppShortcut?: (
+        app: {
+          service: 'APP';
+          name: string;
+          identifier?: string;
+        },
+        baseUrl: string
+      ) => Promise<void>;
+      removeQAppShortcut?: (app: {
+        service: 'APP';
+        name: string;
+        identifier?: string;
+      }) => Promise<void>;
+      isQAppHost?: boolean;
+      openTabFromQAppHost?: (tab: any) => Promise<void>;
+      onQAppHostOpenTab?: (callback: (tab: any) => void) => () => void;
+      onQAppHostClosed?: (callback: (tabId: string) => void) => () => void;
+      openQAppWindow?: (
+        app: {
+          service: 'APP';
+          name: string;
+          identifier?: string;
+          path?: string;
+        },
+        baseUrl: string
+      ) => Promise<void>;
+      getQAppHostConfig?: () => Promise<{
+        app: {
+          service: 'APP';
+          name: string;
+          tabId: string;
+          identifier?: string;
+          path?: string;
+        };
+        baseUrl: string;
+        themeMode: 'light' | 'dark';
+      }>;
+      setQAppHostThemeMode?: (mode: 'light' | 'dark') => Promise<void>;
+      showHubFromQAppHost?: () => Promise<void>;
+      uninstallQAppHost?: () => Promise<void>;
+      onQAppHostNavigate?: (
+        callback: (app: {
+          service: 'APP';
+          name: string;
+          tabId: string;
+          identifier?: string;
+          path?: string;
+        }) => void
+      ) => () => void;
+      onQAppHostThemeMode?: (
+        callback: (mode: 'light' | 'dark') => void
+      ) => () => void;
+      closeAllQAppWindows?: () => Promise<void>;
+      requestFromQAppHost?: (
+        action: string,
+        payload?: unknown,
+        timeout?: number,
+        isExtension?: boolean
+      ) => Promise<any>;
+      onQAppHostRequest?: (
+        callback: (request: {
+          requestId: string;
+          action: string;
+          payload: unknown;
+          timeout: number;
+          isExtension: boolean;
+          appInfo: any;
+        }) => void
+      ) => () => void;
+      respondToQAppHostRequest?: (requestId: string, result: unknown) => void;
+      requestQAppHostPermission?: (
+        hostRequestId: string,
+        payload: unknown
+      ) => Promise<{ accepted: boolean; checkbox1?: boolean }>;
+      requestQAppHostPermissionLocal?: (
+        payload: unknown
+      ) => Promise<{ accepted: boolean; checkbox1?: boolean }>;
+      onQAppHostPermissionPrompt?: (
+        callback: (prompt: {
+          promptId: string;
+          appName: string;
+          payload: Record<string, unknown>;
+        }) => void
+      ) => () => void;
+      onQAppHostPermissionDismiss?: (
+        callback: (promptId: string) => void
+      ) => () => void;
+      respondToQAppHostPermission?: (
+        promptId: string,
+        answer: { accepted: boolean; checkbox1?: boolean }
+      ) => void;
+      takePendingQAppLaunches?: () => Promise<
+        Array<{
+          service: 'APP';
+          name: string;
+          identifier?: string;
+          path?: string;
+        }>
+      >;
+      completePendingQAppLaunch?: (app: {
+        service: 'APP';
+        name: string;
+        identifier?: string;
+        path?: string;
+      }) => Promise<boolean>;
+      hideHubAfterQAppAuthentication?: () => Promise<boolean>;
+      showHubAfterQAppLaunchFailure?: () => Promise<boolean>;
+      onQAppHubShellLock?: (callback: () => void) => () => void;
+      onQAppLaunchPending?: (callback: () => void) => () => void;
       openExternal?: (url: string) => void;
       setAllowedDomains?: (domains: string[]) => void;
       ensureCertForBase?: (
@@ -143,14 +262,35 @@ declare global {
       windowMaximize?: () => Promise<void>;
       windowClose?: () => Promise<void>;
       focusWindow?: () => Promise<void>;
+      showOsNotification?: (request: {
+        title: string;
+        body: string;
+        icon?: string;
+        silent?: boolean;
+        direct?: boolean;
+        clickId?: string;
+        source?: {
+          appName?: string;
+          appService?: string;
+          appIdentifier?: string;
+          link?: string;
+        };
+      }) => Promise<boolean>;
+      onOsNotificationOpened?: (
+        callback: (clickId: string) => void
+      ) => () => void;
       getWindowState?: () => Promise<{ isMaximized: boolean }>;
       onWindowStateChange?: (
         callback: (state: { isMaximized: boolean }) => void
       ) => () => void;
       onSystemLockRequested?: (callback: () => void) => () => void;
       getPlatform?: () => Promise<string>;
-      onDisplayMediaRequest?: (callback: (request: { requestId: string; origin: string }) => void) => () => void;
-      onDisplayMediaCancel?: (callback: (requestId: string) => void) => () => void;
+      onDisplayMediaRequest?: (
+        callback: (request: { requestId: string; origin: string }) => void
+      ) => () => void;
+      onDisplayMediaCancel?: (
+        callback: (requestId: string) => void
+      ) => () => void;
       selectDisplayMedia?: (requestId: string, sourceId?: string) => void;
       authorizeDisplayMedia?: (requestId: string, accepted: boolean) => void;
       listScreenShareSources?: () => Promise<{
@@ -388,9 +528,11 @@ declare global {
         url: string,
         isDevMode: boolean
       ) => Promise<{ partition: string; preload: string }>;
-      qappGuestRelease?: (
-        owner: { tabId: string; name: string; service: string }
-      ) => Promise<boolean>;
+      qappGuestRelease?: (owner: {
+        tabId: string;
+        name: string;
+        service: string;
+      }) => Promise<boolean>;
       onQAppReticulumEvent?: (callback: (payload: any) => void) => () => void;
       qappFileSave?: (owner: any, request: any) => Promise<any>;
       privateChannelOpen?: (

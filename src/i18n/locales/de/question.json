@@ -138,6 +138,8 @@
     }
   },
   "name": "Name: {{ name }}",
+  "notification_show_invalid": "Geben Sie eine Nachricht und gegebenenfalls einen Link zu dieser Q-App an.",
+  "notification_show_permission_required": "Erlauben Sie Benachrichtigungen für diese Q-App, bevor Desktop-Hinweise angezeigt werden.",
   "option": "Option: {{ option }}",
   "options": "Optionen: {{ optionList }}",
   "permission": {
@@ -174,7 +176,7 @@
     "leave_group": "Möchten Sie dieser Anwendung die Berechtigung geben, die folgende Gruppe zu verlassen?",
     "list_hosted_data": "Möchten Sie dieser Anwendung die Berechtigung geben, eine Liste Ihrer gehosteten Daten abzurufen?",
     "lock_tab": "Erlauben Sie, dass der Tab dieser App gesperrt wird?",
-    "notification": "dieser App erlauben, Ihnen Hub-Benachrichtigungen zu senden?",
+    "notification": "dieser App erlauben, Ihnen Hub- und Desktop-Benachrichtigungen zu senden?",
     "notification_allow": "erlauben",
     "notification_dont_allow": "nicht erlauben",
     "notification_title": "{{ appName }}-Benachrichtigungen",

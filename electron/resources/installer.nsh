@@ -7,4 +7,7 @@
 !macro customUnInstall
   DetailPrint "Removing Windows Firewall rule for Qortal Hub Reticulum..."
   ExecWait 'netsh advfirewall firewall delete rule name="Qortal Hub Reticulum" program="$INSTDIR\resources\reticulum\rnsd.exe"'
+  ${ifNot} ${isUpdated}
+    ExecWait 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\remove-qapp-launchers.ps1"'
+  ${endIf}
 !macroend

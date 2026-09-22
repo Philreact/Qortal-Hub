@@ -20,6 +20,13 @@ const setup = () => {
 };
 
 describe('combined backend connection approval', () => {
+  it('passes the host request ID to the permission prompt', async () => {
+    const { backend, request } = setup();
+    const hostApp = { ...app, hostRequestId: 'host-request' };
+    await backend.authorize(hostApp, destination, false);
+    expect(request).toHaveBeenCalledWith(hostApp, false);
+  });
+
   it('one approval covers the backend and subsequent private transport permission', async () => {
     const { backend, request, grant, has } = setup();
     expect(

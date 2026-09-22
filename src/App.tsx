@@ -127,7 +127,10 @@ import { useReticulumDmAccountRegistration } from './hooks/useReticulumDmAccount
 import { useAuth } from './hooks/useAuth.tsx';
 import type { extStates } from './types/app';
 import { AppContextInterface, QORTAL_APP_CONTEXT } from './context/AppContext';
-import { handleSetGlobalApikey } from './utils/globalApi';
+import {
+  getBaseApiReactForAvatar,
+  handleSetGlobalApikey,
+} from './utils/globalApi';
 import { isMainWindow } from './constants/app';
 import type { CustomTitleBarRightNavProps } from './components/Desktop/CustomTitleBar';
 import {
@@ -276,6 +279,7 @@ function App() {
 
   const [extState, setExtstate] = useAtom(extStateAtom);
   const [isAppLocked, setIsAppLocked] = useAtom(appLockedAtom);
+  const [isQAppHubShellLocked, setIsQAppHubShellLocked] = useState(false);
   const setIsIdle = useSetAtom(isIdleAtom);
   const [autoLockTimeoutMinutes, setAutoLockTimeoutMinutes] =
     useState<AutoLockTimeoutMinutes>(DEFAULT_AUTO_LOCK_TIMEOUT_MINUTES);
@@ -467,6 +471,7 @@ function App() {
       // the app again between these state updates.
       setIsIdle(false);
       setIsAppLocked(false);
+      setIsQAppHubShellLocked(false);
     },
     [rawWallet, setIsAppLocked, setIsIdle]
   );
@@ -475,6 +480,7 @@ function App() {
     if (extState !== 'authenticated') {
       setIsIdle(false);
       setIsAppLocked(false);
+      setIsQAppHubShellLocked(false);
     }
   }, [extState, setIsAppLocked, setIsIdle]);
 
@@ -501,6 +507,7 @@ function App() {
       extState !== 'authenticated' ||
       !isMainWindow ||
       isAppLocked ||
+      isQAppHubShellLocked ||
       autoLockTimeoutMinutes === 0
     ) {
       return;
@@ -543,7 +550,19 @@ function App() {
       window.removeEventListener('focus', checkAutoLock);
       document.removeEventListener('visibilitychange', checkAutoLock);
     };
-  }, [autoLockTimeoutMinutes, extState, isAppLocked, lockApp]);
+  }, [
+    autoLockTimeoutMinutes,
+    extState,
+    isAppLocked,
+    isQAppHubShellLocked,
+    lockApp,
+  ]);
+
+  useEffect(() => {
+    return window.electronAPI?.onQAppHubShellLock?.(() => {
+      setIsQAppHubShellLocked(true);
+    });
+  }, []);
 
   useEffect(() => {
     if (typeof window.electronAPI?.onSystemLockRequested !== 'function') return;
@@ -704,7 +723,7 @@ function App() {
         .finally(() => {
           window
             .sendMessage('getWalletInfo')
-            .then((response) => {
+            .then(async (response) => {
               if (response && response?.walletInfo) {
                 if (suppressWalletInfoRestoreRef.current) return;
 
@@ -719,6 +738,9 @@ function App() {
 
                 if (response?.hasKeyPair) {
                   setRawWallet(response?.walletInfo);
+                  await window.electronAPI
+                    ?.hideHubAfterQAppAuthentication?.()
+                    .catch(() => false);
                   setExtstate('authenticated');
                   window.sendMessage('startNotificationCheck').catch(() => {});
                 }
@@ -745,6 +767,20 @@ function App() {
     if (!rawWallet?.address0) return '';
     return rawWallet.address0;
   }, [rawWallet]);
+
+  useEffect(() => {
+    if (!isMainWindow) return;
+    void window.electronAPI
+      ?.setLaunchAccountIdentity?.({
+        name: userInfo?.address === address ? userInfo?.name : undefined,
+        address: address || undefined,
+        avatarUrl:
+          userInfo?.address === address && userInfo?.name
+            ? `${getBaseApiReactForAvatar()}/arbitrary/THUMBNAIL/${encodeURIComponent(userInfo.name)}/qortal_avatar?async=true`
+            : undefined,
+      })
+      .catch(() => undefined);
+  }, [address, userInfo?.address, userInfo?.name]);
 
   useReticulumDmAccountRegistration({
     managed: isMainWindow,
@@ -852,6 +888,23 @@ function App() {
   const qortalRequestPermissionFromExtension = async (message, event) => {
     if (message.action === 'QORTAL_REQUEST_PERMISSION') {
       try {
+        if (typeof message.hostRequestId === 'string') {
+          const result = await window.electronAPI
+            ?.requestQAppHostPermission?.(
+              message.hostRequestId,
+              message.payload
+            )
+            .catch(() => ({ accepted: false }));
+          event.source.postMessage(
+            {
+              action: 'QORTAL_REQUEST_PERMISSION_RESPONSE',
+              requestId: message.requestId,
+              result: result ?? { accepted: false },
+            },
+            event.origin
+          );
+          return;
+        }
         if (message?.payload?.checkbox1) {
           qortalRequestCheckbox1Ref.current =
             message?.payload?.checkbox1?.value || false;
@@ -2084,7 +2137,9 @@ function App() {
       }}
     >
       <CustomTitleBar rightNav={titleBarRightNav} />
-      <QAppScreenCapturePermission active={extState === 'authenticated' && isMainWindow} />
+      <QAppScreenCapturePermission
+        active={extState === 'authenticated' && isMainWindow}
+      />
       {extState === 'authenticated' && isMainWindow && (
         <GlobalQortalNavBar
           desktopViewMode={desktopViewMode}
@@ -2183,12 +2238,14 @@ function App() {
           mainContent
         )}
       </Box>
-      {isAuthenticated && isMainWindow && isAppLocked && (
-        <AuthenticatedLockScreen
-          accountLabel={userInfo?.name || address || null}
-          onUnlock={unlockApp}
-        />
-      )}
+      {isAuthenticated &&
+        isMainWindow &&
+        (isAppLocked || isQAppHubShellLocked) && (
+          <AuthenticatedLockScreen
+            accountLabel={userInfo?.name || address || null}
+            onUnlock={unlockApp}
+          />
+        )}
     </AppContainer>
   );
 }

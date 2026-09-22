@@ -1,6 +1,7 @@
 // @ts-nocheck
 import '../qortal/qortal-requests.ts';
 import { getNotificationOsPushDisabled } from '../qortal/qortal-requests';
+import { showOsNotification } from '../utils/osNotification';
 import { isArray } from 'lodash';
 import { uint8ArrayToObject } from '../encryption/encryption.ts';
 import Base58 from '../encryption/Base58';
@@ -223,6 +224,8 @@ function handleNotificationClick(notificationId) {
     }
   }
 }
+
+window.electronAPI?.onOsNotificationOpened?.(handleNotificationClick);
 
 const allQueues = {
   requestQueueAnnouncements: requestQueueAnnouncements,
@@ -2977,23 +2980,12 @@ export const checkNewMessages = async () => {
       const title = 'New group announcement!';
       const body = `You have received a new announcement from ${newAnnouncements[0]?.groupName}`;
 
-      // Create and show the notification
-      const notification = new window.Notification(title, {
+      void showOsNotification({
+        title,
         body,
         icon: window.location.origin + '/qortal192.png',
-        data: { id: notificationId },
-      });
-
-      // Handle notification click with specific actions based on `notificationId`
-      notification.onclick = () => {
-        handleNotificationClick(notificationId);
-        notification.close(); // Clean up the notification on click
-      };
-
-      // Automatically close the notification after 5 seconds if it’s not clicked
-      setTimeout(() => {
-        notification.close();
-      }, 10000); // Close after 5 seconds
+        clickId: notificationId,
+      }, () => handleNotificationClick(notificationId)).catch(() => undefined);
     }
     const savedtimestampAfter = await getTimestampGroupAnnouncement();
     const targetOrigin = window.location.origin;
@@ -3021,16 +3013,16 @@ export const fireOsNotificationPayment = async (
   try {
     const isDisableNotifications =
       (await getUserSettings({ key: 'disable-push-notifications' })) || false;
-    if (isDisableNotifications) return;
+    if (isDisableNotifications) return false;
 
     if (
-      notificationPayload?.event === 'RESOURCE_PUBLISHED' &&
+      ['RESOURCE_PUBLISHED', 'QAPP_DIRECT'].includes(notificationPayload?.event) &&
       notificationPayload?.appName
     ) {
       const osPushDisabled = await getNotificationOsPushDisabled(
         notificationPayload.appName
       );
-      if (osPushDisabled) return;
+      if (osPushDisabled) return false;
     }
 
     const notificationId = encodeURIComponent(
@@ -3040,26 +3032,38 @@ export const fireOsNotificationPayment = async (
     generalNotificationPayloadById.set(
       notificationId,
       internalPayload ||
-        (qortalLink ? { link: qortalLink } : { openWallets: true })
+        (qortalLink
+          ? { link: qortalLink }
+          : notificationPayload?.event === 'QAPP_DIRECT'
+            ? {}
+            : { openWallets: true })
     );
 
-    const notification = new window.Notification(title, {
-      body: messageBody,
-      icon,
-      data: { id: notificationId },
-    });
-
-    notification.onclick = () => {
-      handleNotificationClick(notificationId);
-      notification.close();
-    };
+    const shown = await showOsNotification(
+      {
+        title,
+        body: messageBody,
+        icon,
+        clickId: notificationId,
+        source: {
+          appName: notificationPayload?.appName,
+          appService: notificationPayload?.appService,
+          appIdentifier: notificationPayload?.appIdentifier,
+          link: qortalLink,
+        },
+        direct: notificationPayload?.event === 'QAPP_DIRECT',
+      },
+      () => handleNotificationClick(notificationId)
+    ).catch(() => false);
+    if (!shown) generalNotificationPayloadById.delete(notificationId);
 
     setTimeout(() => {
       generalNotificationPayloadById.delete(notificationId);
-      notification.close();
     }, 10000);
+    return shown;
   } catch (error) {
     console.error(error);
+    return false;
   }
 };
 
@@ -3194,23 +3198,14 @@ export const checkThreads = async (bringBack) => {
           const title = 'New thread post!';
           const body = `New post in ${newAnnouncements[0]?.thread?.threadData?.title}`;
 
-          // Create and show the notification
-          const notification = new window.Notification(title, {
+          void showOsNotification({
+            title,
             body,
             icon: window.location.origin + '/qortal192.png',
-            data: { id: notificationId },
-          });
-
-          // Handle notification click with specific actions based on `notificationId`
-          notification.onclick = () => {
-            handleNotificationClick(notificationId);
-            notification.close(); // Clean up the notification on click
-          };
-
-          // Automatically close the notification after 5 seconds if it’s not clicked
-          setTimeout(() => {
-            notification.close();
-          }, 10000); // Close after 5 seconds
+            clickId: notificationId,
+          }, () => handleNotificationClick(notificationId)).catch(
+            () => undefined
+          );
         }
       }
     }

@@ -918,6 +918,12 @@
       "title": "Boas-vindas ao Qortal Hub"
     }
   },
+  "qonnect_four": {
+    "os_invitation_title": "Convite para o Qonnect Four",
+    "os_invited_you": "{{requester}} convidou você para jogar.",
+    "os_opponent_moved": "{{opponent}} fez uma jogada.",
+    "os_your_turn_title": "É a sua vez no Qonnect Four"
+  },
   "subscription": {
     "actions_badge_one": "{{count}} ação",
     "actions_badge_other": "{{count}} ações",

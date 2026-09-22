@@ -33,7 +33,7 @@ async function spawnElectron() {
     child = null;
     await runBuild();
   }
-  child = cp.spawn(electron, ['--inspect=5858', './']);
+  child = cp.spawn(electron, ['--inspect=0', './', ...process.argv.slice(2)]);
   child.on('exit', () => {
     if (!reloadWatcher.restarting) {
       process.exit(0);

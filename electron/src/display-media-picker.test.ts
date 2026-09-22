@@ -10,7 +10,8 @@ afterEach(() => {
 function fixture(
   platform: NodeJS.Platform = 'linux',
   guest = false,
-  authorized = true
+  authorized = true,
+  dedicatedHost = false
 ) {
   const bus = new EventEmitter();
   vi.spyOn(ipcMain, 'on').mockImplementation(((...args: any[]) =>
@@ -42,7 +43,20 @@ function fixture(
       },
     },
   };
-  const window = { webContents, isDestroyed: () => false, once: vi.fn() };
+  const window = {
+    webContents,
+    isDestroyed: () => false,
+    once: vi.fn(),
+    removeListener: vi.fn(),
+  };
+  const hostRoot = {};
+  const hostContents = { mainFrame: hostRoot, send: vi.fn() };
+  const hostWindow = {
+    webContents: hostContents,
+    isDestroyed: () => false,
+    once: vi.fn(),
+    removeListener: vi.fn(),
+  };
   const guestContents = {
     mainFrame: guestRoot,
     session: webContents.session,
@@ -55,7 +69,8 @@ function fixture(
     platform,
     webContents.session as any,
     () => authorized,
-    () => guestContents as any
+    () => guestContents as any,
+    () => (dedicatedHost ? (hostWindow as any) : (window as any))
   );
   const callback = vi.fn();
   const request = {
@@ -65,11 +80,15 @@ function fixture(
     securityOrigin: 'https://app.test',
   };
   handler(request, callback);
-  const requestId = webContents.send.mock.calls[0]?.[1]?.requestId;
+  const selectedContents = dedicatedHost ? hostContents : webContents;
+  const requestId = selectedContents.send.mock.calls[0]?.[1]?.requestId;
   const send = (channel: string, payload: object, trusted = true) =>
     bus.emit(
       channel,
-      { sender: trusted ? webContents : {}, senderFrame: root },
+      {
+        sender: trusted ? selectedContents : {},
+        senderFrame: dedicatedHost ? hostRoot : root,
+      },
       { requestId, ...payload }
     );
   return {
@@ -81,9 +100,25 @@ function fixture(
     request,
     webContents,
     guestContents,
+    hostContents,
     bus,
   };
 }
+
+it('routes a dedicated guest capture to its owning window', async () => {
+  const f = fixture('linux', true, true, true);
+  expect(f.webContents.send).not.toHaveBeenCalled();
+  expect(f.hostContents.send).toHaveBeenCalledWith(
+    'display-media:request',
+    expect.any(Object)
+  );
+  f.send('display-media:authorize', { accepted: true });
+  await vi.waitFor(() => expect(f.guestContents.send).toHaveBeenCalled());
+  f.send('display-media:select', { sourceId: 'screen:1' });
+  expect(f.callback).toHaveBeenCalledWith({
+    video: expect.objectContaining({ id: 'screen:1' }),
+  });
+});
 
 it('reports missing macOS screen permission before denying capture', async () => {
   vi.spyOn(systemPreferences, 'getMediaAccessStatus').mockReturnValue('denied');

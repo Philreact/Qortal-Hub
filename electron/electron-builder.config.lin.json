@@ -94,7 +94,8 @@
   "deb": {
     "artifactName": "Qortal-Hub-Setup.${ext}",
     "synopsis": "Qortal Hub for Linux",
-    "afterInstall": "scripts/add-debian-apt-repo.sh"
+    "afterInstall": "scripts/add-debian-apt-repo.sh",
+    "afterRemove": "scripts/after-remove-debian.sh"
   },
   "snap": {
     "artifactName": "Qortal-Hub-Setup.${ext}",

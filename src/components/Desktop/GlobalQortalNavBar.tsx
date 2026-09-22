@@ -17,6 +17,8 @@ import ArrowOutwardIcon from '@mui/icons-material/ArrowOutward';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
+import InstallDesktopRoundedIcon from '@mui/icons-material/InstallDesktopRounded';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import ArrowBackIosNewRoundedIcon from '@mui/icons-material/ArrowBackIosNewRounded';
 import HomeRoundedIcon from '@mui/icons-material/HomeRounded';
 import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded';
@@ -44,7 +46,10 @@ import {
   unsubscribeFromEvent,
 } from '../../utils/events';
 import { QORTAL_PROTOCOL } from '../../constants/constants';
-import { getBaseApiReactForAvatar } from '../../utils/globalApi';
+import {
+  getBaseApiReact,
+  getBaseApiReactForAvatar,
+} from '../../utils/globalApi';
 import { formatQortAmount } from '../../utils/numberFunctions';
 import {
   useAccountStatusDisplay,
@@ -375,14 +380,14 @@ function AuthenticatedUserMenu({
   return (
     <>
       {primaryName ? (
-      <Tooltip
+        <Tooltip
           title={tooltipTitle(primaryName)}
-        placement="bottom"
-        arrow
-        slotProps={tooltipSlotProps}
-      >
-        {accountButton}
-      </Tooltip>
+          placement="bottom"
+          arrow
+          slotProps={tooltipSlotProps}
+        >
+          {accountButton}
+        </Tooltip>
       ) : (
         accountButton
       )}
@@ -770,6 +775,11 @@ export function GlobalQortalNavBar({
   const setSettingsLocalLastUpdated = useSetAtom(settingsLocalLastUpdatedAtom);
   const { t } = useTranslation(['core', 'question']);
   const [selectedTab, setSelectedTab] = useState<SelectedTab>(null);
+  const [qAppShortcutStatus, setQAppShortcutStatus] = useState<{
+    key: string;
+    installed: boolean;
+  } | null>(null);
+  const [qAppShortcutBusy, setQAppShortcutBusy] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [sessionMenuAnchor, setSessionMenuAnchor] =
     useState<HTMLElement | null>(null);
@@ -951,6 +961,105 @@ export function GlobalQortalNavBar({
   const canCopyCurrentLink = Boolean(currentLink);
   const canPinCurrentApp =
     desktopViewMode === 'apps' && Boolean(pinnedCandidate);
+  const qAppCandidate =
+    desktopViewMode === 'apps' &&
+    selectedTab?.service?.toUpperCase() === 'APP' &&
+    !selectedTab?.internal &&
+    !selectedTab?.isPrivate &&
+    !selectedTab?.isPreview &&
+    bookmarkSelectedTab?.service?.toUpperCase() === 'APP' &&
+    bookmarkSelectedTab?.name
+      ? bookmarkSelectedTab
+      : null;
+  const qAppShortcutKey = qAppCandidate
+    ? `${qAppCandidate.name}\0${qAppCandidate.identifier || ''}`
+    : '';
+  const currentQAppShortcutStatus =
+    qAppShortcutStatus?.key === qAppShortcutKey ? qAppShortcutStatus : null;
+  const qAppActionLabel = currentQAppShortcutStatus
+    ? t(
+        currentQAppShortcutStatus.installed
+          ? 'core:action.open_as_app'
+          : 'core:action.install_app',
+        { postProcess: 'capitalizeFirstChar' }
+      )
+    : '';
+
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!qAppCandidate || !api?.qappShortcutStatus) return;
+    let active = true;
+    const refresh = () => {
+      void api.qappShortcutStatus!({
+        service: 'APP',
+        name: qAppCandidate.name!,
+        identifier: qAppCandidate.identifier,
+      })
+        .then((status) => {
+          if (active)
+            setQAppShortcutStatus(
+              status.supported
+                ? { key: qAppShortcutKey, installed: status.installed }
+                : null
+            );
+        })
+        .catch(() => {
+          if (active) setQAppShortcutStatus(null);
+        });
+    };
+    refresh();
+    window.addEventListener('focus', refresh);
+    return () => {
+      active = false;
+      window.removeEventListener('focus', refresh);
+    };
+  }, [qAppShortcutKey, Boolean(qAppCandidate)]);
+
+  const handleQAppAction = useCallback(async () => {
+    const api = window.electronAPI;
+    if (
+      !qAppCandidate ||
+      !currentQAppShortcutStatus ||
+      qAppShortcutBusy ||
+      !api?.openQAppWindow
+    )
+      return;
+    setQAppShortcutBusy(true);
+    const identity = {
+      service: 'APP' as const,
+      name: qAppCandidate.name!,
+      identifier: qAppCandidate.identifier,
+    };
+    try {
+      if (!currentQAppShortcutStatus.installed) {
+        if (!api.installQAppShortcut) return;
+        await api.installQAppShortcut(identity, getBaseApiReact());
+        setQAppShortcutStatus({ key: qAppShortcutKey, installed: true });
+      }
+      await api.openQAppWindow(
+        { ...identity, path: qAppCandidate.path },
+        getBaseApiReact()
+      );
+      executeEvent('removeTab', { data: selectedTab });
+    } catch {
+      setInfoSnackGlobal({
+        message: t('core:message.error.generic'),
+        type: 'error',
+      });
+      setOpenSnackGlobal(true);
+    } finally {
+      setQAppShortcutBusy(false);
+    }
+  }, [
+    currentQAppShortcutStatus,
+    qAppCandidate,
+    qAppShortcutBusy,
+    qAppShortcutKey,
+    selectedTab,
+    setInfoSnackGlobal,
+    setOpenSnackGlobal,
+    t,
+  ]);
   const handleCopyCurrentLink = useCallback(() => {
     if (!currentLink) return;
     if (!navigator.clipboard?.writeText) {
@@ -1584,15 +1693,79 @@ export function GlobalQortalNavBar({
               sx={{
                 alignItems: 'center',
                 display: 'flex',
-                flex: '0 0 90px',
+                flex: '0 0 auto',
                 gap: 0.75,
                 height: 26,
                 justifyContent: 'flex-end',
-                maxWidth: 90,
                 minWidth: 90,
-                width: 90,
               }}
             >
+              {currentQAppShortcutStatus && (
+                <Tooltip
+                  title={tooltipTitle(qAppActionLabel)}
+                  placement="bottom"
+                  arrow
+                  slotProps={tooltipSlotProps}
+                >
+                  <Box component="span" sx={{ display: 'inline-flex' }}>
+                    <ButtonBase
+                      disableRipple
+                      aria-label={qAppActionLabel}
+                      disabled={qAppShortcutBusy}
+                      onClick={handleQAppAction}
+                      sx={{
+                        alignItems: 'center',
+                        backgroundColor: alpha(theme.palette.primary.main, 0.1),
+                        border: `1px solid ${alpha(theme.palette.primary.main, 0.75)}`,
+                        borderRadius: '7px',
+                        color: theme.palette.primary.main,
+                        display: 'flex',
+                        flexShrink: 0,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        gap: 0.75,
+                        height: 25,
+                        justifyContent: 'center',
+                        px: 1.25,
+                        transition:
+                          'background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease',
+                        whiteSpace: 'nowrap',
+                        '&:hover': {
+                          backgroundColor: alpha(
+                            theme.palette.primary.main,
+                            0.18
+                          ),
+                          borderColor: theme.palette.primary.main,
+                          boxShadow: `0 0 0 1px ${alpha(theme.palette.primary.main, 0.18)}`,
+                        },
+                        '&.Mui-disabled': {
+                          borderColor: alpha(theme.palette.primary.main, 0.3),
+                          color: alpha(theme.palette.primary.main, 0.5),
+                        },
+                        '&:focus-visible': {
+                          outline: `1px solid ${theme.palette.primary.main}`,
+                          outlineOffset: '2px',
+                        },
+                      }}
+                    >
+                      {qAppShortcutBusy ? (
+                        <CircularProgress
+                          aria-hidden="true"
+                          size={15}
+                          thickness={5}
+                          sx={{ color: 'inherit' }}
+                        />
+                      ) : currentQAppShortcutStatus.installed ? (
+                        <OpenInNewRoundedIcon sx={{ fontSize: 15 }} />
+                      ) : (
+                        <InstallDesktopRoundedIcon sx={{ fontSize: 15 }} />
+                      )}
+                      {qAppActionLabel}
+                    </ButtonBase>
+                  </Box>
+                </Tooltip>
+              )}
+
               <Tooltip
                 title={tooltipTitle(t('core:action.copy_link'))}
                 placement="bottom"

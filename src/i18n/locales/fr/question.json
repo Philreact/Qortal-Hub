@@ -138,6 +138,8 @@
     }
   },
   "name": "nom : {{ name }}",
+  "notification_show_invalid": "Fournissez un message et, si vous ajoutez un lien, un lien vers cette Q-App.",
+  "notification_show_permission_required": "Autorisez les notifications de cette Q-App avant d’afficher des alertes sur le bureau.",
   "option": "option : {{ option }}",
   "options": "options : {{ optionList }}",
   "permission": {
@@ -174,7 +176,7 @@
     "leave_group": "Souhaitez-vous autoriser cette application à quitter le groupe suivant ?",
     "list_hosted_data": "Souhaitez-vous autoriser cette application à obtenir une liste de vos données hébergées ?",
     "lock_tab": "Autorisez-vous le verrouillage de l’onglet de cette application ?",
-    "notification": "autoriser cette application à vous envoyer des notifications du hub ?",
+    "notification": "autoriser cette application à vous envoyer des notifications du Hub et du bureau ?",
     "notification_allow": "autoriser",
     "notification_dont_allow": "ne pas autoriser",
     "notification_title": "notifications {{ appName }}",

@@ -138,6 +138,8 @@
     }
   },
   "name": "name: {{ name }}",
+  "notification_show_invalid": "Provide a message and, if included, a link to this Q-App.",
+  "notification_show_permission_required": "Allow notifications for this Q-App before showing desktop alerts.",
   "option": "option: {{ option }}",
   "options": "options: {{ optionList }}",
   "permission": {
@@ -174,7 +176,7 @@
     "leave_group": "do you give this application permission to leave the following group?",
     "list_hosted_data": "do you give this application permission to get a list of your hosted data?",
     "lock_tab": "do you give permission for this app's tab to be locked?",
-    "notification": "allow this app to send you Hub notifications?",
+    "notification": "allow this app to send you Hub and desktop notifications?",
     "notification_allow": "allow",
     "notification_dont_allow": "don't allow",
     "notification_title": "{{ appName }} notifications",

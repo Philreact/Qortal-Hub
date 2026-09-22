@@ -26,6 +26,18 @@ describe('extractComponents', () => {
     });
   });
 
+  it('decodes an encoded resource name before opening a Q-App', () => {
+    expect(extractComponents('qortal://APP/Qortal%20Together')).toEqual({
+      service: 'APP',
+      name: 'Qortal Together',
+      identifier: undefined,
+      path: '',
+    });
+    expect(extractComponents('qortal://APP/Name%2520Literal')).toMatchObject({
+      name: 'Name%20Literal',
+    });
+  });
+
   it('defaults qortal://<username> to WEBSITE service', () => {
     const res = extractComponents('qortal://alice');
     expect(res).toEqual({

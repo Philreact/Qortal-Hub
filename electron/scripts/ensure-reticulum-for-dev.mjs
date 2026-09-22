@@ -67,7 +67,7 @@ try:
     import RNS
     dist = md.distribution("rns")
     direct = dist.read_text("direct_url.json") or ""
-    raise SystemExit(0 if "${RETICULUM_REQUIRED_SOURCE}" in direct else 1)
+    raise SystemExit(0 if "${RETICULUM_REQUIRED_SOURCE}".lower() in direct.lower() else 1)
 except Exception:
     raise SystemExit(1)
 `;

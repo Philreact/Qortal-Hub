@@ -13,6 +13,7 @@ type QAppReticulumContext = {
   appService?: string;
   isFromExtension: boolean;
   tabId: string | number;
+  hostRequestId?: string;
 };
 
 type QAppReticulumMessage = {
@@ -52,7 +53,11 @@ export async function dispatchQAppReticulumRequest(
     name: identity.name,
     service: identity.service,
   };
-  const appInfo = { tabId: context.tabId, name: context.appName };
+  const appInfo = {
+    tabId: context.tabId,
+    name: context.appName,
+    hostRequestId: context.hostRequestId,
+  };
 
   if (message.action === 'RNS_REQUEST') {
     if (!api.qappReticulumRequest)

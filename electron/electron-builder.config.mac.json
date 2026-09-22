@@ -12,6 +12,10 @@
 
   "extraResources": [
     {
+      "from": "resources/remove-qapp-launchers-mac.sh",
+      "to": "remove-qapp-launchers-mac.sh"
+    },
+    {
       "from": "resources/private-transport",
       "to": "private-transport",
       "filter": ["**/qortal-private-transport"]

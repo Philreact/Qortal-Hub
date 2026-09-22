@@ -93,7 +93,8 @@
   },
   "deb": {
     "artifactName": "Qortal-Hub-Setup-arm64.${ext}",
-    "synopsis": "Qortal Hub for Linux"
+    "synopsis": "Qortal Hub for Linux",
+    "afterRemove": "scripts/after-remove-debian.sh"
   },
   "directories": {
     "output": "dist",

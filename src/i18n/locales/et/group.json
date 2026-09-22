@@ -918,6 +918,12 @@
       "title": "Tere tulemast Qortal Hubi"
     }
   },
+  "qonnect_four": {
+    "os_invitation_title": "Qonnect Fouri kutse",
+    "os_invited_you": "{{requester}} kutsus sind mängima.",
+    "os_opponent_moved": "{{opponent}} tegi käigu.",
+    "os_your_turn_title": "Sinu käik mängus Qonnect Four"
+  },
   "subscription": {
     "actions_badge_one": "{{count}} toiming",
     "actions_badge_other": "{{count}} toimingut",

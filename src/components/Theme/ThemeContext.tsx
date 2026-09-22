@@ -5,6 +5,7 @@ import {
   useMemo,
   useEffect,
   useCallback,
+  useRef,
 } from 'react';
 import {
   ThemeProvider as MuiThemeProvider,
@@ -40,6 +41,7 @@ export const ThemeProvider = ({ children }) => {
   const [themeMode, setThemeMode] = useState('dark');
   const [userThemes, setUserThemes] = useState([defaultTheme]);
   const [currentThemeId, setCurrentThemeId] = useState(DEFAULT_THEME_ID);
+  const settingsLoaded = useRef(false);
 
   const currentTheme =
     userThemes.find((theme) => theme.id === currentThemeId) || defaultTheme;
@@ -160,8 +162,35 @@ export const ThemeProvider = ({ children }) => {
   }, [themeMode]);
 
   useEffect(() => {
+    if (settingsLoaded.current) return;
+    settingsLoaded.current = true;
     loadSettings();
   }, [loadSettings]);
+
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api?.isQAppHost) {
+      void api?.setQAppHostThemeMode?.(themeMode).catch(() => undefined);
+      return;
+    }
+    const subscription = { active: true };
+    void api.getQAppHostConfig?.()
+      .then((config) => {
+        if (
+          subscription.active &&
+          (config.themeMode === 'light' || config.themeMode === 'dark')
+        )
+          setThemeMode(config.themeMode);
+      })
+      .catch(() => undefined);
+    const unsubscribe = api.onQAppHostThemeMode?.((mode) => {
+      if (subscription.active) setThemeMode(mode);
+    });
+    return () => {
+      subscription.active = false;
+      unsubscribe?.();
+    };
+  }, [themeMode]);
 
   return (
     <ThemeContext.Provider
