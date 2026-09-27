@@ -247,6 +247,7 @@ import {
   noteMainLoopStallForProfiling,
   runMainPressureTask,
 } from './main-pressure';
+import { maybeStartRendererCpuProfile } from './renderer-cpu-profile';
 
 const GCALL_AUDIO_RENDERER_SEND_AT_MS = Symbol.for(
   'qortal.gcallAudioRendererSendAtMs'
@@ -1092,6 +1093,9 @@ export class ElectronCapacitorApp {
     window.once('ready-to-show', () => {
       showInitialWindow();
     });
+    window.webContents.once('dom-ready', () => {
+      maybeStartRendererCpuProfile(window.webContents, 'qapp-host');
+    });
     window.on('closed', () => {
       closeOsNotificationsFor(hostContentsId);
       if (!mainWindow.isDestroyed())
@@ -1557,6 +1561,7 @@ export class ElectronCapacitorApp {
 
     // When the web app is loaded we hide the splashscreen if needed and show the mainwindow.
     this.MainWindow.webContents.on('dom-ready', () => {
+      maybeStartRendererCpuProfile(this.MainWindow.webContents, 'main-shell');
       if (this.CapacitorFileConfig.electron?.splashScreenEnabled) {
         this.SplashScreen.getSplashWindow().hide();
       }
@@ -3955,6 +3960,9 @@ function installQAppGuestPolicy(host: BrowserWindow): void {
       prepared: null,
     });
     restrictQAppGuestWebRtc(guest);
+    guest.once('dom-ready', () => {
+      maybeStartRendererCpuProfile(guest, 'qapp-guest');
+    });
     guest.setWindowOpenHandler(() => ({ action: 'deny' }));
     const allowedGuestUrl = (nextUrl: string) => {
       const bound = attachedQAppGuests.get(guest.id)?.prepared;
