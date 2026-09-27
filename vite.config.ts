@@ -43,6 +43,10 @@ export default defineConfig({
         : {},
   },
   build: {
+    // CPU profiles are only actionable when Chromium samples can be mapped
+    // back to the original TypeScript and React sources. Keep maps out of
+    // normal release builds and enable them for the explicit profiling build.
+    sourcemap: process.env.QORTAL_RENDERER_PROFILE_SOURCEMAP === '1',
     // Explicit runtime baseline for the PSBT dependencies (Object.hasOwn).
     // Also prevents the TLA plugin from reverting to its obsolete Safari 14 target.
     target: ['es2020', 'chrome94', 'edge94', 'firefox93', 'safari15.4'],
