@@ -976,10 +976,24 @@ const RETICULUM_STDOUT_EMIT_SLOW_MS = readPositiveIntEnv(
   'QORTAL_RETICULUM_STDOUT_EMIT_SLOW_MS',
   50
 );
+let systemProfileBridgeAttachPending =
+  process.platform === 'linux' &&
+  !app.isPackaged &&
+  process.argv.some(
+    (argument) =>
+      argument === '--profile-system' ||
+      argument.startsWith('--profile-system=')
+  );
 
 function readPositiveIntEnv(name: string, fallback: number): number {
   const raw = Number(process.env[name]);
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+}
+
+function takeSystemProfileBridgeAttachEnvironment(): Record<string, string> {
+  if (!systemProfileBridgeAttachPending) return {};
+  systemProfileBridgeAttachPending = false;
+  return { QORTAL_SYSTEM_PROFILE_ATTACH: '1' };
 }
 
 function bridgeExeName(): string {
@@ -3840,6 +3854,7 @@ export class ReticulumBridge extends EventEmitter implements PresenceTransport {
         QORTAL_LAND_REALTIME_TOKEN: this.gameTransportToken,
         QORTAL_LAND_REALTIME_INSTANCE_ID: this.gameTransportInstanceId,
         QORTAL_LAND_REALTIME_DEV: app.isPackaged ? '0' : '1',
+        ...takeSystemProfileBridgeAttachEnvironment(),
       },
       'presence-bridge',
       configDir

@@ -83,6 +83,23 @@ class PythonDiagnosticsProfiler:
         self._thread_starts: Counter[str] = Counter()
         self._thread_observations: Counter[str] = Counter()
         self._stack_counts: Counter[Tuple[str, Tuple[str, ...]]] = Counter()
+        self._native_thread_ids: Dict[str, set[int]] = {}
+        self._reticulum_counts: Counter[str] = Counter()
+        self._reticulum_count_lock = threading.Lock()
+        self._reticulum_patches: list[Tuple[Any, str, Any, bool]] = []
+        self._reticulum_patched_targets: set[str] = set()
+        self._reticulum_interest_masks: Dict[int, int] = {}
+        self._reticulum_interface_io: Dict[str, Counter[str]] = {}
+        self._reticulum_packet_io: Dict[str, Counter[Tuple[int, int, int]]] = {
+            "inbound": Counter(),
+            "outbound": Counter(),
+        }
+        self._reticulum_packet_bytes: Dict[str, Counter[Tuple[int, int, int]]] = {
+            "inbound": Counter(),
+            "outbound": Counter(),
+        }
+        self._bridge_json_loads: Counter[Tuple[str, str]] = Counter()
+        self._bridge_json_load_bytes: Counter[Tuple[str, str]] = Counter()
         self._stack_overflow_samples = 0
         self._thread_name_overflow = 0
         self._peak_thread_count = 0
@@ -141,6 +158,7 @@ class PythonDiagnosticsProfiler:
         self.finish()
 
     def _sample_once(self) -> None:
+        self._ensure_reticulum_instrumentation()
         frames = sys._current_frames()
         threads = list(threading.enumerate())
         names_by_ident = {
@@ -161,6 +179,17 @@ class PythonDiagnosticsProfiler:
         with self._lock:
             self._sampler_ticks += 1
             self._peak_thread_count = max(self._peak_thread_count, len(threads))
+            for thread in threads:
+                native_id = getattr(thread, "native_id", None)
+                if not isinstance(native_id, int):
+                    continue
+                name = _safe_thread_name(thread.name)
+                if name not in self._native_thread_ids:
+                    if len(self._native_thread_ids) >= _MAX_THREAD_NAMES:
+                        self._thread_name_overflow += 1
+                        continue
+                    self._native_thread_ids[name] = set()
+                self._native_thread_ids[name].add(native_id)
             for name, stack in sampled:
                 if name in self._thread_observations or len(self._thread_observations) < _MAX_THREAD_NAMES:
                     self._thread_observations[name] += 1
@@ -172,6 +201,322 @@ class PythonDiagnosticsProfiler:
                 else:
                     self._stack_overflow_samples += 1
 
+    def _ensure_reticulum_instrumentation(self) -> None:
+        event_module = sys.modules.get("RNS.Interfaces.EventedSocketIO")
+        event_class = getattr(event_module, "EventedSocketIO", None)
+        if event_class is not None and "event-poll" not in self._reticulum_patched_targets:
+            original_poll = getattr(event_class, "_poll", None)
+            if callable(original_poll):
+                profiler = self
+
+                def measured_poll(timeout: float) -> Any:
+                    events = original_poll(timeout)
+                    event_count = len(events)
+                    wakeup_fileno = getattr(event_class, "wakeup_fileno", None)
+                    wakeup_events = sum(
+                        1 for fileno, _event in events if fileno == wakeup_fileno
+                    )
+                    with profiler._reticulum_count_lock:
+                        profiler._reticulum_counts["pollCalls"] += 1
+                        profiler._reticulum_counts["pollEvents"] += event_count
+                        profiler._reticulum_counts["pollWakeupEvents"] += wakeup_events
+                        profiler._reticulum_counts["pollDataEvents"] += (
+                            event_count - wakeup_events
+                        )
+                        if event_count == 0:
+                            profiler._reticulum_counts["pollTimeouts"] += 1
+                    return events
+
+                event_class._poll = staticmethod(measured_poll)
+                self._reticulum_patches.append(
+                    (event_class, "_poll", original_poll, True)
+                )
+                self._reticulum_patched_targets.add("event-poll")
+
+            original_wake = getattr(event_class, "wake", None)
+            if callable(original_wake):
+                profiler = self
+
+                def measured_wake(_original: Any = original_wake) -> Any:
+                    with profiler._reticulum_count_lock:
+                        profiler._reticulum_counts["wakeCalls"] += 1
+                    return _original()
+
+                event_class.wake = staticmethod(measured_wake)
+                self._reticulum_patches.append(
+                    (event_class, "wake", original_wake, True)
+                )
+
+            original_modify = getattr(event_class, "_modify_or_recover_fileno", None)
+            if callable(original_modify):
+                profiler = self
+
+                def measured_modify(
+                    fileno: int,
+                    mask: int,
+                    owner: Any = None,
+                    _original: Any = original_modify,
+                ) -> Any:
+                    with profiler._reticulum_count_lock:
+                        profiler._reticulum_counts["interestUpdateCalls"] += 1
+                        if profiler._reticulum_interest_masks.get(fileno) == mask:
+                            profiler._reticulum_counts[
+                                "interestRedundantRequests"
+                            ] += 1
+                        if mask == event_class._read_mask():
+                            profiler._reticulum_counts[
+                                "interestReadOnlyRequests"
+                            ] += 1
+                        elif mask == event_class._read_write_mask():
+                            profiler._reticulum_counts[
+                                "interestReadWriteRequests"
+                            ] += 1
+                    result = _original(fileno, mask, owner)
+                    if result:
+                        with profiler._reticulum_count_lock:
+                            profiler._reticulum_interest_masks[fileno] = mask
+                    return result
+
+                event_class._modify_or_recover_fileno = staticmethod(measured_modify)
+                self._reticulum_patches.append(
+                    (
+                        event_class,
+                        "_modify_or_recover_fileno",
+                        original_modify,
+                        True,
+                    )
+                )
+
+            self._patch_reticulum_io_method(
+                event_class, "_read_client_socket", "read"
+            )
+            self._patch_reticulum_io_method(
+                event_class, "_write_client_socket", "write"
+            )
+
+        self._patch_reticulum_watchdog(
+            "RNS.Link", "Link", "_Link__watchdog_job", "linkWatchdogJobs"
+        )
+        self._patch_reticulum_watchdog(
+            "RNS.Resource",
+            "Resource",
+            "_Resource__watchdog_job",
+            "resourceWatchdogJobs",
+        )
+        self._patch_reticulum_packets()
+        main_module = sys.modules.get("__main__")
+        main_file = str(getattr(main_module, "__file__", "") or "")
+        if main_file.endswith("presence_bridge.py"):
+            self._patch_bridge_json_loads()
+
+    @staticmethod
+    def _bridge_wire_label(value: Any) -> str:
+        if not isinstance(value, dict):
+            return type(value).__name__
+        outer_type = value.get("t")
+        inner_kind = value.get("k")
+        if (
+            outer_type == "RCHAT"
+            and isinstance(inner_kind, str)
+            and inner_kind
+        ):
+            return f"{_safe_thread_name(outer_type)[:38]}/{_safe_thread_name(inner_kind)[:38]}"
+        for key in ("t", "type", "k", "action"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return _safe_thread_name(candidate)[:80]
+        return "object"
+
+    def _patch_bridge_json_loads(self) -> None:
+        if "bridge-json-loads" in self._reticulum_patched_targets:
+            return
+        original_loads = getattr(json, "loads", None)
+        if not callable(original_loads):
+            return
+        profiler = self
+
+        def measured_loads(value: Any, *args: Any, **kwargs: Any) -> Any:
+            result = original_loads(value, *args, **kwargs)
+            try:
+                caller = _safe_thread_name(sys._getframe(1).f_code.co_name)
+                label = profiler._bridge_wire_label(result)
+                byte_count = (
+                    len(value)
+                    if isinstance(value, (str, bytes, bytearray, memoryview))
+                    else 0
+                )
+                with profiler._reticulum_count_lock:
+                    key = (caller, label)
+                    profiler._bridge_json_loads[key] += 1
+                    profiler._bridge_json_load_bytes[key] += byte_count
+            except Exception:
+                pass
+            return result
+
+        json.loads = measured_loads
+        self._reticulum_patches.append((json, "loads", original_loads, False))
+        self._reticulum_patched_targets.add("bridge-json-loads")
+
+    def _note_reticulum_packet(
+        self,
+        direction: str,
+        packet_type: int,
+        context: int,
+        destination_type: int,
+        byte_count: int,
+    ) -> None:
+        key = (int(packet_type), int(context), int(destination_type))
+        with self._reticulum_count_lock:
+            self._reticulum_packet_io[direction][key] += 1
+            self._reticulum_packet_bytes[direction][key] += max(0, int(byte_count))
+
+    def _patch_reticulum_packets(self) -> None:
+        packet_module = sys.modules.get("RNS.Packet")
+        packet_class = getattr(packet_module, "Packet", None)
+        transport_module = sys.modules.get("RNS.Transport")
+        transport_class = getattr(transport_module, "Transport", None)
+
+        if packet_class is not None and "packet-unpack" not in self._reticulum_patched_targets:
+            original_unpack = getattr(packet_class, "unpack", None)
+            if callable(original_unpack):
+                profiler = self
+
+                def measured_unpack(
+                    packet: Any,
+                    _original: Any = original_unpack,
+                ) -> Any:
+                    result = _original(packet)
+                    packet_type = getattr(packet, "packet_type", None)
+                    context = getattr(packet, "context", None)
+                    destination_type = getattr(packet, "destination_type", None)
+                    raw = getattr(packet, "raw", None)
+                    if (
+                        result
+                        and isinstance(packet_type, int)
+                        and isinstance(context, int)
+                        and isinstance(destination_type, int)
+                    ):
+                        profiler._note_reticulum_packet(
+                            "inbound",
+                            packet_type,
+                            context,
+                            destination_type,
+                            len(raw)
+                            if isinstance(raw, (bytes, bytearray, memoryview))
+                            else 0,
+                        )
+                    return result
+
+                packet_class.unpack = measured_unpack
+                self._reticulum_patches.append(
+                    (packet_class, "unpack", original_unpack, False)
+                )
+                self._reticulum_patched_targets.add("packet-unpack")
+
+        if transport_class is not None and "transport-outbound" not in self._reticulum_patched_targets:
+            original_outbound = getattr(transport_class, "outbound", None)
+            if callable(original_outbound):
+                profiler = self
+
+                def measured_outbound(
+                    packet: Any,
+                    _original: Any = original_outbound,
+                ) -> Any:
+                    raw = getattr(packet, "raw", None)
+                    packet_type = getattr(packet, "packet_type", None)
+                    context = getattr(packet, "context", None)
+                    destination = getattr(packet, "destination", None)
+                    destination_type = getattr(destination, "type", None)
+                    if (
+                        isinstance(packet_type, int)
+                        and isinstance(context, int)
+                        and isinstance(destination_type, int)
+                    ):
+                        byte_count = (
+                            len(raw)
+                            if isinstance(raw, (bytes, bytearray, memoryview))
+                            else 0
+                        )
+                        profiler._note_reticulum_packet(
+                            "outbound",
+                            packet_type,
+                            context,
+                            destination_type,
+                            byte_count,
+                        )
+                    return _original(packet)
+
+                transport_class.outbound = staticmethod(measured_outbound)
+                self._reticulum_patches.append(
+                    (transport_class, "outbound", original_outbound, True)
+                )
+                self._reticulum_patched_targets.add("transport-outbound")
+
+    def _patch_reticulum_watchdog(
+        self, module_name: str, class_name: str, method_name: str, counter_name: str
+    ) -> None:
+        if counter_name in self._reticulum_patched_targets:
+            return
+        module = sys.modules.get(module_name)
+        owner = getattr(module, class_name, None)
+        original = getattr(owner, method_name, None)
+        if not callable(original):
+            return
+        profiler = self
+
+        def measured(instance: Any, *args: Any, **kwargs: Any) -> Any:
+            with profiler._reticulum_count_lock:
+                profiler._reticulum_counts[counter_name] += 1
+            return original(instance, *args, **kwargs)
+
+        setattr(owner, method_name, measured)
+        self._reticulum_patches.append((owner, method_name, original, False))
+        self._reticulum_patched_targets.add(counter_name)
+
+    def _patch_reticulum_io_method(
+        self, event_class: Any, method_name: str, direction: str
+    ) -> None:
+        target_name = f"interface-{direction}"
+        if target_name in self._reticulum_patched_targets:
+            return
+        original = getattr(event_class, method_name, None)
+        if not callable(original):
+            return
+        profiler = self
+        byte_counter = "read_bytes" if direction == "read" else "write_bytes"
+
+        def measured(
+            fileno: int,
+            interface: Any,
+            client_socket: Any,
+            _original: Any = original,
+        ) -> Any:
+            before = int(getattr(event_class, byte_counter, 0))
+            result = _original(fileno, interface, client_socket)
+            transferred = max(
+                0, int(getattr(event_class, byte_counter, 0)) - before
+            )
+            label = _safe_thread_name(str(interface))
+            with profiler._reticulum_count_lock:
+                if (
+                    label in profiler._reticulum_interface_io
+                    or len(profiler._reticulum_interface_io) < _MAX_THREAD_NAMES
+                ):
+                    counts = profiler._reticulum_interface_io.setdefault(
+                        label, Counter()
+                    )
+                    counts[f"{direction}Events"] += 1
+                    counts[f"{direction}Bytes"] += transferred
+                else:
+                    profiler._thread_name_overflow += 1
+            return result
+
+        setattr(event_class, method_name, staticmethod(measured))
+        self._reticulum_patches.append(
+            (event_class, method_name, original, True)
+        )
+        self._reticulum_patched_targets.add(target_name)
+
     def finish(self) -> None:
         with self._lock:
             if self._finished:
@@ -180,7 +525,73 @@ class PythonDiagnosticsProfiler:
         self._stop.set()
         if threading.Thread.start is self._thread_start_wrapper:
             threading.Thread.start = self._original_thread_start  # type: ignore[assignment]
-        self._write_report()
+        try:
+            self._write_report()
+        finally:
+            self._restore_reticulum_instrumentation()
+
+    def _restore_reticulum_instrumentation(self) -> None:
+        for owner, name, original, is_static in reversed(self._reticulum_patches):
+            try:
+                setattr(owner, name, staticmethod(original) if is_static else original)
+            except Exception:
+                pass
+        self._reticulum_patches.clear()
+
+    def _reticulum_report(self) -> Dict[str, Any]:
+        with self._reticulum_count_lock:
+            measured = dict(self._reticulum_counts)
+            interface_io = {
+                name: dict(counts)
+                for name, counts in self._reticulum_interface_io.items()
+            }
+            packet_io = {
+                direction: [
+                    {
+                        "packetType": packet_type,
+                        "context": context,
+                        "destinationType": destination_type,
+                        "packets": count,
+                        "bytes": self._reticulum_packet_bytes[direction][
+                            (packet_type, context, destination_type)
+                        ],
+                    }
+                    for (packet_type, context, destination_type), count in counts.most_common()
+                ]
+                for direction, counts in self._reticulum_packet_io.items()
+            }
+            bridge_json_loads = [
+                {
+                    "caller": caller,
+                    "wireType": wire_type,
+                    "loads": count,
+                    "bytes": self._bridge_json_load_bytes[(caller, wire_type)],
+                }
+                for (caller, wire_type), count in self._bridge_json_loads.most_common()
+            ]
+        event_module = sys.modules.get("RNS.Interfaces.EventedSocketIO")
+        event_class = getattr(event_module, "EventedSocketIO", None)
+        local_io: Dict[str, Any] = {}
+        if event_class is not None:
+            local_io = {
+                "backend": getattr(event_class, "event_backend", None),
+                "readEvents": getattr(event_class, "read_events", 0),
+                "writeEvents": getattr(event_class, "write_events", 0),
+                "readBytes": getattr(event_class, "read_bytes", 0),
+                "writeBytes": getattr(event_class, "write_bytes", 0),
+                "readBudgetHits": getattr(event_class, "read_budget_hits", 0),
+                "writeBudgetHits": getattr(event_class, "write_budget_hits", 0),
+                "txBufferMax": getattr(event_class, "tx_buffer_max", 0),
+                "socketCloses": getattr(event_class, "socket_close_count", 0),
+                "socketErrors": getattr(event_class, "socket_error_count", 0),
+            }
+        return {
+            "measured": measured,
+            "localIo": local_io,
+            "interfaceIo": interface_io,
+            "packetIo": packet_io,
+            "bridgeJsonLoads": bridge_json_loads,
+        }
 
     def _write_report(self) -> None:
         try:
@@ -200,6 +611,10 @@ class PythonDiagnosticsProfiler:
                     "threadsPresentAtStart": dict(self._threads_present_at_start.most_common()),
                     "threadStartsByName": dict(self._thread_starts.most_common()),
                     "threadObservationsByName": dict(self._thread_observations.most_common()),
+                    "nativeThreadIdsByName": {
+                        name: sorted(native_ids)
+                        for name, native_ids in self._native_thread_ids.items()
+                    },
                     "threadsAliveAtEnd": [
                         {
                             "name": _safe_thread_name(thread.name),
@@ -222,6 +637,7 @@ class PythonDiagnosticsProfiler:
                         "threadNames": self._thread_name_overflow,
                     },
                     "errors": dict(self._errors),
+                    "reticulum": self._reticulum_report(),
                     "note": (
                         "Observed stacks include sleeping threads and are not direct CPU percentages. "
                         "Use nativeId to correlate with an OS CPU sample."
